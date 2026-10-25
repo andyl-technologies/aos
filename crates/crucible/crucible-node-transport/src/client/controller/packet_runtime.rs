@@ -9,32 +9,7 @@ use super::*;
 
 mod identity;
 
-/// Borrows one immutable request from the closed packet runtime method family.
-///
-/// Every variant uses the defining DTO serializer. Callers cannot supply a
-/// serializer callback, override the method or select a different body schema.
-/// Begin arguments retain their separately validated kind-specific schema.
-/// The caller independently funds its original body and all call construction.
-#[derive(Serialize)]
-#[serde(untagged)]
-pub enum PacketRuntimeRequest<'a> {
-    /// Borrows delivered input for its execution owner.
-    Input(&'a InputRequest),
-    /// Borrows an execution owner's observation query.
-    Observe(&'a ObserveRequest),
-    /// Borrows one of the seven baseline Begin argument kinds.
-    Begin(&'a BeginRequest),
-    /// Borrows a retained operation's progress query.
-    Poll(&'a PollRequest),
-    /// Borrows authenticated retirement or inert abandonment data.
-    Retire(&'a RetireRequest),
-    /// Borrows an inert content-transfer reservation.
-    BlobBegin(&'a BlobBeginRequest),
-    /// Borrows one immutable content chunk.
-    BlobChunk(&'a BlobChunkRequest),
-    /// Borrows an inert content-transfer completion.
-    BlobFinish(&'a BlobFinishRequest),
-}
+pub use crate::bodies::PacketRuntimeRequest;
 
 impl PacketRuntimeRequest<'_> {
     fn scope(
@@ -42,16 +17,7 @@ impl PacketRuntimeRequest<'_> {
         operation_id: Option<Id>,
         capture_owner: Option<Id>,
     ) -> Result<CallScope, ProviderError> {
-        let method = match self {
-            Self::Input(_) => Method::Input,
-            Self::Observe(_) => Method::Observe,
-            Self::Begin(_) => Method::Begin,
-            Self::Poll(_) => Method::Poll,
-            Self::Retire(_) => Method::Retire,
-            Self::BlobBegin(_) => Method::BlobBegin,
-            Self::BlobChunk(_) => Method::BlobChunk,
-            Self::BlobFinish(_) => Method::BlobFinish,
-        };
+        let method = self.method();
         let capture = matches!(self, Self::Begin(body) if body.kind == BeginKind::Capture);
         if capture != capture_owner.is_some() {
             return Err(ProviderError::Correlation(
@@ -121,6 +87,12 @@ impl PacketRuntimeController {
     /// direct caller serializer or arbitrary method enters the sizing/encode
     /// passes. Caller-owned roots, codec work and all response populations still
     /// require independent funding.
+    /// BlobChunk's complete quoted base64 extent is checked before its encoder
+    /// can allocate, including during the general JSON sizing pass.
+    /// The same exhaustive field walk bounds literal JSON recursion and rejects
+    /// excessive input populations without constructing a DOM or sorting keys.
+    /// Envelope extensions remain borrowed through preflight and complete sizing;
+    /// only their bounded live contents are cloned into a prepared request.
     ///
     /// Outgoing request IDs must belong to the new runtime suffix. Legacy ID
     /// collisions are refused before serialization or cached-response cloning.
@@ -137,7 +109,7 @@ impl PacketRuntimeController {
         operation_id: Option<Id>,
         capture_owner: Option<Id>,
         body: PacketRuntimeRequest<'_>,
-        extensions: Extensions,
+        extensions: &Extensions,
     ) -> Result<ResponseBody, ProviderError> {
         let result = self.call_inner(request_id, operation_id, capture_owner, body, extensions);
         if result.is_err() {
@@ -152,7 +124,7 @@ impl PacketRuntimeController {
         operation_id: Option<Id>,
         capture_owner: Option<Id>,
         body: PacketRuntimeRequest<'_>,
-        extensions: Extensions,
+        extensions: &Extensions,
     ) -> Result<ResponseBody, ProviderError> {
         if self
             .runtime
@@ -162,9 +134,12 @@ impl PacketRuntimeController {
             return Err(ProviderError::Conflict("packet runtime legacy request ID"));
         }
         let scope = body.scope(operation_id, capture_owner)?;
+        let maximum_frame = usize::try_from(self.runtime.authority().limits().frame_bytes.get())
+            .map_err(|_| ProviderError::ResourceExhausted("packet runtime frame limit"))?;
+        body.preflight_serialization(extensions, maximum_frame)?;
 
         self.runtime
-            .call_scoped(request_id, scope, body, extensions)
+            .call_packet(request_id, scope, body, extensions)
     }
 
     /// Borrows the same connection authority without renewing registration.

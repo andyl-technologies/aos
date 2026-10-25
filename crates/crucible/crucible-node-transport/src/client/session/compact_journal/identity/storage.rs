@@ -24,6 +24,25 @@ pub(in crate::client::session::compact_journal) fn storage_data(
     if maximum_frame_bytes == 0 || maximum_journal_bytes == 0 {
         return Err(credit());
     }
+    projection_storage_data(maximum_frame_bytes, Some(maximum_journal_bytes))
+}
+
+// A legacy retry is authenticated before consulting the suffix's remaining
+// credit. Its complete identity output therefore needs the frame expansion
+// window even when the suffix has less than one frame of credit left.
+pub(in crate::client::session::compact_journal) fn runtime_storage_data(
+    maximum_frame_bytes: usize,
+) -> Result<[usize; 3], ProviderError> {
+    if maximum_frame_bytes == 0 {
+        return Err(credit());
+    }
+    projection_storage_data(maximum_frame_bytes, None)
+}
+
+fn projection_storage_data(
+    maximum_frame_bytes: usize,
+    maximum_journal_bytes: Option<usize>,
+) -> Result<[usize; 3], ProviderError> {
     // A known retry can widen its decimal sequence by at most twenty bytes.
     // The projection inserts a ten-byte origin string. Charge both independently
     // rather than deriving lexical event limits from normalized numeric widths.
@@ -32,10 +51,13 @@ pub(in crate::client::session::compact_journal) fn storage_data(
         .and_then(|bytes| bytes.checked_add("controller".len()))
         .ok_or_else(credit)?;
     let extent = original_json_value_storage_extent_data(lexical)?;
-    let canonical = maximum_journal_bytes
-        .checked_add(20)
-        .ok_or_else(credit)?
-        .min(extent.maximum_canonical_encoded_bytes);
+    let canonical = match maximum_journal_bytes {
+        Some(bytes) => bytes
+            .checked_add(20)
+            .ok_or_else(credit)?
+            .min(extent.maximum_canonical_encoded_bytes),
+        None => extent.maximum_canonical_encoded_bytes,
+    };
     // The sink reserves exactly the measured projection length and cannot grow.
     // Sorting, escaping and diagnostics retain the defining supplier's complete
     // cumulative construction bounds, including refused partial work.
@@ -100,7 +122,7 @@ pub(in crate::client::session::compact_journal) fn counter_scratch_data() -> usi
         + size_of::<std::array::IntoIter<usize, 4>>()
         + size_of::<[usize; 3]>()
         + size_of::<Result<[usize; 3], ProviderError>>()
-        + size_of::<Option<usize>>() * 3
+        + size_of::<Option<usize>>() * 4
         + size_of::<u64>() * 2
         + size_of::<usize>() * 14
 }

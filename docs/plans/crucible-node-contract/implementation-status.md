@@ -10,6 +10,69 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Runtime construction and funding inputs
+
+The Engine's existing runtime slot now holds `PacketRuntimeController`. The
+same closed method roster defines its immutable request variants, the actual
+request/result vector graph and an allocation-free serializer preflight. The
+production same-Source admission and funded constructor are still unfinished;
+changing this slot's type grants no runtime action.
+
+Before general serialization, preflight bounds literal JSON recursion and
+populations and checks BlobChunk's complete base64 encoder extent. This prevents
+an eager encoder allocation from preceding the ordinary sizing sink's refusal.
+Caller envelope extensions remain borrowed through preflight and complete frame
+sizing; only bounded live contents are subsequently cloned. Caller roots and
+all later SDK work remain independent funding terms.
+
+The typed-vector projection now charges disjoint syntax for each completed
+vector element. It covers both ordinary object records and the shorter
+positional-record form accepted by the defining Serde visitor. Required-field
+and positional-prefix controls pin that lower bound. Actual compiled layouts in
+both codecs yield 4,849,664 bytes (4.625 MiB) for completed vector backing and
+10,420,224 bytes (9.9375 MiB) during construction at a 65,536-byte frame ceiling.
+Failed-prefix initial reservations remain included. These are per-population
+vector components, excluding literal JSON, strings, Bytes and other SDK owners.
+Pricing positional records covers current decoder behavior; the RFC requires
+core wire objects, so nested positional-record refusal remains a separate
+conformance gap to close before full completion.
+
+Two additional allocation-free original-controller DATA queries price complete
+retry identity work and one fresh legacy response clone. The identity window
+remains frame-derived when suffix credit is almost exhausted because legacy
+retry authentication precedes the suffix credit check. The clone bound uses
+the actual original canonical-byte debit, including history larger than a later
+negotiated frame, rather than unused quota. Neither query changes custody,
+credit or permission.
+
+Both codecs pass twenty-two compact-runtime owner controls, two runtime-session
+controls and eight vector/field-graph controls. Both complete Transport suites
+pass 2,272 tests with twenty ignored. Both Engine suites pass 2,074 with
+thirty-four ignored; an initial standard run returned OS error 3 during process
+cleanup, and its complete repeat passes with the same frozen Engine and
+source-built companions. A separately reproduced real proc-directory stat-open
+case identifies a conservative census retry fix still required. Scoped
+formatting of twenty changed Rust files and
+five-package all-feature/all-target checks pass. SourceBirth strict Clippy is
+clean; Transport retains exactly the preceding four errors and 1,725 warnings,
+so this is not a strict Transport lint pass.
+
+The rebuilt uninstrumented native inactive-lifecycle control passes with the
+actual source-built provider and device under the unchanged size-optimized,
+no-DWARF test profile and sixty-second Initial deadline. It reaches InputOwners,
+CollectingGraph and InactiveRuntime, verifies exact and one-byte-short census
+restrictions and completes retirement and kernel-resource reclamation. The run
+passes in 706.58 seconds. This establishes inactive lifecycle behavior only;
+it does not qualify Arm/Capture, Source18 or the full RFC.
+
+All six architecture gates pass. Required application test-target compilation
+passes with 185 artifacts across 58 packages and 76 integration targets; all
+754 selected frozen Rust/Cargo inputs match current and captured build source.
+User-owned changes remain outside this component, and this is not clean whole-PR
+or full RFC qualification. Complete SDK R/T/S, its metadata population profile,
+genuine Source18 one-use admission and handoff, Source18/Node18 physical history,
+Native18 production selection and the remaining full RFC work are unfinished.
+
 ## Closed packet runtime call surface
 
 `PacketRuntimeController` now retains the actual compact owner behind an API
@@ -50,8 +113,8 @@ Required application test-target compilation passes with 185 artifacts across
 58 packages and 76 integration targets. All 751 frozen Rust/Cargo inputs match
 the captured build source and current candidate tree.
 
-The Engine's production runtime slot has not yet selected this closed owner.
-Complete SDK R/T/S, the same-Source one-use admission and funded handoff,
+At this earlier stage the Engine's runtime slot had not selected this closed
+owner. Complete SDK R/T/S, the same-Source one-use admission and funded handoff,
 Source18/Node18 history writers and readers, Native18 production selection and
 the remaining full RFC qualification stay unfinished. The preceding native
 inactive-lifecycle result remains evidence for its stated earlier stage; this
@@ -70,9 +133,9 @@ frame ceiling and changes no request quota, byte debit or owner.
 Completed vectors and simultaneous construction receive separate bounds. The
 construction bound includes old/new banks during growth and the pinned Serde
 visitor's initial reservations at every active nested vector, including failure
-before the first element completes. For a 65,536-byte frame, the current field
-layouts yield 32 MiB completed backing and 51 MiB construction backing per typed
-population. Concurrent request and response populations need separate rows.
+before the first element completes. At this earlier stage a 65,536-byte frame yielded
+32 MiB completed backing and 51 MiB construction backing per typed population.
+The runtime construction section above records the subsequently tightened bound. Concurrent request and response populations need separate rows.
 Literal JSON, strings, decoded Bytes, validation sets, diagnostics, inline
 controls, legacy replies larger than the current frame and arbitrary Serialize
 callbacks remain independently priced. This component grants no Source action

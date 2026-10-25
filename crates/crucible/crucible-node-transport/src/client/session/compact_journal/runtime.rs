@@ -58,6 +58,30 @@ impl ClientCustody {
 }
 
 impl ClientSession {
+    pub(in crate::client) fn compact_runtime_identity_storage_data(
+        &self,
+        legacy: &ClientCustody,
+    ) -> Result<[usize; 3], ProviderError> {
+        let [requests, remaining, bank] = legacy.compact_runtime_journal_limits_data()?;
+        validate_journal_limits(requests, remaining, bank)?;
+        let frame =
+            usize::try_from(self.authority.limits().frame_bytes.get()).map_err(|_| credit())?;
+        let mut row = identity::runtime_storage_data(frame)?;
+        row[2] = Self::compact_runtime_identity_counter_scratch_data();
+        Ok(row)
+    }
+
+    pub(in crate::client) fn compact_runtime_identity_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        Self::compact_request_identity_counter_scratch_data()
+            + size_of::<&ClientCustody>()
+            + size_of::<[usize; 3]>()
+            + size_of::<Result<[usize; 3], ProviderError>>()
+            + size_of::<Option<usize>>()
+            + size_of::<usize>() * 4
+    }
+
     pub(in crate::client) fn prepare_compact_runtime_journal(
         &mut self,
         legacy: &ClientCustody,
@@ -209,6 +233,36 @@ mod tests {
     use crate::client::session::compact_journal::tests::{BANK_BYTES, fixture};
     use crucible_node_format::canonical;
     use std::{io::Read, time::Duration};
+
+    #[test]
+    fn identity_quote_keeps_full_retry_work_with_one_byte_of_suffix_credit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_lease, session, compact, _peer, _request) = fixture(BANK_BYTES);
+        let mut legacy = ClientCustody::new(256, compact.content)?;
+        let full = session.compact_runtime_identity_storage_data(&legacy)?;
+        let frame = usize::try_from(session.authority.limits().frame_bytes.get())?;
+
+        // Numeric debit fixtures exercise the same private remaining-credit
+        // arithmetic as retention. They do not fabricate a replay permission.
+        legacy.retained_bytes = legacy.maximum_bytes - 1;
+        let quotas = legacy.runtime_journal_bytes_data();
+        let almost_spent = session.compact_runtime_identity_storage_data(&legacy)?;
+        let suffix_only = identity::storage_data(frame, 1)?;
+
+        assert_eq!(almost_spent, full);
+        assert!(almost_spent[1] > suffix_only[1]);
+        assert_eq!(legacy.runtime_journal_bytes_data(), quotas);
+        for debit in [legacy.maximum_bytes, legacy.maximum_bytes + 1, usize::MAX] {
+            legacy.retained_bytes = debit;
+            assert!(
+                session
+                    .compact_runtime_identity_storage_data(&legacy)
+                    .is_err()
+            );
+            assert_eq!(legacy.retained_bytes, debit);
+        }
+        Ok(())
+    }
 
     #[test]
     fn already_owned_content_uses_no_new_or_expired_operational_cut()

@@ -7,7 +7,7 @@
 use std::mem::size_of;
 
 use crucible_node_transport::{
-    ProviderError, client::CompactRuntimeController, connection::OriginalRetainedSupervisor,
+    ProviderError, client::PacketRuntimeController, connection::OriginalRetainedSupervisor,
     handshake::OriginalExtensionRegistryOwner,
 };
 
@@ -28,7 +28,7 @@ impl CnpSemanticLaunchGuard {
             + size_of::<OriginalControllerView<'static>>()
             + size_of::<Option<OriginalControllerView<'static>>>()
             + size_of::<Result<Option<OriginalControllerView<'static>>, ProviderError>>()
-            + CompactRuntimeController::retained_metadata_counter_scratch_data()
+            + PacketRuntimeController::retained_metadata_counter_scratch_data()
             + size_of::<Option<&OriginalExtensionRegistryOwner>>()
             + size_of::<Option<&OriginalRetainedSupervisor>>()
             // The initial preparation walk also lends its exact roster Source.

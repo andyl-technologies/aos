@@ -20,7 +20,7 @@ fn compact_process_custody_keeps_source_reads_and_survives_supervisor_transfer()
         .retained_descriptor_count_data()
         .unwrap();
 
-    CompactRuntimeController::retain_into(&mut native.controller, &mut native.compact_runtime)
+    PacketRuntimeController::retain_into(&mut native.controller, &mut native.compact_runtime)
         .unwrap();
 
     assert!(native.controller().is_none());
@@ -86,7 +86,7 @@ fn conflicting_or_foreign_compact_custody_cannot_issue_a_source_read() {
     let mut foreign_guard = foreign_fixture.launch_guard();
     let native = guard.custody.as_mut().unwrap();
     let original_read = native.original_source_read().unwrap();
-    CompactRuntimeController::retain_into(&mut native.controller, &mut native.compact_runtime)
+    PacketRuntimeController::retain_into(&mut native.controller, &mut native.compact_runtime)
         .unwrap();
     native.controller = foreign_guard.custody.as_mut().unwrap().controller.take();
 
@@ -113,7 +113,7 @@ fn conflicting_or_foreign_compact_custody_cannot_issue_a_source_read() {
 
     let native = guard.custody.as_mut().unwrap();
     let foreign = foreign_guard.custody.as_mut().unwrap();
-    CompactRuntimeController::retain_into(&mut foreign.controller, &mut foreign.compact_runtime)
+    PacketRuntimeController::retain_into(&mut foreign.controller, &mut foreign.compact_runtime)
         .unwrap();
     std::mem::swap(&mut native.compact_runtime, &mut foreign.compact_runtime);
 

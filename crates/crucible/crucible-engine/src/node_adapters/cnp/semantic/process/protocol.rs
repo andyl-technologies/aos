@@ -12,7 +12,7 @@ pub(super) enum OriginalControllerView<'a> {
     /// Borrows the original controller before its runtime move.
     Legacy(&'a CnpController),
     /// Borrows the opaque runtime owner, including its retained legacy prefix.
-    Compact(&'a CompactRuntimeController),
+    Compact(&'a PacketRuntimeController),
 }
 
 impl CnpSemanticProcessCustody {

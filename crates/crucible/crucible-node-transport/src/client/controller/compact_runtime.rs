@@ -231,6 +231,36 @@ impl CompactRuntimeController {
         body: impl Serialize,
         extensions: Extensions,
     ) -> Result<ResponseBody, ProviderError> {
+        self.call_with_extensions(
+            request_id,
+            scope,
+            body,
+            request::RequestExtensions::Owned(extensions),
+        )
+    }
+
+    pub(super) fn call_packet(
+        &mut self,
+        request_id: Id,
+        scope: CallScope,
+        body: PacketRuntimeRequest<'_>,
+        extensions: &Extensions,
+    ) -> Result<ResponseBody, ProviderError> {
+        self.call_with_extensions(
+            request_id,
+            scope,
+            body,
+            request::RequestExtensions::Borrowed(extensions),
+        )
+    }
+
+    fn call_with_extensions(
+        &mut self,
+        request_id: Id,
+        scope: CallScope,
+        body: impl Serialize,
+        extensions: request::RequestExtensions<'_>,
+    ) -> Result<ResponseBody, ProviderError> {
         let result = self.call_inner(request_id, scope, body, extensions);
         if result.is_err() {
             self.fence();
@@ -243,12 +273,12 @@ impl CompactRuntimeController {
         request_id: Id,
         scope: CallScope,
         body: impl Serialize,
-        extensions: Extensions,
+        extensions: request::RequestExtensions<'_>,
     ) -> Result<ResponseBody, ProviderError> {
         self.ensure_live()?;
         let (original, mut request) = self
             .original
-            .prepare_scoped_request(request_id, scope, body, extensions)?;
+            .prepare_scoped_request_with_extensions(request_id, scope, body, extensions)?;
         let reply = self.exchange(&mut request)?;
         let response = decode_response(&original, &reply.body)?;
         if matches!(response.shape, ResponseShape::Completed { .. }) {

@@ -12,7 +12,7 @@ use crucible_node_format::{ContractError, canonical};
 use std::io::{self, Write};
 
 mod storage;
-pub(super) use storage::{counter_scratch_data, storage_data};
+pub(super) use storage::{counter_scratch_data, runtime_storage_data, storage_data};
 
 pub(super) fn request_hash(
     request: &Envelope,

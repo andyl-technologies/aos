@@ -10,7 +10,7 @@ use std::rc::Rc;
 use crucible_node_format::{ContentRef, U64};
 use crucible_node_transport::{
     ProviderError,
-    client::{CnpController, CompactRuntimeController},
+    client::{CnpController, PacketRuntimeController},
     handshake::{ExtensionHandshake, Handshake},
 };
 use rustix::process::{Pid, Signal, getpgid, kill_process_group};
@@ -114,7 +114,7 @@ pub struct CnpSemanticProcessCustody {
     pub(super) directory: PathBuf,
     pub(super) controller: Option<CnpController>,
     // Only the separately funded Source handoff may populate this alternative.
-    pub(super) compact_runtime: Option<CompactRuntimeController>,
+    pub(super) compact_runtime: Option<PacketRuntimeController>,
     pub(super) protocol_supervisor:
         std::cell::RefCell<Option<crucible_node_transport::connection::OriginalProtocolSupervisor>>,
     pub(super) handshake: Option<Handshake>,

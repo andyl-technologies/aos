@@ -19,6 +19,7 @@ mod requests;
 mod responses;
 mod results;
 mod runtime_vectors;
+pub use runtime_vectors::PacketRuntimeRequest;
 pub(crate) use runtime_vectors::{
     counter_scratch_data as runtime_typed_vector_counter_scratch_data, typed_vector_storage_data,
 };

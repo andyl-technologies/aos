@@ -7,6 +7,8 @@
 use super::*;
 use std::mem::size_of;
 
+mod identity;
+
 impl CnpController {
     /// Bounds compact suffix journal backing from this original controller.
     ///

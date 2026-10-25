@@ -7,6 +7,162 @@ use super::*;
 use crate::client::{PacketRuntimeController, PacketRuntimeRequest};
 
 #[test]
+fn closed_calls_bound_literal_roots_before_any_serializer_runs() -> TestResult {
+    for in_envelope in [false, true] {
+        let (_lease, mut original, mut peer, _) = fixture(8);
+        let mut output = None;
+        PacketRuntimeController::retain_into(&mut original, &mut output)?;
+        let runtime = output.as_mut().unwrap();
+        let quotas = runtime.journal_byte_reservations_data();
+        let mut nested = Value::Null;
+        for _ in 0..65 {
+            nested = Value::Array(vec![nested]);
+        }
+        let mut request = BlobFinishRequest {
+            transfer_id: id("transfer"),
+            extensions: Extensions::new(),
+        };
+        let mut envelope_extensions = Extensions::new();
+        if in_envelope {
+            envelope_extensions.insert("deep".into(), nested);
+        } else {
+            request.extensions.insert("deep".into(), nested);
+        }
+
+        let result = runtime.call(
+            id("runtime"),
+            None,
+            None,
+            PacketRuntimeRequest::BlobFinish(&request),
+            &envelope_extensions,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProviderError::ResourceExhausted(
+                "packet runtime literal JSON preflight depth"
+            ))
+        ));
+        assert_eq!(runtime.journal_byte_reservations_data(), quotas);
+        assert!(runtime.pending_envelope().is_none());
+        assert!(runtime.unexpected_frame().is_none());
+        assert_eq!(
+            runtime.compact_originals(RequestOrigin::Controller).count(),
+            0
+        );
+        assert_eq!(peer.read(&mut [0])?, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn closed_blob_chunk_refuses_its_oversized_encoder_before_generic_sizing() -> TestResult {
+    for length in [49_152, 65_536] {
+        let (_lease, mut original, mut peer, reference) = fixture(8);
+        let before = prefix(original.as_ref().unwrap());
+        let pointer = original.as_ref().unwrap().content(&reference)?.as_ptr();
+        let mut output = None;
+        PacketRuntimeController::retain_into(&mut original, &mut output)?;
+        let runtime = output.as_mut().unwrap();
+        let quotas = runtime.journal_byte_reservations_data();
+        let request = BlobChunkRequest {
+            transfer_id: id("oversized"),
+            offset: U64::new(0),
+            bytes: Bytes::new(vec![0xff; length]),
+            extensions: Extensions::new(),
+        };
+
+        let result = runtime.call(
+            id("runtime"),
+            None,
+            None,
+            PacketRuntimeRequest::BlobChunk(&request),
+            &Extensions::new(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProviderError::ResourceExhausted(
+                "packet runtime BlobChunk encoder exceeds frame"
+            ))
+        ));
+        assert_eq!(runtime.journal_byte_reservations_data(), quotas);
+        assert_eq!(runtime.content(&reference)?.as_ptr(), pointer);
+        assert!(runtime.pending_envelope().is_none());
+        assert!(runtime.unexpected_frame().is_none());
+        assert_eq!(
+            runtime.compact_originals(RequestOrigin::Controller).count(),
+            0
+        );
+        assert_eq!(
+            serde_json::to_vec(
+                &runtime
+                    .legacy_originals(RequestOrigin::Controller)
+                    .collect::<Vec<_>>()
+            )?,
+            before
+        );
+        assert_eq!(peer.read(&mut [0])?, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn closed_blob_chunk_preserves_the_original_unpadded_byte_encoding() -> TestResult {
+    let (_lease, mut original, mut peer, _) = fixture(8);
+    let extensions =
+        Extensions::from([("resume-envelope".into(), json!({"literal": [null, "kept"]}))]);
+    let expected_extensions = extensions.clone();
+    let server = std::thread::spawn(move || {
+        let mut reader = FrameReader::new(peer.try_clone().unwrap(), 65_536).unwrap();
+        let request = read(&mut reader);
+        assert_eq!(request.method, Method::BlobChunk);
+        assert_eq!(request.body["bytes"], json!("_wAB"));
+        assert_eq!(request.extensions, expected_extensions);
+        let terminal = response(
+            &request,
+            ResponseShape::Completed {
+                operation_state: OperationState::Completed,
+                result: body(BlobChunkResult {
+                    transfer_id: id("transfer"),
+                    next_offset: U64::new(3),
+                }),
+                extensions: Extensions::new(),
+            },
+            2,
+        );
+        write(&mut peer, &terminal);
+    });
+    let request = BlobChunkRequest {
+        transfer_id: id("transfer"),
+        offset: U64::new(0),
+        bytes: Bytes::new(vec![0xff, 0, 1]),
+        extensions: Extensions::new(),
+    };
+    let mut output = None;
+    PacketRuntimeController::retain_into(&mut original, &mut output)?;
+
+    let response = output.as_mut().unwrap().call(
+        id("runtime"),
+        None,
+        None,
+        PacketRuntimeRequest::BlobChunk(&request),
+        &extensions,
+    )?;
+
+    assert!(
+        matches!(response.result, Some(MethodResult::BlobChunk(result)) if result.next_offset == U64::new(3))
+    );
+    assert_eq!(request.bytes.as_slice(), &[0xff, 0, 1]);
+    assert_eq!(
+        extensions["resume-envelope"],
+        json!({"literal": [null, "kept"]})
+    );
+    server.join().unwrap();
+    Ok(())
+}
+
+#[test]
 fn closed_calls_preserve_runtime_replay_and_refuse_legacy_before_publication() -> TestResult {
     let (lease, mut original, mut peer, reference) = fixture(8);
     let terminal_reference = reference.clone();
@@ -51,7 +207,7 @@ fn closed_calls_preserve_runtime_replay_and_refuse_legacy_before_publication() -
         None,
         None,
         PacketRuntimeRequest::BlobFinish(&request),
-        Extensions::new(),
+        &Extensions::new(),
     )?;
     let charged = runtime.journal_byte_reservations_data();
     assert_eq!([charged[0], charged[1]], quotas);
@@ -62,7 +218,7 @@ fn closed_calls_preserve_runtime_replay_and_refuse_legacy_before_publication() -
         None,
         None,
         PacketRuntimeRequest::BlobFinish(&request),
-        Extensions::new(),
+        &Extensions::new(),
     )?;
 
     assert_eq!(replay, response);
@@ -72,7 +228,7 @@ fn closed_calls_preserve_runtime_replay_and_refuse_legacy_before_publication() -
         None,
         None,
         PacketRuntimeRequest::BlobFinish(&request),
-        Extensions::new(),
+        &Extensions::new(),
     );
 
     assert!(matches!(
@@ -147,7 +303,7 @@ fn closed_capture_uses_its_actual_capture_owner_on_the_wire() -> TestResult {
         Some(id("operation")),
         Some(id("capture-owner")),
         PacketRuntimeRequest::Begin(&request),
-        Extensions::new(),
+        &Extensions::new(),
     )?;
 
     assert!(matches!(response.shape, ResponseShape::Error { .. }));
@@ -186,7 +342,7 @@ fn inconsistent_capture_scope_fences_before_body_construction_or_publication() -
             None,
             capture_owner,
             request,
-            Extensions::new(),
+            &Extensions::new(),
         );
 
         assert!(matches!(

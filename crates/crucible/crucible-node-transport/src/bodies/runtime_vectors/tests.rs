@@ -72,6 +72,113 @@ fn vector_backing(value: &ObserveResult) -> usize {
             .sum::<usize>()
 }
 
+fn positional<T: RecordFields>(value: &Value) -> Value {
+    Value::Array(
+        T::FIELDS
+            .iter()
+            .map(|field| value[*field].clone())
+            .collect(),
+    )
+}
+
+fn verify_required_record_syntax<T>(original: &T) -> TestResult
+where
+    T: RecordFields + Serialize + serde::de::DeserializeOwned + PartialEq,
+{
+    let value = serde_json::to_value(original)?;
+    let object = value.as_object().ok_or("record object absent")?;
+    assert_eq!(object.len(), T::FIELDS.len());
+
+    for field in T::FIELDS {
+        let mut missing = object.clone();
+        assert!(missing.remove(*field).is_some());
+        assert!(T::deserialize(Value::Object(missing)).is_err(), "{field}");
+    }
+    let array = positional::<T>(&value);
+    assert!(T::deserialize(&array)? == *original);
+    let elements = array.as_array().ok_or("record sequence absent")?;
+    for length in 0..elements.len() {
+        assert!(T::deserialize(Value::Array(elements[..length].to_vec())).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn local_syntax_bound_covers_required_object_and_positional_record_forms() -> TestResult {
+    let batch = observation(1, 1);
+
+    verify_required_record_syntax(&batch.measurement_ref)?;
+    verify_required_record_syntax(&batch.events[0])?;
+    verify_required_record_syntax(&batch)?;
+    assert!(Id::deserialize(json!("")).is_err());
+    assert_eq!(serde_json::to_vec(&id("i"))?.len(), Id::LOCAL_ENCODED_BYTES);
+    Ok(())
+}
+
+#[test]
+fn nested_positional_records_fit_the_same_disjoint_vector_budget() -> TestResult {
+    let original = ObserveResult {
+        observations: vec![observation(17, 33); 3],
+        next_sequence: U64::new(1),
+        complete: true,
+        inventory_hash: canonical::hash("cnp.inventory.v1", b"inventory")?,
+    };
+    let mut input = serde_json::to_value(&original)?;
+    for batch in input["observations"].as_array_mut().unwrap() {
+        for event in batch["events"].as_array_mut().unwrap() {
+            for field in ["payload", "provenance_ref"] {
+                event[field] = positional::<ContentRef>(&event[field]);
+            }
+            *event = positional::<Event>(event);
+        }
+        batch["measurement_ref"] = positional::<ContentRef>(&batch["measurement_ref"]);
+        *batch = positional::<ObservationBatch>(batch);
+    }
+    let bytes = serde_json::to_vec(&input)?;
+
+    let decoded = ObserveResult::deserialize(&input)?;
+    let row = typed_vector_storage_data(bytes.len(), usize::MAX)?;
+
+    assert_eq!(decoded, original);
+    assert!(vector_backing(&decoded) <= row[0]);
+    // The old largest-slot-per-two-bytes projection is unnecessary even for
+    // positional inputs, and would obscure the actual SDK admission demand.
+    assert!(row[0] < bytes.len() * RUNTIME.element_bytes);
+    Ok(())
+}
+
+#[test]
+fn closed_field_walk_preserves_valid_byte_windows_and_bounds_large_objects() -> TestResult {
+    let reference = canonical::content_ref(b"body", "application/octet-stream")?;
+    let request = BlobBeginRequest {
+        transfer_id: id("transfer"),
+        content: reference,
+        extensions: Extensions::from([("literal".into(), json!({"nested": [0, "text"]}))]),
+    };
+    let body = PacketRuntimeRequest::BlobBegin(&request);
+    let empty = Extensions::new();
+    let bytes = serde_json::to_vec(&body)?;
+
+    body.preflight_serialization(&empty, bytes.len() + 2)?;
+
+    let large = Extensions::from([(
+        "many".into(),
+        json!(
+            (0..20_000)
+                .map(|index| (index.to_string(), Value::Null))
+                .collect::<Map<String, Value>>()
+        ),
+    )]);
+    assert!(matches!(
+        body.preflight_serialization(&large, 65_536),
+        Err(ProviderError::ResourceExhausted(
+            "packet runtime serializer preflight exceeds frame"
+        ))
+    ));
+    assert_eq!(serde_json::to_vec(&body)?, bytes);
+    Ok(())
+}
+
 #[test]
 fn completed_borrowed_populations_fit_with_independent_nested_capacities() -> TestResult {
     for (batches, events, parents) in [(0, 0, 0), (1, 0, 0), (1, 1, 3), (1, 2050, 0), (3, 2, 257)] {

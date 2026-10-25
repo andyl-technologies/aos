@@ -5,6 +5,27 @@
 
 use super::*;
 
+pub(super) enum RequestExtensions<'a> {
+    Owned(Extensions),
+    Borrowed(&'a Extensions),
+}
+
+impl RequestExtensions<'_> {
+    fn as_extensions(&self) -> &Extensions {
+        match self {
+            Self::Owned(extensions) => extensions,
+            Self::Borrowed(extensions) => extensions,
+        }
+    }
+
+    fn into_owned(self) -> Extensions {
+        match self {
+            Self::Owned(extensions) => extensions,
+            Self::Borrowed(extensions) => extensions.clone(),
+        }
+    }
+}
+
 impl CnpController {
     /// Names the shared request constructor's fixed views and return controls.
     ///
@@ -26,6 +47,9 @@ impl CnpController {
             + size_of::<Value>()
             + size_of::<serde_json::Map<String, Value>>()
             + size_of::<[&Id; 3]>()
+            + size_of::<RequestExtensions<'static>>()
+            + size_of::<&Extensions>()
+            + size_of::<Extensions>()
             + crucible_node_format::literal_json::deserialization_counter_scratch_data()
     }
 
@@ -35,6 +59,21 @@ impl CnpController {
         scope: CallScope,
         body: impl Serialize,
         extensions: Extensions,
+    ) -> Result<(RequestBody, Envelope), ProviderError> {
+        self.prepare_scoped_request_with_extensions(
+            request_id,
+            scope,
+            body,
+            RequestExtensions::Owned(extensions),
+        )
+    }
+
+    pub(super) fn prepare_scoped_request_with_extensions(
+        &self,
+        request_id: Id,
+        scope: CallScope,
+        body: impl Serialize,
+        extensions: RequestExtensions<'_>,
     ) -> Result<(RequestBody, Envelope), ProviderError> {
         let CallScope {
             operation_id,
@@ -65,7 +104,7 @@ impl CnpController {
             sequence: U64::new(u64::MAX),
             method,
             body: &body,
-            extensions: &extensions,
+            extensions: extensions.as_extensions(),
         };
         count_serialized(&wire, self.maximum_frame()?)?;
 
@@ -74,6 +113,10 @@ impl CnpController {
             return Err(ProviderError::Frame("generic method body is not an object"));
         };
         let original = decode_request(method, &body)?;
+        // The packet entry point still lends its caller's original here. Its
+        // closed preflight bounded recursion, and complete sizing has now
+        // bounded live contents before any independently owned clone exists.
+        let extensions = extensions.into_owned();
         let request = Envelope {
             protocol: "CNP/1".into(),
             message: MessageKind::Request,

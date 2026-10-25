@@ -562,8 +562,21 @@ fn initial_and_resumed_hello_frames_bind_correlation_and_fence_old_scope() {
 pub(crate) fn controller_authority(
     evidence: bool,
 ) -> Result<(Handshake, ConnectionAuthority), ProviderError> {
+    controller_authority_with_frame_limit(evidence, limits().frame_bytes.get())
+}
+
+/// Negotiates an inert controller fixture with its actual selected frame limit.
+///
+/// # Errors
+/// Returns invalid model feature, limit or ordinary SDK negotiation refusal.
+pub(crate) fn controller_authority_with_frame_limit(
+    evidence: bool,
+    maximum_frame_bytes: u64,
+) -> Result<(Handshake, ConnectionAuthority), ProviderError> {
     let mut request = hello();
     let mut response = result();
+    request.limits.frame_bytes = U64::new(maximum_frame_bytes);
+    response.limits.frame_bytes = U64::new(maximum_frame_bytes);
     let installation = TrustedInstallation {
         session_id: id("session"),
         incarnation_id: id("incarnation"),
@@ -582,6 +595,7 @@ pub(crate) fn controller_authority(
             id("cnp.resume/1"),
         )]),
     };
+    policy.provider_limits.frame_bytes = U64::new(maximum_frame_bytes);
     if evidence {
         let feature = Id::new("cnp.control-evidence/1")?;
         request.optional_features.push(feature.clone());

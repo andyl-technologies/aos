@@ -6,9 +6,18 @@
 //! This component excludes literal JSON, strings, Bytes decoding, validation
 //! sets, diagnostics, inline controls, caller roots and all transport owners.
 //! It is one input to SDK funding, not a complete R/T/S row or Source right.
+//!
+//! The same closed field and method rosters also drive an allocation-free input
+//! preflight before the defining DTO serializers run. The preflight bounds
+//! populations, eager Bytes encoding and literal recursion without admitting
+//! their later construction or replacing complete frame sizing.
 
 use super::*;
 use std::{collections::BTreeMap, mem::size_of};
+
+mod preflight;
+
+use preflight::Preflight;
 
 // serde_core 1.0.228 caps Vec<T>'s initial reservation at this many bytes.
 // A rejected first element can leave that entire reservation live. The pinned
@@ -18,18 +27,24 @@ const CAUTIOUS_RESERVATION_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Copy)]
 struct Shape {
     element_bytes: usize,
+    element_bytes_per_wire_byte: usize,
     vector_depth: usize,
 }
 
 impl Shape {
     const EMPTY: Self = Self {
         element_bytes: 0,
+        element_bytes_per_wire_byte: 0,
         vector_depth: 0,
     };
 
     const fn merge(self, other: Self) -> Self {
         Self {
             element_bytes: maximum(self.element_bytes, other.element_bytes),
+            element_bytes_per_wire_byte: maximum(
+                self.element_bytes_per_wire_byte,
+                other.element_bytes_per_wire_byte,
+            ),
             vector_depth: maximum(self.vector_depth, other.vector_depth),
         }
     }
@@ -41,48 +56,105 @@ const fn maximum(left: usize, right: usize) -> usize {
 
 trait HeapShape {
     const SHAPE: Shape;
+
+    fn preflight(&self, counter: &mut Preflight) -> Result<(), ProviderError>;
 }
 
-// Only strings and objects can be completed elements in this closed family.
-// Each contributes its own two quote/bracket bytes, disjoint from descendants.
-// Thus completed typed elements across all nested vectors number at most F/2.
-trait VectorElement: HeapShape {}
-
-impl VectorElement for Id {}
-impl VectorElement for ContentRef {}
-impl VectorElement for Event {}
-impl VectorElement for ObservationBatch {}
-
-impl<T: VectorElement> HeapShape for Vec<T> {
-    const SHAPE: Shape = Shape {
-        element_bytes: maximum(size_of::<T>(), T::SHAPE.element_bytes),
-        vector_depth: 1 + T::SHAPE.vector_depth,
-    };
+// Each completed element contributes its own syntax, disjoint from nested
+// vector elements. Serde's borrowed Value struct visitor can also accept a
+// positional array: use that smaller separator/bracket budget for records.
+// The defining schema controls below pin every selected field as required.
+trait VectorElement: HeapShape {
+    const LOCAL_ENCODED_BYTES: usize;
 }
 
-impl<T: HeapShape> HeapShape for Option<T> {
-    const SHAPE: Shape = T::SHAPE;
+impl VectorElement for Id {
+    // Id validates its nonempty text during deserialization.
+    const LOCAL_ENCODED_BYTES: usize = 3;
 }
 
-impl<T: HeapShape> HeapShape for Nullable<T> {
-    const SHAPE: Shape = T::SHAPE;
+trait RecordFields {
+    const FIELDS: &'static [&'static str];
 }
 
-// These opaque populations have their own JSON/string/byte backing rows. In
-// particular, literal Value arrays do not use Serde's typed Vec reservation.
-macro_rules! without_typed_vectors {
+macro_rules! record_vector_elements {
     ($($type:ty),+ $(,)?) => {$(
-        impl HeapShape for $type {
-            const SHAPE: Shape = Shape::EMPTY;
+        impl VectorElement for $type {
+            // N required positional fields have N-1 separators and two
+            // brackets. No child value's syntax contributes to this budget.
+            const LOCAL_ENCODED_BYTES: usize = <Self as RecordFields>::FIELDS.len() + 1;
         }
     )+};
 }
 
-without_typed_vectors!(
-    bool, u16, String, Id, U64, Bytes, Value,
-    Map<String, Value>, BTreeMap<String, Value>,
-    BoundaryPolicy, BoundKind, BudgetOutcome, StopReason, EventStage, OperatingMode, OperationState,
-    Phase, RetirementDisposition, Visibility,
+record_vector_elements!(ContentRef, Event, ObservationBatch);
+
+impl<T: VectorElement> HeapShape for Vec<T> {
+    const SHAPE: Shape = Shape {
+        element_bytes: maximum(size_of::<T>(), T::SHAPE.element_bytes),
+        element_bytes_per_wire_byte: maximum(
+            size_of::<T>().div_ceil(T::LOCAL_ENCODED_BYTES),
+            T::SHAPE.element_bytes_per_wire_byte,
+        ),
+        vector_depth: 1 + T::SHAPE.vector_depth,
+    };
+
+    fn preflight(&self, counter: &mut Preflight) -> Result<(), ProviderError> {
+        counter.container(self.len())?;
+        for element in self {
+            element.preflight(counter)?;
+        }
+        Ok(())
+    }
+}
+
+impl<T: HeapShape> HeapShape for Option<T> {
+    const SHAPE: Shape = T::SHAPE;
+
+    fn preflight(&self, counter: &mut Preflight) -> Result<(), ProviderError> {
+        match self {
+            Some(value) => value.preflight(counter),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<T: HeapShape> HeapShape for Nullable<T> {
+    const SHAPE: Shape = T::SHAPE;
+
+    fn preflight(&self, counter: &mut Preflight) -> Result<(), ProviderError> {
+        self.0.preflight(counter)
+    }
+}
+
+// Scalar fields have no typed vectors or unbounded serializer recursion. The
+// dynamic String, Bytes and literal JSON implementations live in preflight.
+macro_rules! scalar_shapes {
+    ($($type:ty),+ $(,)?) => {$(
+        impl HeapShape for $type {
+            const SHAPE: Shape = Shape::EMPTY;
+
+            fn preflight(&self, counter: &mut Preflight) -> Result<(), ProviderError> {
+                counter.consume(1)
+            }
+        }
+    )+};
+}
+
+scalar_shapes!(
+    bool,
+    u16,
+    U64,
+    BoundaryPolicy,
+    BoundKind,
+    BudgetOutcome,
+    StopReason,
+    EventStage,
+    OperatingMode,
+    OperationState,
+    Phase,
+    RetirementDisposition,
+    Visibility,
 );
 
 const fn field_shape<S, T: HeapShape>(_: fn(&S) -> &T) -> Shape {
@@ -93,6 +165,10 @@ const fn field_shape<S, T: HeapShape>(_: fn(&S) -> &T) -> Shape {
 // field type participate in the graph. No DTO or field witness is evaluated.
 macro_rules! record {
     ($type:ident { $($field:ident),+ $(,)? }) => {
+        impl RecordFields for $type {
+            const FIELDS: &'static [&'static str] = &[$(stringify!($field)),+];
+        }
+
         impl HeapShape for $type {
             const SHAPE: Shape = {
                 let _ = |value: &Self| {
@@ -102,6 +178,12 @@ macro_rules! record {
                 $(shape = shape.merge(field_shape(|value: &Self| &value.$field));)+
                 shape
             };
+
+            fn preflight(&self, counter: &mut Preflight) -> Result<(), ProviderError> {
+                counter.consume(1)?;
+                $(self.$field.preflight(counter)?;)+
+                Ok(())
+            }
         }
     };
 }
@@ -401,6 +483,10 @@ macro_rules! begin_variants {
                 $(shape = shape.merge(<$argument>::SHAPE).merge(<$result>::SHAPE);)+
                 shape
             };
+
+            fn preflight(&self, counter: &mut Preflight) -> Result<(), ProviderError> {
+                counter.consume(1)
+            }
         }
     };
 }
@@ -415,32 +501,65 @@ begin_variants! {
     Shutdown => (ShutdownArguments, ShutdownResult),
 }
 
-const RUNTIME: Shape = {
-    let mut shape = Shape::EMPTY;
-    shape = shape.merge(InputRequest::SHAPE);
-    shape = shape.merge(ObserveRequest::SHAPE);
-    shape = shape.merge(BeginRequest::SHAPE);
-    shape = shape.merge(PollRequest::SHAPE);
-    shape = shape.merge(RetireRequest::SHAPE);
-    shape = shape.merge(BlobBeginRequest::SHAPE);
-    shape = shape.merge(BlobChunkRequest::SHAPE);
-    shape = shape.merge(BlobFinishRequest::SHAPE);
-    shape = shape.merge(InputResult::SHAPE);
-    shape = shape.merge(ObserveResult::SHAPE);
-    shape = shape.merge(BeginAccepted::SHAPE);
-    shape = shape.merge(PollResult::SHAPE);
-    shape = shape.merge(RetireResult::SHAPE);
-    shape = shape.merge(BlobBeginResult::SHAPE);
-    shape = shape.merge(BlobChunkResult::SHAPE);
-    shape = shape.merge(BlobFinishResult::SHAPE);
-    shape = shape.merge(ExactRunArguments::SHAPE);
-    shape = shape.merge(QuantumBeginArguments::SHAPE);
-    shape = shape.merge(PauseArguments::SHAPE);
-    shape = shape.merge(CaptureArguments::SHAPE);
-    shape = shape.merge(PrepareRestoreArguments::SHAPE);
-    shape = shape.merge(ShutdownArguments::SHAPE);
-    shape
-};
+// One roster defines both the public immutable body family and its actual DTO
+// vector graph. A new variant cannot bypass the sealed field-shape witnesses.
+macro_rules! packet_requests {
+    ($($(#[$documentation:meta])* $variant:ident($request:ty) => $result:ty),+ $(,)?) => {
+        /// Borrows one immutable request from the closed packet runtime family.
+        ///
+        /// Every variant uses the defining DTO serializer. Callers cannot supply
+        /// a serializer callback, override its method or select another schema.
+        /// Begin arguments retain their separately validated kind-specific schema.
+        /// Original body backing and all call construction require independent
+        /// funding. This type grants no Source or native effect permission.
+        #[derive(Serialize)]
+        #[serde(untagged)]
+        pub enum PacketRuntimeRequest<'a> {
+            $($(#[$documentation])* $variant(&'a $request)),+
+        }
+
+        impl PacketRuntimeRequest<'_> {
+            pub(crate) fn method(&self) -> Method {
+                match self { $(Self::$variant(_) => Method::$variant),+ }
+            }
+
+            pub(crate) fn preflight_serialization(
+                &self,
+                extensions: &Extensions,
+                maximum_frame: usize,
+            ) -> Result<(), ProviderError> {
+                let mut counter = Preflight::new(maximum_frame);
+                match self { $(Self::$variant(body) => body.preflight(&mut counter)?),+ }
+                extensions.preflight(&mut counter)
+            }
+        }
+
+        const RUNTIME: Shape = {
+            let mut shape = Shape::EMPTY;
+            $(shape = shape.merge(<$request>::SHAPE).merge(<$result>::SHAPE);)+
+            shape
+        };
+    };
+}
+
+packet_requests! {
+    /// Borrows delivered input for its execution owner.
+    Input(InputRequest) => InputResult,
+    /// Borrows an execution owner's observation query.
+    Observe(ObserveRequest) => ObserveResult,
+    /// Borrows one of the seven baseline Begin argument kinds.
+    Begin(BeginRequest) => BeginAccepted,
+    /// Borrows a retained operation's progress query.
+    Poll(PollRequest) => PollResult,
+    /// Borrows authenticated retirement or inert abandonment data.
+    Retire(RetireRequest) => RetireResult,
+    /// Borrows an inert content-transfer reservation.
+    BlobBegin(BlobBeginRequest) => BlobBeginResult,
+    /// Borrows one immutable content chunk.
+    BlobChunk(BlobChunkRequest) => BlobChunkResult,
+    /// Borrows an inert content-transfer completion.
+    BlobFinish(BlobFinishRequest) => BlobFinishResult,
+}
 
 /// Bounds completed and simultaneously constructing typed vector backing.
 ///
@@ -465,9 +584,8 @@ pub(crate) fn typed_vector_storage_data(
     if maximum_encoded_bytes == 0 {
         return Err(refused());
     }
-    let elements = maximum_encoded_bytes / 2;
-    let payload = elements
-        .checked_mul(RUNTIME.element_bytes)
+    let payload = maximum_encoded_bytes
+        .checked_mul(RUNTIME.element_bytes_per_wire_byte)
         .ok_or_else(refused)?;
     let completed = payload.checked_mul(2).ok_or_else(refused)?;
     let partials = RUNTIME
