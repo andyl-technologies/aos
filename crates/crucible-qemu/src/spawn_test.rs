@@ -32,6 +32,7 @@ const INHERITED_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_INHERITED_SENTINEL";
 const TIME_OWNERSHIP_EXPECTED: &str = "CRUCIBLE_QEMU_TIME_OWNERSHIP_EXPECTED";
 const EXPLICIT_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_EXPLICIT_SENTINEL";
 const DESCENDANT_SUPERVISOR_ENV: &str = "CRUCIBLE_QEMU_DESCENDANT_SUPERVISOR";
+const SMALL_PROCESS_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_SMALL_PROCESS_PROBE";
 const GUARDED_PROBE_CHILD_MARKER: &str = "guarded-probe-child";
 const GUARDED_PROBE_DESCENDANT_PID: &str = "guarded-probe-descendant.pid";
 static TEMP_DIR_SUFFIX: AtomicU64 = AtomicU64::new(0);
@@ -929,6 +930,9 @@ fn guarded_probe_times_out_and_reaps_a_live_child() -> Result<(), Box<dyn Error>
 
 #[test]
 fn guarded_probe_bounds_a_flooding_output_stream() -> Result<(), Box<dyn Error>> {
+    if reran_in_a_small_process("spawn::tests::guarded_probe_bounds_a_flooding_output_stream")? {
+        return Ok(());
+    }
     let fixture = GuardedProbeFixture::new(
         "spawn::tests::guarded_probe_flood_child",
         ProbeChildDirectoryAccess::ReadOnly,
@@ -2215,6 +2219,34 @@ fn child_probe_cwd(expected: &Path) -> Result<(), Box<dyn Error>> {
     let actual = std::env::current_dir()?.canonicalize()?;
     assert_eq!(actual, expected);
     child_probe_fixed_fds()
+}
+
+/// Reruns the named test alone in a fresh copy of this test binary.
+///
+/// A probe's deadline covers its own spawn. A full parallel run grows this
+/// process to gigabytes, and forking it then takes long enough to consume a
+/// short probe deadline before the child starts. The rerun forks from a
+/// small process, so the probe limits under test are unchanged.
+///
+/// Returns `true` after the rerun passed, and `false` inside the rerun,
+/// where the caller performs the test itself.
+fn reran_in_a_small_process(test_name: &str) -> Result<bool, Box<dyn Error>> {
+    if env::var_os(SMALL_PROCESS_PROBE_ENV).is_some() {
+        return Ok(false);
+    }
+
+    let output = Command::new(env::current_exe()?)
+        .args(["--exact", test_name, "--test-threads=1"])
+        .env(SMALL_PROCESS_PROBE_ENV, "1")
+        .output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // A filter that matched nothing would also exit successfully.
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+        "small-process rerun of {test_name} failed:\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(true)
 }
 
 struct GuardedProbeFixture {
