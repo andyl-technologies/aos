@@ -43,6 +43,12 @@ publisher-role transport below is a registered part of this protocol, not an
 alternative transport for those services; PROTO-56 to PROTO-59 govern it.
 The host-supplied quota inspector has its own registered local-only scope
 under PROTO-60; it cannot perform publisher or Distribution operations.
+The registered `host-maintenance-local-v1` channel is limited to the original
+Serve owner's bounded draining-exposure reconciliation under ARCH-5. The
+registered `worker-backing-local-v1` channel carries the scoped backing handoff
+for FUSE-3. Neither is a Distribution transport or a second protocol between
+tiers; their closed native layouts and authority boundaries are specified in
+[`reference/protocol.md`](reference/protocol.md).
 
 - **[PROTO-1]** The protocol MUST be served as ConnectRPC over HTTP/2, with
   the Connect, gRPC, and gRPC-Web wire encodings all accepted. *Gate:*

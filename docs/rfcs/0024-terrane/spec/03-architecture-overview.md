@@ -79,8 +79,9 @@ Each layer has one job and reaches down exactly one layer.
   operating-system mount facility. *Gate:* `gate:repository-portable`.
 - **[ARCH-5]** Every boundary between processes or hosts MUST be the wire
   protocol of [`18-protocol.md`](18-protocol.md) or a registered surface.
-  The wire protocol includes its registered, host-local publisher transport;
-  that transport MUST NOT carry intertier store traffic. There is no second
+  The wire protocol includes its registered host-local transports, including
+  publisher, quota, worker-backing and draining-maintenance channels. These
+  local transports MUST NOT carry intertier store traffic. There is no second
   private protocol between tiers. *Gate:*
   `gate:one-protocol`.
 

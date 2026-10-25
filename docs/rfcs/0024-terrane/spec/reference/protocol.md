@@ -490,6 +490,118 @@ project setters. The observation itself performs none of these transitions,
 does not identify reference holders, and does not authorize release of any
 different inode or policy obligation.
 
+## `host-maintenance-local-v1`
+
+This registered host-local transport implements ARCH-5's process boundary for
+bounded draining-exposure reconciliation. Its endpoints are the configured
+`gc` role and the original `serve` process that owns the native cache. It is
+not a repository, publisher, quota-inspection, surface or intertier store API.
+It cannot collect repository objects, choose cache victims, change policy or
+supply evidence of kernel-reference closure. It grants no repository authority.
+
+A trusted launcher supplies a connected Linux `AF_UNIX/SOCK_SEQPACKET` pair,
+or the roles connect through an explicitly configured protected socket path.
+Both descriptors are close-on-exec. Listener connections authenticate the
+opposite configured UID through `SO_PEERCRED` before exchanging packets.
+`SO_PASSCRED` is enabled before either endpoint can send. Every received packet
+MUST carry exactly one kernel `SCM_CREDENTIALS` record whose UID matches the
+configured opposite role. The role UIDs are distinct. Claimed identity fields,
+request sequences and socket access permissions are not credentials. A private
+pair depends on the launcher's original endpoint custody; it does not establish
+a worker process incarnation or authenticate a caller-supplied PID.
+
+Each listener is bound by trusted configuration to one domain's actual recovered
+native owner. The request cannot select another domain or owner. Configured
+startup validates the complete domain/listener inventory before binding any
+listener and retains all original owners while serving requests. The protected
+parent is owned by root or Serve, is not writable by other identities, and uses
+its configured setgid group to permit GC traversal. Binding never replaces an
+existing name; the socket is owned by Serve with mode `0660`.
+
+Version 1 has this exact binary layout. Integers are unsigned 64-bit little
+endian values. There is no padding, extension area, protobuf framing or trailing
+data.
+
+```text
+request: 24 bytes
+offset  size  field
+0       8     magic "TRNMNT01"
+8       8     operation = 1 (reconcile draining exposures)
+16      8     request sequence
+
+reply: 48 bytes
+offset  size  field
+0       8     magic "TRNMNT01"
+8       8     outcome
+16      8     echoed request sequence
+24      8     checked count
+32      8     completed count
+40      8     blocked count
+```
+
+One packet is one request or reply. Receivers reject empty packets, payload
+or ancillary truncation, wrong lengths, unknown versions or operations, missing
+or incorrect credentials, and all other ancillary records. In particular,
+`SCM_RIGHTS` is forbidden in both directions; every received descriptor is
+closed on rejection. No packet carries a token, path, object hash, exposure ID,
+cache row, filesystem descriptor, project number or executable callback.
+A malformed or unauthenticated request faults and disconnects its connection
+before it can enqueue a native command. An invalid reply faults the client
+connection without revoking work the original owner has already accepted.
+
+Each connection starts at sequence one. Requests increase by exactly one
+without wrapping, with at most one outstanding exchange. A request that would
+exhaust the sequence space is rejected before dispatch. Replies echo the exact
+outstanding sequence; a reply for another sequence faults the connection. A
+new connection starts a new sequence, not a new physical cache incarnation.
+
+| Outcome | Meaning | Counts |
+| --- | --- | --- |
+| `0` | Original owner completed the bounded reconciliation turn. | `checked = completed + blocked`, without overflow. |
+| `2` | Permission denied. | All zero. |
+| `3` | Would block. | All zero. |
+| `4` | Unsupported. | All zero. |
+| `5` | Broken pipe. | All zero. |
+| `6` | Other native refusal or failure. | All zero. |
+
+Outcome `1` and every other value are unregistered. A receiver rejects invalid
+count relationships, failed replies carrying counts, and values that do not fit
+its local count representation. A valid refusal is not a completed reconciliation
+and carries no partial success. Low-level endpoints may preserve the next
+sequence after a valid refusal; the bounded serving loop may close that connection.
+
+Operation `1` submits only the original owner's existing finite reconciliation
+command. The owner independently selects its durable draining inventory and
+checks the actual original inode, generation, exclusion, retained pins and
+physical quota/closure observations. A completed count reports effects already
+performed by that owner; it is not transferable release authority. A blocked
+count retains the obligation and its charges. There is no operation to manufacture
+a closure observation, release another owner's custody or mutate a selected row.
+
+The serving runtime bounds active connections, requests per connection, whole
+connection lifetime and whole-request deadline, including idle wait. Version 1
+permits one through 1024 active connections and one through 4096 successful
+requests per connection; lifetimes are positive and at most 300 seconds, and a
+request deadline cannot exceed its connection lifetime. The one-shot GC client
+has a positive whole-exchange deadline of at most 300 seconds, including send
+backpressure and reply wait. Configured multi-domain passes additionally share
+one whole-pass deadline. Invalid limits refuse before accepting or sending work.
+
+Timeout, cancellation, malformed reply, shutdown or a lost response disconnects
+the affected channel. Work already accepted by the physical owner retains its
+original queue turn, descriptors, funding and durable obligations through actual
+completion; disconnect is neither rollback nor proof of release. Reconnection
+cannot discharge earlier work. In particular, a successful empty report does
+not establish that unobserved kernel references are closed.
+
+Orderly shutdown ends all borrowed request futures before retiring listener names.
+Retirement closes the listener, checks the retained parent and original socket
+inode, type, owner, group, link count and mode, and unlinks only that original
+name. A substituted name is left untouched. Ordinary drop and failed startup
+leave the pathname for diagnosis. Listener retirement does not release any cache
+or exposure obligation. Extending this closed vocabulary after the initial
+protocol freeze or a conforming release requires a new transport version.
+
 ## `worker-backing-local-v1`
 
 The serve process and one supervised worker use a connected Unix
