@@ -35,8 +35,22 @@ use aos_hub_db::backend::BackendBounds;
 /// they never persist the original error string.
 #[must_use]
 pub fn redacted_job_failure(error: &str) -> String {
+    redacted_failure("job", error)
+}
+
+/// Builds bounded, non-secret durable failure evidence for an operation.
+///
+/// Operation failures cross authorization boundaries through status APIs. The
+/// original error can contain provider capabilities or credentials, so durable
+/// state retains only a digest for correlation with similarly redacted logs.
+#[must_use]
+pub fn redacted_operation_failure(error: &str) -> String {
+    redacted_failure("operation", error)
+}
+
+fn redacted_failure(kind: &str, error: &str) -> String {
     let fingerprint = hex::encode(Sha256::digest(error.as_bytes()));
-    format!("job failed; detail redacted; fingerprint={fingerprint}")
+    format!("{kind} failed; detail redacted; fingerprint={fingerprint}")
 }
 
 /// One deferred unit of post-write propagation.
@@ -352,7 +366,9 @@ impl Queue for InMemoryQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::{redacted_job_failure, InMemoryQueue, Job, JobEnvelope, Queue};
+    use super::{
+        redacted_job_failure, redacted_operation_failure, InMemoryQueue, Job, JobEnvelope, Queue,
+    };
 
     #[test]
     fn durable_failure_evidence_is_bounded_deterministic_and_secret_free() {
@@ -360,8 +376,13 @@ mod tests {
         let first = redacted_job_failure(error);
         assert_eq!(first, redacted_job_failure(error));
         assert!(first.len() < 128);
-        for secret in ["user", "password", "example.test", "token", "secret"] {
-            assert!(!first.contains(secret));
+        let operation = redacted_operation_failure(error);
+        assert_eq!(operation, redacted_operation_failure(error));
+        assert!(operation.len() < 128);
+        for redacted in [first, operation] {
+            for secret in ["user", "password", "example.test", "token", "secret"] {
+                assert!(!redacted.contains(secret));
+            }
         }
     }
 

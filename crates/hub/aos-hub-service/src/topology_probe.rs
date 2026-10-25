@@ -1408,6 +1408,7 @@ impl DomainProbeController {
             if let Err(error) = self.run_claimed(&claimed).await {
                 let now = clock::now_unix_secs();
                 let detail = serde_json::json!({ "attempts": 3 }).to_string();
+                let message = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
                 let failure_update = self
                     .db
                     .update_topology_operation(
@@ -1417,9 +1418,7 @@ impl DomainProbeController {
                         0,
                         None,
                         &detail,
-                        Some(&format!(
-                            "domain measurement failed after retries: {error:#}"
-                        )),
+                        Some(&message),
                         Some(now),
                         Some(now),
                     )
@@ -1492,6 +1491,7 @@ impl DomainProbeController {
                     completed += 1;
                     continue;
                 }
+                let message = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
                 self.db
                     .update_topology_operation(
                         &current.operation_id,
@@ -1500,9 +1500,7 @@ impl DomainProbeController {
                         0,
                         Some(1),
                         &current.detail_json,
-                        Some(&format!(
-                            "storage credential probe could not produce trusted evidence: {error:#}"
-                        )),
+                        Some(&message),
                         current.started_at.or(Some(now)),
                         Some(now),
                     )
@@ -1555,10 +1553,7 @@ impl DomainProbeController {
             };
             if let Err(error) = self.run_grant_revocation_claimed(&claimed).await {
                 let now = clock::now_unix_secs();
-                let message = format!("{error:#}")
-                    .chars()
-                    .take(4 * 1024)
-                    .collect::<String>();
+                let message = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
                 self.db
                     .update_topology_operation(
                         &claimed.operation_id,
@@ -1639,6 +1634,10 @@ impl DomainProbeController {
                 evidence.valid == evidence.error.is_none(),
                 "storage credential adapter returned inconsistent evidence"
             );
+            let probe_error = evidence
+                .error
+                .as_deref()
+                .map(crate::jobs::redacted_operation_failure);
             let checkpoint_detail = serde_json::json!({
                 "bindingId": target.stable_id,
                 "purpose": purpose,
@@ -1646,7 +1645,7 @@ impl DomainProbeController {
                 "credentialHeadResourceVersion": expected_head_version,
                 "probeToken": probe_token,
                 "probeResult": if evidence.valid { "valid" } else { "invalid" },
-                "probeError": evidence.error,
+                "probeError": probe_error.as_deref(),
                 "conditionalWritesSupported": evidence.conditional_writes_supported,
                 "evidence": evidence.evidence,
             })
@@ -1672,7 +1671,7 @@ impl DomainProbeController {
                     &purpose,
                     generation,
                     state,
-                    evidence.error.as_deref(),
+                    probe_error.as_deref(),
                     expected_head_version,
                 )
                 .await?;
@@ -1917,10 +1916,7 @@ impl DomainProbeController {
             }
             .await;
             if let Err(error) = result {
-                let message = format!("{error:#}")
-                    .chars()
-                    .take(4 * 1024)
-                    .collect::<String>();
+                let message = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
                 self.db
                     .fail_topology_pin_resolution_job(&job, &message)
                     .await?;
@@ -2292,7 +2288,9 @@ impl DomainProbeController {
             Err(error) => (
                 "degraded",
                 "failed",
-                Some(format!("delivery observation failed: {error:#}")),
+                Some(crate::jobs::redacted_operation_failure(&format!(
+                    "{error:#}"
+                ))),
                 None,
             ),
         };
@@ -2571,7 +2569,7 @@ async fn measure_domain_once(
             Err(error) => tracing::warn!(
                 %hostname,
                 %record_type,
-                error = %format!("{error:#}"),
+                error = %crate::jobs::redacted_operation_failure(&format!("{error:#}")),
                 "domain DNS probe attempt failed"
             ),
         }

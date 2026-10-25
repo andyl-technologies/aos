@@ -248,7 +248,7 @@ pub async fn recover_expired_cache_writes(
                         current.state.as_str(),
                         "observing" | "active" | "completing"
                     ) {
-                        let detail = format!("{error:#}");
+                        let detail = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
                         if let Err(defer_error) = db
                             .defer_cache_write_recovery(
                                 &ticket.ticket_id,
@@ -262,7 +262,7 @@ pub async fn recover_expired_cache_writes(
                         }
                     }
                 }
-                tracing::warn!(ticket = %ticket.ticket_id, error = %format!("{error:#}"), "cache write recovery deferred");
+                tracing::warn!(ticket = %ticket.ticket_id, error = %crate::jobs::redacted_operation_failure(&format!("{error:#}")), "cache write recovery deferred");
             }
         }
         db.advance_cache_write_recovery_cursor(
