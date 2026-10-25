@@ -45,7 +45,9 @@ in {
     mkdir -p "$out"
     ${pkgs.python3}/bin/python3 ${./verify_architecture.py} \
       --architecture ${pkgs.aosBazelArchitecture}/architecture.json \
-      --workspace-directory ${architectureOracleSource}/crates --output "$out/parity.json"
+      --workspace-directory ${architectureOracleSource}/crates \
+      --additional-workspace-directory ${architectureOracleSource}/crates/accache \
+      --output "$out/parity.json"
   '';
   default = testConfiguration false;
   fleet = testConfiguration true;

@@ -20,7 +20,7 @@ def production_dependencies(manifest, inherited):
     return result
 
 
-def verify(graph, directory):
+def verify(graph, directory, additional_workspaces=()):
     """Requires complete ownership and exact edges for every modeled package."""
     if graph["schema_version"] != 1:
         raise ValueError("unsupported architecture schema")
@@ -29,20 +29,31 @@ def verify(graph, directory):
         if package["name"] in packages:
             raise ValueError("duplicate architecture package")
         packages[package["name"]] = package
-    workspace = tomllib.loads((directory / "Cargo.toml").read_text())["workspace"]
+    directory = directory.resolve()
     expected = {}
-    for member in workspace["members"]:
-        manifest = tomllib.loads((directory / member / "Cargo.toml").read_text())
-        package = manifest["package"]
-        name = package["name"]
-        if name in expected:
-            raise ValueError("duplicate Cargo package")
-        identity = {}
-        for field in ["version", "edition", "license"]:
-            value = package[field]
-            identity[field] = workspace["package"][field] if isinstance(value, dict) and value.get("workspace") else value
-        expected[name] = {"identity": identity, "directory": "crates/" + member,
-                          "dependencies": production_dependencies(manifest, workspace["dependencies"])}
+    for workspace_directory in [directory, *additional_workspaces]:
+        workspace_directory = workspace_directory.resolve()
+        if not workspace_directory.is_relative_to(directory):
+            raise ValueError("Cargo workspace lies outside the declared crate source")
+        workspace = tomllib.loads((workspace_directory / "Cargo.toml").read_text())["workspace"]
+        for member in workspace["members"]:
+            member_directory = (workspace_directory / member).resolve()
+            if not member_directory.is_relative_to(workspace_directory):
+                raise ValueError("Cargo member lies outside its declared workspace")
+            manifest = tomllib.loads((member_directory / "Cargo.toml").read_text())
+            package = manifest["package"]
+            name = package["name"]
+            if name in expected:
+                raise ValueError("duplicate Cargo package")
+            identity = {}
+            for field in ["version", "edition", "license"]:
+                value = package[field]
+                identity[field] = workspace["package"][field] if isinstance(value, dict) and value.get("workspace") else value
+            expected[name] = {
+                "identity": identity,
+                "directory": "crates/" + member_directory.relative_to(directory).as_posix(),
+                "dependencies": production_dependencies(manifest, workspace.get("dependencies", {})),
+            }
     if packages.keys() != expected.keys():
         raise ValueError("Cargo/Bazel source package inventories differ")
 
@@ -72,9 +83,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--architecture", type=Path, required=True)
     parser.add_argument("--workspace-directory", type=Path, required=True)
+    parser.add_argument("--additional-workspace-directory", type=Path, action="append", default=[])
     parser.add_argument("--output", type=Path, required=True)
     options = parser.parse_args()
-    result = verify(json.loads(options.architecture.read_text()), options.workspace_directory)
+    result = verify(json.loads(options.architecture.read_text()), options.workspace_directory,
+                    options.additional_workspace_directory)
     result["architecture_sha256"] = hashlib.sha256(options.architecture.read_bytes()).hexdigest()
     options.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 

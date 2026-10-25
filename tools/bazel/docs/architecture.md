@@ -38,7 +38,10 @@ Clippy and documentation actions, and the application Rust compilation gate.
 The temporary Cargo oracle checks source identities for every workspace member
 and exact production dependency sets for every modeled package. It includes
 normal and build dependencies from every Cargo target section, including
-optional dependencies, and excludes development dependencies:
+optional dependencies, and excludes development dependencies. The standalone
+`crates/accache` workspace is declared separately in the comparison. Its two
+members retain their own workspace dependency and package inheritance rules;
+duplicate package ownership and members outside the declared source fail:
 
 ```text
 nix-build tools/bazel/tests/aos-cli.nix -A architecture --no-out-link

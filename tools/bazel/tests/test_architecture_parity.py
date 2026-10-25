@@ -45,6 +45,35 @@ class ArchitectureParityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "requires modeled"):
                 verify(unmodeled, directory)
 
+    def test_standalone_workspaces_retain_ownership_and_dependency_checks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            workspace = directory / "standalone"
+            (workspace / "tool").mkdir(parents=True)
+            (directory / "Cargo.toml").write_text('[workspace]\nmembers = []\n')
+            (workspace / "Cargo.toml").write_text('[workspace]\nmembers = ["tool"]\n')
+            (workspace / "tool/Cargo.toml").write_text(
+                '[package]\nname = "tool"\nversion = "1"\nedition = "2024"\nlicense = "MIT"\n'
+                '[dependencies]\nupstream = "1"\n')
+            graph = {"schema_version": 1, "packages": [{
+                "name": "tool", "version": "1", "edition": "2024", "license": "MIT",
+                "directory": "crates/standalone/tool", "production_dependencies": ["upstream"],
+                "production_targets": ["//crates/standalone/tool:lib"],
+            }]}
+
+            self.assertEqual(verify(graph, directory, [workspace])["modeled_packages"], 1)
+            with self.assertRaisesRegex(ValueError, "inventories differ"):
+                verify(graph, directory)
+            with self.assertRaisesRegex(ValueError, "duplicate Cargo"):
+                verify(graph, directory, [workspace, workspace])
+
+            graph["packages"][0]["production_dependencies"] = []
+            with self.assertRaisesRegex(ValueError, "dependencies differ"):
+                verify(graph, directory, [workspace])
+
+            with self.assertRaisesRegex(ValueError, "outside"):
+                verify(graph, directory, [directory.parent])
+
 
 if __name__ == "__main__":
     unittest.main()
