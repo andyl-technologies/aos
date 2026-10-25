@@ -134,8 +134,10 @@ Recent committed startup fixes close narrower prerequisites:
   passes 176 policy unit tests, the linked-policy guard and negative fixtures
   (`/nix/store/m3giqqama6y9ja8mjj8w3grwi447bh3c-aos-selinux-production-policy-1`).
   It excludes the pending Host custody, SwitchRoot, networkd and offline-cleanup
-  patches. The enforcing installed Host retry remains pending; this policy
-  receipt supplies neither original funding nor public readiness.
+  patches. The enforcing installed retry gets past the boot-ID denial but
+  the actual Host process terminates with SIGSEGV; startup remains unqualified.
+  That installed candidate includes the pending policy changes listed above.
+  This policy receipt supplies neither original funding nor public readiness.
 
 - `a03d34dc15` replays only the ext4 journal before reading the protected
   `/var` root label. The installed hard-loss diagnostic returned an empty raw
@@ -168,9 +170,11 @@ Recent committed startup fixes close narrower prerequisites:
   remain forbidden. The isolated committed-base candidate passes all 176 policy
   unit tests, the linked-policy guard and negative fixtures
   (`/nix/store/hfdjpajb01k0449jpw25v6c110vz98c8-aos-selinux-production-policy-1`).
-  The combined startup candidate passes 183 policy unit tests. Installed key
-  preparation and the later recovery cases remain pending; this grant supplies
-  no TPM initialization or method-46 admission authority.
+  The combined startup candidate passes 183 policy unit tests. Its enforcing
+  installed retry no longer reports the directory-traversal denial, but actual
+  preparation exits unsuccessfully after the expected output-failure negative.
+  Key preparation and the later recovery cases remain unqualified; this grant
+  supplies no TPM initialization or method-46 admission authority.
 
 - The TPM transport fixture now durably publishes a distinct initial intent
   before its first encrypted Extend. Both fixed endpoints recover exactly once
@@ -193,8 +197,11 @@ Recent committed startup fixes close narrower prerequisites:
   request or conflicting Written value and never classifies Written NV as
   needing another Extend. Seven native regressions and the public rustdoc
   example pass. The installed-cut staging fixture derives its unsigned request
-  through this same codec. The complete application Rust target build is
-  pending. These records perform no I/O and establish no financial original,
+  through this same codec. The complete application Rust unit and integration
+  targets compile successfully
+  (`/nix/store/ndhpzwm30h186lwvn9wv7d276x713k27-aos-test-targets-0.1.0`);
+  that check compiles the targets without running them. These records perform
+  no I/O and establish no financial original,
   independent key-pin provenance, durable publication or authenticated TPM
   observation. The funded manual producer, installed hooks and connected
   recovery remain incomplete; public admission stays closed.
