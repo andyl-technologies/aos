@@ -11652,3 +11652,14 @@ fresh Guardian-pair verification and recycled-leader cgroup refusal.
 This non-enforcing component fixture does not qualify the enforcing Host
 daemon, its financial/currentness handoffs, TPM journal floors or public
 lifecycle. Those installed gates remain closed.
+
+Commit `1021e0587c` strengthens initial-floor transport coverage for both fixed
+Storage endpoints. Each two-stage fixture uses the production encrypted,
+salted-HMAC Extend, then authenticates the changed WRITTEN Name and exact
+initial value before saving its checkpoint. The hermetic probe builds with
+`-Wall -Wextra -Werror`; its clean installed-kernel QEMU/vTPM run passes at
+`/nix/store/w0x2xz5579dz6frnpsp9ks9xrlx89lm6-aos-fleet-test-sandbox-method46-tpm-transport-0`.
+The same run passes all existing reboot, unclean reset, both power-cut cases,
+stale-state refusal and TPM-clear cases. Provisioning remains test-only; these
+results do not supply the missing funded initial-floor producer or qualify
+either installed journal hook.
