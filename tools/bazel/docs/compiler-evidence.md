@@ -105,6 +105,15 @@ The report retains all nine compiler commands and the complete sandbox recipe.
 This establishes the minimal Cargo behavior; it does not qualify an actual
 rust-analyzer query or complete application graph.
 
+The [rust-analyzer profile probe](../tests/evidence/rust-analyzer-execution-profile-baseline.json)
+then runs the declared source-built analyzer over that minimal Cargo workspace.
+Actual compiler traces retain both execution-tool builds with default settings
+and with the CLI editor oracle's explicit flags. Both analyses finish without
+panics, and the explicit size-optimization and assertion/overflow flags reach
+both tools. First-party target code is analyzed rather than compiled by this
+probe. These observations establish the editor-tool distinction without
+claiming full application or whole-model inference equivalence.
+
 The conformance check builds the pinned process wrapper from source with AOS
 Rust, then compares its actual child arguments and selected environment values
 with the reconstruction model. Run it with:
