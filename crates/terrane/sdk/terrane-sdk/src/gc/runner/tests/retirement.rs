@@ -24,7 +24,7 @@ use terrane_format::gc::{ArtifactBinding, CreationJournal, JournalState, Tombsto
 
 use terrane_format::gc::publication::evidence::CheckedLineage;
 
-struct Image {
+pub(super) struct Image {
     state: PublicationState,
     logical: BTreeMap<String, Option<Vec<u8>>>,
     cap: BucketCapabilities,
@@ -32,7 +32,7 @@ struct Image {
     lineages: BTreeMap<String, CheckedLineage>,
 }
 
-async fn image(fixture: &Fixture) -> Image {
+pub(super) async fn image(fixture: &Fixture) -> Image {
     let holder = SingleHeld::acquire(fixture.guard().store()).await.unwrap();
     let held = holder.destination();
     let observed = held.observe_publication_unrepaired().await.unwrap();
@@ -194,7 +194,7 @@ fn native_failure_contains(error: &CollectionError, expected: &str) {
 // Each expected source comes from actual prior protected selection. Newly
 // completed history may consume additional ancestors, but it must independently
 // preserve every prior signed view, interpretation and administrative dependency.
-fn assert_carried(previous: &Image, after: &Image) {
+pub(super) fn assert_carried(previous: &Image, after: &Image) {
     let mut names = Vec::new();
     for (name, prior) in &previous.lineages {
         if prior.used.view_interpretations.is_none() {

@@ -94,6 +94,18 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+The fresh-cycle missing-Trash guest at `3075f98717` fails in 1,552.164
+seconds: the new test expected unchanged source-lineage digests across a new
+retirement. Retirement deliberately carries the signed dependencies into the
+new loss generation, changing their encoded digests. The corrected test uses
+the existing independent carried-lineage oracle to require preserved source,
+Original, signed views, controls, issuers, disclosures and interpretations, with
+the new loss generation. Binding, Guard and burn owners are also checked
+explicitly. No production behavior or timing changes. Corrected guest
+qualification remains pending; the original failure is retained. Mandatory
+compilation at the failed checkpoint separately passes in 1,591.580 seconds,
+with full review of 8,216 source files, 190 executables and 59 packages.
+
 Shared-session copied first ownership at `144d310a76` passes its focused native
 guest in 1,569.881 seconds. Full review compares all 8,215 immutable source
 files and 5,467 crate inputs, verifies the actual retained Cargo library-test

@@ -103,6 +103,7 @@ async fn gc_refresh_native_missing_trash_uses_fresh_cycle_and_preserves_old_jour
         current.mark_batch(32).await.unwrap();
         current.finish_mark().await.unwrap();
         let checkpoint = current.state().clone();
+        let prior_lineages = super::super::retirement::image(&fixture).await;
         let refreshed = current
             .refresh_exclusion(fixture.repository.coordinator(), old.clone())
             .await
@@ -115,8 +116,14 @@ async fn gc_refresh_native_missing_trash_uses_fresh_cycle_and_preserves_old_jour
         assert_eq!(refreshed.timestamp, expiry + 1);
         assert_eq!(current.state(), &checkpoint);
         let after = image(&fixture).await;
+        assert_eq!(after.state.binding, before.state.binding);
+        assert_eq!(after.state.guard, before.state.guard);
         assert_eq!(after.state.branches, before.state.branches);
-        assert_eq!(after.state.sources, before.state.sources);
+        assert_eq!(after.state.burn_owners, before.state.burn_owners);
+        // A new retirement completes carried lineage at its new loss generation.
+        // Digests change; every prior signed dependency must remain represented.
+        let next_lineages = super::super::retirement::image(&fixture).await;
+        super::super::retirement::assert_carried(&prior_lineages, &next_lineages);
         assert_eq!(
             after.state.loss_generation,
             before.state.loss_generation + 1
