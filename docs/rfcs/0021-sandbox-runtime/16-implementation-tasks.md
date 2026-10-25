@@ -439,7 +439,11 @@ before FloorSeal, failed-Create CAS, or ACK can be enabled.
   This covers the real ZFS transaction fixture and test-only initial floor
   staging/install refusal checks. Its non-enforcing composition does not
   qualify the funded initial floor producer, required-mode journal hooks or
-  public lifecycle. The expired-namespace variant requires its own VM result.
+  public lifecycle. The expired-mount-namespace variant also passes all five
+  scenarios at `13c5e0c733`, with registered result
+  `/nix/store/3nx3qa3z8fq6zbrqnmxzry4ws165d27j-aos-fleet-test-sandbox-storage-rpc-stale-scope-0`
+  (`PASS`, NAR hash
+  `sha256:0p0vaylwjxvh8nx76pal6lnfx6clm4ddqsydxpsd42pza5zivh2g`).
 - `sandbox-method46-tpm-transport` passes at `b44e212aae` on the exact installed
   Root kernel, including both endpoints' authenticated initial writes and
   unclean QEMU/vTPM loss before checkpoint publication. Cold `initialize`,
