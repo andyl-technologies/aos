@@ -3,7 +3,7 @@
 //! Typed and erased observers share the same private control. Neither raw Arc
 //! aliases nor weak controller headers escape this owner.
 
-use super::{OriginalActorAccountError, OriginalNativeFreshLaunchError};
+use super::{FreshLaunchCause, OriginalActorAccountError, OriginalNativeFreshLaunchError};
 use crucible_engine::{BackendOperationalCause, SharedOperationalCause};
 use crucible_host_resources::host_services::process_birth::{
     AuthenticatedSourceHostPurpose, SourceHostControlLease,
@@ -79,6 +79,15 @@ impl RetainedNativeFreshLaunchError {
         }
     }
 
+    /// Saves the initiating refusal in its prebirth controller before a postcut.
+    ///
+    /// Sharing this same owner neither allocates another diagnostic body nor
+    /// transfers any retained child or cleanup authority.
+    pub(super) fn retain_primary(&self, primary: FreshLaunchCause) -> Self {
+        self.record(primary, None);
+        self.clone()
+    }
+
     /// Shares the same concrete original through the portable backend boundary.
     ///
     /// This observer allocates no new body and retains the original error's
@@ -118,5 +127,85 @@ impl fmt::Display for RetainedNativeFreshLaunchError {
 impl Error for RetainedNativeFreshLaunchError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(self.source.source_ref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        QemuLiveNodeStepGateError, QemuNodeChannelPlane, QemuNodeError, QemuNodeStepOperation,
+    };
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::borrow::Cow;
+    use std::sync::Arc;
+
+    #[test]
+    fn primary_is_retained_before_independent_post_without_another_allocation() {
+        const OPERATION: QemuNodeStepOperation = QemuNodeStepOperation::new("component launch");
+        let supervisor =
+            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+        let original = Arc::new(supervisor.begin(HostOperationClass::Preparation).unwrap());
+        let controller = OriginalNativeFreshLaunchError::prepare_unissued(&original);
+        let message = String::from("existing launch payload");
+        let payload = message.as_ptr();
+        let primary = FreshLaunchCause::Launch(QemuLiveNodeStepGateError::Step {
+            operation: &OPERATION,
+            source: QemuNodeError::Channel {
+                plane: QemuNodeChannelPlane::QmpMachineControl,
+                operation: "component channel",
+                message: Cow::Owned(message),
+            },
+        });
+
+        let (retained, counts) =
+            TestAllocationObserver::count(|| controller.retain_primary(primary));
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert!(retained.same_owner(&controller));
+        assert!(retained.original_after().is_none());
+        let first = controller.primary.get().unwrap();
+        let FreshLaunchCause::Launch(QemuLiveNodeStepGateError::Step {
+            source: QemuNodeError::Channel { message, .. },
+            ..
+        }) = first
+        else {
+            panic!("the original typed launch cause must already be retained");
+        };
+        assert_eq!(message.as_ptr(), payload);
+        assert!(std::ptr::eq(
+            controller
+                .as_ref()
+                .source()
+                .unwrap()
+                .downcast_ref::<FreshLaunchCause>()
+                .unwrap(),
+            first,
+        ));
+
+        supervisor.cancel().unwrap();
+        let after = original.wait_slice().unwrap_err();
+        let ((), counts) = TestAllocationObserver::count(|| {
+            retained.record_original_after(Some(after));
+        });
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(controller.original_after(), Some(&after));
+        assert!(std::ptr::eq(controller.primary.get().unwrap(), first));
+
+        // A later adapter cannot replace either saved observation.
+        let later = controller.retain_primary(FreshLaunchCause::Binding(
+            OriginalActorAccountError::Unavailable,
+        ));
+        assert!(later.same_owner(&retained));
+        assert!(std::ptr::eq(controller.primary.get().unwrap(), first));
+        assert_eq!(later.original_after(), Some(&after));
     }
 }

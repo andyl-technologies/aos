@@ -155,16 +155,19 @@ impl InstalledNodeLaunchIssuer {
         retain_refusal: impl FnOnce(T, &OriginalNativeFreshLaunchError, HostSupervisionError),
     ) -> Result<T, RetainedNativeFreshLaunchError> {
         let attempt = &self.attempt;
+        // Journal each initiating refusal before unwinding local preparation
+        // and observing the independent postcut. Only the existing controller
+        // handle crosses this boundary; its child and cause stay in place.
         let launch = (|| {
             attempt
                 .require_live_launch_control()
-                .map_err(FreshLaunchCause::Binding)?;
+                .map_err(|source| failure.retain_primary(FreshLaunchCause::Binding(source)))?;
             let mut binding = attempt
                 .prepare_node_binding(original)
-                .map_err(FreshLaunchCause::Binding)?;
+                .map_err(|source| failure.retain_primary(FreshLaunchCause::Binding(source)))?;
             let artifact_control = binding
                 .prepare_source_artifact_controls(contract, original)
-                .map_err(FreshLaunchCause::Purpose)?;
+                .map_err(|source| failure.retain_primary(FreshLaunchCause::Purpose(source)))?;
             let controls =
                 crate::artifact_identity::InstallerControlIdentity::authenticate_original_paths(
                     config.qemu_executable(),
@@ -172,17 +175,19 @@ impl InstalledNodeLaunchIssuer {
                     original,
                     &artifact_control,
                 )
-                .map_err(FreshLaunchCause::Artifact)?;
+                .map_err(|source| failure.retain_primary(FreshLaunchCause::Artifact(source)))?;
             drop(artifact_control);
             let guest_bytes = u64::from(config.memory_mib())
                 .checked_mul(1024 * 1024)
-                .ok_or(FreshLaunchCause::Purpose(
-                    InstalledProcessPurposeError::Capacity,
-                ))?;
+                .ok_or_else(|| {
+                    failure.retain_primary(FreshLaunchCause::Purpose(
+                        InstalledProcessPurposeError::Capacity,
+                    ))
+                })?;
             let setup_mapping = super::super::original_roster::SetupMappingRequest::for_config(
                 config.original_setup_region_config(),
             )
-            .map_err(FreshLaunchCause::Purpose)?;
+            .map_err(|source| failure.retain_primary(FreshLaunchCause::Purpose(source)))?;
             let purpose = attempt
                 .prepare_installed_process_purpose(InstalledProcessPreparation {
                     original,
@@ -194,7 +199,7 @@ impl InstalledNodeLaunchIssuer {
                     setup_mapping,
                     process_generation: config.original_process_generation(),
                 })
-                .map_err(FreshLaunchCause::Purpose)?;
+                .map_err(|source| failure.retain_primary(FreshLaunchCause::Purpose(source)))?;
             // Move the already reserved workspace host term before snapshotting
             // the issued carrier. The local loan retains the incarnation while
             // this no-body transition runs; the binding owns it before Arc/FD
@@ -208,7 +213,9 @@ impl InstalledNodeLaunchIssuer {
                     )
                 })
                 .transpose()
-                .map_err(|source| FreshLaunchCause::Binding(source.into()))?;
+                .map_err(|source| {
+                    failure.retain_primary(FreshLaunchCause::Binding(source.into()))
+                })?;
             // The real node keeper owns this borrower before workspace or
             // Setup effects. Failed launch cannot reissue its assigned share.
             let record = purpose
@@ -220,11 +227,11 @@ impl InstalledNodeLaunchIssuer {
                     config.original_process_generation(),
                     |material| material.encode_record(),
                 )
-                .map_err(FreshLaunchCause::Purpose)?
-                .map_err(FreshLaunchCause::Purpose)?;
+                .map_err(|source| failure.retain_primary(FreshLaunchCause::Purpose(source)))?
+                .map_err(|source| failure.retain_primary(FreshLaunchCause::Purpose(source)))?;
             binding
                 .retain_installed_process_purpose(purpose, record)
-                .map_err(FreshLaunchCause::Purpose)?;
+                .map_err(|source| failure.retain_primary(FreshLaunchCause::Purpose(source)))?;
             if let Some(purpose) = workspace_purpose {
                 let mut held = failure
                     .workspace
@@ -234,18 +241,23 @@ impl InstalledNodeLaunchIssuer {
                 // its first Arc or FD effect. A refusal retains this same slot.
                 *held = Some(crate::spawn::OriginalDeviceDigestWorkspace::new(purpose));
                 held.as_mut()
-                    .ok_or(FreshLaunchCause::Workspace(
-                        crate::spawn::DeviceDigestWorkspaceIssueError::Unavailable,
-                    ))?
+                    .ok_or_else(|| {
+                        failure.retain_primary(FreshLaunchCause::Workspace(
+                            crate::spawn::DeviceDigestWorkspaceIssueError::Unavailable,
+                        ))
+                    })?
                     .create()
-                    .map_err(FreshLaunchCause::Workspace)?;
+                    .map_err(|source| {
+                        failure.retain_primary(FreshLaunchCause::Workspace(source))
+                    })?;
             }
             let workspace = failure
                 .workspace
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
-            complete(binding, workspace, contract).map_err(FreshLaunchCause::Launch)
+            complete(binding, workspace, contract)
+                .map_err(|source| failure.retain_primary(FreshLaunchCause::Launch(source)))
         })();
         let original_after = original.wait_slice().err();
         match (launch, original_after) {
@@ -254,9 +266,9 @@ impl InstalledNodeLaunchIssuer {
                 retain_refusal(value, &failure, after);
                 Err(failure)
             }
-            (Err(primary), original_after) => {
-                failure.record(primary, original_after);
-                Err(failure)
+            (Err(retained), original_after) => {
+                retained.record_original_after(original_after);
+                Err(retained)
             }
         }
     }

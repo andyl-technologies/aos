@@ -103,6 +103,15 @@ pub(super) const CONTROLLER: Companion = Companion {
         }
     }
 
+    /// Saves the initiating refusal in its prebirth controller before a postcut.
+    ///
+    /// Sharing this same owner neither allocates another diagnostic body nor
+    /// transfers any retained child or cleanup authority.
+    pub(super) fn retain_primary(&self, primary: FreshLaunchCause) -> Self {
+        self.record(primary, None);
+        self.clone()
+    }
+
     /// Shares the same concrete original through the portable backend boundary.
     ///
     /// This observer allocates no new body and retains the original error's

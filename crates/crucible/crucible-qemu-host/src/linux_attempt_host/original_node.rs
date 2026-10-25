@@ -223,6 +223,11 @@ impl OriginalNativeFreshLaunchError {
         // The issued guard returns its actual body before publishing an error.
         // Recording diagnostics never moves that body out of its prepaid cell.
         let _ = self.primary.set(primary);
+        self.record_original_after(original_after);
+    }
+
+    /// Saves the independent postcut without replacing the initiating cause.
+    fn record_original_after(&self, original_after: Option<HostSupervisionError>) {
         if let Some(after) = original_after {
             let _ = self.original_after.set(after);
         }

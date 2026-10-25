@@ -67,9 +67,53 @@ failed attempts appear in the dated entries below.
 | Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Earlier legacy configuration and thirteen read-only Ninja queries pass; later target attempts retain generator, interpreter and unavailable-process refusals. The latest original invocation refuses during configure because a disappeared wrapper lacks original exit-observation custody; its complete signed result and diagnosis pass independent review. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Native compiler correction | Signed atomic `cb9a5e825a` and conventional `0d49fac971` preserve the complete integration while correcting declarations, const projections and shadowed locals. Fresh configure, the POSIX thread object and source extraction pass. | The startup Source object still fails on its unchanged uncalled RR birth routine with all warnings retained. No whole QEMU build, Windows compilation, native execution or lifecycle qualification is established. |
-| Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 27 errors: seven large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 26 errors: six large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 676 bindings: 657 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 677 bindings: 658 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+
+#### Retained launch refusal before the independent post
+
+Each actual fresh-launch preparation failure now enters its existing prebirth
+controller before the launch closure unwinds and the independent original
+postcheck runs. The launch boundary returns an observer of that same controller;
+the typed initiating cause, owned payload and any child remain in their original
+cells. The independent postcheck writes its separate once-only field. No new
+carrier, diagnostic allocation or cleanup authority is introduced.
+
+The passing component control checks that the first typed cause is already present
+before cancellation, preserves the same owned-message pointer and controller
+identity, and retains both observations without allocation or reallocation.
+Inventory `2iaa1a0pgi53zbc6vdg90bqqavgwn170` contains 677 bindings: 633 model,
+25 format and nineteen native. No capability is advertised and no requirement
+is newly qualified. The strict host-library check removes one diagnostic and
+adds none, leaving 26; it still fails. Source-bound hygiene and formatting pass.
+All five existing helper-receiver controls, all 90 source-policy controls, five
+engineering-hygiene controls and private-configuration compilation pass.
+Mandatory application compilation passes at `nygn5fqn6snk8ajgsmcnj2shlndvvw1l`; its frozen inputs
+are checked against the signed checkpoint separately.
+
+The refreshed `origin/master` merge `be4519f089` retains the Ciborium vendor
+correction and the updated dependency pin. All seven merged NAR verification
+controls pass, including signed size/hash and XZ/LZMA output bounds.
+Mandatory application compilation
+passes at `19v1pwdgmn2vb5771sv4rpk1vrlii9cd`; the preceding preparation checkpoint
+`9a45878642` passes at `xjgrzcmhqrjqdxqgjz35hh88lah8aa72`. Independent audits
+verify 185 compiler artifacts, 58 packages, 56 library unit targets and all
+5,468 frozen Rust/TOML inputs plus the lockfile for each corresponding revision.
+These are compilation-only results; Native activation, physical return, paging
+and performance qualification remain unfinished.
+
+The current Source ownership review finds implemented Core bank borrowers,
+fixed installed Module callbacks, nominal Original construction and ENTER/return
+journals. Their existence does not construct a complete runtime profile.
+`qemu_crucible_deferred_cleanup_producer_current_v1` still refuses the absent
+concrete stack/guard/TLS/allocator/outer-return execution profile. Application
+cleanup preparation additionally lacks actual containing prebirth payment and
+transfer; physical return requires terminal, context/cache/RCU and outer-owner
+last use. Source extraction passes with 179 roots and 1,299 functions. No Source
+edit, new compiler run, runtime execution or admission qualification follows
+from that review; the retained owning-object compilation still fails on the
+uncalled RR birth helper.
 
 #### Closed prelaunch preparation causes
 
@@ -126,7 +170,8 @@ leaving forty: twenty large-error returns, seventeen unused-code diagnostics
 and three large enum variants. The strict gate still fails. Inventory
 `9ypja02w81bdba40793k2wmjg6s8b0ag` contains 675 bindings: 631 model, 25 format
 and nineteen native. The same 142 requirements remain uncovered and none is
-qualified. Mandatory application compilation for this checkpoint is running.
+qualified. Mandatory application compilation for this checkpoint passes at
+`czi10rcwhfw99gav80cfvk2n0j24qng6`, as audited above.
 
 The preceding channel checkpoint `04bc0886ee` passes mandatory application
 compilation at `3f6ajh5c34flaj4d0243lif5lw99x3km`; independent audit verifies
