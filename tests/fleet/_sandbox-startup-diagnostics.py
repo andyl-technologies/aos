@@ -12,11 +12,12 @@ def startup_diagnostics(machine, *units):
     except Exception:
         selected_units = " ".join(f"--unit={shlex.quote(unit)}" for unit in units)
         journal_lines = 80 if units else 160
+        # Preserve the audit tail before status queries add their own denials.
         # Serial audit backlogs can overflow before the startup assertion fails.
         commands = (
-            "systemctl --failed --no-pager",
-            f"journalctl --boot=0 {selected_units} --lines={journal_lines} --no-pager",
             "tail -c 65536 /var/log/audit/audit.log",
+            f"journalctl --boot=0 {selected_units} --lines={journal_lines} --no-pager",
+            "systemctl --failed --no-pager",
         )
 
         for command in commands:
