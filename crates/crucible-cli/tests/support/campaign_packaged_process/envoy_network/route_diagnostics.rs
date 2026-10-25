@@ -146,6 +146,9 @@ pub(super) fn service_failure_rows(service: &CampaignServiceChild) -> String {
         // A wake due at the node's own coordinate prints its cause here.
         ("CRUCIBLE-CLOCK-DOMAIN-V1 ", 32),
         ("CRUCIBLE-HOT-FORK-SOURCE-PREPARATION-V1 ", 8),
+        // A marker drained beside a stop it did not prove can leave a later
+        // quiesced pause with no marker to prove it.
+        ("CRUCIBLE-QEMU-CAMPAIGN-MARKER-STOP-V1 ", 16),
     ] {
         match service.stderr_recent_lines_with_prefix(prefix, maximum_lines, 1024) {
             Ok(lines) => rows.extend(lines),

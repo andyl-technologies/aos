@@ -47,11 +47,13 @@ pub use channels::{QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShme
 mod error;
 mod exact_snapshot;
 mod network_output;
+mod stall_context;
 #[cfg(target_os = "linux")]
 pub use exact_snapshot::{
     QemuExactCheckpointCaptureAdmission, QemuExactCheckpointCaptureBoundary,
     QemuExactCheckpointCaptureOutputs, QemuExactCheckpointCaptureResult,
 };
+pub(crate) use stall_context::{QemuNodeStallContext, StallBoundary, UnprovenCampaignMarker};
 mod fault_events;
 #[cfg(target_os = "linux")]
 #[path = "node/hot_fork_child_files.rs"]
@@ -553,6 +555,8 @@ pub struct QemuNode {
     hot_fork_resume_pending: bool,
     // A released campaign marker park keeps its native VMStop until the next ceiling.
     campaign_marker_resume_pending: bool,
+    // A marker drained beside a stop it did not prove; stall reports only.
+    unproven_campaign_marker: Option<UnprovenCampaignMarker>,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     pending_priming_observations: Vec<ObservableEvent>,
     next_network_output_sequence: u64,
@@ -822,6 +826,7 @@ impl QemuNode {
             console_output_resume_pending: false,
             hot_fork_resume_pending: false,
             campaign_marker_resume_pending: false,
+            unproven_campaign_marker: None,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: 0,
@@ -2047,6 +2052,31 @@ impl QemuNode {
     #[must_use]
     pub const fn completed_quantum_boundary(&self) -> Option<crate::QemuCompletedQuantumBoundary> {
         self.last_step_completed_boundary
+    }
+
+    /// Returns host-held evidence naming which quiesced writer may own a stall.
+    pub(crate) fn stall_context(&self) -> QemuNodeStallContext {
+        QemuNodeStallContext::new(
+            [
+                ("selectable", self.selectable_resume_pending),
+                ("network-output", self.network_output_resume_pending),
+                ("console-output", self.console_output_resume_pending),
+                ("hot-fork", self.hot_fork_resume_pending),
+                ("campaign-marker", self.campaign_marker_resume_pending),
+            ],
+            self.pending_network_outputs.len(),
+            self.unproven_campaign_marker.clone(),
+            self.last_step_completed_boundary
+                .map(crate::QemuCompletedQuantumBoundary::stall_boundary),
+        )
+    }
+
+    /// Records the campaign marker a step drained without proving its stop.
+    ///
+    /// A proven park or a later step with no marker leaves the record alone;
+    /// only the next marker step replaces it.
+    pub(crate) fn note_campaign_marker_proof(&mut self, unproven: Option<UnprovenCampaignMarker>) {
+        self.unproven_campaign_marker = unproven;
     }
 
     /// Returns the effective shared-memory ceiling from the last scheduler step.

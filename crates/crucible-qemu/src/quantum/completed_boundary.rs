@@ -165,6 +165,22 @@ impl QemuCompletedQuantumBoundary {
         }
     }
 
+    /// Returns the accepted publication's fields a stall report names.
+    pub(crate) const fn stall_boundary(self) -> crate::node::StallBoundary {
+        crate::node::StallBoundary {
+            status: self.snapshot.status,
+            device_io_active: self.snapshot.device_io_active,
+            control_request: self.request_generation,
+            control_ack: self.snapshot.control_boundary_ack,
+            logical: self.snapshot.current_icount,
+            raw: self.snapshot.logical_time_raw_icount,
+            idle_wake: self.snapshot.idle_wake_icount,
+            advance_sequence: self.snapshot.advance_publication_sequence,
+            settled_ceiling: self.snapshot.settled_ceiling_tick,
+            settled_sequence: self.snapshot.settled_publication_sequence,
+        }
+    }
+
     /// Rejoins the original physical coordinate before a terminal-only fence.
     pub(crate) fn validate_terminal_coordinate(
         self,

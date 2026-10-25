@@ -99,6 +99,23 @@ pub(super) fn is_campaign_boundary_marker(node: &NodeId, event: &ObservableEvent
     )
 }
 
+/// Names a step's campaign markers for `node` as comma-separated `name@tick`.
+pub(super) fn campaign_marker_names(node: &NodeId, events: &[ObservableEvent]) -> String {
+    events
+        .iter()
+        .filter(|event| is_campaign_boundary_marker(node, event))
+        .filter_map(|event| match event.payload() {
+            ObservableEventPayload::GuestMarker {
+                retired_icount,
+                marker,
+                ..
+            } => Some(format!("{}@{}", marker.name, retired_icount.retired)),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Writes one diagnostic row for a step that retired a campaign marker.
 ///
 /// Marker steps are rare, and an unproven marker beside a horizon stop is
@@ -113,19 +130,7 @@ pub(super) fn report_campaign_marker_stop(
 ) {
     use std::io::Write as _;
 
-    let markers = events
-        .iter()
-        .filter(|event| is_campaign_boundary_marker(node, event))
-        .filter_map(|event| match event.payload() {
-            ObservableEventPayload::GuestMarker {
-                retired_icount,
-                marker,
-                ..
-            } => Some(format!("{}@{}", marker.name, retired_icount.retired)),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(",");
+    let markers = campaign_marker_names(node, events);
     let result = match stop {
         Ok(Some(_)) => String::from("parked"),
         Ok(None) => String::from("unproven"),

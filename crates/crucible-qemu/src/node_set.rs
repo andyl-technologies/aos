@@ -1187,6 +1187,12 @@ impl QemuNodeSet {
                 unproven,
                 &stop,
             );
+            backend.note_campaign_marker_proof(matches!(stop, Ok(None)).then(|| {
+                crate::node::UnprovenCampaignMarker {
+                    markers: campaign_marker::campaign_marker_names(node, &events),
+                    stop_tick: physical_icount.retired,
+                }
+            }));
             stop?
         } else {
             None
@@ -2288,9 +2294,12 @@ impl QemuNodeSet {
                     last_stagnant_pause = Some(boundary);
                     continue;
                 }
+                // The quiesced encoding has several plugin writers; the
+                // host's retained state names which one this stall belongs to.
+                let context = self.node_mut(node)?.stall_context();
                 return Err(BackendError::Rejected {
                     message: format!(
-                        "QEMU node `{}` stalled at {} while stepping to {} after {reissue} reissues: effective ceiling {:?}, outcome {:?}, completed state {:?}, consumed inbound {}",
+                        "QEMU node `{}` stalled at {} while stepping to {} after {reissue} reissues: effective ceiling {:?}, outcome {:?}, completed state {:?}, consumed inbound {}; {context}",
                         node.name,
                         observation.reached.ticks,
                         ceiling.ticks,
