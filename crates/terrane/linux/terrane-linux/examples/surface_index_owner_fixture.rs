@@ -60,10 +60,13 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 fn main() -> Result<()> {
     let mode = std::env::args().nth(1).unwrap_or_default();
     if mode == "configured-mounted" {
-        return configured::mounted::run(false);
+        return configured::mounted::run(configured::mounted::Scenario::Ordinary);
+    }
+    if mode == "configured-mounted-expiry" {
+        return configured::mounted::run(configured::mounted::Scenario::Expiry);
     }
     if mode == "configured-mounted-late" {
-        return configured::mounted::run(true);
+        return configured::mounted::run(configured::mounted::Scenario::Late);
     }
     if mode == "configured-worker" {
         return configured::worker::run();

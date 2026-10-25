@@ -7,7 +7,9 @@
 //! driven until shutdown completes; mapped indexes never cross thread boundaries.
 
 use super::{PendingRequest, RequestedBacking, WorkerChannel};
-use crate::host_cache::{NativeReadDriver, NativeRootIndex};
+use crate::host_cache::{
+    NativeExposureLease, NativeMetadataOwner, NativeReadDriver, NativeRootIndex,
+};
 use std::{io, rc::Rc, time::Duration};
 use terrane_format::surface::{View, ViewTarget};
 use terrane_sdk::{
@@ -20,7 +22,7 @@ use tokio::{
     runtime::Handle,
     sync::oneshot,
     task::{JoinHandle, LocalSet},
-    time::timeout,
+    time::{MissedTickBehavior, interval, timeout},
 };
 
 /// Bounds repository metadata selection and missing-file publication separately.
@@ -109,7 +111,8 @@ impl Service {
     /// Startup validates finite bounds and the original mapped exposure before
     /// spawning. The task performs no content fetch until an authenticated file
     /// request passes a fresh scoped selection. Idle waiting has no request timeout;
-    /// an idle mount remains usable until its owner requests drain or its peer fails.
+    /// the task checks the original durable exposure every second, so expiry,
+    /// external drain or owner failure also closes an idle worker channel.
     /// The caller drives `local` until this service finishes; its mapped index
     /// and all request futures stay on that original local executor.
     ///
@@ -210,10 +213,14 @@ where
 {
     let exposure = channel.exposure.clone();
     let owner = context.driver.native().ready().owner();
+    let unavailable = wait_until_unavailable(owner, &exposure, context.options.metadata_budget);
+    tokio::pin!(unavailable);
+
     let outcome = loop {
         let request = tokio::select! {
             biased;
             _ = &mut stop => break Ok(()),
+            error = &mut unavailable => break Err(Error::Io(error)),
             received = channel.receive_ready() => match received {
                 Ok(request) => request,
                 Err(error) => break Err(Error::Io(error)),
@@ -230,6 +237,13 @@ where
                 let prepared = preparation.await;
                 return prepared.and(drained);
             }
+            error = &mut unavailable => {
+                let drained = owner.drain_surface_exposure(&exposure).await.map_err(Error::Io);
+                // Expiry stops disclosure, but cannot cancel an accepted cold
+                // producer before its original cache handoff completes.
+                let prepared = preparation.await;
+                return prepared.and(drained).and(Err(Error::Io(error)));
+            }
             prepared = &mut preparation => {
                 if let Err(error) = prepared {
                     break Err(error);
@@ -242,6 +256,26 @@ where
         .await
         .map_err(Error::Io);
     outcome.and(drained)
+}
+
+async fn wait_until_unavailable(
+    owner: &NativeMetadataOwner,
+    exposure: &NativeExposureLease,
+    budget: Duration,
+) -> io::Error {
+    let mut checks = interval(Duration::from_secs(1));
+    checks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    loop {
+        checks.tick().await;
+        // Query the original serialized owner rather than a cached deadline:
+        // renewal and generation changes must be observed from durable state.
+        match timeout(budget, owner.check_surface_exposure(exposure)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return error,
+            Err(_) => return io::ErrorKind::TimedOut.into(),
+        }
+    }
 }
 
 async fn prepare<S, C, F, D>(

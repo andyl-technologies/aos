@@ -217,7 +217,7 @@ impl NativeMetadataOwner {
     ///
     /// # Errors
     /// Refuses foreign, draining or expired context and native queue failures.
-    pub(in crate::host_cache::owner) async fn check_surface_exposure(
+    pub(crate) async fn check_surface_exposure(
         &self,
         lease: &NativeExposureLease,
     ) -> io::Result<()> {

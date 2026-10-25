@@ -39,6 +39,17 @@ use terrane_sdk::{
 };
 use tokio::{sync::Notify, task::LocalSet, time::timeout};
 
+/// Selects the original mounted cold-read lifecycle exercised by this guest.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scenario {
+    /// Drains explicitly after original coalesced reads complete.
+    Ordinary,
+    /// Expires kernel opens while retaining their original cold preparation.
+    Late,
+    /// Waits for the actual durable exposure lease to expire without stop.
+    Expiry,
+}
+
 const BODY: &[u8] = b"actual scoped worker backing through serialized owner Send";
 
 /// Starts the fixture child before dropping privilege and recovering real caches.
@@ -46,13 +57,13 @@ const BODY: &[u8] = b"actual scoped worker backing through serialized owner Send
 /// # Errors
 /// Refuses invalid configuration, child identity, confinement, native recovery,
 /// original request lifetime, cache handoff or final disclosure behavior.
-pub(crate) fn run(late: bool) -> Result<()> {
+pub(crate) fn run(scenario: Scenario) -> Result<()> {
     let mut arguments = std::env::args().skip(2);
     let path = PathBuf::from(arguments.next().ok_or("missing worker configuration")?);
     if arguments.next().is_some() {
         return Err("unexpected configured worker argument".into());
     }
-    let launched = if late {
+    let launched = if scenario == Scenario::Late {
         scoped_worker::mounted::launch_late()?
     } else {
         scoped_worker::mounted::launch()?
@@ -73,7 +84,7 @@ pub(crate) fn run(late: bool) -> Result<()> {
             .run_until(Box::pin(verify(
                 &local,
                 launched,
-                late,
+                scenario,
                 plan,
                 confinement,
                 host,
@@ -90,7 +101,7 @@ pub(crate) fn run(late: bool) -> Result<()> {
 async fn verify(
     local: &LocalSet,
     mut launched: scoped_worker::Launched,
-    late: bool,
+    scenario: Scenario,
     plan: NativeCachePlan,
     confinement: Arc<quota_confinement::Installed>,
     host: &terrane_sdk::config::host::HostTier,
@@ -155,7 +166,7 @@ async fn verify(
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
     let served = Rc::new(owner.prepare_surface_mapping(selected).await?);
-    let expires = now()? + 90;
+    let expires = now()? + if scenario == Scenario::Expiry { 20 } else { 90 };
     let lease = owner.retain_surface_exposure(&served, expires).await?;
     owner.check_running().await?;
     println!(
@@ -192,7 +203,7 @@ async fn verify(
     .await??;
     phase(&mut service, launched.receive_control(b"COALESCED")).await??;
     send(b"FETCH")?;
-    if late {
+    if scenario == Scenario::Late {
         phase(&mut service, launched.receive_control(b"EXPIRED")).await??;
         phase(&mut service, launched.receive_control(b"EXPIRED")).await??;
         if service.is_finished() || reads.load(Ordering::Relaxed) != 1 {
@@ -228,7 +239,19 @@ async fn verify(
         );
     }
 
-    service.stop().await?;
+    if scenario == Scenario::Expiry {
+        let result = timeout(Duration::from_secs(25), service.wait()).await?;
+        if now()? < expires
+            || !matches!(result, Err(terrane_sdk::repository::Error::Io(ref error))
+            if error.kind() == io::ErrorKind::PermissionDenied)
+        {
+            return Err(
+                format!("expired original exposure returned another result: {result:?}").into(),
+            );
+        }
+    } else {
+        service.stop().await?;
+    }
     // The retained service closes its original channel only after durable
     // drain. The idle worker must observe that closure without a kernel open
     // or a second supervisor control causing its device to abort.
@@ -240,17 +263,24 @@ async fn verify(
         .iter()
         .find(|row| row.id == lease.id())
         .ok_or("mounted configured stop erased original exposure custody")?;
+    // Consumer grace may expire while this scenario waits for the actual lease
+    // deadline. Its exposure pins still protect every retained kernel backing.
+    let exposure_owner = format!("exposure:{}", lease.id());
     let original_pins = before
         .pins
         .iter()
-        .map(|pin| (&pin.owner, &pin.hash, pin.expires));
+        .filter(|pin| scenario != Scenario::Expiry || pin.owner == exposure_owner)
+        .map(|pin| (&pin.owner, &pin.hash, pin.expires))
+        .collect::<Vec<_>>();
     let retained_pins = after
         .pins
         .iter()
-        .map(|pin| (&pin.owner, &pin.hash, pin.expires));
-    if retained.phase != ExposurePhase::Draining
-        || retained.backings != original.backings
-        || !original_pins.eq(retained_pins)
+        .filter(|pin| scenario != Scenario::Expiry || pin.owner == exposure_owner)
+        .map(|pin| (&pin.owner, &pin.hash, pin.expires))
+        .collect::<Vec<_>>();
+    let mut expected_exposure = original.clone();
+    expected_exposure.phase = ExposurePhase::Draining;
+    if retained != &expected_exposure || original_pins.is_empty() || original_pins != retained_pins
     {
         return Err(
             "mounted configured stop inferred physical release from connection closure".into(),
@@ -265,9 +295,14 @@ async fn verify(
     println!(
         "PASS configured production worker opens fetch and seal original signed cold backing through retained service before kernel reads"
     );
-    if late {
+    if scenario == Scenario::Late {
         println!(
             "PASS actual kernel open deadlines return EIO while original configured cold work survives and a later open joins the same fetch before sealed handoff"
+        );
+    }
+    if scenario == Scenario::Expiry {
+        println!(
+            "PASS actual durable exposure expiry autonomously drains retained service and disconnects idle mounted worker while preserving original kernel backing custody"
         );
     }
     send(b"DRAINED")?;

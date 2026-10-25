@@ -94,6 +94,35 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+The configured surface aggregate at `ac4f28b701` passes in 1,265.705 seconds.
+Independent review compares 8,196 immutable source files, all three images and
+nine retained Cargo/installed executables. The five original read-only namespace
+observations, disabled/bound refusals, funded draining reopen with actual Resume,
+exact index custody, signed cold preparations and retained-service cache handoff
+all pass. This supersedes the preceding fixture ordering failure only for this
+frozen checkpoint; it accepts no additional trunk task.
+
+The AOS 7.2.3 kernel contract at `93e53f07bf` passes in 21.452 seconds with its
+original thirty-second probe bound. Actual UID/GID 848, empty groups, zero
+capability sets and `NoNewPrivs=1` receive exact `EPERM` from original-connection
+`FUSE_DEV_IOC_BACKING_OPEN`. The same probe subsequently requires privileged
+registration, zero userspace data reads, mapping/execution, backing release,
+abort and retained-reference quota accounting. Retained source, installed probe,
+rootfs, actual test-input image and observations are independently reviewed.
+The registration-broker RFC proposal remains pending; this evidence grants no
+production broker or passthrough acceptance.
+
+Live worker-service supervision now checks the original durable exposure through
+its serialized owner every second under the configured metadata budget. Expiry,
+external drain and native owner failure request durable drain, close the original
+channel and preserve any accepted cold preparation through cache handoff. Renewal
+is read from actual state rather than an obsolete receipt deadline. The new
+configured mounted expiry guest waits for its actual twenty-second exposure lease
+without calling stop, then requires autonomous service/worker exit, disconnected
+kernel metadata and unchanged original exposure bindings and pins. Consumer grace
+may expire during that wait; ordinary mounted controls still compare all pins
+exactly. Native expiry qualification and mandatory compilation remain pending.
+
 Checkpoint `0f180b1201` passes mandatory application-target compilation in
 828.199 seconds. Independent review compares all 8,194 immutable source files
 and verifies 190 test executables across 59 packages; this is compilation only.

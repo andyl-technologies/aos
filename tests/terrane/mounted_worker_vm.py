@@ -15,7 +15,7 @@ import time
 BODY = b"actual scoped worker backing through serialized owner Send"
 
 
-def run(support, executable, environment, source, owner_command=None, configured=False, late=False):
+def run(support, executable, environment, source, owner_command=None, configured=False, late=False, expiry=False):
     """Mounts only the original worker device and drives authenticated serving."""
     support.require(os.geteuid() == 0, "mounted supervisor requires administration")
     specification = importlib.util.spec_from_file_location(
@@ -129,7 +129,7 @@ def run(support, executable, environment, source, owner_command=None, configured
             os.fsync(retained.fileno())
 
             support.require(supervisor.send(b"D") == 1, "drain acknowledgement truncated")
-            receive(b"DRAINED")
+            receive(b"DRAINED", timeout=25 if expiry else 5)
             try:
                 target.stat()
             except OSError as error:
@@ -158,6 +158,8 @@ def run(support, executable, environment, source, owner_command=None, configured
                 expected_witnesses.append("PASS configured production worker opens fetch and seal original signed cold backing through retained service before kernel reads")
             if late:
                 expected_witnesses.append("PASS actual kernel open deadlines return EIO while original configured cold work survives and a later open joins the same fetch before sealed handoff")
+            if expiry:
+                expected_witnesses.append("PASS actual durable exposure expiry autonomously drains retained service and disconnects idle mounted worker while preserving original kernel backing custody")
             support.require(b"".join(output).decode().splitlines() == expected_witnesses,
                 "mounted owner omitted its original authority or custody checks")
             print("PASS mounted production worker joins signed index startup, coalesced verified reads, responsive metadata and durable drain", flush=True)
