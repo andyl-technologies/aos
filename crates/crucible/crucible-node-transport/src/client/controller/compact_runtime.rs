@@ -9,6 +9,7 @@ use crate::client::session::CompactClientJournal;
 use crate::envelope::RequestOrigin;
 
 mod identity;
+mod storage;
 
 /// Owns compact runtime exchanges alongside the complete original controller.
 ///

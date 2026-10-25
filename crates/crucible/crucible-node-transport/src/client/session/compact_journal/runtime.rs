@@ -44,6 +44,17 @@ impl ClientCustody {
     pub(in crate::client) fn runtime_journal_bytes_data(&self) -> [usize; 2] {
         [self.maximum_bytes, self.retained_bytes]
     }
+
+    pub(in crate::client) fn compact_runtime_journal_limits_data(
+        &self,
+    ) -> Result<[usize; 3], ProviderError> {
+        let remaining = self
+            .maximum_bytes
+            .checked_sub(self.retained_bytes)
+            .ok_or_else(credit)?;
+        let bank = remaining.checked_mul(9).ok_or_else(credit)?;
+        Ok([self.maximum_requests, remaining, bank])
+    }
 }
 
 impl ClientSession {
@@ -57,12 +68,8 @@ impl ClientSession {
         }
         self.connection.authenticate_compact_exchange_idle()?;
 
-        let remaining = legacy
-            .maximum_bytes
-            .checked_sub(legacy.retained_bytes)
-            .ok_or_else(credit)?;
-        let bank = remaining.checked_mul(9).ok_or_else(credit)?;
-        let suffix = CompactClientJournal::new(legacy.maximum_requests, remaining, bank)?;
+        let [requests, remaining, bank] = legacy.compact_runtime_journal_limits_data()?;
+        let suffix = CompactClientJournal::new(requests, remaining, bank)?;
         prefix(legacy)?.authenticate(&suffix)?;
         Ok(suffix)
     }

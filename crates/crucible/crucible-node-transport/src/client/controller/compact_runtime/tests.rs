@@ -202,11 +202,24 @@ fn opaque_owner_preserves_original_actor_content_credit_and_cached_reply() -> Te
         );
     });
     let controller = original.as_mut().unwrap();
+    let unspent_journal =
+        controller.original_compact_runtime_journal_retained_storage_data(usize::MAX)?;
     let first = controller.call(id("legacy"), None, Method::Discover, false, discover())?;
     let before = prefix(controller);
     let pointer = controller.content(&installed)?.as_ptr();
     let actor = Rc::downgrade(&controller.protocol_owner);
     let [maximum, used] = controller.custody.runtime_journal_bytes_data();
+    let journal = controller.original_compact_runtime_journal_retained_storage_data(usize::MAX)?;
+    assert_eq!(unspent_journal - journal, 9 * used);
+    assert_eq!(
+        controller.original_compact_runtime_journal_retained_storage_data(journal)?,
+        journal
+    );
+    assert!(
+        controller
+            .original_compact_runtime_journal_retained_storage_data(journal - 1)
+            .is_err()
+    );
     let mut output = None;
 
     CompactRuntimeController::retain_into(&mut original, &mut output)?;
@@ -219,6 +232,7 @@ fn opaque_owner_preserves_original_actor_content_credit_and_cached_reply() -> Te
     ));
     assert_eq!(runtime.content(&installed)?.as_ptr(), pointer);
     assert_eq!(runtime.journal_byte_reservations_data(), [maximum, used, 0]);
+    assert_eq!(runtime.journal.retained_storage_data(usize::MAX)?, journal);
     assert_eq!(prefix(&runtime.original), before);
 
     let reply = runtime.call(
@@ -260,6 +274,28 @@ fn opaque_owner_preserves_original_actor_content_credit_and_cached_reply() -> Te
     assert_eq!(prefix(&runtime.original), before);
     done.send(())?;
     server.join().unwrap();
+    Ok(())
+}
+
+#[test]
+fn original_journal_quote_remains_data_after_fencing_without_authorizing_handoff() -> TestResult {
+    let (_lease, mut original, _peer, _) = fixture(256);
+    let controller = original.as_mut().unwrap();
+    let quote = controller.original_compact_runtime_journal_retained_storage_data(usize::MAX)?;
+    let debit = controller.custody.runtime_journal_bytes_data();
+
+    controller.fence();
+
+    assert_eq!(
+        controller.original_compact_runtime_journal_retained_storage_data(quote)?,
+        quote
+    );
+    assert_eq!(controller.custody.runtime_journal_bytes_data(), debit);
+    assert!(CnpController::original_compact_runtime_journal_retained_counter_scratch_data() > 0);
+    let mut output = None;
+    assert!(CompactRuntimeController::retain_into(&mut original, &mut output).is_err());
+    assert!(original.is_some());
+    assert!(output.is_none());
     Ok(())
 }
 

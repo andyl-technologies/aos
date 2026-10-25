@@ -10,6 +10,40 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Original-controller compact journal projection
+
+The original Controller now quotes future compact suffix journal backing before
+its ownership move. The quote and the actual suffix constructor share one
+private limit calculation: the original lifetime request ceiling is preserved,
+and only the irreversibly unconsumed canonical-byte allowance can fund new banks.
+Both namespace maps, duplicate IDs and identity hashes remain independently
+priced. Existing originals remain in the current census and continue to count
+toward their original lifetime request ceilings; no quota is renewed or cropped.
+The fixed quote and tree-layout controls have a separate named counter.
+
+A real socket control completes a legacy exchange, prices the remaining suffix,
+and checks the same quote after moving the same Controller. Other controls cover
+exact-limit acceptance, one-byte-short refusal, both 256 and 4,096 request
+ceilings, exhausted/inconsistent credit and unchanged debit. Fenced owners retain
+readable pricing DATA, while the ownership move still refuses them.
+
+This prices persistent compact journal backing only. Content, received/generated
+failure custody, correlation, encoding, materialization, original owners and
+whole-Source observation remain separate. Complete future SDK R/T/S, the genuine
+same-Source one-use funded handoff and Native18 production selection remain
+unfinished; this query grants none of those permissions.
+
+Both complete Transport codec suites pass 2,245 tests with zero failures and
+twenty ignored; all twelve compact runtime controls and all 62 SourceBirth tests
+pass in each codec. Scoped formatting, five-package all-feature/all-target checks
+and all six architecture checks pass. SourceBirth strict Clippy has no warnings;
+Transport retains the exact prior four errors and 1,725 warnings, with no errors
+in the six changed Rust files. This is not a strict Transport lint pass.
+Required application test-target compilation passes with 185 artifacts across
+58 packages and 76 integration targets. All 722 frozen Rust/Cargo inputs match
+the captured application source and candidate tree. User-owned changes remain
+outside this component; no clean whole-PR qualification is claimed.
+
 ## Raw-frame clone storage geometry
 
 The shared fresh-clone forest quote now accepts a complete raw JSON byte ceiling
