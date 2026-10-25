@@ -1,0 +1,813 @@
+{
+  "all_selected_source_bytes_match_checkout": true,
+  "cargo_profiles": {
+    "crucible_campaign": {
+      "debug-assertions": "on",
+      "embed-bitcode": "no",
+      "extra-filename": "-2ffdcb08421d973a",
+      "incremental": "/build/target/debug/incremental",
+      "opt-level": "s",
+      "strip": "debuginfo"
+    },
+    "crucible_store": {
+      "debug-assertions": "on",
+      "embed-bitcode": "no",
+      "extra-filename": "-e766efd832b3736f",
+      "incremental": "/build/target/debug/incremental",
+      "opt-level": "s",
+      "strip": "debuginfo"
+    },
+    "curve25519_dalek_derive": {
+      "embed-bitcode": "no",
+      "extra-filename": "-4030c108f81f9063",
+      "strip": "debuginfo"
+    },
+    "serde_derive": {
+      "embed-bitcode": "no",
+      "extra-filename": "-7def3cc6e02deaab",
+      "strip": "debuginfo"
+    },
+    "thiserror_impl": {
+      "embed-bitcode": "no",
+      "extra-filename": "-f098cda140883465",
+      "strip": "debuginfo"
+    }
+  },
+  "cargo_trace_sha256": "daf60aebcf97f501ab7189b83e84de317e027cede4c98c5fd555b02abfa45cc2",
+  "checkout_parent": "b02388f31259ccc6af1414dccd6f4fdbcd18e152",
+  "command": "nix-build default.nix -A checks.build.bazel.store.all --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "declarations_sha256": {
+    "tests/build/_bazel-rust-family.nix": "898d464ed7885211e148d2eca9b8a29f43a26cc3aafa20793eb6cd4f29cfff64",
+    "tests/build/_bazel-rust-test-profiles.nix": "fabfdd9201b9a2e45b9270e6b7ae0f90c7b3bfaee95dca602ce07bbbac4bf198",
+    "tests/build/_bazel-store.nix": "c8cd8bebee0c0ae1519c5d443d3d232833db9156d0ce200114e9d19e77129607"
+  },
+  "default": {
+    "doctests": {
+      "//crates/crucible/crucible-campaign:doc": {},
+      "//crates/crucible/crucible-store:doc": {}
+    },
+    "examples": [],
+    "first_party_features": {
+      "crucible-campaign": [
+        []
+      ],
+      "crucible-store": [
+        []
+      ]
+    },
+    "ignored_cases": 1,
+    "ignored_inventory": {
+      "//crates/crucible/crucible-campaign:gate_campaign_cold_continuity": [
+        "continuity_process_helper"
+      ]
+    },
+    "libtest_reports": 13,
+    "parity_sha256": "d7ace0012e1e8a8638d0c5b70fa04c57ca2ab5a1b1d3eccd27a117b73d4e2fe6",
+    "test_cases": 599,
+    "upstream_feature_identities": 85
+  },
+  "editor": {
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 0,
+        "total": 474603,
+        "unknown": 12
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 96395,
+        "unknown": 0
+      }
+    },
+    "comparison_scope": "whole-model",
+    "diagnostic_multiplicity_comparable": true,
+    "diagnostics": [
+      [
+        "crates/crucible/crucible-store/src/content_store/encrypted_directory.rs",
+        "737:32",
+        "737:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-store/src/content_store/encrypted_directory.rs",
+        "853:27",
+        "853:29",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-store/src/content_store/s3/blob_admin.rs",
+        "505:23",
+        "505:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-store/src/content_store/s3_ref.rs",
+        "849:20",
+        "849:21",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-store/src/content_store/s3_ref.rs",
+        "882:23",
+        "882:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-store/src/content_store/sqlite.rs",
+        "684:23",
+        "684:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "roots": {
+      "crates/crucible/crucible-campaign/src/lib.rs": [],
+      "crates/crucible/crucible-campaign/tests/gate_attempt_idempotence.rs": [],
+      "crates/crucible/crucible-campaign/tests/gate_branch_point_model.rs": [],
+      "crates/crucible/crucible-campaign/tests/gate_campaign_cold_continuity.rs": [],
+      "crates/crucible/crucible-campaign/tests/gate_campaign_model.rs": [],
+      "crates/crucible/crucible-campaign/tests/gate_campaign_replay.rs": [],
+      "crates/crucible/crucible-campaign/tests/gate_campaign_statistics.rs": [],
+      "crates/crucible/crucible-campaign/tests/gate_lazy_frontier.rs": [],
+      "crates/crucible/crucible-campaign/tests/gate_typed_choice.rs": [],
+      "crates/crucible/crucible-store/src/bin/crucible-fleet-store.rs": [],
+      "crates/crucible/crucible-store/src/lib.rs": [],
+      "crates/crucible/crucible-store/tests/gate_campaign_continuity.rs": [],
+      "crates/crucible/crucible-store/tests/gate_campaign_store_composition.rs": []
+    }
+  },
+  "editor_cargo_trace_sha256": "87b91b14722ba957dbff7a439e53a4f5909c6e9e46d23cc4bfdee845f9769518",
+  "editor_flags": {
+    "execution": [
+      "-Copt-level=0",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ],
+    "target": []
+  },
+  "evidence_sha256": {
+    "editor-parity.json": "f46ce5ccbb52bee6b8305eaceb618bb22d04af22dbcdea3ebc420e9e20c394b5",
+    "execution-profiles.json": "29354e77ef9fb84416f55e4f06b8807d2be6b849f578333862ce61bd1f4216ac",
+    "inventory.json": "5fa1131c52106c9bda335bb6c9c99d86041b71b4680ea884aee08776fe21584a",
+    "native-linkage.json": "90347ddab4c80cd7a922af9e460d78a9d25412a900928a11a9f253d4900a48c7",
+    "native-metadata.json": "24074289bdc7a597a3a4de0531dec84468edad6c8d91443185a054b36255ecb6",
+    "parity.json": "d7ace0012e1e8a8638d0c5b70fa04c57ca2ab5a1b1d3eccd27a117b73d4e2fe6",
+    "runtime/parity.json": "d1d561dcad850d2ce931a30c854560e66c33d90689ba3e1aa4beac0742309528"
+  },
+  "family": "store",
+  "limits": [
+    "Native x86_64 ordinary tests and existing feature variants, Clippy, documentation, formatting and selected-package editor comparison only.",
+    "Whole-model editor inference statistics and raw diagnostic multiplicity match; inference remains incomplete as recorded.",
+    "The selected test and macro audit checks scalar profiles against actual Cargo invocations; it does not establish complete compiler defaults, ABI, native libraries or linker equivalence.",
+    "Ordinary aos-dev enrollment, shared-cache qualification, foreign platforms, production cutover and performance acceptance remain separate."
+  ],
+  "native_linkage": {
+    "binary_sha256": "bbf136647597c2825c69e586cd3f4d46b2504fc4dc98a6acb38f25fdb63627c1",
+    "interpreter": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+    "libraries": {
+      "sqlite": {
+        "closure": [
+          {
+            "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+            "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          },
+          {
+            "narHash": "sha256:1zqysm2wkn0arj41ang2f73p56lyq02mla4w1ycng91cy1cg724y",
+            "path": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4"
+          }
+        ],
+        "headerDirectory": "include",
+        "headerPackage": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+        "libraryFile": "lib/libsqlite3.so",
+        "licenseDomain": "apache-host",
+        "linkage": "shared",
+        "linkopts": [],
+        "package": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+        "pkgConfigFiles": [
+          "lib/pkgconfig/sqlite3.pc"
+        ],
+        "schema_version": 1,
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "zstd": {
+        "closure": [
+          {
+            "narHash": "sha256:109h987ir323zjn5jma151xnb227rax88yq3n600qymbnfw6nspd",
+            "path": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7"
+          },
+          {
+            "narHash": "sha256:0y5gycdr52a2xc8gzxf37bika6m7kyzw3az0lqdbmz4mma49drj5",
+            "path": "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0"
+          },
+          {
+            "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+            "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          },
+          {
+            "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
+            "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+          }
+        ],
+        "headerDirectory": "include",
+        "headerPackage": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7",
+        "libraryFile": "lib/libzstd.a",
+        "licenseDomain": "apache-host",
+        "linkage": "static",
+        "linkopts": [],
+        "package": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7",
+        "pkgConfigFiles": [
+          "lib/pkgconfig/libzstd.pc"
+        ],
+        "schema_version": 1,
+        "target": "x86_64-unknown-linux-gnu"
+      }
+    },
+    "needed": [
+      "libsqlite3.so",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2",
+      "libgcc_s.so.1"
+    ],
+    "runtime_closure": [
+      {
+        "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+        "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+      },
+      {
+        "narHash": "sha256:1zqysm2wkn0arj41ang2f73p56lyq02mla4w1ycng91cy1cg724y",
+        "path": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4"
+      },
+      {
+        "narHash": "sha256:03382kj8vvmdwzfk3rr36rd03d211akhi3r4p5x3d6j69k72jw26",
+        "path": "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0"
+      },
+      {
+        "narHash": "sha256:1p59lh2s7nc741pqcpcy8r0fqiqav12qlfj8cxr7ilj5zvbb8h79",
+        "path": "/nix/store/v4gfkz123amkvh78ix3n02bqln9vdh0b-crucible-fleet-store-0.1.0"
+      }
+    ],
+    "schema_version": 1,
+    "selected_inputs": {
+      "sqlite": [
+        {
+          "digest": {
+            "hash": "355f069f759621753606d4704c2ff5d71d21f8eccb5586480556fbf8d7d53ab0",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "1591216"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Unative_S_S_Csqlite_Uimport___Usqlite_Slib/libsqlite3.so",
+          "symlinkTargetPath": ""
+        },
+        {
+          "digest": {
+            "hash": "355f069f759621753606d4704c2ff5d71d21f8eccb5586480556fbf8d7d53ab0",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "1591216"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_store_crates__libsqlite3-sys-0.30.1/_bs.cargo_runfiles/+aos_tools_repository+aos_native/sqlite/lib/libsqlite3.so",
+          "symlinkTargetPath": ""
+        },
+        {
+          "digest": {
+            "hash": "355f069f759621753606d4704c2ff5d71d21f8eccb5586480556fbf8d7d53ab0",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "1591216"
+          },
+          "isTool": false,
+          "path": "external/+aos_tools_repository+aos_native/sqlite/lib/libsqlite3.so",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "zstd": [
+        {
+          "digest": {
+            "hash": "cd67bba08db44bf4e2955db31daf9cc442552e86f84e6932b261c86342eeb9b6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "1283582"
+          },
+          "isTool": false,
+          "path": "external/+aos_tools_repository+aos_native/zstd/lib/libzstd.a",
+          "symlinkTargetPath": ""
+        }
+      ]
+    }
+  },
+  "native_metadata": {
+    "sqlite": {
+      "flags": "-I/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/include -L/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib -lsqlite3 -lm",
+      "library": {
+        "closure": [
+          {
+            "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+            "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          },
+          {
+            "narHash": "sha256:1zqysm2wkn0arj41ang2f73p56lyq02mla4w1ycng91cy1cg724y",
+            "path": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4"
+          }
+        ],
+        "headerDirectory": "include",
+        "headerPackage": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+        "libraryFile": "lib/libsqlite3.so",
+        "licenseDomain": "apache-host",
+        "linkage": "shared",
+        "linkopts": [],
+        "package": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+        "pkgConfigFiles": [
+          "lib/pkgconfig/sqlite3.pc"
+        ],
+        "schema_version": 1,
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "module": "sqlite3",
+      "tools": {
+        "closure": [
+          {
+            "narHash": "sha256:02280799m4rzqgl7xjlf0jr1d1pn6rfzfmfj1zmilibflkamxls7",
+            "path": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15"
+          },
+          {
+            "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+            "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          },
+          {
+            "narHash": "sha256:03zmqjm0y9l9g4rx5w4161lvx5zfjbdi60liqv0i467grmsbxc0s",
+            "path": "/nix/store/slp1q1sg1nx2nikr551qficdycfbdml3-pkg-config-0.29.2"
+          },
+          {
+            "narHash": "sha256:1vv30xb54bslyj4zrhir583a9m4ysqsmgyx4vfvpibqjaz3cndvi",
+            "path": "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6"
+          }
+        ],
+        "schema_version": 1
+      },
+      "version": "3.53.4"
+    },
+    "zstd": {
+      "flags": "-I/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7/include -L/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7/lib -lzstd -pthread",
+      "library": {
+        "closure": [
+          {
+            "narHash": "sha256:109h987ir323zjn5jma151xnb227rax88yq3n600qymbnfw6nspd",
+            "path": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7"
+          },
+          {
+            "narHash": "sha256:0y5gycdr52a2xc8gzxf37bika6m7kyzw3az0lqdbmz4mma49drj5",
+            "path": "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0"
+          },
+          {
+            "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+            "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          },
+          {
+            "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
+            "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+          }
+        ],
+        "headerDirectory": "include",
+        "headerPackage": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7",
+        "libraryFile": "lib/libzstd.a",
+        "licenseDomain": "apache-host",
+        "linkage": "static",
+        "linkopts": [],
+        "package": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7",
+        "pkgConfigFiles": [
+          "lib/pkgconfig/libzstd.pc"
+        ],
+        "schema_version": 1,
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "module": "libzstd",
+      "tools": {
+        "closure": [
+          {
+            "narHash": "sha256:02280799m4rzqgl7xjlf0jr1d1pn6rfzfmfj1zmilibflkamxls7",
+            "path": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15"
+          },
+          {
+            "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+            "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          },
+          {
+            "narHash": "sha256:03zmqjm0y9l9g4rx5w4161lvx5zfjbdi60liqv0i467grmsbxc0s",
+            "path": "/nix/store/slp1q1sg1nx2nikr551qficdycfbdml3-pkg-config-0.29.2"
+          },
+          {
+            "narHash": "sha256:1vv30xb54bslyj4zrhir583a9m4ysqsmgyx4vfvpibqjaz3cndvi",
+            "path": "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6"
+          }
+        ],
+        "schema_version": 1
+      },
+      "version": "1.5.7"
+    }
+  },
+  "paths": {
+    "all": "/nix/store/rrabc68ac48v27xypnmfz0jxffb4as17-aos-bazel-store-qualified-checks",
+    "cargo": "/nix/store/9pjyyhhjgmj4g0ldcjvyblv17sziwbbn-aos-bazel-store-cargo-oracle-1",
+    "developer-build": "/nix/store/s8pgm48b5x4lf2sjfbnja6jaqyxcds2w-aos-bazel-store-developer-tools-1",
+    "developer-tests": "/nix/store/98jng44ns250lvx8nc1l13y8dzsq3jcj-aos-bazel-store-format-1",
+    "editor": "/nix/store/88g3vbk7nrss2vnnmy90qjskwcgx3xz3-aos-bazel-store-editor",
+    "editor-cargo-oracle": "/nix/store/aq2xs79pkb451j7xr5lnkf0bx8sylwgy-aos-bazel-store-editor-cargo-oracle",
+    "editor-parity": "/nix/store/vvnghdjgdba3qimnh532yrldqay88g2l-aos-bazel-store-editor-parity",
+    "editorWorkspace": {
+      "configuration": "/nix/store/a56rsrmxcpdqw5fhfqlz1wyydskkybib-aos-bazel-configuration.json",
+      "source": "/nix/store/7y36gdbnclmidfhdaggl7hv0kvh7jzj8-aos-bazel-workspace"
+    },
+    "execution-profiles": "/nix/store/k77h4a561rhg82gibqc12d1ngm6sn0pq-aos-bazel-store-execution-profiles",
+    "tests": "/nix/store/x3z5zkw300p9rwv9rwp52pf9l0vq8nkf-aos-bazel-store-tests-1",
+    "variant-builds": {
+      "all-features": "/nix/store/ffa0vvr7wz07h7q6drhlbm5ks1nyc7ql-aos-bazel-store-all_features-tests-1",
+      "recovery-faults": "/nix/store/jb4l6v2k2pdc248b8vg2qfnjdnpq285m-aos-bazel-store-recovery_faults-tests-1",
+      "test-support": "/nix/store/g7yi19sdl4v0zc918c2niwnk2mdd1gjb-aos-bazel-store-test_support-tests-1"
+    },
+    "workspace": {
+      "configuration": "/nix/store/rwryhhlgcvp9l3s1zyxzcxn3pl2z12an-aos-bazel-configuration.json",
+      "source": "/nix/store/7y36gdbnclmidfhdaggl7hv0kvh7jzj8-aos-bazel-workspace"
+    }
+  },
+  "profiles": {
+    "//crates/crucible/crucible-campaign:unit_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1210553121",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "s",
+        "overflow-checks": "yes",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "//crates/crucible/crucible-store:unit_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-2240170149",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "s",
+        "overflow-checks": "yes",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_store_crates__curve25519-dalek-derive-0.1.1//:curve25519_dalek_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-2845165396",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_store_crates__serde_derive-1.0.228//:serde_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1356668882",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_store_crates__thiserror-impl-2.0.18//:thiserror_impl": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-2466066038",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    }
+  },
+  "qualified_checks": "/nix/store/rrabc68ac48v27xypnmfz0jxffb4as17-aos-bazel-store-qualified-checks",
+  "runs": {
+    "developer-build": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 21,
+        "Clippy": 64,
+        "ExtractCargoTomlEnvVars": 102,
+        "Rustc": 119,
+        "Rustdoc": 2
+      },
+      "build": "/nix/store/s8pgm48b5x4lf2sjfbnja6jaqyxcds2w-aos-bazel-store-developer-tools-1",
+      "executed_actions": 308,
+      "execution_sha256": "e7e2695ce4072b272b29bff6aecec506549797df314b404b2f565dc63f084638"
+    },
+    "developer-tests": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "Rustc": 5,
+        "TestRunner": 4
+      },
+      "build": "/nix/store/98jng44ns250lvx8nc1l13y8dzsq3jcj-aos-bazel-store-format-1",
+      "executed_actions": 9,
+      "execution_sha256": "000d472ef44b68ce2a32a3bf81e3e9ec3559b99a2670f5a50211b057e25e2bcd"
+    },
+    "editor": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 21,
+        "ExtractCargoTomlEnvVars": 102,
+        "Rustc": 127
+      },
+      "executed_actions": 250,
+      "execution_sha256": "1b8b4eb79cdac14614a7bc13fb716bf83d9b0e0a4e1127c413c0874206f2b2ec"
+    },
+    "tests": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 21,
+        "ExtractCargoTomlEnvVars": 102,
+        "Rustc": 129,
+        "RustdocTestWriter": 2,
+        "TestRunner": 17
+      },
+      "build": "/nix/store/x3z5zkw300p9rwv9rwp52pf9l0vq8nkf-aos-bazel-store-tests-1",
+      "executed_actions": 271,
+      "execution_sha256": "989e57e408f32d636f70b0d6cd1846085712ea2e0645da0d291db149f3eb5e7f"
+    },
+    "variant-all-features": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 21,
+        "ExtractCargoTomlEnvVars": 102,
+        "Rustc": 131,
+        "RustdocTestWriter": 2,
+        "TestRunner": 19
+      },
+      "executed_actions": 275,
+      "execution_sha256": "ef4535571ce4b08482300366d3bca475c0b2ea6952b0d3c8b5516ef4866f3c54"
+    },
+    "variant-recovery-faults": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 21,
+        "ExtractCargoTomlEnvVars": 102,
+        "Rustc": 129,
+        "RustdocTestWriter": 2,
+        "TestRunner": 17
+      },
+      "executed_actions": 271,
+      "execution_sha256": "11ee8814cc63f59714b0ff44e118e49e3055d39d59a18e8adf98a98dd979c8f1"
+    },
+    "variant-test-support": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 21,
+        "ExtractCargoTomlEnvVars": 102,
+        "Rustc": 131,
+        "RustdocTestWriter": 2,
+        "TestRunner": 19
+      },
+      "executed_actions": 275,
+      "execution_sha256": "8f7340d9aae0887f4111f870a7c4eb3a8dc6e2f5be07a1bbbb6e6068301926d9"
+    }
+  },
+  "runtime": {
+    "bazel_binary_sha256": "bbf136647597c2825c69e586cd3f4d46b2504fc4dc98a6acb38f25fdb63627c1",
+    "cargo_binary_sha256": "527df6a46c2670ed8436d62dfdd4baa6a02e72ac1739ad7e67f99bd2344228c1",
+    "invalid_command_status": 1,
+    "probe_lines": [
+      "crucible-fleet-store probe",
+      "object=cf128530c7af1e33325299bf79dad27957b278dec6eb9f255ac8760bd2907ac7",
+      "interface=DagStore::put,DagStore::get,DagStore::has",
+      "backend=SharedDagStore",
+      "location_independent_identity=true",
+      "location_independent_roots=2",
+      "location_independent_object=cf128530c7af1e33325299bf79dad27957b278dec6eb9f255ac8760bd2907ac7",
+      "concurrent_put=idempotent",
+      "concurrent_writers=16",
+      "object_file_count=1",
+      "claim_lease=ttl-hint",
+      "claim_key=content-addressed",
+      "claim_path_excludes_host=true",
+      "expired_lease=reclaimable",
+      "stale_claim_lock=reclaimable",
+      "reclaimed_node_byte_identical=true",
+      "hash_affinity=priority-only",
+      "affinity_filters_frontier=false",
+      "static_partitioning=false",
+      "lease_ttl_ticks=5",
+      "dedup_layers=exists,coverage-map,reduction-fingerprint,claim-set",
+      "exists_gated_expansion=skip-existing",
+      "coverage_map_admission=compare-and-merge",
+      "coverage_map_repair=entry-markers-before-fingerprint",
+      "coverage_map_duplicate=skipped",
+      "reduction_fingerprint=shared-prune",
+      "claim_set_anti_redundancy=unclaimed-first",
+      "campaign_store=persistent-dagstore",
+      "campaign_manifest=content-addressed",
+      "campaign_head=cas-advanced",
+      "campaign_head_lock=advisory-head-file",
+      "campaign_head_log=append-only-checksummed",
+      "manifest_head_only_mutable=true",
+      "manifest_roots=corpus,coverage,findings,genesis,provenance",
+      "manifest_root_objects=required",
+      "provenance_triple=recorded",
+      "lost_cas=bookkeeping-only",
+      "read_merge_retry=enabled",
+      "merge_roots=materialized-objects",
+      "campaign_seed=prior-corpus",
+      "campaign_seed_artifact=self-contained",
+      "campaign_seed_replay=bit-identical",
+      "campaign_seed_process_state=not-required",
+      "coverage_ratchet=grow-only-union-crdt",
+      "coverage_ratchet_monotone=true",
+      "coverage_crdt=commutative-associative-idempotent",
+      "coverage_novelty=against-accumulated-map",
+      "findings_ledger=cross-run-grow-only",
+      "findings_ledger_dedup=content-addressed",
+      "finding_replay=bit-identical-from-ledger",
+      "campaign_gc_roots=manifest-roots",
+      "campaign_gc_scope=corpus,coverage,findings,genesis",
+      "campaign_gc_unpinned=swept-candidate",
+      "campaign_gc_value=cache-only",
+      "fat_to_thin_eviction=value-preserved",
+      "thin_checkpoint_source=parent-schedule-delta",
+      "corpus_retention=deterministic-seeded-cap",
+      "corpus_retention_authorized=explicit-policy",
+      "corpus_retention_reproducible=true",
+      "corpus_retention_root=source-cap-seed-proof",
+      "findings_ledger_retention=never-evict",
+      "campaign_continuity=implemented",
+      "campaign_continuity_seed_reproducible=true",
+      "campaign_continuity_coverage_monotone=true",
+      "campaign_continuity_cross_provenance_refused=true",
+      "campaign_continuity_fresh_lineage=forked",
+      "campaign_continuity_prior_findings_reproducible=true",
+      "provenance_seed_gate=triple-keyed"
+    ]
+  },
+  "schema_version": 1,
+  "selected_source_differences_from_checkout": {},
+  "selected_source_files": 269,
+  "status": "PASS",
+  "variants": {
+    "all-features": {
+      "doctests": {
+        "//crates/crucible/crucible-campaign:doc_all_features": {},
+        "//crates/crucible/crucible-store:doc_all_features": {}
+      },
+      "examples": [],
+      "first_party_features": {
+        "crucible-campaign": [
+          [
+            "destructive-recovery-faults",
+            "test-support"
+          ]
+        ],
+        "crucible-store": [
+          [
+            "destructive-recovery-faults",
+            "test-support"
+          ]
+        ]
+      },
+      "ignored_cases": 1,
+      "ignored_inventory": {
+        "//crates/crucible/crucible-campaign:gate_campaign_cold_continuity_all_features": [
+          "continuity_process_helper"
+        ]
+      },
+      "libtest_reports": 15,
+      "parity_sha256": "c141b04a94cf0a34f10ffa4fd150074e54e0f342ffb73fada19600a62b958afa",
+      "test_cases": 608,
+      "upstream_feature_identities": 85
+    },
+    "recovery-faults": {
+      "doctests": {
+        "//crates/crucible/crucible-campaign:doc_recovery_faults": {},
+        "//crates/crucible/crucible-store:doc_recovery_faults": {}
+      },
+      "examples": [],
+      "first_party_features": {
+        "crucible-campaign": [
+          [
+            "destructive-recovery-faults"
+          ]
+        ],
+        "crucible-store": [
+          [
+            "destructive-recovery-faults"
+          ]
+        ]
+      },
+      "ignored_cases": 1,
+      "ignored_inventory": {
+        "//crates/crucible/crucible-campaign:gate_campaign_cold_continuity_recovery_faults": [
+          "continuity_process_helper"
+        ]
+      },
+      "libtest_reports": 13,
+      "parity_sha256": "a4140621ac5f016272aef4c4434ed24109bfdc5dd6a73df6bb51ed996831825c",
+      "test_cases": 605,
+      "upstream_feature_identities": 85
+    },
+    "test-support": {
+      "doctests": {
+        "//crates/crucible/crucible-campaign:doc_test_support": {},
+        "//crates/crucible/crucible-store:doc_test_support": {}
+      },
+      "examples": [],
+      "first_party_features": {
+        "crucible-campaign": [
+          [
+            "test-support"
+          ]
+        ],
+        "crucible-store": [
+          [
+            "test-support"
+          ]
+        ]
+      },
+      "ignored_cases": 1,
+      "ignored_inventory": {
+        "//crates/crucible/crucible-campaign:gate_campaign_cold_continuity_test_support": [
+          "continuity_process_helper"
+        ]
+      },
+      "libtest_reports": 15,
+      "parity_sha256": "5880f813b1a2fe59325c4b9a81c88b993de870968d02045f4331a99ce4415b20",
+      "test_cases": 602,
+      "upstream_feature_identities": 85
+    }
+  }
+}

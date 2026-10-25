@@ -529,6 +529,18 @@ Bazel label, preserving program behavior.
 
 ## Crucible storage and campaign graph
 
+The [profile qualification](tests/evidence/store-profile-qualification.json)
+passes 599 default, 602 test-support, 605 recovery-fault and 608 combined cases,
+preserving the existing ignored replay case in each configuration. Five actual
+compiler actions verify both unit binaries and all three macros against Cargo's
+ordinary test profiles. Clippy, documentation, formatting, runtime probes and
+the SQLite/zstd metadata and linkage checks pass. Whole-model editor statistics
+and all twelve diagnostic rows match, including multiplicity; inference remains
+incomplete. Its thirteen roots use the native analyzer's optimized target cfg
+with unoptimized host macros. All 1,659 retained actions execute in Linux
+sandboxes without cache hits. Ordinary `aos-dev` enrollment, production cutover
+and performance acceptance remain separate.
+
 `checks.build.bazel.store.all` connects `crucible-store` and
 `crucible-campaign`. Its explicit configurations cover the default features,
 `test-support`, `destructive-recovery-faults`, and both features together.

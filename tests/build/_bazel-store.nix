@@ -17,11 +17,26 @@
     dependencyProfile = "store";
     # Match the workspace Cargo test profile for campaign scale workloads.
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    # Match the native analyzer's optimized cfg queries separately from tests.
+    editorTargetRustcFlags = [];
+    retainTestActionGraph = true;
+    captureCompilerArguments = true;
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.store // {aos_native = pkgs.aosBazelStoreLibraries;};
     extraSourceDirectories = ["docs/rfcs/0020-crucible-campaigns"];
     excludedTests = ["gate_campaign_store_equivalence" "gate_campaign_mutation_scaling"];
     extraTests = ["${store}:bin_crucible-fleet-store"];
     extraEditorTargets = ["${store}:crucible-fleet-store" "${store}:bin_crucible-fleet-store_binary"];
+  };
+  execution-profiles = import ./_bazel-rust-test-profiles.nix {
+    inherit pkgs;
+    inherit (family) tests cargo;
+    pname = "aos-bazel-store-execution-profiles";
+    firstPartyTests = {
+      "${store}:unit_binary" = "crucible_store";
+      "${campaign}:unit_binary" = "crucible_campaign";
+    };
+    proceduralMacros = ["curve25519_dalek_derive" "serde_derive" "thiserror_impl"];
   };
   variantTargets = suffix: features:
     pkgs.lib.concatMap (name: let
@@ -65,6 +80,7 @@
 in
   family
   // rec {
+    inherit execution-profiles;
     # Only the aspect reports are materialized. Compilation and execution are
     # independently required by the qualification checks below.
     inventory = pkgs.mkAosBazelBuild {
@@ -218,7 +234,7 @@ in
       '';
     all =
       pkgs.runCommand "aos-bazel-store-qualified-checks" {
-        buildDeps = [family.all family.editor-parity runtime native-metadata native-linkage] ++ builtins.attrValues variants;
+        buildDeps = [family.all family.editor-parity runtime native-metadata native-linkage execution-profiles] ++ builtins.attrValues variants;
       } ''
         mkdir -p "$out/variants"
         cp -r ${family.all}/evidence "$out/evidence"
@@ -227,6 +243,7 @@ in
         cp -r ${runtime} "$out/runtime"
         cp ${native-metadata}/metadata.json "$out/native-metadata.json"
         cp ${native-linkage}/linkage.json "$out/native-linkage.json"
+        cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
         ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList (name: variant: ''
             cp ${variant}/parity.json "$out/variants/${name}.json"
           '')
