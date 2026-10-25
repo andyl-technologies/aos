@@ -404,6 +404,14 @@ impl HybridBindingState {
         if !watermark.active || watermark.revision != revision {
             return Ok(None);
         }
+        self.resolve_publication(&watermark).await
+    }
+
+    /// Checks the active publication while the caller retains the binding gate.
+    async fn resolve_publication(
+        &self,
+        watermark: &BindingWatermark,
+    ) -> worker::Result<Option<StorageBindingPublication>> {
         let Some(publication) = self
             .state
             .storage()
@@ -422,7 +430,7 @@ impl HybridBindingState {
                 .binding_spec_revision()
                 .map_err(storage_error)?
                 != watermark.binding_spec_revision
-            || publication.snapshot.revision().map_err(storage_error)? != revision
+            || publication.snapshot.revision().map_err(storage_error)? != watermark.revision
             || publication.validate(&deployment_id, now).is_err()
         {
             return Ok(None);
@@ -445,18 +453,14 @@ impl HybridBindingState {
         if !watermark.active || watermark.binding_resource_version != binding_resource_version {
             return Ok(None);
         }
-        self.resolve(&watermark.revision).await
+        // Both fetch and alarm retain the same gate. Reuse this turn's exact
+        // watermark rather than rereading it before checking the publication.
+        self.resolve_publication(&watermark).await
     }
 }
 
 async fn acquire_gate(gate: Arc<Mutex<()>>) -> OwnedMutexGuard<()> {
-    loop {
-        if let Some(permit) = gate.try_lock_owned() {
-            return permit;
-        }
-        // A runtime timer keeps requests alive while the object is busy.
-        worker::Delay::from(Duration::from_millis(25)).await;
-    }
+    crate::runtime_gate::acquire(gate, Duration::from_millis(25)).await
 }
 
 fn binding_name(env: &Env, binding_id: i64) -> worker::Result<String> {

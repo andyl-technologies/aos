@@ -193,6 +193,9 @@ pub mod handlers;
 #[cfg(target_arch = "wasm32")]
 mod hybrid;
 
+#[cfg(any(test, target_arch = "wasm32"))]
+mod runtime_gate;
+
 #[cfg(target_arch = "wasm32")]
 mod mirror_live;
 
