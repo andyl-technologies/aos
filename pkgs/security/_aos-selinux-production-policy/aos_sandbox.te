@@ -13,6 +13,7 @@ require {
     type dbusd_unit_t;
     type auditd_unit_t;
     type chronyd_unit_t;
+    type sshd_unit_t;
     type device_t;
     type fixed_disk_device_t;
     type fuse_device_t;
@@ -73,6 +74,8 @@ allow init_t dbusd_unit_t:service { start status };
 allow init_t auditd_unit_t:service { start status };
 # Native activation starts and observes the fixed image time-sync service.
 allow init_t chronyd_unit_t:service { start status };
+# Native activation starts and observes the configured image SSH service.
+allow init_t sshd_unit_t:service { start status };
 # Native activation also publishes units into the writable /etc overlay. Those
 # PID-1-domain files retain init_tmpfs_t rather than the immutable image label.
 allow init_t init_tmpfs_t:service { reload start status stop };
