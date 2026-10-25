@@ -14,7 +14,11 @@ use anyhow::{ensure, Result};
 use crate::external_object::MAX_PENDING_DESTINATION_PARTS;
 
 /// Bounds new copies across one foreground invocation, below the journal limit.
-pub(crate) const MAX_COPY_PARTS_PER_INVOCATION: usize = 32;
+///
+/// Journal preparation and provider-capacity waits share the fixed foreground
+/// window with Native authorization. A small wave leaves room for those waits;
+/// later Complete calls renew permission for the same retained reservation.
+pub(crate) const MAX_COPY_PARTS_PER_INVOCATION: usize = 8;
 
 /// Checks one bounded contiguous wave, including its exact acknowledgement replay.
 ///

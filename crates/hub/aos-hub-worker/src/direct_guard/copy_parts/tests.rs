@@ -15,18 +15,27 @@ async fn acknowledged_copy_waves_resume_without_repeating_provider_effects() {
     let mut retained = Vec::new();
     let dispatched = &std::cell::RefCell::new(Vec::new());
 
-    for _ in 0..8 {
+    while usize::try_from(cursor).unwrap() < originals.len() {
         let wave = crate::direct_guard::copy_progress::next_wave(originals.len(), cursor).unwrap();
         let through = u32::try_from(wave.end).unwrap();
-        let copied = copy_parts(&originals[wave], |part| async move {
-            dispatched.borrow_mut().push(part.part.part_number);
-            tokio::task::yield_now().await;
-            Ok(DirectManifestPart {
-                part: part.part.clone(),
-                etag: format!("\"acknowledged-{}\"", part.part.part_number),
-            })
-        })
+        assert!(
+            through > cursor,
+            "each invocation must advance its positive prefix"
+        );
+        let barrier = &tokio::sync::Barrier::new(wave.len());
+        let copied = tokio::time::timeout(
+            Duration::from_secs(2),
+            copy_parts(&originals[wave], |part| async move {
+                dispatched.borrow_mut().push(part.part.part_number);
+                barrier.wait().await;
+                Ok(DirectManifestPart {
+                    part: part.part.clone(),
+                    etag: format!("\"acknowledged-{}\"", part.part.part_number),
+                })
+            }),
+        )
         .await
+        .expect("a bounded copy wave must keep its independent parts parallel")
         .unwrap();
 
         crate::direct_guard::copy_progress::validate_advance(cursor, cursor, through, 256).unwrap();
