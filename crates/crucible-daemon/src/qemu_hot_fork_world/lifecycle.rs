@@ -25,6 +25,10 @@ use crucible_api::{
 use crucible_protocol::SelectionReply;
 use crucible_qemu::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 
+mod rows;
+
+use rows::{note_child_memory, note_install_quarantine};
+
 use super::QemuHotForkCompleteWorldAssembly;
 use crate::qemu_hot_fork_reconciliation::LinuxQemuHotForkWorldReconciliationSet;
 use crate::qemu_hot_fork_world_factory::QemuHotForkStartOrigin;
@@ -801,7 +805,13 @@ where
                 None => {
                     let error =
                         lifecycle_error("assembled hot-fork child disappeared during adoption");
-                    retain_remaining_install_failure(source_world, resources, completed, children);
+                    retain_remaining_install_failure(
+                        source_world,
+                        resources,
+                        completed,
+                        children,
+                        &error,
+                    );
                     return Err(error);
                 }
             };
@@ -816,7 +826,13 @@ where
                         node.name
                     ));
                     child.quarantine_and_retain();
-                    retain_remaining_install_failure(source_world, resources, completed, children);
+                    retain_remaining_install_failure(
+                        source_world,
+                        resources,
+                        completed,
+                        children,
+                        &error,
+                    );
                     return Err(error);
                 }
             };
@@ -824,14 +840,26 @@ where
                 Ok(identity) => identity,
                 Err(error) => {
                     child.quarantine_and_retain();
-                    retain_remaining_install_failure(source_world, resources, completed, children);
+                    retain_remaining_install_failure(
+                        source_world,
+                        resources,
+                        completed,
+                        children,
+                        &error,
+                    );
                     return Err(error);
                 }
             };
             let adoption = match child.into_world_node_adoption(identity, completed.clone()) {
                 Ok(adoption) => adoption,
                 Err(error) => {
-                    retain_remaining_install_failure(source_world, resources, completed, children);
+                    retain_remaining_install_failure(
+                        source_world,
+                        resources,
+                        completed,
+                        children,
+                        &error,
+                    );
                     return Err(error);
                 }
             };
@@ -847,7 +875,13 @@ where
         ) {
             Ok(lifecycle) => lifecycle,
             Err(error) => {
-                retain_remaining_install_failure(source_world, resources, completed, children);
+                retain_remaining_install_failure(
+                    source_world,
+                    resources,
+                    completed,
+                    children,
+                    &error,
+                );
                 return Err(error);
             }
         };
@@ -891,6 +925,7 @@ fn retain_complete_install_failure<G>(
 where
     G: QemuAttemptProcessResourceGuard + Send + 'static,
 {
+    note_install_quarantine(&error);
     complete.quarantine();
     resources.quarantine();
     let reconciliations = LinuxQemuHotForkWorldReconciliationSet::new(BTreeSet::new());
@@ -908,9 +943,11 @@ fn retain_remaining_install_failure<G>(
     mut resources: QemuHotForkWorldResourceOwner<G>,
     mut reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
     children: BTreeMap<NodeId, ProductionWorldChild<G>>,
+    error: &LifecycleApiError,
 ) where
     G: QemuAttemptProcessResourceGuard + Send + 'static,
 {
+    note_install_quarantine(error);
     for (_node, child) in children {
         child.quarantine_and_retain();
     }
@@ -927,43 +964,5 @@ fn retain_remaining_install_failure<G>(
 fn lifecycle_error(message: impl Into<String>) -> LifecycleApiError {
     LifecycleApiError::LoopFactory {
         message: message.into(),
-    }
-}
-
-/// Writes a child world's measured private dirty bytes against its budget.
-///
-/// The budget is a prediction made when the source was measured, so every
-/// child checks it before shutdown. Exceeding it, or failing to measure,
-/// writes a row of its own; neither stops the child.
-fn note_child_memory(
-    measured: Result<crucible_api::SourceMemoryRegions, crucible_api::LifecycleApiError>,
-    budget: Option<u64>,
-) {
-    use std::io::Write as _;
-
-    let mut stderr = std::io::stderr().lock();
-    let regions = match measured {
-        Ok(regions) => regions,
-        Err(error) => {
-            let _ = writeln!(
-                stderr,
-                "CRUCIBLE-HOT-FORK-CHILD-MEMORY-V1 decision=unmeasured budget={budget:?} error=\"{error}\""
-            );
-            return;
-        }
-    };
-    let dirty = regions.private_dirty_bytes;
-    let _ = writeln!(
-        stderr,
-        "CRUCIBLE-HOT-FORK-CHILD-MEMORY-V1 private_dirty_bytes={dirty} budget={budget:?} regions={regions:?}"
-    );
-    if let Some(budget) = budget
-        && dirty > budget
-    {
-        let _ = writeln!(
-            stderr,
-            "CRUCIBLE-HOT-FORK-CHILD-OVER-BUDGET-V1 private_dirty_bytes={dirty} budget={budget} excess={}",
-            dirty - budget
-        );
     }
 }

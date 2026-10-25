@@ -31,6 +31,8 @@ enum CampaignChoiceTestError {
     Runtime(#[from] FaultRuntimeError),
     #[error(transparent)]
     Scheduler(#[from] SchedulerError),
+    #[error(transparent)]
+    ProductionRuntime(#[from] crucible_qemu::ProductionFaultRuntimeError),
     #[error("{0}")]
     Missing(&'static str),
 }
@@ -371,5 +373,115 @@ fn campaign_effect_trace_keeps_its_own_fingerprint_and_replays_canonically()
         .flat_map(|item| item.records)
         .collect::<Vec<_>>();
     assert_eq!(campaign_records, vec![campaign]);
+    Ok(())
+}
+
+/// Builds an adapter whose launch selected `plan`, as an attempt world does.
+fn adapter_selecting(
+    plan: &NetworkFaultCampaignReplayPlan,
+) -> Result<ProductionFaultNetworkInterceptor, CampaignChoiceTestError> {
+    let nodes = QemuNodeSet::new();
+    let runtime = ProductionFaultRuntime::new(
+        crucible::model::FaultSignalPlan::empty(),
+        None,
+        SignalBoundarySnapshot::default(),
+        plan.target().def.id(),
+        super::super::fault_implementation::test_host_manifests(),
+        &nodes,
+    )?;
+    let mut adapter = ProductionFaultNetworkInterceptor::new(runtime, topology()?, Vec::new());
+    adapter.install_campaign_replay(Some(plan.clone()), None)?;
+    Ok(adapter)
+}
+
+#[test]
+fn a_source_rebind_drops_only_branches_ahead_of_its_boundary() -> Result<(), CampaignChoiceTestError>
+{
+    let scenario = scenario()?;
+    let (selected, branches) = selected_loss(&scenario, "primary")?;
+    let parent = branches[0].parent().clone();
+
+    // Parked at the branch parent, the selection is still ahead: the resume
+    // plan names nothing, and a child may extend it at the frontier again.
+    let mut adapter = adapter_selecting(&selected)?;
+    let original = adapter.rebind_campaign_replay(None, &parent)?;
+    assert_eq!(original, Some(selected.clone()));
+    assert_eq!(adapter.campaign_replay_identity(), None);
+    assert!(
+        validate_campaign_replay_restore(
+            adapter.campaign_replay_identity(),
+            Some(&selected),
+            Some(branches[0].at()),
+        )
+        .is_ok()
+    );
+
+    // Restoring the returned plan undoes the rebind exactly.
+    adapter.restore_campaign_replay(original);
+    assert_eq!(
+        adapter.campaign_replay_identity(),
+        Some(selected.identity())
+    );
+    Ok(())
+}
+
+#[test]
+fn a_source_rebind_cannot_drop_a_branch_the_world_committed() -> Result<(), CampaignChoiceTestError>
+{
+    let scenario = scenario()?;
+    let (selected, branches) = selected_loss(&scenario, "primary")?;
+    let committed_boundary = branches[0].selected().clone();
+
+    let mut adapter = adapter_selecting(&selected)?;
+    assert!(
+        adapter
+            .rebind_campaign_replay(None, &committed_boundary)
+            .is_err(),
+        "a committed branch must stay in the resume plan"
+    );
+    assert_eq!(
+        adapter.campaign_replay_identity(),
+        Some(selected.identity()),
+        "a refused rebind leaves the selection unchanged"
+    );
+
+    // Keeping exactly the committed branch is the resume plan at that boundary.
+    adapter.rebind_campaign_replay(Some(selected.clone()), &committed_boundary)?;
+    assert_eq!(
+        adapter.campaign_replay_identity(),
+        Some(selected.identity())
+    );
+    Ok(())
+}
+
+#[test]
+fn a_source_rebind_cannot_keep_a_branch_still_ahead_or_drop_a_released_marker()
+-> Result<(), CampaignChoiceTestError> {
+    let scenario = scenario()?;
+    let (selected, branches) = selected_loss(&scenario, "primary")?;
+    let parent = branches[0].parent().clone();
+
+    let mut adapter = adapter_selecting(&selected)?;
+    assert!(
+        adapter
+            .rebind_campaign_replay(Some(selected.clone()), &parent)
+            .is_err(),
+        "a resume plan names only branches the source has crossed"
+    );
+
+    adapter.record_campaign_marker_release(
+        &NodeId {
+            name: String::from("router-a"),
+        },
+        "fault.transport.ready",
+        Icount { retired: 10 },
+        Icount { retired: 11 },
+        Icount { retired: 11 },
+        branches[0].selected().id(),
+    )?;
+    assert!(
+        adapter.rebind_campaign_replay(None, &parent).is_err(),
+        "a released marker proves the world crossed its branch"
+    );
     Ok(())
 }

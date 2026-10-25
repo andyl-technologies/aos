@@ -22,8 +22,7 @@ mod route;
 pub(super) use campaign_log::CampaignRecordLog;
 use campaign_log::{CampaignRecordLogPosition, CampaignRecordReplay};
 use campaign_state::CampaignMarkerReleaseRecord;
-#[cfg(test)]
-use campaign_state::validate_campaign_replay_restore;
+pub(super) use campaign_state::validate_campaign_replay_restore;
 pub(super) use campaign_trace::{
     campaign_network_binding_name, split_campaign_network_trace,
     trace_with_campaign_network_records,

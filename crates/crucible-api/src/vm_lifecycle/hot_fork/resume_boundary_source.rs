@@ -17,17 +17,20 @@ impl ProductionVmLifecycleLoop {
     /// the current launch basis (executables, guest assets, recovery root,
     /// scheduler bounds, and shared stores) and schedule no branch boundary.
     /// A `config` that names no trace segment store adopts the one this world
-    /// launched with, because its runtime keeps sealing segments there.
+    /// launched with, because its runtime keeps sealing segments there. The
+    /// network adapter's selected campaign plan is rebound to the one `config`
+    /// installs, which may drop only branches this world has not reached.
     /// The launcher's attempt bindings are released before preparation, so a
     /// later attempt cancellation cannot reach the retained processes.
     ///
     /// # Errors
     ///
     /// Returns [`ProductionVmHotForkSourceWorldPreparationFailure`] retaining
-    /// the lifecycle when the configuration changes the launch basis or names
-    /// a branch boundary, when attempt bindings cannot be released, or when
-    /// ordinary source preparation fails. The original configuration is
-    /// restored on every failure that returns the lifecycle.
+    /// the lifecycle when the configuration changes the launch basis, names
+    /// a branch boundary, or drops a network fault branch this world already
+    /// crossed, when attempt bindings cannot be released, or when ordinary
+    /// source preparation fails. The original configuration and network plan
+    /// are restored on every failure that returns the lifecycle.
     pub fn prepare_hot_fork_source_world_with_config(
         mut self,
         config: ProductionVmLifecycleConfig,
@@ -60,7 +63,33 @@ impl ProductionVmLifecycleLoop {
                 Vec::new(),
             ));
         }
+        let network_replay = match resume_network_replay(&config) {
+            Ok(replay) => replay,
+            Err(error) => {
+                return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
+                    self,
+                    format!("admit resume network fault replay: {error}"),
+                    Vec::new(),
+                ));
+            }
+        };
+        // Children restore the checkpoint taken during preparation, so the
+        // network adapter must name the resume plan before anything is sealed.
+        let boundary = self.inner.loop_impl().configuration().clone();
+        let (_, network) = self.inner.backend_and_network_output_interceptor_mut();
+        let original_network_replay =
+            match network.rebind_campaign_replay(network_replay, &boundary) {
+                Ok(original) => original,
+                Err(error) => {
+                    return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
+                        self,
+                        format!("rebind network fault replay: {error}"),
+                        Vec::new(),
+                    ));
+                }
+            };
         if let Err(error) = self.node_launcher.release_execution_bindings() {
+            self.restore_network_replay(original_network_replay);
             return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
                 self,
                 format!("release attempt bindings: {error}"),
@@ -72,10 +101,35 @@ impl ProductionVmLifecycleLoop {
         self.prepare_hot_fork_source_world().map_err(|mut failure| {
             if let Some(lifecycle) = failure.lifecycle.as_mut() {
                 lifecycle.config = original;
+                lifecycle.restore_network_replay(original_network_replay);
             }
             failure
         })
     }
+
+    fn restore_network_replay(&mut self, replay: Option<crucible::NetworkFaultCampaignReplayPlan>) {
+        let (_, network) = self.inner.backend_and_network_output_interceptor_mut();
+        network.restore_campaign_replay(replay);
+    }
+}
+
+/// Returns the network fault plan an exact resume with `config` installs.
+fn resume_network_replay(
+    config: &ProductionVmLifecycleConfig,
+) -> Result<Option<crucible::NetworkFaultCampaignReplayPlan>, crucible::NetworkFaultSelectableError>
+{
+    let Some(replay) = config
+        .signal_fault_replay
+        .as_ref()
+        .filter(|replay| !replay.network_branches().is_empty())
+    else {
+        return Ok(None);
+    };
+    crucible::NetworkFaultCampaignReplayPlan::new(
+        replay.target().clone(),
+        replay.network_branches().to_vec(),
+    )
+    .map(Some)
 }
 
 #[cfg(test)]

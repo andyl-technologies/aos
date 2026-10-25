@@ -14,7 +14,11 @@ pub(super) struct CampaignMarkerReleaseRecord {
     pub(super) selected: ContentHash,
 }
 
-pub(super) fn validate_campaign_replay_restore(
+/// Checks that a restored plan equals the checkpointed selection or extends it.
+///
+/// An extension appends exactly one branch, anchored at the restored frontier,
+/// to the plan the checkpoint authenticated.
+pub(in crate::vm_lifecycle) fn validate_campaign_replay_restore(
     checkpoint_identity: Option<ContentHash>,
     replay: Option<&crucible::NetworkFaultCampaignReplayPlan>,
     restore_frontier: Option<VirtualTime>,
@@ -117,6 +121,90 @@ impl ProductionFaultNetworkInterceptor {
         self.campaign_replay = replay;
         self.campaign_replay_identity = selected_identity;
         Ok(())
+    }
+
+    /// Rebinds the selected campaign plan of a world paused at `boundary`.
+    ///
+    /// A world launched for one attempt carries that attempt's whole plan,
+    /// including branches it has not reached yet. Before the world becomes a
+    /// source, its plan is replaced by the one an exact resume at `boundary`
+    /// would install, so a checkpoint names only branches the world has
+    /// already committed. The replacement must keep exactly the committed
+    /// branches and may drop only branches still ahead of `boundary`; every
+    /// recorded marker release must still name a kept branch. Returns the
+    /// previous plan so a failed preparation can restore it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, leaving the plan unchanged, when `replay` differs
+    /// from the committed branches or a release names a dropped branch.
+    pub(in crate::vm_lifecycle) fn rebind_campaign_replay(
+        &mut self,
+        replay: Option<crucible::NetworkFaultCampaignReplayPlan>,
+        boundary: &Configuration,
+    ) -> Result<Option<crucible::NetworkFaultCampaignReplayPlan>, SchedulerError> {
+        let history = boundary.schedule.decision_history();
+        let committed = self
+            .campaign_replay
+            .as_ref()
+            .map_or(&[][..], crucible::NetworkFaultCampaignReplayPlan::branches)
+            .iter()
+            .filter(|branch| {
+                let index = branch.parent().schedule.len();
+                index < boundary.schedule.len() && history.get(index) == Some(branch.decision())
+            })
+            .collect::<Vec<_>>();
+        let kept = replay
+            .as_ref()
+            .map_or(&[][..], crucible::NetworkFaultCampaignReplayPlan::branches);
+        if !kept.iter().eq(committed.iter().copied()) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "rebound network fault replay differs from the branches committed at the boundary",
+                ),
+            });
+        }
+        // A plan branch at or before the boundary whose decision is absent
+        // was neither committed nor still ahead; the world left that plan.
+        let abandoned = self.campaign_replay.as_ref().is_some_and(|plan| {
+            plan.branches().iter().any(|branch| {
+                let index = branch.parent().schedule.len();
+                index < boundary.schedule.len() && history.get(index) != Some(branch.decision())
+            })
+        });
+        let released_dropped = self.campaign_marker_releases.iter().any(|release| {
+            !kept
+                .iter()
+                .any(|branch| branch.selected().id() == release.selected)
+        });
+        if abandoned || released_dropped {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "rebound network fault replay drops a branch the world already crossed",
+                ),
+            });
+        }
+
+        self.campaign_replay_identity = replay
+            .as_ref()
+            .map(crucible::NetworkFaultCampaignReplayPlan::identity);
+        Ok(std::mem::replace(&mut self.campaign_replay, replay))
+    }
+
+    /// Restores a plan returned by [`Self::rebind_campaign_replay`].
+    pub(in crate::vm_lifecycle) fn restore_campaign_replay(
+        &mut self,
+        replay: Option<crucible::NetworkFaultCampaignReplayPlan>,
+    ) {
+        self.campaign_replay_identity = replay
+            .as_ref()
+            .map(crucible::NetworkFaultCampaignReplayPlan::identity);
+        self.campaign_replay = replay;
+    }
+
+    /// Returns the identity of the selected campaign plan a checkpoint records.
+    pub(in crate::vm_lifecycle) const fn campaign_replay_identity(&self) -> Option<ContentHash> {
+        self.campaign_replay_identity
     }
 
     pub(in crate::vm_lifecycle) fn campaign_marker_release_committed(

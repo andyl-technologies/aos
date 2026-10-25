@@ -950,6 +950,22 @@ where
             }
         };
         drop(source);
+        // The attempt's network branches must restore at the source boundary;
+        // a refusal here returns the source before any child exists.
+        let continuation =
+            match continuation.admit_attempt_fault_replay(input.signal_fault_replay()) {
+                Ok(Some(replay)) => continuation.with_attempt_fault_replay(replay),
+                Ok(None) => continuation,
+                Err(reason) => {
+                    drop(source_world);
+                    self.sources.restore(source_lease);
+                    note_hot_fork_decline(crate::HotForkRefusal::with_detail(
+                        "attempt-network-replay-mismatch",
+                        reason,
+                    ));
+                    return Ok(QemuHotForkWorldLifecycleStart::Declined);
+                }
+            };
         let mut guard =
             match self
                 .resources

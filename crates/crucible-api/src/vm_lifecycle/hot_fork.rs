@@ -611,6 +611,11 @@ pub struct ProductionVmHotForkWorldContinuation {
     failed_host_io: BTreeMap<NodeId, ProductionFailedNodeState>,
     nodes: Vec<ProductionVmHotForkNodeBoundary>,
     io_nodes: Vec<ProductionVmHotForkIoNodeBoundary>,
+    // The network adapter's selected campaign plan and committed frontier
+    // inside `fault_checkpoint`, kept so a child's plan is admitted before
+    // any child process exists.
+    network_replay_identity: Option<ContentHash>,
+    network_committed_frontier: VirtualTime,
 }
 
 impl ProductionVmHotForkWorldContinuation {
@@ -645,6 +650,8 @@ impl ProductionVmHotForkWorldContinuation {
             failed_host_io: self.failed_host_io.clone(),
             nodes: self.nodes.clone(),
             io_nodes: self.io_nodes.clone(),
+            network_replay_identity: self.network_replay_identity,
+            network_committed_frontier: self.network_committed_frontier,
         })
     }
 
@@ -652,6 +659,58 @@ impl ProductionVmHotForkWorldContinuation {
     #[must_use]
     pub const fn configuration(&self) -> &Configuration {
         &self.configuration
+    }
+
+    /// Admits one child attempt's network fault branches at this boundary.
+    ///
+    /// A source names only the network fault branches it has committed. A
+    /// child whose attempt selects a further branch at the source boundary
+    /// crosses it at runtime, and its network adapter must hold that branch
+    /// to release the selected markers and resolve the outage. Returns the
+    /// network-only plan to pass to [`Self::with_attempt_fault_replay`], or
+    /// `None` when the attempt selects no network branch and the child keeps
+    /// the source's own selection. Signal-fault branches are left out: those
+    /// the source crossed are already part of its checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal when the network branches do not form a valid plan
+    /// for the attempt's target, or when the plan neither equals the
+    /// checkpointed selection nor extends it by one branch at the committed
+    /// network frontier.
+    pub fn admit_attempt_fault_replay(
+        &self,
+        replay: &SignalFaultCampaignReplayPlan,
+    ) -> Result<Option<SignalFaultCampaignReplayPlan>, SchedulerError> {
+        if replay.network_branches().is_empty() {
+            return Ok(None);
+        }
+        let invalid = |error: crucible::NetworkFaultSelectableError| {
+            hot_fork_boundary_error(format!("attempt network fault replay is invalid: {error}"))
+        };
+        let network = crucible::NetworkFaultCampaignReplayPlan::new(
+            replay.target().clone(),
+            replay.network_branches().to_vec(),
+        )
+        .map_err(invalid)?;
+        network_faults::validate_campaign_replay_restore(
+            self.network_replay_identity,
+            Some(&network),
+            Some(self.network_committed_frontier),
+        )?;
+        SignalFaultCampaignReplayPlan::empty(replay.target().clone())
+            .with_network_branches(replay.network_branches().to_vec())
+            .map(Some)
+            .map_err(invalid)
+    }
+
+    /// Returns this continuation carrying a plan from [`Self::admit_attempt_fault_replay`].
+    ///
+    /// Every child forked from the continuation installs the plan in place of
+    /// the source's own selection; construction validates it again.
+    pub fn with_attempt_fault_replay(mut self, replay: SignalFaultCampaignReplayPlan) -> Self {
+        self.config = self.config.with_signal_fault_campaign_replay(replay);
+        self
     }
 
     /// Returns the canonical scheduler continuation at the fork boundary.
@@ -1486,6 +1545,10 @@ impl ProductionVmLifecycleLoop {
         let configuration = self.inner.loop_impl().configuration().clone();
         let checkpoint_virtual_time = self.inner.loop_impl().frontier();
         let network_committed_frontier = self.inner.committed_frontier();
+        let network_replay_identity = self
+            .inner
+            .network_output_interceptor()
+            .campaign_replay_identity();
         let fault_checkpoint = {
             let (scheduler, backend, interceptor, pending_outputs) =
                 self.inner.network_transaction_parts_mut();
@@ -1569,6 +1632,8 @@ impl ProductionVmLifecycleLoop {
             failed_host_io: self.failed_host_io.clone(),
             nodes: before,
             io_nodes,
+            network_replay_identity,
+            network_committed_frontier,
         };
         continuation.validate_complete_internal_state()?;
         Ok(continuation)
