@@ -7,6 +7,7 @@ mod admission;
 mod backend_shutdown;
 mod campaign_park;
 mod cap_boundary;
+mod custody_release;
 mod device_group;
 mod dispatch_boundary;
 mod fixed_input;
@@ -493,6 +494,7 @@ where
                 preselection: &mut self.preselection,
                 pause_before_live_network_choice: self.pause_before_live_network_choice,
                 network_release_at: outcome.frontier,
+                network_cut: None,
             },
             outcome,
             evidence,

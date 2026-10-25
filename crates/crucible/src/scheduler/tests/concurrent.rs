@@ -90,6 +90,15 @@ impl SimulationBackend for TestConcurrentBackend {
         self.inner.apply(effect, at)
     }
 
+    fn apply_to_node(
+        &mut self,
+        node: &NodeId,
+        effect: &BackendEffect,
+        at: VirtualTime,
+    ) -> Result<(), BackendError> {
+        self.inner.apply_to_node(node, effect, at)
+    }
+
     fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
         self.inner.snapshot()
     }

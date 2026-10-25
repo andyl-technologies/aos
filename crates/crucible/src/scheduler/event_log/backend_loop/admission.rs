@@ -19,6 +19,42 @@ pub(super) struct BackendOutcomeAdmission<'a, L, B, I> {
     pub(super) preselection: &'a mut Option<BackendPendingPreselection>,
     pub(super) pause_before_live_network_choice: bool,
     pub(super) network_release_at: VirtualTime,
+    /// The cut a custody release publishes at, which the interceptor
+    /// evaluates in place of the committed frontier. Absent for a RUN's own
+    /// admission.
+    pub(super) network_cut: Option<VirtualTime>,
+}
+
+/// Returns when one frame may leave the pending queue: its emission time, or
+/// a later adapter release coordinate while the frame is in custody.
+pub(super) fn pending_network_release_time<L: QuantumLoop>(
+    loop_impl: &L,
+    frozen_network_output_times: &BTreeMap<(NodeId, u64), VirtualTime>,
+    output: &BackendNetworkOutput,
+) -> Result<VirtualTime, SchedulerError> {
+    let at = pending_network_output_time(loop_impl, frozen_network_output_times, output)?;
+    let resume = VirtualTime {
+        ticks: output.fault_continuation.cursor().not_before_ticks(),
+    };
+
+    Ok(at.max(resume))
+}
+
+/// Returns the earliest pending frame and the time it may leave the queue.
+pub(super) fn earliest_pending_network_release<'a, L: QuantumLoop>(
+    loop_impl: &L,
+    frozen_network_output_times: &BTreeMap<(NodeId, u64), VirtualTime>,
+    pending_network_outputs: &'a [BackendNetworkOutput],
+) -> Result<Option<(VirtualTime, &'a BackendNetworkOutput)>, SchedulerError> {
+    let mut earliest: Option<(VirtualTime, &BackendNetworkOutput)> = None;
+    for output in pending_network_outputs {
+        let at = pending_network_release_time(loop_impl, frozen_network_output_times, output)?;
+        if earliest.is_none_or(|(current, _)| at < current) {
+            earliest = Some((at, output));
+        }
+    }
+
+    Ok(earliest)
 }
 
 pub(super) fn complete_backend_outcome_on<L, B, I>(
@@ -47,7 +83,9 @@ where
         preselection,
         pause_before_live_network_choice,
         network_release_at,
+        network_cut,
     } = admission;
+    let interceptor_frontier = network_cut.unwrap_or(outcome.frontier);
 
     for event in &outcome.resolved_events {
         if staged_inputs.contains(&event.key) {
@@ -74,12 +112,8 @@ where
     let mut timed_network_outputs = std::mem::take(pending_network_outputs)
         .into_iter()
         .map(|output| {
-            pending_network_output_time(loop_impl, frozen_network_output_times, &output).map(|at| {
-                let resume = VirtualTime {
-                    ticks: output.fault_continuation.cursor().not_before_ticks(),
-                };
-                (at.max(resume), output)
-            })
+            pending_network_release_time(loop_impl, frozen_network_output_times, &output)
+                .map(|at| (at, output))
         })
         .collect::<Result<Vec<_>, _>>()?;
     timed_network_outputs.sort_by(|(left_at, left), (right_at, right)| {
@@ -141,7 +175,7 @@ where
         let appends = network_output_interceptor.intercept_network_outputs(
             loop_impl,
             backend,
-            outcome.frontier,
+            interceptor_frontier,
             pending_network_outputs,
             &mut network_outputs,
         )?;

@@ -10,6 +10,9 @@ mod topology;
 #[path = "network_output/preemption.rs"]
 mod preemption;
 
+#[path = "network_output/delayed_release.rs"]
+mod delayed_release;
+
 // The peer's RUN ceiling stays before either TX's earliest possible delivery.
 const NETWORK_PREFIX_TEST_MINIMUM_LATENCY: u64 = 64;
 

@@ -1,6 +1,9 @@
 //! Causal host RUN publication and held selectable continuations.
 
 use super::cap_boundary::resolve_cap_boundary;
+use super::custody_release::{
+    HeldCustodyRelease, carry_custody_release, next_custody_release, release_held_custody,
+};
 use super::dispatch_boundary::resolve_dispatch_boundary;
 use super::held_boundary::{HeldBoundaryRun, hold_run_result};
 use super::held_catchup::{CatchupKind, execute_host_runs, held_peer_evidence, require_caught_up};
@@ -349,6 +352,10 @@ where
         let mut staged_preselection = None;
         let mut staged_frontier = self.committed_frontier;
         let mut published = Vec::with_capacity(held_limit);
+        // Custody releases publish ahead of the next RUN outcome, which
+        // carries them so every published outcome still names its RUN.
+        let mut custody_released: Option<QuantumOutcome> = None;
+        let mut custody_released_through: Option<VirtualTime> = None;
         while !held_runs.is_empty() || !boundary_runs.is_empty() {
             super::held_lineage::prepare_canonical_extension(
                 &mut lineage,
@@ -400,9 +407,21 @@ where
                 .map_err(|error| self.poison_continuation(error))?
                 .into_iter()
                 .min();
-            let Some((next_time, next_node)) = next else {
+            let Some((run_time, next_node)) = next else {
                 break;
             };
+
+            // A frame leaving adapter custody publishes as its own cut at
+            // its release time, ahead of any RUN that settles there.
+            let custody_release = next_custody_release(
+                &staged_scheduler,
+                &staged_frozen_network_output_times,
+                &staged_pending_network_outputs,
+                run_time,
+                custody_released_through,
+            )
+            .map_err(|error| self.poison_continuation(error))?;
+            let next_time = custody_release.as_ref().map_or(run_time, |(at, _)| *at);
 
             // Every unheld live node behind `next_time` catches up before the
             // held RUN publishes there. The catch-up RUNs are independent:
@@ -506,6 +525,71 @@ where
             // order only if no other node can still emit before it.
             require_caught_up(&staged_scheduler, next_time, &held_runs, &boundary_runs)
                 .map_err(|error| self.poison_continuation(error))?;
+
+            if let Some((_, source)) = custody_release {
+                let before_release = HeldCommitBefore::capture(&staged_scheduler);
+                let retain_extension =
+                    !boundary_runs.is_empty() || lineage.context_is_current(&staged_scheduler);
+                if retain_extension {
+                    lineage
+                        .ensure_extension_room()
+                        .map_err(|error| self.poison_continuation(error))?;
+                }
+                let released = release_held_custody(
+                    HeldCustodyRelease {
+                        scheduler: &mut staged_scheduler,
+                        backend: &mut self.backend,
+                        network_output_interceptor: &mut staged_interceptor,
+                        pending_network_outputs: &mut staged_pending_network_outputs,
+                        frozen_network_output_times: &mut staged_frozen_network_output_times,
+                        pending_observations: &mut staged_pending_observations,
+                        preselection: &mut staged_preselection,
+                        pause_before_live_network_choice: self.pause_before_live_network_choice,
+                        frontier: staged_frontier,
+                    },
+                    next_time,
+                )
+                .map_err(|error| self.poison_continuation(error))?;
+                custody_released_through = Some(next_time);
+
+                // A release moves no node counter; the extension records only
+                // the new configuration and log offset.
+                if retain_extension {
+                    lineage
+                        .extend_commit_from(before_release, &staged_scheduler, &source)
+                        .map_err(|error| self.poison_continuation(error))?;
+                }
+                for held in held_runs.values_mut() {
+                    held.run.canonical_lineage = Some(lineage.clone());
+                }
+                for held in boundary_runs.values_mut() {
+                    held.run.canonical_lineage = Some(lineage.clone());
+                }
+                for run in original_runs.values_mut() {
+                    run.canonical_lineage = Some(lineage.clone());
+                }
+
+                let released = carry_custody_release(custody_released.take(), released);
+                if self.parallel_choice_free_boot
+                    && (staged_preselection.is_some()
+                        || !released.discovered_choices.is_empty()
+                        || released.decisions.iter().any(|decision| {
+                            matches!(decision, Decision::Selection(_) | Decision::Override(_))
+                        }))
+                {
+                    return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "choice-free parallel boot reached a selectable before the serial boundary",
+                        ),
+                    }));
+                }
+                if staged_preselection.is_some() {
+                    published.push(released);
+                    break;
+                }
+                custody_released = Some(released);
+                continue;
+            }
 
             if let Some(mut held_boundary) = boundary_runs.remove(&next_node) {
                 lineage
@@ -697,12 +781,17 @@ where
                     preselection: &mut staged_preselection,
                     pause_before_live_network_choice: self.pause_before_live_network_choice,
                     network_release_at: release_at,
+                    network_cut: None,
                 },
                 outcome,
                 boundary,
             );
             match completed {
                 Ok(outcome) => {
+                    let outcome = match custody_released.take() {
+                        Some(released) => carry_custody_release(Some(released), outcome),
+                        None => outcome,
+                    };
                     if retain_extension {
                         lineage
                             .extend_commit_from(before_commit, &staged_scheduler, &node)
@@ -756,6 +845,10 @@ where
                 }
                 Err(error) => return Err(self.poison_continuation(error)),
             }
+        }
+
+        if let Some(released) = custody_released {
+            published.push(released);
         }
 
         // Held evidence stays with the continuation, never with the scheduler.
@@ -830,6 +923,7 @@ where
                 preselection: &mut staged_preselection,
                 pause_before_live_network_choice: self.pause_before_live_network_choice,
                 network_release_at: frontier,
+                network_cut: None,
             },
             only,
             BackendBoundaryEvidence {
