@@ -14,6 +14,7 @@ nix-build -A checks.build.bazel.qemu-gpl.parity --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.developer-build --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.format --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.installed-inspection --no-out-link
+nix-build -A checks.build.bazel.qemu-gpl.runtime-closure --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.gateway-tests.all --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.plugin-tests.all --no-out-link
 ```
@@ -50,9 +51,18 @@ properties and gateway rejection behavior with Cargo, and resolves their native
 libraries with the AOS loader. It verifies the symlink, license bytes, and build
 metadata, and requires the metadata installer to reject a different QEMU
 package, shared-memory version, or embedded build identity before publishing
-metadata. This qualifies the install layout and runtime resolution; complete
-closure equivalence and the suite's matching corresponding-source retention
-policy still require their separate release gates.
+metadata. This qualifies the install layout and runtime resolution.
+
+`runtime-closure` compares each complete installed Bazel package closure with
+its ordinary Cargo-built package. It removes only that package's own root and
+requires every remaining Nix store path to match, including non-ELF references.
+The [current default-toolchain qualification](../tests/evidence/master-qemu-gpl-qualification.json)
+retains the exact dependency lists: 54 paths for the plugin and one for the
+gateway. The aggregate `all` check requires this comparison. During coexistence,
+the `cargoInstalled` parameter must select independent legacy packages if the
+production selector changes; comparing a package with itself is not migration
+evidence. Matching corresponding-source retention remains a separate release
+requirement.
 
 The live white-box gate runs unchanged against `installed.plugin`:
 
@@ -114,5 +124,13 @@ oracle requests; the original plugin assertions remain in the GPL suite.
 Production consumers continue to use their existing builders. The ordinary
 Cargo gateway and plugin checks also launch the separately built helper.
 Apache engine or server libraries must not be linked into a GPL test target.
-The mandatory ABI, license-boundary, remaining live QEMU, complete closure, and
-release gates remain independent requirements before production migration.
+The current-toolchain report also retains the precise production graph,
+developer and format checks, all 36 gateway and 583 plugin cases, installed ELF
+inspection, live white-box results, negative license-boundary analysis, and the
+plugin ABI bundle. Production source selection may omit unselected test sources;
+explicit lifecycle-test source labels defer their existence checks until that
+test is analyzed. The conservative and precise production graphs both pass.
+
+The normative ABI/license gates, suite release/source retention, supported
+foreign-host execution, complete compiler/linker semantic equivalence, and
+repeated performance acceptance remain requirements before production migration.

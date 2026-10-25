@@ -2,6 +2,10 @@
 {
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/qemu-gpl-production-inventory.json,
+  cargoInstalled ? {
+    plugin = pkgs.crucible-qemu-plugin;
+    gateway = pkgs.crucible.passthru.debugGateway;
+  },
 }: let
   packages = {
     crucible-qemu-plugin = "crates/crucible/crucible-qemu-plugin";
@@ -82,6 +86,16 @@ in rec {
   };
   cargo = import ./_bazel-qemu-gpl-cargo.nix {inherit pkgs;};
   installed = import ./_bazel-qemu-gpl-installed.nix {inherit pkgs build;};
+  runtime-closure = import ./_bazel-runtime-closure-parity.nix {
+    inherit pkgs;
+    pname = "aos-bazel-qemu-gpl-runtime-closure-parity";
+    packages =
+      pkgs.lib.mapAttrs (name: package: {
+        bazel = package;
+        cargo = cargoInstalled.${name};
+      })
+      installed;
+  };
   live-whitebox = import ../crucible/phase2-qemu-live-whitebox-doorbell.nix {
     pkgs = pkgs // {crucible-qemu-plugin = installed.plugin;};
     inherit (pkgs) lib;
@@ -143,7 +157,7 @@ in rec {
   };
   all =
     pkgs.runCommand "aos-bazel-qemu-gpl-production-checks" {
-      buildDeps = [parity developer-build format installed-inspection gateway-tests.all plugin-tests.all];
+      buildDeps = [parity developer-build format installed-inspection runtime-closure gateway-tests.all plugin-tests.all];
     } ''
       mkdir -p "$out"
       printf 'PASS: production compiler artifacts and developer tools\n' > "$out/result"
