@@ -136,7 +136,22 @@ Recent committed startup fixes close narrower prerequisites:
   (`/nix/store/a5rg84477w4l0xd1zkvs67dz70p20871-aos-test-targets-0.1.0`).
   That combined candidate also contains temporary offline startup diagnostics;
   the target check compiles tests without running them. The enforcing Host
-  rerun remains pending, so this is not installed startup qualification.
+  rerun still terminates with SIGSEGV. Two self-signal denials precede the
+  failure; an ordinary selected-startup refusal currently drops the armed
+  assembly and invokes its abort guard. This does not establish the original
+  failure site or qualify startup. The installed candidate includes the
+  pending startup-policy dependencies listed below.
+
+  Selected refusal now exits while the armed assembly and its retained native
+  results remain resident. The abandonment guard still aborts; a subprocess
+  regression proves ordinary refusal exits with status 1. Capture boxing also
+  moves into a separate helper after the existing whole-capture payment. The
+  async observer's native release frame falls from about 2 MiB to 7 KiB;
+  constructor staging stays in the synchronous helper. No allocation or limit
+  is added. The final release build and incremental source verification pass.
+  Complete Rust targets and the enforcing installed retry are running. The
+  latter uses temporary fixed first-site exit statuses, excluded from the
+  production commit, and the pending policy dependencies remain explicit.
 
 - Host authentication may now traverse `sysctl_kernel_t` directories and read
   their files to obtain its fixed kernel boot UUID. The SELinux grant is
@@ -186,6 +201,16 @@ Recent committed startup fixes close narrower prerequisites:
   preparation exits unsuccessfully after the expected output-failure negative.
   Key preparation and the later recovery cases remain unqualified; this grant
   supplies no TPM initialization or method-46 admission authority.
+
+- Canonical offline unit readback also follows its inventory symlink. The
+  preparer may read `systemd_unit_t` symlinks; mutation and relabeling remain
+  forbidden. The exact committed-base candidate passes all 177 policy tests,
+  the complete merged-policy scan and linked negative fixtures
+  (`/nix/store/drs1wpvr19xfiar9yibc8f2bpcsczc4k-aos-selinux-production-policy-1`).
+  The preceding enforcing run reached Service admission and recorded the
+  selected unit's symlink-read denial. The installed retry is still running
+  with the separately listed pending startup-policy dependencies. This grant
+  does not qualify key preparation, TPM initialization or recovery.
 
 - The TPM transport fixture now durably publishes a distinct initial intent
   before its first encrypted Extend. Both fixed endpoints recover exactly once

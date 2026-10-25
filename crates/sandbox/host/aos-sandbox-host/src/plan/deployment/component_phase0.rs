@@ -75,6 +75,13 @@ struct Phase0CaptureV2 {
 }
 
 impl Phase0CaptureV2 {
+    // Keep construction staging out of the async observer's persistent frame.
+    // Its caller already paid the same whole-capture quote before this Box.
+    #[inline(never)]
+    fn new_boxed() -> Box<Self> {
+        Box::new(Self::new())
+    }
+
     fn new() -> Self {
         Self {
             facts: std::array::from_fn(|_| Phase0DeploymentFactsOriginalV2::new()),
@@ -443,7 +450,7 @@ impl HostComponentPhase0OriginalV2 {
                 return Err(closed());
             }
         };
-        self.capture = Some(Box::new(Phase0CaptureV2::new()));
+        self.capture = Some(Phase0CaptureV2::new_boxed());
         let Some(capture) = self.capture.as_mut() else {
             std::process::abort();
         };
