@@ -275,6 +275,21 @@ original-owner drop, unfunded refusal and funded reopen; scoped index stage
 logs also record elapsed time to locate its separate actor timeout. No retry,
 recovery fallback, actor deadline increase or task acceptance is introduced.
 
+Source inspection identifies a separate ownership cycle: native custody's
+registered manifest source can retain an encoded read observation, whose strong
+Running context retains that same custody. This can keep the exclusive cache
+state lock alive after executor shutdown. The observation now holds a weak
+context identity; the physical executor remains the strong owner. Native mutation
+still requires a live original serialized turn, exact context/session identity
+and the original body incarnation. Atomic rejection continues to cover retained
+read aliases without extending the owner's lifetime. No durable pin, reservation
+or backing obligation is removed by this change.
+
+Strict all-target Clippy passes in both all-feature and Tokio-only profiles.
+The existing configured cold-manifest/reopen and native encoded-fault scenarios
+must qualify this change. The observed EAGAIN is not yet attributed to this cycle,
+and no native success or task acceptance is claimed from source inspection.
+
 The structural-index requirements audit distinguishes the qualified component
 from the remaining open-path composition:
 

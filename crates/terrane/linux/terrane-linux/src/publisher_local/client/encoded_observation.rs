@@ -14,7 +14,7 @@ use crate::{
 use std::{
     io,
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
@@ -23,7 +23,11 @@ use terrane_sdk::host::cache::HostDomainLocation;
 /// Shares original publisher custody and permanent revocation across read aliases.
 pub(crate) struct EncodedReadObservation {
     session: Arc<Client<HostDomainLocation>>,
-    running: Arc<PublisherRunningContext>,
+    // Custody registers manifest sources that retain this observation. A strong
+    // context would point back to that same custody and keep its exclusive
+    // state lock alive after shutdown. The physical executor owns the live
+    // context; observations retain its identity without extending its lifetime.
+    running: Weak<PublisherRunningContext>,
     original: BodyIncarnationObservation<HostDomainLocation>,
     failed: AtomicU8,
     attempted: AtomicBool,
@@ -71,7 +75,7 @@ impl EncodedReadObservation {
         running: &Arc<PublisherRunningContext>,
         key: &BodyKey,
     ) -> io::Result<()> {
-        if !Arc::ptr_eq(running, &self.running)
+        if !self.running.ptr_eq(&Arc::downgrade(running))
             || !Arc::ptr_eq(running.publisher_session(), &self.session)
             || self.original.key() != key
         {
@@ -132,7 +136,7 @@ impl Client<HostDomainLocation> {
         }
         Ok(Arc::new(EncodedReadObservation {
             session: Arc::clone(self),
-            running,
+            running: Arc::downgrade(&running),
             original,
             failed: AtomicU8::new(0),
             attempted: AtomicBool::new(false),
