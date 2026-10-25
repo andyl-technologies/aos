@@ -29,9 +29,47 @@ def status(pid):
             ["Uid", "Gid", "NoNewPrivs", "Seccomp", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]}
 
 
+def cli_preflight(image, root):
+    """Requires syntax-only and refused CLI invocations to leave selection unchanged."""
+    cli = str(image / "bin/configured-sdk-cli")
+    config = root / "config.toml"
+    controls = list(root.glob(".terrane-control:*"))
+    require(len(controls) == 1, "expected one genuine native control directory")
+    commits = controls[0] / "publication/commits"
+
+    def selected_bytes():
+        return [(path.name, path.read_bytes()) for path in sorted(commits.iterdir())]
+
+    before = selected_bytes()
+    syntax = subprocess.run([cli, "--config", str(config), "--role", "gc", "--check-config"],
+                            capture_output=True, text=True, timeout=20)
+    require(syntax.returncode == 0
+            and syntax.stdout.startswith("configuration syntax valid for role gc;"),
+            "CLI syntax check failed or acknowledged collection")
+
+    refused = root / "unsupported.toml"
+    refused.write_text(config.read_text().replace(
+        "[tokens]", "[tokens]\nhost_token = 'file:" + str(root / "absent-token") + "'"))
+    composition = subprocess.run([cli, "--config", str(refused), "--role", "gc"],
+                                 capture_output=True, text=True, timeout=20)
+    require(composition.returncode != 0
+            and "unsupported local collector composition" in composition.stderr,
+            "CLI did not refuse the complete composition before token I/O")
+    mismatch = subprocess.run([cli, "--config", str(config), "--role", "serve"],
+                              capture_output=True, text=True, timeout=20)
+    require(mismatch.returncode != 0 and "differs from configured role gc" in mismatch.stderr,
+            "CLI accepted a role/configuration mismatch")
+    require(selected_bytes() == before, "CLI preflight changed native publication selection")
+    print("CONFIGURED_GC_CLI_PREFLIGHT syntax-only unsupported-composition role-mismatch "
+          "no-publication", flush=True)
+
+
 def main():
     """Requires full native deletion, recurring cycles and acknowledged shutdown."""
-    image, storage = map(Path, sys.argv[1:])
+    require(len(sys.argv) in [3, 4], "expected image, storage and optional launcher")
+    image, storage = map(Path, sys.argv[1:3])
+    launcher = sys.argv[3] if len(sys.argv) == 4 else "component"
+    require(launcher in ["component", "cli"], "unknown collector launcher")
     require(os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 840
             and os.getgroups() == [], "driver requires dedicated unprivileged guest identity")
     root = storage / "repository"
@@ -39,6 +77,8 @@ def main():
     subprocess.run([str(executable), "setup", str(root), "840"], check=True, timeout=60)
     for name in ["issuer.seed", "terminal.seed", "token.cbor"]:
         require(not (root / "authority" / name).exists(), "private authority survived setup")
+    if launcher == "cli":
+        cli_preflight(image, root)
     pack = (root / "expected.pack").read_bytes()
     require(len(pack) == 16, "invalid actual pack identity")
     prefix = root / "bucket/objects/pack" / pack.hex()[:2] / pack.hex()
@@ -56,19 +96,27 @@ def main():
             and all(time.time_ns() - row["modified_ns"] > 60_000_000_000 for row in versions),
             "actual native pack grace has not elapsed")
 
+    if launcher == "cli":
+        command = [str(image / "bin/configured-sdk-cli"), "--config",
+                   str(root / "config.toml"), "--role", "gc"]
+        ready_line = "collector ready: initial marking complete\n"
+    else:
+        command = [str(executable), "run", str(root), "840"]
+        ready_line = "CONFIGURED_GC_READY\n"
+
     stdout_path, stderr_path = storage / "collector.stdout", storage / "collector.stderr"
     started = time.monotonic()
     process = None
     try:
         with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
-            process = subprocess.Popen([str(executable), "run", str(root), "840"],
+            process = subprocess.Popen(command,
                                        stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
             ready = None
             deadline = started + 180
             last_observation = None
             while time.monotonic() < deadline:
                 require(process.poll() is None, "collector exited before durable collection")
-                if ready is None and "CONFIGURED_GC_READY\n" in stdout_path.read_text():
+                if ready is None and ready_line in stdout_path.read_text():
                     ready = time.monotonic()
                     actor_status = status(process.pid)
                 if ready is not None and all(not path.exists() for path in pair):
@@ -103,9 +151,11 @@ def main():
             stopped = time.monotonic()
         subprocess.run([str(executable), "verify", str(root), "840"], check=True, timeout=60)
         identity = json.loads((image / "share/identity.json").read_text())
-        artifact = identity["artifacts"]["gc"]
+        artifact_kind = "cli" if launcher == "cli" else "gc"
+        artifact = identity["artifacts"][artifact_kind]
         print("CONFIGURED_GC_PROOF " + json.dumps({
             "source": identity["source"], "image": str(image),
+            "launcher": launcher, "artifact_kind": artifact_kind,
             "actual_binary_sha256": artifact["binary_sha256"],
             "native_pair": versions, "actor_status": actor_status,
             "real_grace_seconds": time.monotonic() - age_started,

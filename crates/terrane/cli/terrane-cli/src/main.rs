@@ -3,8 +3,8 @@
 //! Arguments and file loading live here; configuration semantics and role
 //! behavior live in library crates (CRATE-16). [`local`] calls the T1
 //! repository SDK and registered checkout surface (CRATE-22 to CRATE-24).
-//! Linux configured SDK snapshots, native cache maintenance and publisher startup
-//! run through `terrane-linux`;
+//! Linux configured SDK snapshots, local collection, native cache maintenance
+//! and publisher startup run through `terrane-linux`;
 //! other configured runtimes remain unavailable. Syntax checking starts no runtime.
 //! Roles follow specifications 03 and 37, and TOML follows 11 and 26.
 
@@ -95,8 +95,25 @@ fn run(arguments: Arguments) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    #[cfg(target_os = "linux")]
+    if role == Role::Gc {
+        // The library checks the complete supported local configuration before
+        // installing confinement, creating its executor or reopening authority.
+        terrane_linux::configured_gc::run_service(&config, role, report_collector_ready)?;
+        return Ok(());
+    }
+
     role.run()?;
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn report_collector_ready() -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut output = std::io::stdout().lock();
+    writeln!(output, "collector ready: initial marking complete")?;
+    output.flush()
 }
 
 #[cfg(target_os = "linux")]

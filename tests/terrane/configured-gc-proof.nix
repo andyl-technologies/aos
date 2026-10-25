@@ -2,11 +2,16 @@
   pkgs,
   lib,
   image,
-}: let
+  launcher ? "component",
+}:
+assert builtins.elem launcher ["component" "cli"]; let
   testing = import ../../lib/testing {inherit pkgs lib;};
 in
   testing.mkVMTest {
-    name = "terrane-configured-gc-ext4";
+    name =
+      if launcher == "cli"
+      then "terrane-configured-gc-cli-ext4"
+      else "terrane-configured-gc-ext4";
     memory = 1024;
     timeout = 420;
     rootfsDeps = [image pkgs.terrane.src pkgs.python3 pkgs.coreutils pkgs.util-linux];
@@ -26,6 +31,6 @@ in
       setpriv --reuid=840 --regid=840 --clear-groups --bounding-set=-all \
         --inh-caps=-all --ambient-caps=-all --no-new-privs \
         python3 ${pkgs.terrane.src}/tests/terrane/configured_gc_vm.py \
-          ${image} "$fixture_root/storage"
+          ${image} "$fixture_root/storage" ${launcher}
     '';
   }

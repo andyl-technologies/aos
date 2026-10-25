@@ -474,6 +474,11 @@ in {
     inherit pkgs lib;
     image = configuredSdkProof.image;
   };
+  integration.native-configured-gc-cli = import ./configured-gc-proof.nix {
+    inherit pkgs lib;
+    image = configuredSdkProof.image;
+    launcher = "cli";
+  };
   integration.host-cache-image = hostCacheProof.image;
   integration.native-host-cache = hostCacheProof.native;
   integration.native-host-cache-all-features = hostCacheAllFeatureProof.native;

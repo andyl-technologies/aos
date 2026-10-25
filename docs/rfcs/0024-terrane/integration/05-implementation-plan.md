@@ -96,6 +96,28 @@ production worker, mount-broker or full RFC conformance. Pack compaction
 (GC-18 to GC-21) is explicitly deferred from T-GC-1 to T-GC-2 on B-jobs;
 that optional workline is outside this agreed trunk completion scope.
 
+The main Linux CLI now dispatches configured `gc` invocations to the checked
+local collector. It performs complete preflight before confinement, executor
+creation or repository/public-key reopening. The readiness line is emitted
+only after the first durable sweep checkpoint; SIGINT/SIGTERM retain the
+existing cancellation and joined-shutdown behavior. Unsupported host-tier,
+remote/composite, exposure and instance/workload-credential compositions still
+fail explicitly. This does not implement the existing host-local GC timer or
+change its service model, and does not establish full GC-role acceptance.
+
+The separate `native-configured-gc-cli` guest launches the actual retained
+Cargo CLI artifact with `--config ... --role gc`. The original component guest
+remains separate, with its original 180-second actor and 420-second whole-guest
+bounds. CLI syntax-only, unsupported-composition and role-mismatch invocations
+must preserve the genuine protected commit slots before collection starts.
+The same verifier requires actual full-D deletion, exact durable Done, multiple
+selected cycles, unchanged live signed content, empty capabilities,
+no-new-privileges, seccomp and acknowledged shutdown. The proof records the
+actual CLI artifact hash and launcher separately from fixture setup/verification.
+CLI strict all-target lint, controller AST, touched Nix formatting, PLAN-2 and
+diff checks pass; native and mandatory workspace qualification remain pending.
+No task acceptance changes.
+
 The corrected configured collector at `7f11415ca9` passes its native guest in
 597.840 seconds. Complete independent review verifies all 8,228 immutable
 source files, 5,478 crate inputs, all four actual retained Cargo artifacts and
