@@ -22,10 +22,7 @@ use rustix::{
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
-    os::{
-        fd::{AsFd, OwnedFd},
-        unix::fs::MetadataExt,
-    },
+    os::fd::{AsFd, OwnedFd},
     process::{Child, Command, Stdio},
     time::Duration,
 };
@@ -36,7 +33,7 @@ use terrane_format::{
 };
 use terrane_linux::{
     host_cache::{NativeExposureLease, NativeMetadataOwner},
-    structural_index::{Kind, MappedIndex},
+    structural_index::Kind,
     worker_channel::{
         self, ExposureContext, PendingBacking, RequestedBacking, WorkerChannel, WorkerClient,
         WorkerIdentity,
@@ -572,11 +569,12 @@ pub(super) fn child_network() -> Result<()> {
 }
 
 fn child_body(network: bool) -> Result<()> {
-    let (mut client, root, content) = child_context()?;
-    let index = reply(&mut client.request(RequestedBacking::Index)?)?.into_file();
-    let index_stat = index.metadata()?;
-    let seal = terrane_linux::verity::measure(&index)?;
-    let mapping = MappedIndex::open(index.into(), root, &seal, 65536)?;
+    let (mut client, _, content) = child_context()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let mapping = runtime.block_on(client.request_index_bounded(65536, Duration::from_secs(10)))?;
+    let index_stat = rustix::fs::fstat(&mapping)?;
     let prepared_size = match mapping.index().lookup(b"file").map(|entry| entry.kind()) {
         Some(Kind::File {
             content: selected,
@@ -612,10 +610,7 @@ fn child_body(network: bool) -> Result<()> {
     }
     let report = format!(
         "ORIGINAL {} {} {} {}\n",
-        index_stat.dev(),
-        index_stat.ino(),
-        file_stat.st_dev,
-        file_stat.st_ino
+        index_stat.st_dev, index_stat.st_ino, file_stat.st_dev, file_stat.st_ino
     );
     if network {
         File::from(io::stderr().as_fd().try_clone_to_owned()?).write_all(report.as_bytes())?;

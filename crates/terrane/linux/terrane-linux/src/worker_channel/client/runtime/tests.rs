@@ -32,9 +32,23 @@ fn assert_disconnected(client: &mut WorkerClient, peer: &std::os::fd::OwnedFd) {
 async fn invalid_limits_and_paths_refuse_before_send_without_faulting_connection() {
     let (mut client, peer) = connection();
 
+    for max_bytes in [0, isize::MAX as usize + 1] {
+        let error = client
+            .request_index_bounded(max_bytes, Duration::from_secs(1))
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
     for timeout in [Duration::ZERO, Duration::from_secs(301)] {
         let error = client
             .request_bounded(RequestedBacking::Index, timeout)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        let error = client
+            .request_index_bounded(65536, timeout)
             .await
             .err()
             .unwrap();

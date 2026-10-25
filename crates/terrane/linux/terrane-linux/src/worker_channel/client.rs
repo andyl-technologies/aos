@@ -228,8 +228,8 @@ impl PendingBacking<'_> {
         if !file.metadata()?.is_file() {
             return Err(invalid("backing descriptor is not a regular file"));
         }
-        crate::verity::measure(&file)?;
-        Ok(BackingReply { file })
+        let seal = crate::verity::measure(&file)?;
+        Ok(BackingReply { file, seal })
     }
 }
 
@@ -254,6 +254,7 @@ impl Drop for PendingBacking<'_> {
 /// index; the fs-verity digest is not the Terrane object digest.
 pub struct BackingReply {
     file: File,
+    seal: terrane_sdk::host::publication::VerityBinding,
 }
 
 impl BackingReply {

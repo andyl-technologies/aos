@@ -9,6 +9,54 @@ use std::{
 use tokio::{io::unix::AsyncFd, time::Instant};
 
 impl WorkerClient {
+    /// Requests and maps the structural index for this channel's exposure root.
+    ///
+    /// The private launcher context supplies the root; a caller cannot replace
+    /// it with a root read from the returned bytes. The authenticated reply's
+    /// original descriptor and measured seal pass directly to the read-only
+    /// mapping owner. Mapping or index validation failure disconnects the
+    /// channel and consumes the refused descriptor.
+    ///
+    /// The timeout bounds the complete channel exchange. Synchronous mapping
+    /// and validation additionally obey `max_bytes`; they do not fetch content.
+    /// Previously received backings retain their original custody on failure.
+    ///
+    /// # Errors
+    /// Refuses zero or unaddressable mapping bounds before sending. Preserves
+    /// transport and deadline failures from [`Self::request_bounded`]. Returns
+    /// `InvalidData` for a refused mapping, including malformed index bytes,
+    /// another root, an oversized file or a changed kernel measurement.
+    ///
+    /// # Panics
+    /// Panics without a Tokio I/O or time driver after validating the bounds.
+    pub async fn request_index_bounded(
+        &mut self,
+        max_bytes: usize,
+        timeout: Duration,
+    ) -> io::Result<crate::structural_index::MappedIndex> {
+        if max_bytes == 0 || max_bytes > isize::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "worker index requires an addressable positive mapping bound",
+            ));
+        }
+        let reply = self
+            .request_bounded(RequestedBacking::Index, timeout)
+            .await?;
+        match crate::structural_index::MappedIndex::open(
+            reply.file.into(),
+            self.context.root,
+            &reply.seal,
+            max_bytes,
+        ) {
+            Ok(mapping) => Ok(mapping),
+            Err(error) => {
+                self.abort();
+                Err(io::Error::new(io::ErrorKind::InvalidData, error))
+            }
+        }
+    }
+
     /// Requests and validates one backing descriptor under a whole-exchange deadline.
     ///
     /// Kernel readiness drives both send backpressure and reply receipt. Success

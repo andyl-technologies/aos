@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::ptr::NonNull;
 
 use rustix::fs::{FileType, OFlags, fcntl_getfl, fstat};
@@ -163,6 +163,12 @@ impl MappedIndex {
             metadata: self.metadata,
             links: self.links,
         }
+    }
+}
+
+impl AsFd for MappedIndex {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.mapping._file.as_fd()
     }
 }
 

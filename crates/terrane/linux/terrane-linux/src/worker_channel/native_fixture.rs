@@ -129,6 +129,12 @@ fn exercise(setpriv: &Path, file: &File, unsealed: &Path, mode: &str) -> Result 
                 return Err("worker client did not advance the acknowledged sequence".into());
             }
             endpoint.send(&second, file.as_fd())?;
+            let third = packet_sequence(3)?;
+            if receive(&endpoint)? != third {
+                return Err("worker index request lost its original channel sequence".into());
+            }
+            // This authenticated inode is sealed, but its bytes are not an index.
+            endpoint.send(&third, file.as_fd())?;
         }
     } else {
         let error = request
@@ -276,6 +282,17 @@ fn client_worker(socket: OwnedFd, mode: &str) -> Result {
                 println!("ORIGINAL {} {}", metadata.st_dev, metadata.st_ino);
             }
         }
+        let before = descriptors()?;
+        let result = runtime.block_on(client.request_index_bounded(65536, Duration::from_secs(5)));
+        if !matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidData)
+            || descriptors()? != before
+            || client.request(RequestedBacking::Index).is_ok()
+        {
+            return Err("invalid sealed index retained a descriptor or usable channel".into());
+        }
+        eprintln!(
+            "PASS authenticated sealed non-index reply closes the refused descriptor and faults its original channel"
+        );
         return Ok(());
     }
     let before = descriptors()?;
