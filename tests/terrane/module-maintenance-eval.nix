@@ -101,6 +101,17 @@ in [
     };
   }
   {
+    name = "maintenance-readiness-and-startup-order-overrides-refused";
+    pass =
+      accepted {aos.terrane.roles.gc.enable = false;}
+      && builtins.all rejected [
+        {systemd.services.terrane-serve.serviceConfig.Type = lib.mkForce "simple";}
+        {systemd.services.terrane-serve.serviceConfig.NotifyAccess = lib.mkForce "all";}
+        {systemd.services.terrane-gc.after = lib.mkForce [];}
+        {systemd.services.terrane-gc.requires = lib.mkForce [];}
+      ];
+  }
+  {
     name = "maintenance-transport-group-cannot-be-aliased-or-granted";
     pass = builtins.all rejected [
       {aos.users.groups.unrelated.gid = 846;}

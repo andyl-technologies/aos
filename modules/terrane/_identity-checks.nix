@@ -68,6 +68,16 @@
       && unit.AmbientCapabilities == ""
       && unit.NoNewPrivileges
       && !(unit.PrivateUsers or false));
+
+  maintenanceKeepsReadiness =
+    config.aos.terrane.hostTier.maintenance
+    == null
+    || (config.aos.terrane.roles.serve.enable
+      && units.terrane-serve.serviceConfig.Type == "notify"
+      && (units.terrane-serve.serviceConfig.NotifyAccess or null) == "main"
+      && (!config.aos.terrane.roles.gc.enable
+        || (builtins.elem "terrane-serve.service" units.terrane-gc.after
+          && builtins.elem "terrane-serve.service" units.terrane-gc.requires)));
 in [
   {
     assertion = builtins.all accountKeepsIdentity roleNames;
@@ -101,5 +111,9 @@ in [
   {
     assertion = builtins.all unitKeepsIdentity roleNames;
     message = "Terrane units must retain their dedicated identities, empty capabilities and initial host user namespace.";
+  }
+  {
+    assertion = maintenanceKeepsReadiness;
+    message = "Terrane maintenance requires main-process serving readiness and GC startup ordered after and dependent on Serve.";
   }
 ]

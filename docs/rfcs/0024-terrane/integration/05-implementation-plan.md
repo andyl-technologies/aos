@@ -18664,3 +18664,35 @@ owner locks. All original maintenance identity, denial, response, stopped-owner
 and 30/240-second bounds remain required. Native notification and actual
 service-manager ordering are not yet qualified. Restart cleanup remains open;
 acceptance remains 28/64.
+
+
+The corrected maintenance guest at frozen `21871350bf` passes in 658.018
+seconds. Complete review checks all 8,234 immutable source files, 5,488/5,483
+bound image inputs, five retained Cargo executables and all 15 initial
+enrollment controls. Both fresh GC exchanges return the exact original-owner
+counts while private owner-state access remains denied. Foreign identity and
+stopped-owner refusals, unchanged original listener inodes, actual owner locks,
+SDK snapshots, publication and acknowledged SIGTERM all pass. This resolves
+the fixture group-isolation failure recorded above; the original failed
+results remain preserved. It does not qualify actual draining-exposure release,
+readiness notification, a service manager or full role deployment.
+
+The same checkpoint's configured GC CLI guest passes in 673.099 seconds.
+Complete review checks all 8,234 immutable files, 5,483 crate inputs and four
+retained Cargo executables. Its actual CLI ELF has SHA-256
+`66a37c113a5d924bd7225f4db6ef940dc6149acd8ec5a8191821928ff0f3d375`.
+Readiness takes 6.923 seconds, full-D reclamation 100.105 seconds and confined
+shutdown 0.004 seconds; exact Done, fresh cycles and unchanged live signed
+reads pass as UID 840 on guest ext4 with empty capabilities, no-new-privileges
+and seccomp. Focused startup metadata-restoration qualification remains pending.
+
+The subsequent readiness checkpoint `601cc64863` is pushed, and its fresh
+notification guest and mandatory application compilation are running against
+an immutable 9,536-file checkout. Its protocol proof is separate from the
+completed `21871350bf` maintenance result. The module now additionally rejects
+overrides that bypass main-process notification or remove either required
+GC dependency on Serve. All 110 module checks pass, including eight
+maintenance cases and a positive control with local GC disabled. These
+declarative invariants do not supply the outstanding service-manager and
+restart-lifecycle qualification. Acceptance
+remains 28/64.
