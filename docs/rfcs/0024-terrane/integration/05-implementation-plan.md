@@ -94,7 +94,22 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance. Pack compaction
 (GC-18 to GC-21) is explicitly deferred from T-GC-1 to T-GC-2 on B-jobs;
-that optional workline is outside this agreed trunk completion scope.
+that optional workline is outside this agreed trunk completion scope. Full
+host-tier collection and multi-region GC (GC-25 to GC-27) belong to optional
+T-TOPO-2 on B-topology. The trunk's HOST-24 periodic lease-expiry obligation
+remains with the original physical worker; it is not replaced by that optional
+collection work.
+
+The collector component at startup checkpoint `0c2fbb6668` passes its native
+guest in 587.913 seconds. Complete independent review verifies all 8,229
+immutable source files, 5,479 crate inputs and four actual retained Cargo
+artifacts. The original empty-capability UID/GID 840 ext4 actor reaches
+readiness in 7.432 seconds, reclaims after 100.976 seconds including full D,
+and acknowledges shutdown in 0.008 seconds. Protected Done, fresh cycles and
+the live authenticated read pass. This fixture starts without excluded Meta;
+the focused required-Meta, protected Done-observation and original-session
+handoff guests remain pending. It does not qualify the later CLI increment or
+change trunk acceptance.
 
 The main Linux CLI now dispatches configured `gc` invocations to the checked
 local collector. It performs complete preflight before confinement, executor
