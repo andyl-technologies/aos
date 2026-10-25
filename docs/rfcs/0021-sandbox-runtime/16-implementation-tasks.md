@@ -93,9 +93,21 @@ Recent committed startup fixes close narrower prerequisites:
   negative fixtures. With that patch, the enforcing Host candidate passes bus
   startup and native activation, then stops at an intentionally denied test
   observer directory listing before Host starts. Its pending Host, SwitchRoot,
-  networkd and offline-cleanup dependencies remain explicit. Corrected Host,
-  Source and offline preparation runs are pending; this is not full boot,
-  Host custody, floor initialization or public lifecycle qualification.
+  networkd and offline-cleanup dependencies remain explicit. The Source
+  candidate passes the initial installed enclosure, then fails the durable
+  `/var` root-label check in initrd after hard QEMU/vTPM power loss, before
+  Source's own startup cases. The offline preparer reaches its genuine ELF
+  after activation but refuses with `NoApply`; its startup cause remains open.
+  Neither result qualifies Host custody, floor initialization or the public
+  lifecycle.
+
+- `79af2fcc4c` keeps the Host's legacy and component assemblies in separate
+  stack frames. The installed component previously exhausted the normal stack
+  while reserving both routes. Native disassembly confirms separate frames;
+  direct non-root startup now reaches the UID guard with 2, 4 and 8 MiB stacks.
+  The native Host package passes 407 tests, and the complete Rust unit and
+  integration test-target compilation passes. Privileged installed component
+  startup remains a separate pending qualification; no stack limit is raised.
 
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
