@@ -18831,3 +18831,44 @@ results predate `9d89554155` and do not qualify its read-only-lock fix. The new
 four-case coordination guest, strengthened configured-maintenance guest and
 mandatory application-target compilation are running on a clean frozen
 `9d895541558b6bb464589213517074e6625d8bcf` checkout. Acceptance remains 28/64.
+
+### Expired consumer protection through physical eviction
+
+The native source-cleanup eviction fixture now adds a distinct ten-second
+consumer over the original restored inline inode. Independent guest inspection
+requires its exact pin, lease and future hold with unchanged original backing.
+After the real deadline, reads and renewal must refuse without modifying durable
+policy. The original longer-lived consumer is then explicitly released; its
+unchanged grace wait covers both grants. Background-only cleanup must remove
+the finite consumer's lease and hold before the original physical retirement.
+The expired handle stays retained through namespace removal, final observer
+closure and measured quota release. Both the new finite-expiry witness and the
+original complete S3-FIFO eviction witness are required.
+
+All original restoration, queued-pin, release-grace, duplicate-publication,
+retirement, unrelated-consumer, retained-descriptor and quota controls remain.
+No existing actor or supervisor deadline is increased. Strict Clippy for the
+actual all-feature native fixture passes; Python AST, original-control review,
+plan coverage and diff checks pass. Native qualification and mandatory
+application-target compilation on this candidate remain pending. The preceding
+HOST-24 component audit remains qualified only at its recorded source; this
+new scenario does not change task acceptance until its actual guest evidence
+has been reviewed. Acceptance remains 28/64.
+
+The strengthened configured-maintenance guest at `9d89554155` fails in
+603.014 seconds during existing repository reopening, before readiness. Both
+original repository roots report read-only mounts and actual UID 840 EROFS
+write refusal; the eight publisher-namespace controls also pass. The original
+failure and immutable source fingerprints are retained. Source review finds
+that the current local repository factory still selects write-capable
+`FileBucket::open`, whose active-open path repairs/probes and updates
+CAPABILITIES. The lock-open correction alone therefore does not establish
+read-only repository startup. A native read-only open must preserve protected
+registration, selected publication and original authority while refusing effects;
+legacy or portable metadata validation cannot substitute for that authority.
+No write grants or mount assertions are relaxed to bypass this failure.
+
+Mandatory application-target compilation at the same `9d89554155` checkpoint
+passes in 606.759 seconds. Complete review matches all 8,242 immutable source
+files and 190 test executables across 59 packages. This is compilation evidence,
+not execution or qualification of the later finite-consumer eviction scenario.

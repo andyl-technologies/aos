@@ -10,7 +10,10 @@ use terrane_format::identity::{Descriptor, IdentityKind, TERRANE_V1};
 use terrane_linux::host_cache::{
     NativeCacheEvictionReport, NativeConsumerLease, NativeMetadataOwner,
 };
-use terrane_sdk::{host::cache::CacheState, store::TokioLocalFs};
+use terrane_sdk::{
+    host::cache::CacheState,
+    store::{Clock, TokioClock, TokioLocalFs},
+};
 
 /// Keeps the original Running owner and independent consumers through eviction.
 ///
@@ -84,6 +87,44 @@ pub(super) fn run(
     }
     drop(stalled);
     emit("READY actual inline consumer pin restores canonical backing and reads with policy held")?;
+
+    control("expiring-pin")?;
+    let expires = TokioClock
+        .now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_secs()
+        .checked_add(10)
+        .ok_or_else(|| invalid("inline expiry deadline overflow"))?;
+    let expiring = runtime.block_on(owner.pin_resident_chunk(identity.clone(), expires))?;
+    if expiring.read_verified()? != super::INLINE {
+        return Err(invalid("finite consumer lost original inline backing"));
+    }
+    emit(&format!(
+        "CACHE_EVICTION_EXPIRING owner={} expires={expires}",
+        expiring.owner()
+    ))?;
+    emit("READY independent finite consumer retains original restored inline backing")?;
+
+    control("expired-pin")?;
+    let policy_path = inputs.root.join("state/cache/records.toml");
+    let before_expired_read = std::fs::read(&policy_path)?;
+    if expiring
+        .read_verified()
+        .err()
+        .is_none_or(|error| error.kind() != io::ErrorKind::PermissionDenied)
+        || runtime
+            .block_on(owner.renew_consumer_lease(&expiring, expires + 90))
+            .is_ok()
+        || std::fs::read(&policy_path)? != before_expired_read
+    {
+        return Err(invalid(
+            "expired inline consumer retained access or changed durable protection",
+        ));
+    }
+    emit(
+        "READY expired inline consumer refuses reads and renewal without changing durable policy",
+    )?;
 
     control("release-pin")?;
     runtime.block_on(owner.release_consumer_lease(&pinned))?;
@@ -199,6 +240,14 @@ pub(super) fn run(
         "READY independent consumers survive actual final cache retirement and descriptor closure",
     )?;
     control("done")?;
+    // Keep the expired handle through actual eviction and the independent
+    // observer's final closure; dropping it must not manufacture reclamation.
+    if expiring.read_verified().is_ok() {
+        return Err(invalid("evicted expired consumer regained read access"));
+    }
+    emit(
+        "PASS automatic consumer expiry permits original inline eviction and measured reclamation while the expired handle remains retained",
+    )?;
     emit(
         "PASS actual S3 FIFO inline retirement restores for a new pin, preserves release grace, and finally removes original backing before measured quota release; independent consumers remain live; no Ready",
     )

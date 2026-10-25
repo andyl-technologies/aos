@@ -290,6 +290,34 @@ def run_eviction(driver, case, process, lines, snapshot):
                        and (restored.st_dev, restored.st_ino) == (original.st_dev, original.st_ino)
                        and files(root / "sealed") == all_sealed,
                        "new pin did not restore the exact original canonical body")
+
+        before_expiring = tomllib.loads(snapshot.read_text())
+        control("expiring-pin")
+        lines.until("READY independent finite consumer retains original restored inline backing", timeout=15)
+        grants = re.findall(r"^CACHE_EVICTION_EXPIRING owner=(consumer:[0-9a-f]{32}) expires=(\d+)$",
+                            lines.bytes.decode(), re.M)
+        driver.require(len(grants) == 1, "missing unique finite inline consumer grant")
+        expired_owner, finite_expiry = grants[0][0], int(grants[0][1])
+        expired_token = expired_owner.removeprefix("consumer:")
+        expected_expiring = dict(before_expiring)
+        expected_expiring["pins"] = before_expiring["pins"] + [
+            {"owner": expired_owner, "hash": digest, "expires": finite_expiry}]
+        expected_expiring["leases"] = before_expiring["leases"] + [
+            {"owner": expired_owner, "expires": finite_expiry}]
+        expected_expiring["reservations"] = before_expiring["reservations"] + [
+            {"id": expired_token, "owner": driver.owner(case), "bytes": 262144}]
+        driver.require(tomllib.loads(snapshot.read_text()) == expected_expiring
+                       and canonical.stat().st_ino == original.st_ino
+                       and files(root / "sealed") == all_sealed and not pending.exists(),
+                       "finite consumer lost its exact grant, funding or original inline inode")
+        wait = finite_expiry - time.time() + 1
+        driver.require(0 < wait <= 12, "finite inline consumer exceeds its original deadline")
+        time.sleep(wait)
+        control("expired-pin")
+        lines.until("READY expired inline consumer refuses reads and renewal without changing durable policy", timeout=15)
+        driver.require(tomllib.loads(snapshot.read_text()) == expected_expiring,
+                       "finite consumer expiry removed protection before original grace")
+
         control("release-pin")
         lines.until("READY released inline pin prevents eviction through its durable grace", timeout=15)
         grace = re.findall(r"^CACHE_EVICTION_PIN_GRACE expires=(\d+)$", lines.bytes.decode(), re.M)
@@ -307,6 +335,11 @@ def run_eviction(driver, case, process, lines, snapshot):
         state = tomllib.loads(snapshot.read_text())
         driver.require(not any(row["hash"] == digest for row in state["pins"]),
                        "periodic sweep retained expired inline grace protection")
+        driver.require(not any(row["owner"] == expired_owner for row in state["leases"])
+                       and not any(row["id"] == expired_token for row in state["reservations"]),
+                       "periodic expiry retained the finite consumer lease or future hold")
+        print("PASS independent observer verifies automatic finite consumer expiry before original inline retirement; no explicit release or sweep for that consumer",
+              flush=True)
 
         control("retire-after-grace")
         lines.until("READY actual cached inline pending final removal after release grace", timeout=15)
@@ -371,5 +404,6 @@ def run_eviction(driver, case, process, lines, snapshot):
     output, _ = process.communicate(b"done\n", timeout=15)
     print(output.decode(), end="", flush=True)
     driver.require(process.returncode == 0 and output.decode().splitlines() == [
+        "PASS automatic consumer expiry permits original inline eviction and measured reclamation while the expired handle remains retained",
         "PASS actual S3 FIFO inline retirement restores for a new pin, preserves release grace, and finally removes original backing before measured quota release; independent consumers remain live; no Ready"
     ], "native cache eviction did not complete with original live custody")
