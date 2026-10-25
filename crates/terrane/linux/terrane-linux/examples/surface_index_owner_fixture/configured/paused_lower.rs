@@ -56,7 +56,21 @@ impl<S: ContentStore + Send + Sync> ContentStore for PausedLower<S> {
             _ => {}
         }
 
-        self.original.get(identity, range).await
+        let started_at = tokio::time::Instant::now();
+        let result = self.original.get(identity, range).await;
+        if matches!(
+            identity.kind(),
+            IdentityKind::Chunk | IdentityKind::Manifest
+        ) {
+            eprintln!(
+                "CONFIGURED_LOWER_READ kind={:?} encoded_bytes={:?} elapsed_ms={} failure={:?}",
+                identity.kind(),
+                result.as_ref().ok().map(Vec::len),
+                started_at.elapsed().as_millis(),
+                result.as_ref().err(),
+            );
+        }
+        result
     }
 
     async fn has(&self, identities: &[Identity]) -> std::result::Result<Vec<bool>, StoreFailure> {

@@ -148,6 +148,15 @@ async fn verify(
     if scenario == Scenario::Manifest && boundaries.len() < 2 {
         return Err("mounted manifest fixture requires actual multi-chunk input".into());
     }
+    if scenario == Scenario::Manifest {
+        eprintln!(
+            "CONFIGURED_MOUNTED_MANIFEST chunk_lengths={:?}",
+            boundaries
+                .iter()
+                .map(|range| range.len())
+                .collect::<Vec<_>>(),
+        );
+    }
     let mut chunk_hashes = Vec::new();
     for range in &boundaries {
         let identity = TERRANE_V1.calculate(IdentityKind::Chunk, &body[range.clone()])?;

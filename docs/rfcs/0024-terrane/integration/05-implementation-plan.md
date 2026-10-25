@@ -207,6 +207,16 @@ underlying preparation failure or a successful signed manifest read. The exact
 signed input, assertions and deadlines remain unchanged; both failed frozen
 guests and their receipts remain retained. T-FUSE-1 and T-FUSE-2 stay open.
 
+The mounted child now reports its original error in one bounded control packet
+before Rust's terminal stderr reporter can fragment it. Invalid packet errors
+retain received content without changing the exact successful control values.
+The same manifest scenario also reports actual original chunk lengths and lower
+encoded-body lengths, completion times and errors. These are diagnostics only:
+no source bytes, cache/read budgets, required fetch counts, custody assertions
+or deadlines change. Both strict Linux all-target Clippy profiles pass; the
+final framed fixture also passes its own feature-enabled check. Native
+diagnosis remains pending.
+
 Native permanent reconciliation now borrows a collection's original mutable
 session instead of acquiring a second singleton lease. `Recovery::reconcile`
 and `LocalCollection::reconcile_permanent` delegate to the same native producer.

@@ -153,7 +153,9 @@ pub(crate) async fn receive_async(
         loop {
             let mut ready = channel.readable().await?;
             match ready.try_io(|channel| {
-                let mut bytes = [0; 16];
+                // Retain the child's error packet while accepting only the
+                // same exact successful control value.
+                let mut bytes = [0; 1024];
                 let (length, received) = net::recv(
                     channel.get_ref(),
                     &mut bytes,
@@ -162,9 +164,11 @@ pub(crate) async fn receive_async(
                 if received == length && bytes.get(..length) == Some(expected) {
                     Ok(())
                 } else {
-                    Err(io::Error::other(
-                        "unexpected mounted fixture control packet",
-                    ))
+                    Err(io::Error::other(format!(
+                        "unexpected mounted fixture control packet: expected {expected:?}, received {} of {received} bytes: {:?}",
+                        length,
+                        String::from_utf8_lossy(&bytes[..length.min(bytes.len())]),
+                    )))
                 }
             }) {
                 Ok(result) => return result,
@@ -314,6 +318,21 @@ pub(crate) fn run(
 /// # Errors
 /// Refuses failed confinement, authenticated startup, kernel exchanges or drain.
 pub(crate) fn child(late: bool) -> Result<()> {
+    let result = run_child(late);
+    if let Err(error) = &result {
+        // Rust's terminal Result reporter may emit several writes. Keep the
+        // original failure in one packet before those stderr fragments arrive.
+        let diagnostic = format!("WORKER_ERROR {error:?}");
+        let mut end = diagnostic.len().min(1024);
+        while !diagnostic.is_char_boundary(end) {
+            end -= 1;
+        }
+        let _ = send(io::stderr().as_fd(), &diagnostic.as_bytes()[..end]);
+    }
+    result
+}
+
+fn run_child(late: bool) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let device = fs::OpenOptions::new()
         .read(true)
