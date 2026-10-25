@@ -11,6 +11,11 @@ pub(crate) extern "C" fn arm_timer_witness(
     deadline_tick: u64,
     generation: *mut u64,
 ) -> std::os::raw::c_int {
+    // QEMU binds the witness to the advance target and rejects any target
+    // other than the timer deadline itself.
+    if deadline_ps < 0 || deadline_tick != deadline_ps.unsigned_abs() {
+        return -libc::EINVAL;
+    }
     let next = TIMER_WITNESS.with(|witness| witness.get().0.wrapping_add(1).max(1));
     TIMER_WITNESS.with(|witness| witness.set((next, deadline_ps, deadline_tick)));
     // SAFETY: the test exercises the same non-null output-pointer contract as QEMU.

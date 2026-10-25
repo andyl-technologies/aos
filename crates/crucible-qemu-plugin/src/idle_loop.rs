@@ -121,6 +121,20 @@ impl IdleWakePlan {
         self.ceiling_icount < self.desired_wake_icount
     }
 
+    /// Returns whether an advance released to `target_icount` fires the
+    /// timer this plan woke for.
+    ///
+    /// Only then may the advance arm QEMU's virtual-timer witness: QEMU
+    /// binds the witness to the advance target and rejects a target that is
+    /// not the timer deadline. A release short of the deadline, for an
+    /// earlier inbound frame or an exact-event ceiling, leaves the timer
+    /// pending for a later plan.
+    #[must_use]
+    pub fn fires_timer_at(&self, target_icount: u64) -> bool {
+        matches!(self.cause, IdleWakeCause::TimerDeadline)
+            && self.timer_deadline_icount == Some(target_icount)
+    }
+
     /// Returns whether the plan parks without any real wake.
     #[must_use]
     pub const fn parks_without_wake(&self) -> bool {

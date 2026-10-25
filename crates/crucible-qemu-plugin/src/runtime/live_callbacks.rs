@@ -1521,12 +1521,15 @@ impl LiveVcpuTimeCallbackState {
                     observation,
                     idle_plan_witness::Outcome::AdvanceSelected(target_icount),
                 );
+                // An inbound frame or exact-event ceiling can release the
+                // node short of the timer it planned for; only an advance that
+                // lands on the deadline fires the timer QEMU witnesses.
                 if !self.arm_and_enqueue_idle_advance_or_defer(
                     raw_icount,
                     target_icount,
-                    (plan.cause() == IdleWakeCause::TimerDeadline)
-                        .then_some(timer_deadline_ps)
-                        .flatten(),
+                    timer_deadline_ps.filter(|&deadline_ps| {
+                        deadline_ps == target_icount && plan.fires_timer_at(target_icount)
+                    }),
                 )? {
                     // QEMU still owns the preceding advance barrier. Its
                     // completion kicks every halted vCPU, so release this

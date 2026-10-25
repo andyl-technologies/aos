@@ -471,3 +471,45 @@ fn idle_loop_release_waits_for_qemu_completion_before_mutating_state() {
     assert_eq!(clock.current_icount(), 20);
     assert_eq!(slot.snapshot().status, STATUS_RUNNING);
 }
+
+#[test]
+fn a_timer_plan_fires_its_timer_only_when_released_to_the_deadline() {
+    let plan = match compute_idle_wake_plan(
+        10,
+        ExactDeadlineReport::Armed { deadline_ps: 40 },
+        None,
+        SchedulerCeiling::new(20),
+        false,
+        None,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => panic!("timer wake plan should compute: {error}"),
+    };
+    assert_eq!(plan.cause(), IdleWakeCause::TimerDeadline);
+
+    assert!(plan.fires_timer_at(40));
+
+    // A frame that arrives while the node parks, or an exact-event ceiling,
+    // can release the node short of its timer. That advance never reaches
+    // the deadline, so QEMU must not be asked to witness the timer firing.
+    assert!(!plan.fires_timer_at(25));
+}
+
+#[test]
+fn a_plan_woken_by_another_source_never_fires_its_timer() {
+    let plan = match compute_idle_wake_plan(
+        10,
+        ExactDeadlineReport::Armed { deadline_ps: 80 },
+        Some(30),
+        SchedulerCeiling::new(50),
+        false,
+        None,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => panic!("inbound wake plan should compute: {error}"),
+    };
+    assert_eq!(plan.cause(), IdleWakeCause::InboundFrame);
+
+    assert!(!plan.fires_timer_at(30));
+    assert!(!plan.fires_timer_at(80));
+}
