@@ -28,6 +28,10 @@ fn channel_diagnostics_borrow_static_text_and_move_owned_allocations() {
     assert!(errors.iter().all(|error| matches!(
         error.detail,
         ChannelFailureDetail::Message {
+            message: Cow::Borrowed(_)
+        } | ChannelFailureDetail::RetryableMessage {
+            message: Cow::Borrowed(_)
+        } | ChannelFailureDetail::BoundedAwaitTimeout {
             message: Cow::Borrowed(_),
             ..
         }
@@ -65,6 +69,10 @@ fn channel_diagnostics_borrow_static_text_and_move_owned_allocations() {
         assert!(matches!(
             error.detail,
             ChannelFailureDetail::Message {
+                message: Cow::Owned(_)
+            } | ChannelFailureDetail::RetryableMessage {
+                message: Cow::Owned(_)
+            } | ChannelFailureDetail::BoundedAwaitTimeout {
                 message: Cow::Owned(_),
                 ..
             }

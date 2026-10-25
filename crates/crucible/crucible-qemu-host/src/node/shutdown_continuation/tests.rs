@@ -521,7 +521,7 @@ fn channel_timeout_preserves_actual_initiator_and_independent_shutdown_report()
         panic!("the actual channel first must not be replaced by cleanup")
     };
     assert_eq!(retained, first);
-    assert_eq!(status.node_id, expected.node_id);
+    assert_eq!(status.node_id.as_ref(), expected.node_id.as_str());
     assert_eq!(status.handling, expected.handling);
     let crate::QemuCrashCause::BoundedAwaitTimeout(cause) = expected.cause else {
         panic!("the first channel timeout must remain the crash cause")

@@ -159,7 +159,7 @@ fn poll_mapped_prime_chain(
             })?;
             match QemuShmemHotPathChannel::poll_quantum(hot_path, active) {
                 Ok(completion) => Some(completion),
-                Err(source) if source.retryable => None,
+                Err(source) if source.is_retryable() => None,
                 Err(source) => {
                     return Err(QemuLiveNodeStepGateError::prime(
                         "poll priming quantum",

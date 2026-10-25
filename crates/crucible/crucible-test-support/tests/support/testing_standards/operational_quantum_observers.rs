@@ -342,11 +342,6 @@ const SLOT_CAUSE: &str = r#"pub(crate) fn quantum_node_slot(
     ) -> Self {
         Self {
             operation: "qemu_quantum_shmem_hot_path",
-            retryable: matches!(
-                source,
-                crucible_qemu_shmem::NodeSlotError::NodeReportChanged { .. }
-                    | crucible_qemu_shmem::NodeSlotError::AdvancePublicationOccupied { .. }
-            ),
             detail: ChannelFailureDetail::QuantumNodeSlot { operation, source },
         }
     }"#;
@@ -354,7 +349,6 @@ const SLOT_CAUSE: &str = r#"pub(crate) fn quantum_node_slot(
 const REPORT_CAUSE: &str = r#"pub(crate) fn quantum_report_pending(current_icount: u64, ceiling: u64) -> Self {
         Self {
             operation: "qemu_quantum_shmem_hot_path",
-            retryable: true,
             detail: ChannelFailureDetail::QuantumReportPending(QemuPendingQuantumReport {
                 current_icount,
                 ceiling,
@@ -363,7 +357,19 @@ const REPORT_CAUSE: &str = r#"pub(crate) fn quantum_report_pending(current_icoun
     }"#;
 
 const RETRY_OBSERVATION: &str = r#"pub const fn is_retryable(&self) -> bool {
-        self.retryable
+        matches!(
+            &self.detail,
+            ChannelFailureDetail::RetryableMessage { .. }
+                | ChannelFailureDetail::FingerprintSample(
+                    QemuFingerprintSampleError::BehindBoundary { .. }
+                )
+                | ChannelFailureDetail::QuantumNodeSlot {
+                    source: crucible_qemu_shmem::NodeSlotError::NodeReportChanged { .. }
+                        | crucible_qemu_shmem::NodeSlotError::AdvancePublicationOccupied { .. },
+                    ..
+                }
+                | ChannelFailureDetail::QuantumReportPending(_)
+        )
     }"#;
 
 const CHANNEL_CONVERSION: &str = r#"impl From<QemuQuantumError> for QemuNodeChannelError {

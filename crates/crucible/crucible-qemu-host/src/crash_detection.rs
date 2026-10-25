@@ -234,7 +234,7 @@ impl QemuCrashHandling {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuChannelCrashDisposition {
     /// Stable identifier of the node whose bounded channel wait expired.
-    pub node_id: String,
+    pub node_id: Box<str>,
     /// Original crash handling policy, retained before independent cleanup.
     pub handling: QemuCrashHandling,
 }
@@ -243,7 +243,7 @@ impl QemuChannelCrashDisposition {
     /// Moves the same classification and independently retained cause into a status.
     pub(crate) fn into_status(self, cause: QemuCrashCause) -> QemuNodeRunStatus {
         QemuNodeRunStatus::Crashed(QemuCrashedNodeStatus {
-            node_id: self.node_id,
+            node_id: self.node_id.into_string(),
             cause,
             handling: self.handling,
         })
@@ -332,7 +332,7 @@ impl QemuCrashDetector {
     /// Captures the same node classification before independent channel cleanup.
     pub(crate) fn channel_crash_disposition(&self) -> QemuChannelCrashDisposition {
         QemuChannelCrashDisposition {
-            node_id: self.node_id.clone(),
+            node_id: Box::from(self.node_id.as_str()),
             handling: QemuCrashHandling::ReportAndLocalize,
         }
     }
@@ -385,4 +385,57 @@ fn exit_signal(status: &ExitStatus) -> Option<i32> {
 #[cfg(not(unix))]
 fn exit_signal(_status: &ExitStatus) -> Option<i32> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::alloc::Layout;
+    use std::time::Duration;
+
+    #[test]
+    fn channel_disposition_preserves_the_original_name_allocation_and_policy() {
+        let detector = QemuCrashDetector::new("original-node-identity");
+        let layout = Layout::array::<u8>(detector.node_id.len()).unwrap();
+        let (old_name, old_allocation, old_counts) =
+            TestAllocationObserver::capture_layout_and_count(layout, || detector.node_id.clone());
+
+        let (disposition, allocation, counts) =
+            TestAllocationObserver::capture_layout_and_count(layout, || {
+                detector.channel_crash_disposition()
+            });
+
+        assert!(old_allocation.is_some());
+        assert!(allocation.is_some());
+        assert_eq!(counts, old_counts);
+        assert_eq!(counts.allocations, 1);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(disposition.node_id.as_ref(), old_name.as_str());
+        assert_eq!(disposition.handling, QemuCrashHandling::ReportAndLocalize);
+        let original_pointer = disposition.node_id.as_ptr();
+        let cause = QemuCrashCause::BoundedAwaitTimeout(QemuBoundedAwaitTimeout::new(
+            "observe original channel",
+            Duration::from_millis(17),
+        ));
+
+        let (status, counts) = TestAllocationObserver::count(|| disposition.into_status(cause));
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        let QemuNodeRunStatus::Crashed(status) = status else {
+            panic!("bounded channel failure retains its original crash classification");
+        };
+        assert_eq!(status.node_id.as_ptr(), original_pointer);
+        assert_eq!(status.node_id, old_name);
+        assert_eq!(status.handling, QemuCrashHandling::ReportAndLocalize);
+        assert!(!status.handling.retry_on_determinism_gate());
+        let QemuCrashCause::BoundedAwaitTimeout(cause) = status.cause else {
+            panic!("the original bounded timeout must remain the cause");
+        };
+        assert_eq!(cause.operation, "observe original channel");
+        assert_eq!(cause.timeout, Duration::from_millis(17));
+    }
 }

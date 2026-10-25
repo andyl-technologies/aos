@@ -89,8 +89,6 @@ pub enum QemuFingerprintSampleError {
 pub struct QemuNodeChannelError {
     /// Operation being attempted on the channel.
     pub operation: &'static str,
-    /// Whether the operation may be retried without republishing its request.
-    pub retryable: bool,
     detail: ChannelFailureDetail,
 }
 
@@ -109,15 +107,21 @@ pub struct QemuPendingQuantumReport {
     pub ceiling: u64,
 }
 
-/// Retains authored timeout diagnostics or typed causes inline.
+/// Retains authored diagnostics or typed causes with their actual classification.
 ///
-/// Only authored diagnostics can carry a bounded-await timeout. Typed observation
-/// refusals retain their original source without paying for an unused timeout.
+/// Only a bounded-await diagnostic carries a timeout. Retryable authored text
+/// has its own variant; typed refusals derive retryability from their source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ChannelFailureDetail {
     Message {
         message: Cow<'static, str>,
-        timeout: Option<Duration>,
+    },
+    RetryableMessage {
+        message: Cow<'static, str>,
+    },
+    BoundedAwaitTimeout {
+        message: Cow<'static, str>,
+        timeout: Duration,
     },
     Supervision(HostSupervisionError),
     DecodeAdmission(DecodeAdmissionError),
@@ -138,14 +142,18 @@ impl QemuNodeChannelError {
     #[must_use]
     pub fn message(&self) -> &str {
         match &self.detail {
-            ChannelFailureDetail::Message { message, .. } => message,
+            ChannelFailureDetail::Message { message }
+            | ChannelFailureDetail::RetryableMessage { message }
+            | ChannelFailureDetail::BoundedAwaitTimeout { message, .. } => message,
             _ => "",
         }
     }
 
     pub(crate) fn into_message(self) -> Cow<'static, str> {
         match self.detail {
-            ChannelFailureDetail::Message { message, .. } => message,
+            ChannelFailureDetail::Message { message }
+            | ChannelFailureDetail::RetryableMessage { message }
+            | ChannelFailureDetail::BoundedAwaitTimeout { message, .. } => message,
             _ => Cow::Borrowed(""),
         }
     }
@@ -158,10 +166,8 @@ impl QemuNodeChannelError {
     pub fn new(operation: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             operation,
-            retryable: false,
             detail: ChannelFailureDetail::Message {
                 message: message.into(),
-                timeout: None,
             },
         }
     }
@@ -171,10 +177,8 @@ impl QemuNodeChannelError {
     pub fn retryable(operation: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             operation,
-            retryable: true,
-            detail: ChannelFailureDetail::Message {
+            detail: ChannelFailureDetail::RetryableMessage {
                 message: message.into(),
-                timeout: None,
             },
         }
     }
@@ -188,10 +192,9 @@ impl QemuNodeChannelError {
     ) -> Self {
         Self {
             operation,
-            retryable: false,
-            detail: ChannelFailureDetail::Message {
+            detail: ChannelFailureDetail::BoundedAwaitTimeout {
                 message: message.into(),
-                timeout: Some(timeout),
+                timeout,
             },
         }
     }
@@ -203,7 +206,6 @@ impl QemuNodeChannelError {
     pub fn operational_supervision(operation: &'static str, source: HostSupervisionError) -> Self {
         Self {
             operation,
-            retryable: false,
             detail: ChannelFailureDetail::Supervision(source),
         }
     }
@@ -228,7 +230,6 @@ impl QemuNodeChannelError {
     ) -> Self {
         Self {
             operation,
-            retryable: false,
             detail: ChannelFailureDetail::DecodeAdmission(source),
         }
     }
@@ -250,7 +251,6 @@ impl QemuNodeChannelError {
     pub fn fingerprint_sample(operation: &'static str, source: QemuFingerprintSampleError) -> Self {
         Self {
             operation,
-            retryable: matches!(source, QemuFingerprintSampleError::BehindBoundary { .. }),
             detail: ChannelFailureDetail::FingerprintSample(source),
         }
     }
@@ -275,7 +275,6 @@ impl QemuNodeChannelError {
     ) -> Self {
         Self {
             operation,
-            retryable: false,
             detail: ChannelFailureDetail::MappedRegionAccess(source),
         }
     }
@@ -301,11 +300,6 @@ impl QemuNodeChannelError {
     ) -> Self {
         Self {
             operation: "qemu_quantum_shmem_hot_path",
-            retryable: matches!(
-                source,
-                crucible_qemu_shmem::NodeSlotError::NodeReportChanged { .. }
-                    | crucible_qemu_shmem::NodeSlotError::AdvancePublicationOccupied { .. }
-            ),
             detail: ChannelFailureDetail::QuantumNodeSlot { operation, source },
         }
     }
@@ -322,7 +316,6 @@ impl QemuNodeChannelError {
     pub(crate) fn quantum_report_pending(current_icount: u64, ceiling: u64) -> Self {
         Self {
             operation: "qemu_quantum_shmem_hot_path",
-            retryable: true,
             detail: ChannelFailureDetail::QuantumReportPending(QemuPendingQuantumReport {
                 current_icount,
                 ceiling,
@@ -343,7 +336,7 @@ impl QemuNodeChannelError {
     #[must_use]
     pub const fn bounded_timeout(&self) -> Option<Duration> {
         match &self.detail {
-            ChannelFailureDetail::Message { timeout, .. } => *timeout,
+            ChannelFailureDetail::BoundedAwaitTimeout { timeout, .. } => Some(*timeout),
             _ => None,
         }
     }
@@ -351,7 +344,19 @@ impl QemuNodeChannelError {
     /// Returns whether the same in-flight operation may be polled again.
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
-        self.retryable
+        matches!(
+            &self.detail,
+            ChannelFailureDetail::RetryableMessage { .. }
+                | ChannelFailureDetail::FingerprintSample(
+                    QemuFingerprintSampleError::BehindBoundary { .. }
+                )
+                | ChannelFailureDetail::QuantumNodeSlot {
+                    source: crucible_qemu_shmem::NodeSlotError::NodeReportChanged { .. }
+                        | crucible_qemu_shmem::NodeSlotError::AdvancePublicationOccupied { .. },
+                    ..
+                }
+                | ChannelFailureDetail::QuantumReportPending(_)
+        )
     }
 }
 
@@ -384,7 +389,9 @@ impl fmt::Display for QemuNodeChannelError {
             ChannelFailureDetail::QuantumReportPending(source) => {
                 write!(formatter, "{} failed: {source}", self.operation)
             }
-            ChannelFailureDetail::Message { message, .. } => {
+            ChannelFailureDetail::Message { message }
+            | ChannelFailureDetail::RetryableMessage { message }
+            | ChannelFailureDetail::BoundedAwaitTimeout { message, .. } => {
                 write!(formatter, "{} failed: {message}", self.operation)
             }
         }
@@ -400,7 +407,9 @@ impl std::error::Error for QemuNodeChannelError {
             ChannelFailureDetail::MappedRegionAccess(source) => Some(source),
             ChannelFailureDetail::QuantumNodeSlot { source, .. } => Some(source),
             ChannelFailureDetail::QuantumReportPending(source) => Some(source),
-            ChannelFailureDetail::Message { .. } => None,
+            ChannelFailureDetail::Message { .. }
+            | ChannelFailureDetail::RetryableMessage { .. }
+            | ChannelFailureDetail::BoundedAwaitTimeout { .. } => None,
         }
     }
 }
@@ -820,7 +829,9 @@ impl QemuNodeError {
             ChannelFailureDetail::QuantumReportPending(source) => {
                 Self::ChannelQuantumReportPending { plane, source }
             }
-            ChannelFailureDetail::Message { message, .. } => Self::Channel {
+            ChannelFailureDetail::Message { message }
+            | ChannelFailureDetail::RetryableMessage { message }
+            | ChannelFailureDetail::BoundedAwaitTimeout { message, .. } => Self::Channel {
                 plane,
                 operation: source.operation,
                 message,

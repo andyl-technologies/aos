@@ -67,9 +67,43 @@ failed attempts appear in the dated entries below.
 | Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Earlier legacy configuration and thirteen read-only Ninja queries pass; later target attempts retain generator, interpreter and unavailable-process refusals. The latest original invocation refuses during configure because a disappeared wrapper lacks original exit-observation custody; its complete signed result and diagnosis pass independent review. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Native compiler correction | Signed atomic `cb9a5e825a` and conventional `0d49fac971` preserve the complete integration while correcting declarations, const projections and shadowed locals. Fresh configure, the POSIX thread object and source extraction pass. | The startup Source object still fails on its unchanged uncalled RR birth routine with all warnings retained. No whole QEMU build, Windows compilation, native execution or lifecycle qualification is established. |
-| Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 125 errors: 105 large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 117 errors: 97 large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 673 bindings: 654 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 674 bindings: 655 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+
+#### Bounded channel diagnostic classification
+
+Channel errors now retain authored ordinary, retryable and timeout diagnostics
+as separate alternatives. Only the timeout alternative stores its duration;
+typed fingerprint, node-slot and pending-report causes determine their existing
+retry classification directly. The existing `is_retryable()` observer replaces
+the mutable public retry flag at its two remaining production readers. Owned
+and borrowed text, source chains, timeout coordinates and operation labels remain
+unchanged, without new allocation or execution authority.
+
+The crash disposition copies its node name directly into `Box<str>`. Its handling
+policy remains `ReportAndLocalize`. An allocator control observes the same byte
+extent, one allocation and no reallocations as the prior `String` clone;
+conversion into the normal crash status preserves that allocation pointer and
+allocates nothing. All nine node-error controls, nine shutdown controls, twelve
+crash-classification integration tests, four quantum observation controls and
+95 policy controls pass. Exact source obligations retain their causal mutations.
+Formatting, source-bound hygiene and private-configuration compilation pass.
+
+Strict host-library Clippy removes eight diagnostics without adding any, leaving
+117: 97 large-error returns, seventeen unused-code diagnostics and three large
+enum variants. The retained runtime error remains 112 bytes and the bounded-step
+wrapper remains 128 bytes; this change does not establish a passing strict gate
+or complete diagnostic funding. Inventory `2g6yv17x3f5831faj4wpkhhh7nv1whrf`
+retains 674 bindings, 142 uncovered requirements and zero qualifications.
+
+The preceding signed dispatcher checkpoint `dc0d0036a8` passes mandatory
+application compilation at `zw4jf7xm7rs0cdf15kxvpgz8ch2dkmn6`. Independent audit
+verifies its 185 compiler artifacts, 58 packages, 56 library unit targets, all
+5,467 frozen Rust/TOML inputs and lockfile. These targets compile without
+executing. Current-checkpoint application compilation runs separately; the
+preceding 423-case supervision gate is also running. Native activation,
+physical-return, paging and performance qualifications remain open.
 
 #### Actual Target dispatcher maintenance errors
 
