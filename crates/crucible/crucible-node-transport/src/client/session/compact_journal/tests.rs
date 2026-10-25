@@ -139,6 +139,7 @@ fn failed_send_keeps_compact_original_and_caller_spare_capacity() -> TestResult 
         super::super::envelope_bytes(&original)?
     );
     assert!(retained.retained_bank_bytes() <= 9 * custody.retained_journal_bytes());
+    assert!(journal_backing(&custody)? <= custody.journal_retained_storage_data(usize::MAX)?);
     assert!(
         custody.retained_metadata_facts()?.vector_capacity_bytes >= retained.retained_bank_bytes()
     );
@@ -378,6 +379,7 @@ fn actual_content_transfer_keeps_namespaces_distinct_and_recovers_original_ack()
         .map(CompactClientOriginal::retained_bank_bytes)
         .sum();
     assert!(bank_bytes <= 9 * custody.retained_journal_bytes());
+    assert!(journal_backing(&custody)? <= custody.journal_retained_storage_data(usize::MAX)?);
     assert!(custody.retained_metadata_facts()?.vector_capacity_bytes >= bank_bytes);
     Ok(())
 }
@@ -466,7 +468,9 @@ fn unsupported_notification_keeps_complete_frame_and_fences_stream() -> TestResu
         panic!("notification typed backing was lost");
     };
     assert_eq!(body.as_ref(), &notification);
-    assert!(custody.retained_metadata_facts().is_err());
+    let facts = custody.retained_metadata_facts()?;
+    assert!(facts.string_capacity_bytes >= 2 * 4096);
+    assert!(facts.boxed_value_bytes >= std::mem::size_of::<NotificationBody>());
     assert!(custody.pending_envelope().is_none());
     assert!(!custody.originals().next().unwrap().has_response());
     let charged = custody.retained_journal_bytes();
@@ -479,5 +483,160 @@ fn unsupported_notification_keeps_complete_frame_and_fences_stream() -> TestResu
     assert_eq!(custody.unexpected_frame().unwrap().envelope, event);
     assert_eq!(custody.retained_journal_bytes(), charged);
     assert_eq!(custody.originals().count(), 1);
+    Ok(())
+}
+
+fn journal_backing(custody: &CompactClientCustody) -> Result<usize, ProviderError> {
+    let mut observer = crate::retained_metadata::MetadataObserver::new();
+    observer.observe(&custody.controller)?;
+    observer.observe(&custody.provider)?;
+    crate::retained_metadata::requested_metadata_backing_storage_data(&observer.finish())
+}
+
+#[test]
+fn full_journal_projection_keeps_both_namespaces_and_unresolved_prefixes() -> TestResult {
+    let (_lease, _session, mut custody, _peer, template) = fixture(BANK_BYTES);
+    let quote = custody.journal_retained_storage_data(usize::MAX)?;
+    let ceilings = (custody.maximum_requests, custody.maximum_bytes);
+
+    // This fills the actual SDK owner as DATA. Existing socket controls cover
+    // wire admission; these deliberately generic bodies issue no Source rights.
+    for (origin, prefix) in [
+        (RequestOrigin::Controller, "c"),
+        (RequestOrigin::Provider, "p"),
+    ] {
+        for index in 0..custody.maximum_requests {
+            let mut request = template.clone();
+            request.request_id = Nullable(Some(Id::new(format!(
+                "{prefix}{index}-{}",
+                "x".repeat(120)
+            ))?));
+            request.body = serde_json::from_value(json!({"nested": [{"": [0, -0.0, true]}]}))?;
+            custody.retain_request(origin, &request, 0)?;
+            if index % 2 == 0 {
+                let response = response(&request, json!({"complete": [false, {}]}), 2);
+                custody.hold(origin, response)?;
+                custody.complete_response(request.request_id.0.as_ref().unwrap())?;
+            }
+            assert!(journal_backing(&custody)? <= quote);
+        }
+    }
+
+    assert_eq!(custody.controller.len(), ceilings.0);
+    assert_eq!(custody.provider.len(), ceilings.0);
+    assert_eq!(
+        custody
+            .originals()
+            .filter(|entry| !entry.has_response())
+            .count(),
+        ceilings.0
+    );
+    assert_eq!(custody.journal_retained_storage_data(quote)?, quote);
+    assert!(custody.journal_retained_storage_data(quote - 1).is_err());
+    assert_eq!((custody.maximum_requests, custody.maximum_bytes), ceilings);
+    assert_eq!(
+        custody.content().original_completed_objects_data().count(),
+        0
+    );
+    Ok(())
+}
+
+#[test]
+fn bootstrap_failed_data_census_counts_typed_banks_without_eligibility() -> TestResult {
+    use crate::connection::ReceivedFrame;
+    use crate::reference_packet::service::{
+        complete_restore::import18::bootstrap_ack::*,
+        native_startup::PacketNativeStartupAllocationRow,
+    };
+
+    let (_lease, _session, mut custody, _peer, envelope) = fixture(BANK_BYTES);
+    let row = PacketNativeStartupAllocationRow {
+        retained_requested_bytes: U64::new(0),
+        maximum_simultaneous_transient_bytes: U64::new(0),
+        declared_counter_scratch_bytes: U64::new(0),
+    };
+    let spare_bytes = || {
+        let mut bytes = Vec::with_capacity(131_072);
+        bytes.extend_from_slice(&[0; 32]);
+        Bytes::new(bytes)
+    };
+    let spare_schema = || {
+        let mut schema = String::with_capacity(8192);
+        schema.push_str("invalid failed-prefix DATA");
+        schema
+    };
+    let request = PacketNativeImport18BootstrapRequest {
+        schema: spare_schema(),
+        recipe_identity: spare_bytes(),
+        initial_funding: row,
+    };
+    let result = PacketNativeImport18BootstrapResult {
+        schema: spare_schema(),
+        state: PacketNativeImport18BootstrapAckState::BootstrapOnly,
+        recipe_identity: spare_bytes(),
+        initial_funding: row,
+    };
+    assert!(request.validate_data().is_err());
+    let bodies = [
+        PacketNativeImport18BootstrapReceivedBody::Request(request),
+        PacketNativeImport18BootstrapReceivedBody::Response(
+            PacketNativeImport18BootstrapResponseBody {
+                shape: ResponseShape::Completed {
+                    operation_state: OperationState::Completed,
+                    result: serde_json::from_value(json!({"independent": "x".repeat(4096)}))?,
+                    extensions: Extensions::new(),
+                },
+                result: Some(result),
+            },
+        ),
+        PacketNativeImport18BootstrapReceivedBody::Response(
+            PacketNativeImport18BootstrapResponseBody {
+                shape: ResponseShape::Accepted {
+                    operation_state: OperationState::NotStarted,
+                    result: serde_json::from_value(json!({"ineligible_prefix": "x".repeat(4096)}))?,
+                    extensions: Extensions::new(),
+                },
+                result: None,
+            },
+        ),
+        PacketNativeImport18BootstrapReceivedBody::Response(
+            PacketNativeImport18BootstrapResponseBody {
+                shape: ResponseShape::Error {
+                    operation_state: OperationState::NotStarted,
+                    error: ErrorRecord {
+                        code: "REFUSED".into(),
+                        message: "actual saved refusal".into(),
+                        effect: EffectCertainty::Unknown,
+                        retryable: false,
+                        details: serde_json::from_value(json!({"independent": "x".repeat(4096)}))?,
+                    },
+                    extensions: Extensions::new(),
+                },
+                result: None,
+            },
+        ),
+    ];
+
+    // These are unvalidated retained DTOs, not a native bootstrap exchange or
+    // allocation grant. Ineligibility cannot make their real backing disappear.
+    for body in bodies {
+        let owns_recipe = !matches!(&body, PacketNativeImport18BootstrapReceivedBody::Response(value) if value.result.is_none());
+        custody.unexpected = Some(ReceivedFrame {
+            envelope: envelope.clone(),
+            body: ReceivedBody::NativeImport18Bootstrap(Box::new(body)),
+        });
+        let facts = custody.retained_metadata_facts()?;
+
+        assert!(
+            facts.boxed_value_bytes
+                >= std::mem::size_of::<PacketNativeImport18BootstrapReceivedBody>()
+        );
+        if owns_recipe {
+            assert!(facts.vector_capacity_bytes >= 131_072);
+            assert!(facts.string_capacity_bytes >= 8192);
+        } else {
+            assert!(facts.string_capacity_bytes >= 4096);
+        }
+    }
     Ok(())
 }

@@ -25,6 +25,51 @@ pub enum PacketNativeImport18BootstrapReceivedBody {
     Response(PacketNativeImport18BootstrapResponseBody),
 }
 
+impl crate::retained_metadata::ObserveMetadata for PacketNativeImport18BootstrapReceivedBody {
+    fn observe_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        use PacketNativeImport18BootstrapRetainedData as Retained;
+
+        match self {
+            Self::Request(request) => Retained::Request(request).observe_data(observer),
+            Self::Response(response) => {
+                let PacketNativeImport18BootstrapResponseBody { shape, result } = response;
+                match shape {
+                    ResponseShape::Accepted {
+                        operation_state,
+                        result,
+                        extensions,
+                    }
+                    | ResponseShape::Completed {
+                        operation_state,
+                        result,
+                        extensions,
+                    } => {
+                        observer.observe(operation_state)?;
+                        observer.observe(result)?;
+                        observer.observe(extensions)?;
+                    }
+                    ResponseShape::Error {
+                        operation_state,
+                        error,
+                        extensions,
+                    } => {
+                        observer.observe(operation_state)?;
+                        observer.observe(error)?;
+                        observer.observe(extensions)?;
+                    }
+                }
+                if let Some(result) = result {
+                    Retained::Result(result).observe_data(observer)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Decodes the closed profile request after its independently funded raw prewalk.
 ///
 /// Actual feature/profile/current service ownership and receiving sequence are

@@ -17,6 +17,8 @@ use crucible_node_format::{HashRef, Id};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+mod storage;
+
 /// Retains one complete compact original and its last authentic response.
 ///
 /// The immutable banks contain every envelope field and preserve Number variants
@@ -137,8 +139,7 @@ impl CompactClientCustody {
     /// before invocation; independent views receive no alias discount.
     ///
     /// # Errors
-    /// Refuses checked census overflow, unsupported retained content metadata,
-    /// or unexpected typed traffic whose complete backing is not yet qualified.
+    /// Refuses checked census overflow or unsupported retained content metadata.
     pub fn retained_metadata_facts(
         &self,
     ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
@@ -153,14 +154,6 @@ impl CompactClientCustody {
             pending,
             unexpected,
         } = self;
-        // Typed bootstrap bodies can own banks independent of the envelope.
-        // Preserve them whole and refuse a partial census rather than reporting
-        // only the easier-to-observe envelope population.
-        if unexpected.is_some() {
-            return Err(ProviderError::ResourceExhausted(
-                "unexpected compact frame metadata is unqualified",
-            ));
-        }
         let mut observer = crate::retained_metadata::MetadataObserver::new();
         observer.observe(maximum_requests)?;
         observer.observe(maximum_bytes)?;
@@ -175,6 +168,9 @@ impl CompactClientCustody {
         }) = pending
         {
             observer.observe(envelope)?;
+        }
+        if let Some(frame) = unexpected {
+            observe_unexpected_frame(frame, &mut observer)?;
         }
         Ok(observer.finish())
     }
@@ -533,6 +529,41 @@ impl ClientSession {
         let response = custody.complete_response(&id)?;
         self.send(response)?;
         Ok(())
+    }
+}
+
+// The original envelope and decoded typed body are independently owning
+// populations even when their logical JSON is equal. No value-based discount
+// is valid for either the Box allocation or the body's nested backing.
+fn observe_unexpected_frame(
+    frame: &crate::connection::ReceivedFrame,
+    observer: &mut crate::retained_metadata::MetadataObserver,
+) -> Result<(), ProviderError> {
+    use crate::connection::{ReceivedBody, ReceivedFrame};
+
+    let ReceivedFrame { envelope, body } = frame;
+    observer.observe(envelope)?;
+    match body {
+        ReceivedBody::NativeImport18Bootstrap(body) => {
+            observer.boxed_value(body.as_ref())?;
+            observer.observe(body.as_ref())
+        }
+        ReceivedBody::Notification(body) => {
+            let crate::bodies::NotificationBody {
+                operation_state,
+                last_observation_sequence,
+                details,
+                extensions,
+            } = body.as_ref();
+            observer.boxed_value(body.as_ref())?;
+            observer.observe(operation_state)?;
+            observer.observe(last_observation_sequence)?;
+            observer.observe(details)?;
+            observer.observe(extensions)
+        }
+        // Only the two variants above enter this slot. A changed producer must
+        // extend the defining walk before its new owner can pass any census.
+        ReceivedBody::Request(_) | ReceivedBody::Response(_) => Err(changed()),
     }
 }
 

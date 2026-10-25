@@ -10,6 +10,46 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Compact journal backing and complete failed-frame census
+
+The compact custody now projects its full future journal backing from the
+unchanged local ceilings: all request/response banks share nine times the
+canonical-byte quota, while both namespace maps, their concrete entry layouts,
+duplicate map IDs and independent identity hash strings remain separate terms.
+Current use, negotiated entries and equal values provide no discount. Both
+bank constructors refuse any capacity differing from their measured demand,
+so allocator overcapacity cannot invalidate the aggregate bank bound.
+
+The actual retained-frame census now walks the complete independent envelope,
+box allocation and typed notification or bootstrap body. Bootstrap requests,
+common response shapes and separately retained typed results include actual
+spare capacities even for ineligible or malformed saved DTOs. Observation
+validates no bootstrap claim and cannot clear the retained frame or reopen
+its fenced stream.
+
+Nine focused SDK controls include the real socket paths, full actual journal
+maps with completed and unresolved originals, exact/short backing restrictions,
+and invalid bootstrap DATA with large independent banks. These controls supply
+no measured Child, Hello, Source or native phase authority.
+
+Both complete Transport suites pass 2,166 tests with zero failures and twenty
+ignored, using frozen compiler-selected artifacts. All-feature/all-target
+checking, scoped formatting and six architecture checks pass. Strict Transport
+Clippy retains the exact preceding code/message multiset: four existing
+large-enum errors and 1,726 warnings, with no diagnostics in the changed modules.
+It is not a strict lint pass.
+
+Application test-target compilation passes. Actual metadata records 185 test
+artifacts across 58 packages, including 76 integration targets; its captured
+source matches all 650 frozen owned Rust/Cargo inputs.
+
+The journal projection excludes content, original caller owners, all received
+and generated failure populations, connection storage, materialization and work
+counters. It is not a complete SDK funding row. Production Source reservations
+and constructors remain unchanged. Complete future R/T/S, genuine Source18
+selection, paired physical history codecs and the Initial/runtime handoff
+remain required; the full RFC remains unfinished.
+
 ## Compact SDK exchanges and failed-frame custody
 
 A distinct compact SDK custody owner now seals complete controller and provider
@@ -24,8 +64,8 @@ Received responses and provider originals enter an owning pending slot before
 fallible accounting or copying. Failure fences the actual stream while keeping
 that envelope and all earlier compact originals. Unsupported traffic retains
 its entire ReceivedFrame, including independently owned typed body backing;
-subsequent exchanges cannot discard it. Its census refuses until the complete
-typed population is qualified, rather than returning an envelope-only count.
+subsequent exchanges cannot discard it. At that stage its census refused
+unqualified typed populations; the complete actual walk is recorded above.
 
 Seven socket/serializer controls cover failed send, refusal before publication,
 received-response copy failure, cached responses and changed originals, real

@@ -96,7 +96,9 @@ impl CompactJson {
         let requested = Self::storage_bytes(value, maximum)?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(requested).map_err(|_| refused())?;
-        if bytes.capacity() > maximum {
+        // The aggregate journal bound prices measured banks, so allocator
+        // overcapacity cannot become an uncharged independent owner.
+        if bytes.capacity() != requested {
             return Err(refused());
         }
 
