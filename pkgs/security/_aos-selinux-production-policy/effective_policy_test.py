@@ -306,6 +306,21 @@ class EffectivePolicyTest(unittest.TestCase):
                     effective_policy.Access("init_t", "auditd_unit_t", "service", permission)
                 )
 
+    def test_native_manager_chrony_access_stays_with_startup(self) -> None:
+        for permission in ("start", "status"):
+            with self.subTest(permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access("init_t", "chronyd_unit_t", "service", permission)
+                )
+
+        for source in ("init_t", *effective_policy.owner_policy.OWNER_DOMAINS):
+            permissions = ("stop", "reload") if source == "init_t" else ("start", "stop", "reload")
+            for permission in permissions:
+                with self.subTest(source=source, permission=permission):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(source, "chronyd_unit_t", "service", permission)
+                    )
+
     def test_view_preparer_nosuid_entry_stays_with_the_manager(self) -> None:
         for role in ("source", "cache"):
             preparer = f"aos_sandbox_{role}_view_preparer_t"

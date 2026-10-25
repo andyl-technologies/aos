@@ -259,6 +259,7 @@ POSITIVE_ACCESS = (
     *accesses("init_t", "init_t", "system", ("status", "reload")),
     *accesses("init_t", "dbusd_unit_t", "service", ("start", "status")),
     *accesses("init_t", "auditd_unit_t", "service", ("start", "status")),
+    *accesses("init_t", "chronyd_unit_t", "service", ("start", "status")),
     *accesses(
         "init_t", "systemd_unit_t", "service", ("status", "start", "stop", "reload")
     ),
@@ -1178,6 +1179,7 @@ NEGATIVE_ACCESS = (
     *negative_access(), *OWNER_NEGATIVE,
     Access("init_t", "init_t", "system", "start"),
     *accesses("init_t", "auditd_unit_t", "service", ("stop", "reload")),
+    *accesses("init_t", "chronyd_unit_t", "service", ("stop", "reload")),
     *accesses(
         "init_t", "init_t", "perf_event",
         ("cpu", "kernel", "open", "read", "tracepoint", "write"),
