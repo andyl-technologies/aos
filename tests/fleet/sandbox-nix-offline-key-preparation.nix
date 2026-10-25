@@ -118,6 +118,7 @@ in {
   };
 
   testScript = ''
+    ${builtins.readFile ./_sandbox-startup-diagnostics.py}
     import shlex
 
     unit = "aos-sandbox-nix-floor-provision.service"
@@ -240,12 +241,17 @@ in {
         )
         vm.execute(f"systemctl reset-failed {unit}")
 
-    vm.succeed(f"systemctl start {unit}")
-    vm.wait_until_succeeds(
-        f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 0 && "
-        f"test $(systemctl show {unit} --property=ActiveState --value) = inactive",
-        timeout=120,
-    )
+    with startup_diagnostics(vm, unit):
+        vm.succeed(f"systemctl start {unit}")
+        vm.wait_until_succeeds(
+            f"test $(systemctl show {unit} --property=ActiveState --value) = inactive || "
+            f"test $(systemctl show {unit} --property=ActiveState --value) = failed",
+            timeout=120,
+        )
+        vm.succeed(
+            f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 0 && "
+            f"test $(systemctl show {unit} --property=ActiveState --value) = inactive"
+        )
     original = public_candidate_exports()
     assert len(original) == 1, original
     assert_candidate_reads_denied()
