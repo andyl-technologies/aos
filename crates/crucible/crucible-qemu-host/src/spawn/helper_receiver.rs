@@ -549,7 +549,7 @@ mod tests {
         assert!(matches!(
             observed,
             Err(QemuSpawnError::SourceAdmission {
-                source: crate::linux_attempt_host::OriginalActorAccountError::Supervision(source),
+                source: crate::OriginalAccountCheckError::Supervision(source),
             }) if source == first
         ));
         assert!(child.try_wait_natural_exit_raw().unwrap().is_none());

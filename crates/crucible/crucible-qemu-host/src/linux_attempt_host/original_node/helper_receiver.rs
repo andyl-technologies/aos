@@ -195,10 +195,10 @@ impl OriginalNativeFreshLaunchError {
         original: &HostOperationGuard,
     ) -> Result<
         crucible_host_resources::host_services::process_birth::SourceHostControlLease,
-        OriginalActorAccountError,
+        OriginalAccountCheckError,
     > {
         let bytes = crate::spawn::helper_receiver::retained_control_bytes()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let controls = self
             .retained_source_host()?
             .reserve_controls(crate::spawn::helper_receiver::DESCRIPTOR_PEAK, bytes)?;
@@ -476,7 +476,7 @@ mod tests {
         assert!(matches!(
             slot.first_cause(),
             Some(crate::QemuSpawnError::SourceAdmission {
-                source: OriginalActorAccountError::Unavailable,
+                source: OriginalAccountCheckError::Unavailable,
             })
         ));
         assert!(slot.child.is_none());

@@ -37,8 +37,7 @@ pub use normal_pool::{
 };
 mod original_node;
 mod original_roster;
-pub(crate) use native_account::OriginalAccountCheckError;
-pub use native_account::OriginalActorAccountError;
+pub use native_account::{OriginalAccountCheckError, OriginalActorAccountError};
 use native_resources::NativeResourceState;
 pub use native_resources::OriginalNativeControlRetirement;
 pub use native_resources::{LinuxQemuNativeResourceController, LinuxQemuNativeResourceError};

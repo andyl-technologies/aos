@@ -209,7 +209,7 @@ pub use linux_attempt_host::{
     LinuxQemuAttemptHostFactory, LinuxQemuAttemptHostOwner, LinuxQemuForkTargetPermit,
     LinuxQemuNativeNodeHost, LinuxQemuNativeResourceController, LinuxQemuNativeResourceError,
     LinuxQemuNativeWorldConstructor, LinuxQemuNativeWorldPreparation,
-    LinuxQemuNativeWorldPreparationOrigin, OriginalActorAccountError,
+    LinuxQemuNativeWorldPreparationOrigin, OriginalAccountCheckError, OriginalActorAccountError,
     OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
     OriginalNativeFreshLaunchError, OriginalNativeControlRetirement,
     OriginalNativePhysicalRetirement, QemuForkTargetConstructionError,

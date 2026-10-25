@@ -946,7 +946,7 @@ pub enum QemuSpawnError {
     SourceAdmission {
         /// The actual initiating nominal account refusal.
         #[source]
-        source: crate::linux_attempt_host::OriginalActorAccountError,
+        source: crate::OriginalAccountCheckError,
     },
     /// The active original configuration account refused before allocation.
     #[error("QEMU configuration admission refused: {0}")]

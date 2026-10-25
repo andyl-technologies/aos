@@ -405,31 +405,31 @@ impl LaunchCleanup {
     pub(crate) fn reserve_source_spawn_controls(
         &self,
         admission: &crate::linux_attempt_host::InstalledSourceAdmission,
-    ) -> Result<(), crate::linux_attempt_host::OriginalActorAccountError> {
+    ) -> Result<(), crate::linux_attempt_host::OriginalAccountCheckError> {
         let held = self
             .inner
             .source_purpose
             .lock()
-            .map_err(|_| crate::linux_attempt_host::OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| crate::linux_attempt_host::OriginalAccountCheckError::Unavailable)?;
         if !held
             .as_ref()
             .is_some_and(|purpose| purpose.same_owner(admission.host_purpose()))
         {
-            return Err(crate::linux_attempt_host::OriginalActorAccountError::Unavailable);
+            return Err(crate::linux_attempt_host::OriginalAccountCheckError::Unavailable);
         }
         let mut controls = self
             .inner
             .source_spawn_control
             .lock()
-            .map_err(|_| crate::linux_attempt_host::OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| crate::linux_attempt_host::OriginalAccountCheckError::Unavailable)?;
         if controls.is_some() || self.inner.child_started.load(Ordering::Acquire) {
-            return Err(crate::linux_attempt_host::OriginalActorAccountError::Unavailable);
+            return Err(crate::linux_attempt_host::OriginalAccountCheckError::Unavailable);
         }
         *controls = Some(
             admission
                 .host_purpose()
                 .reserve_controls(16, 0)
-                .map_err(crate::linux_attempt_host::OriginalActorAccountError::from)?,
+                .map_err(crate::linux_attempt_host::OriginalAccountCheckError::from)?,
         );
         Ok(())
     }

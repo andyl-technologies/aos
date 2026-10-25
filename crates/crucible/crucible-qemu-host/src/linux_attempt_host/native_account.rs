@@ -112,13 +112,15 @@ pub enum OriginalActorAccountError {
     Unavailable,
 }
 
-/// Reports observation of existing credit without carrying birth or return custody.
+/// Reports checks and fixed control admission against an existing account.
 ///
-/// These checks borrow retained authority or update its fixed ledger. Native pool
-/// issuance, physical return and cleanup retain their full custody payloads in
-/// [`OriginalActorAccountError`].
+/// These operations borrow retained authority or reserve controls in its fixed
+/// ledger. A refusal creates no native child or retained birth outcome. Native
+/// pool issuance, physical return and cleanup retain their full custody payloads
+/// in [`OriginalActorAccountError`]. Converting this error into that broader type
+/// moves the same concrete cause without allocating.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum OriginalAccountCheckError {
+pub enum OriginalAccountCheckError {
     /// The same authenticated normal purpose refused its checked observation.
     #[error("normal native purpose refused: {0}")]
     NativePurpose(#[from] ServiceBirthError),
