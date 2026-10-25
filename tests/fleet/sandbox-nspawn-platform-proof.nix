@@ -1,10 +1,14 @@
 # Executable nspawn phase-0 proof for the exact AOS kernel and systemd build.
 {
+  lib,
   mkSystem,
   pkgs,
+  systems,
   ...
-}: let
+} @ args: let
   passtVersion = pkgs.passt.version;
+  installedSystem = (import ./sandbox-host-phase0-readiness.nix args).machines.vm.system;
+  installedKernel = installedSystem.config.system.build.kernel;
 
   probe = pkgs.mkDerivation {
     pname = "aos-nspawn-platform-probe";
@@ -180,9 +184,12 @@
     '';
   };
 
-  system = mkSystem [
+  proofSystem = mkSystem [
     ../../systems/server-test.nix
     {
+      # Keep the lightweight proof userspace while exercising the Host's
+      # exact namespace, seccomp and BPF kernel implementation.
+      aos.kernel._extraConfigFragments = lib.mkForce installedSystem.config.aos.kernel._extraConfigFragments;
       environment.systemPackages = [
         pkgs.glibc-tools
         pkgs.iproute2
@@ -300,6 +307,10 @@
       };
     }
   ];
+  system =
+    if toString proofSystem.config.system.build.kernel == toString installedKernel
+    then proofSystem
+    else throw "nspawn platform proof must use the installed Host kernel";
 in {
   name = "sandbox-nspawn-platform-proof";
   timeout = 300;
