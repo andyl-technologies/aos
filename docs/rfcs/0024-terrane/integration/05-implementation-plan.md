@@ -121,10 +121,50 @@ unchanged physical identities and bytes across those operations, missing
 registration and coordination refusal without repair, and the original writable
 reopen regression. Both supported native SDK profiles and the actual CLI pass
 strict all-target Clippy. Python syntax, exact selector review, Nix formatting,
-PLAN-2 and guest derivation evaluation pass. Native qualification, renewed
-configured-maintenance qualification and mandatory application-target
-compilation are pending.
-No task acceptance changes.
+PLAN-2 and guest derivation evaluation pass. The qualifications below now
+cover this committed correction. No task acceptance changes.
+
+Renewed configured maintenance at `ff940f1b3f` passes in 712.919 seconds.
+Complete review binds all 8,246 immutable source files, both images,
+5,494/5,488 bound inputs, five retained Cargo executables and all fifteen
+enrollment controls. Original read-only bucket and authority mounts, actual
+UID 840 EROFS refusals, signed snapshots/publication, main-PID readiness,
+maintenance exchanges, private-state denial and original socket-name retirement
+pass together. This closes the preceding repository-reopen failure for this
+guest. The repository regression guest also passes in 1,517.054 seconds,
+with all four original cases and its retained Cargo executable bound to the
+same immutable source. All-feature cache qualification passes in 1,625.633
+seconds: review binds 5,505 inputs, four retained Cargo executables and three
+independent guest transcripts, including 257 ordinary and five creator cases.
+The recovery guest verifies automatic finite-consumer expiry through original
+inline-inode retirement and measured reclamation while the expired handle is
+retained. Application-target compilation passes in 1,561.689 seconds, producing
+190 test executables across 59 packages; it does not run those executables.
+All four stages retain identical source fingerprints before and after execution.
+Actual service-manager execution remains unqualified; acceptance stays at 28/64.
+
+The full-system fixture additionally exposes its exact system disk as a
+passthru so its ordinary package checks can be built in an AOS microVM before
+the original manager test runs on a KVM host. The new native-builder environment
+uses source-built tools, an actual Nix daemon, mandatory sandboxing, original
+guest build users and ext4-backed store/build/temporary data. Its fresh
+nonce-bound transport probe passes in 13.508 seconds: actual guest UID 30001
+maps to namespace UID 1000, effective capabilities are empty, the kernel boot
+identity matches the serial record, all three filesystems are ext4, the original
+source marker and kernel UID map return through the worker protocol, and the
+VM shuts down cleanly. A second fresh probe passes in 14.969 seconds and verifies
+the controller's two-output mode for combined probe/image qualification.
+The final source-bound two-output probe passes in 15.977 seconds with another
+fresh nonce and boot identity, including output import and orderly teardown.
+Metadata review also matches the exposed disk to the original manager manifest;
+the unchanged manager check still requires KVM. Host local builds are disabled;
+no external network interface, host mount or persistent daemon setting is created. Earlier
+prototype failures remain evidence. The initial Unix-daemon transport assumed
+a shared filesystem and failed output import; the qualified transport uses
+the full remote worker protocol through a local stdio relay to the guest.
+The full-system image passthru passes evaluation and dry-run only. Native
+provider checks and actual manager runtime remain unexecuted at this checkpoint.
+The probe grants no Terrane gate or task acceptance.
 
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The

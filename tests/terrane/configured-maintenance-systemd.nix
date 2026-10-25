@@ -197,6 +197,17 @@
       ${pkgs.python3}/bin/python3 ${image}/share/initial_enrollment_vm.py ${image} ${pkgs.terrane.src} maintenance-systemd
     '';
   };
+  # Build this exact input in the native builder before running the manager
+  # test on a KVM host. Provider checks keep their ordinary derivations.
+  withBuildImage = test:
+    test
+    // {
+      passthru =
+        test.passthru
+        // {
+          systemDisk = testing.mkTestDisk {inherit system;};
+        };
+    };
   expected = {
     source = toString pkgs.terrane.src;
     configuration = system.config.environment.etc."terrane/terrane.toml".text;
@@ -206,7 +217,7 @@
     }) ["serve" "publish" "gc"]);
   };
 in
-  testing.mkVMTest {
+  withBuildImage (testing.mkVMTest {
     name = "terrane-native-configured-maintenance-systemd-ext4";
     inherit system;
     timeout = 300;
@@ -221,4 +232,4 @@ in
       vm.succeed("${pkgs.bash}/bin/bash ${guest}/run-proof >/dev/console 2>&1", timeout=240)
       vm.succeed("test $(cat /proc/1/comm) = systemd")
     '';
-  }
+  })

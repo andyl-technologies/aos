@@ -63,13 +63,44 @@ Both the fixture and independent supervisor emit their exact completion
 witnesses; the guest reports `TEST_RESULT:PASS` and successful Firecracker exit.
 Native filesystem, quota and confinement operations execute inside the guest.
 
+## Expiry through physical eviction
+
+Renewed all-feature cache qualification at
+`ff940f1b3fe1825c552a00ec85260ad7e02ef531` passes in 1,625.633 seconds.
+Its aggregate is
+`/nix/store/icfcij6lfvp42y2953pspqys658n77ra-terrane-native-host-cache-all-features-scenarios-0`.
+Complete review matches 8,246 immutable source files, 5,505 bound inputs and
+four retained actual Cargo executables across all three independent guests.
+The unit inventory remains 257 ordinary and five creator cases.
+
+The renewed recovery guest is
+`/nix/store/21qnyw72c6sf0phiql1gnsng5njk4l0g-aos-vm-test-terrane-native-host-cache-all-features-recovery-ext4-0`.
+Its serial log SHA-256 is
+`6f194f2897db6fb7f10fda6a37ce3a22d299603bd344f5aceb2167ce9677202e`.
+The `source-cleanup` fixture and independent supervisor now additionally verify:
+
+- A finite consumer remains retained while its original lease expires. No
+  explicit release or sweep is issued for that consumer. The ordinary worker
+  removes its exact durable pin, lease and hold after the effective deadline
+  and release grace; independent inspection observes the removal before
+  retirement of the original inline inode.
+- Original queued-pin, restoration, unrelated-consumer and release-grace
+  controls still run. After the remaining eligible protections close, the
+  original inline object is evicted and measured physical usage falls while
+  the expired consumer handle remains retained.
+- The original last-descriptor and quota observations still establish actual
+  reclamation. Both new completion witnesses occur in the actual guest log,
+  followed by `TEST_RESULT:PASS` and successful Firecracker exit.
+
+This closes the earlier component gap between periodic expiry and physical
+eviction for the exercised inline-object scenario. It also qualifies the
+cache suite against the intervening read-only coordination and repository-open
+changes; the historical evidence above remains unchanged.
+
 ## Remaining acceptance boundary
 
-This proves the exercised periodic consumer-expiry lifecycle. The scenario
-deliberately preserves producer custody, so it does not prove that an otherwise
-eligible object is physically evicted after the final expired consumer pin.
-Physical eviction, retained-kernel-reference accounting, configured service
-deployment and the other T-HOST-1 requirements need their own complete audits
-and integrated qualification. The evidence above predates the read-only
-coordination fix at `9d89554155`; it does not qualify that fix. No task checkbox
-or accepted-task count changes follow from this component audit.
+Configured service deployment, retained-kernel-reference accounting and the
+other T-HOST-1 requirements still require their complete audits and integrated
+qualification. Consumer-handle expiry does not establish closure of retained
+exposure descriptors or mappings (D-133). No task checkbox or accepted-task
+count changes follow from this component audit.
