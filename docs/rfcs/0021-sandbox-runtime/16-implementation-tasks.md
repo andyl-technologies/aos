@@ -319,6 +319,18 @@ Recent committed startup fixes close narrower prerequisites:
   live-policy comparison, without an installed caller, protected writer,
   independent key provenance or initial-floor publication authority.
 
+- Initial unit observation now owns its separately Source-paid current-thread
+  Runtime and finite readonly manager. Two actual PID1 property observations
+  compare the recipient invocation with the original capture and reject
+  transient/drop-in units. The held immutable fragment must match both the
+  Source's raw unit digest and the profile digest after replacing exactly its
+  one profile OpenFile line with `@AOS_METHOD46_INITIAL_STARTUP_PROFILE@`.
+  Actual bytes, native results and failures stay resident. Manager and file posts
+  are independently attempted before Source after. All 25 focused regressions
+  pass; exact-source complete Rust target compilation is running. Installed
+  positive capture, full unit hardening, independent key provenance, protected
+  writer custody and actual initial-floor publication remain unqualified.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they
