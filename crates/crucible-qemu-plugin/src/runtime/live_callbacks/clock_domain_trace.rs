@@ -19,8 +19,10 @@
 //! its consecutive occurrences at one coordinate and prints the 2nd, 4th,
 //! 8th, ... of that run: a node that keeps returning to the same point, the
 //! shape of a stall, prints there however late it happens, while isolated
-//! occurrences at new coordinates stay quiet. The rows are diagnostic only
-//! and never feed a guest-visible value or a scheduling choice.
+//! occurrences at new coordinates stay quiet. When the export is missing or
+//! refuses a read, the row still prints the plugin's side and replaces QEMU's
+//! terms with `qemu=unavailable`. The rows are diagnostic only and never feed
+//! a guest-visible value or a scheduling choice.
 
 use std::ffi::c_void;
 use std::io::Write as _;
@@ -90,15 +92,15 @@ static LAST_ALREADY_DUE: [AtomicU64; 2] = [AtomicU64::new(u64::MAX), AtomicU64::
 
 /// Records one already-due idle pass and prints QEMU's clock terms when due.
 pub(super) fn note_already_due(plugin_ps: u64, deadline_ps: Option<u64>, raw: u64) {
-    let Some(read) = read_qemu_clock() else {
-        return;
-    };
+    let read = read_qemu_clock();
     let deadline = deadline_ps.unwrap_or(u64::MAX);
     let previous_ps = LAST_ALREADY_DUE[0].swap(plugin_ps, Ordering::Relaxed);
     let previous_deadline = LAST_ALREADY_DUE[1].swap(deadline, Ordering::Relaxed);
     let repeated = previous_ps == plugin_ps && previous_deadline == deadline;
-    let qemu_not_due = deadline_ps.is_some_and(|deadline| {
-        u64::try_from(read.virtual_ps).map_or(true, |virtual_ps| virtual_ps < deadline)
+    let qemu_not_due = read.is_some_and(|read| {
+        deadline_ps.is_some_and(|deadline| {
+            u64::try_from(read.virtual_ps).map_or(true, |virtual_ps| virtual_ps < deadline)
+        })
     });
 
     for (reason, hit) in [
@@ -125,16 +127,13 @@ pub(super) fn note_due_now(
         | IdleWakeCause::DeviceIoFreeze
         | IdleWakeCause::SchedulerCeiling => return,
     };
-    let Some(read) = read_qemu_clock() else {
-        return;
-    };
     print_row(
         Reason::DueNowOther,
         cause,
         plugin_ps,
         deadline_ps,
         raw,
-        read,
+        read_qemu_clock(),
     );
 }
 
@@ -144,7 +143,7 @@ fn print_row(
     plugin_ps: u64,
     deadline_ps: Option<u64>,
     raw: u64,
-    read: QemuClockDiagnostic,
+    read: Option<QemuClockDiagnostic>,
 ) {
     let index = reason.index();
     let count = COUNTS[index]
@@ -162,17 +161,27 @@ fn print_row(
         return;
     }
     let deadline = deadline_ps.map_or_else(|| String::from("none"), |value| value.to_string());
+    // A refused or missing export still prints the plugin's side, so a stall
+    // names its cause even when QEMU's clock terms are unreadable.
+    let qemu = read.map_or_else(
+        || String::from("qemu=unavailable"),
+        |read| {
+            format!(
+                "virtual_ps={} qemu_deadline_ps={} qemu_raw={} sim_tick_bias={} icount_bias_ps={} warp_start={}",
+                read.virtual_ps,
+                read.deadline_ps,
+                read.raw_icount,
+                read.sim_tick_bias,
+                read.icount_bias_ps,
+                read.warp_start,
+            )
+        },
+    );
     let _ = writeln!(
         std::io::stderr().lock(),
-        "CRUCIBLE-CLOCK-DOMAIN-V1 pid={} reason={} cause={cause} count={count} run={run} plugin_ps={plugin_ps} deadline_ps={deadline} raw={raw} virtual_ps={} qemu_deadline_ps={} qemu_raw={} sim_tick_bias={} icount_bias_ps={} warp_start={}",
+        "CRUCIBLE-CLOCK-DOMAIN-V1 pid={} reason={} cause={cause} count={count} run={run} plugin_ps={plugin_ps} deadline_ps={deadline} raw={raw} {qemu}",
         std::process::id(),
         reason.name(),
-        read.virtual_ps,
-        read.deadline_ps,
-        read.raw_icount,
-        read.sim_tick_bias,
-        read.icount_bias_ps,
-        read.warp_start,
     );
 }
 
