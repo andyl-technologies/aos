@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from inspect_compiler_execution import inspect, parse_execution_trace
+from inspect_compiler_execution import compilation_inventory, inspect, parse_execution_trace
 
 
 def execution(pid, executable, arguments, result="0"):
@@ -38,6 +38,8 @@ class ExecutionTraceTests(unittest.TestCase):
         complete = execution(10, "/compiler", ["compiler", "source.rs"])
         invalid = [
             "", complete.rstrip(), "10 execve( <unfinished ...>\n",
+            complete + "109 ???( <detached ...>\n",
+            complete + "109 ???( <unfinished ...>\n",
             "10 <... execve resumed>) = 0\n",
             complete.replace('["compiler", "source.rs"]', "[...]"),
             complete.replace('["compiler", "source.rs"]', '["compiler", 3]'),
@@ -51,6 +53,22 @@ class ExecutionTraceTests(unittest.TestCase):
         for trace in invalid:
             with self.subTest(trace=trace), self.assertRaises(ValueError):
                 parse_execution_trace(trace)
+
+    def test_requested_command_scope_retains_undecoded_tasks(self):
+        complete = execution(10, "/compiler", ["compiler", "source.rs"])
+        unresolved = "109 ???( <detached ...>\n"
+
+        report = parse_execution_trace(complete + unresolved, retain_unresolved_tasks=True)
+
+        self.assertEqual(len(report["executions"]), 1)
+        self.assertEqual(report["unresolved_task_records"], [
+            {"pid": 109, "record": "???( <detached ...>"},
+        ])
+        with self.assertRaises(ValueError):
+            parse_execution_trace(unresolved, retain_unresolved_tasks=True)
+        with self.assertRaises(ValueError):
+            parse_execution_trace(complete.removesuffix(" = 0\n") + " <unfinished ...>\n"
+                                  + "10 ???( <detached ...>\n", retain_unresolved_tasks=True)
 
 
 class CompilerInspectionTests(unittest.TestCase):
@@ -99,6 +117,47 @@ class CompilerInspectionTests(unittest.TestCase):
                 self.trace.write_text("\n".join(line for line in self.valid.splitlines() if missing not in line) + "\n")
                 with self.assertRaises(ValueError):
                     self.inspect()
+
+    def test_unresolved_tasks_do_not_satisfy_missing_compiler_requests(self):
+        self.trace.write_text(self.valid + "109 ???( <detached ...>\n")
+
+        report = inspect(self.trace, self.requested, self.rustc, self.gcc, self.linker,
+                         retain_unresolved_tasks=True)
+
+        self.assertFalse(report["execution_capture"]["complete"])
+        self.requested.write_text(self.requested.read_text() * 2)
+        with self.assertRaisesRegex(ValueError, "requested compiler invocations differ"):
+            inspect(self.trace, self.requested, self.rustc, self.gcc, self.linker,
+                    retain_unresolved_tasks=True)
+
+
+class CompilationInventoryTests(unittest.TestCase):
+    def request(self, source="src/lib.rs"):
+        return {"schema_version": 1, "directory": "/fixture/crates/demo",
+                "arguments": ["rustc", source], "environment": {"CARGO_PKG_VERSION": "1.0.0"}}
+
+    def test_order_is_immaterial_but_duplicate_requests_remain_visible(self):
+        first, second = self.request(), self.request("src/main.rs")
+        self.assertEqual(compilation_inventory([first, second]), compilation_inventory([second, first]))
+        self.assertNotEqual(compilation_inventory([first, second]), compilation_inventory([first, first, second]))
+        self.assertEqual(compilation_inventory([first, first])["units"], 2)
+
+    def test_queries_do_not_replace_source_requests(self):
+        query = {"schema_version": 1, "arguments": ["rustc", "--print=cfg"]}
+        self.assertEqual(compilation_inventory([self.request(), query]), compilation_inventory([self.request()]))
+        with self.assertRaisesRegex(ValueError, "no source"):
+            compilation_inventory([query])
+
+    def test_arguments_directories_and_captured_metadata_are_bound(self):
+        original = self.request()
+        changed = [
+            {**original, "arguments": [*original["arguments"], "-Copt-level=3"]},
+            {**original, "directory": "/other/source"},
+            {**original, "environment": {"CARGO_PKG_VERSION": "2.0.0"}},
+        ]
+        for request in changed:
+            with self.subTest(request=request):
+                self.assertNotEqual(compilation_inventory([original]), compilation_inventory([request]))
 
 
 if __name__ == "__main__":

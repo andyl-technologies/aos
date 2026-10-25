@@ -62,6 +62,7 @@ in
     }cargo";
     inherit cargoSource;
     captureCompilerArguments = true;
+    retainExecutionTrace = true;
     packages = ["aos-cli"];
     cargoFlags = pkgs.lib.optionals fleet ["--features" "release-fleet-fixture"];
   })

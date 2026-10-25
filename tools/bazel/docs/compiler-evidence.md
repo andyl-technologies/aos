@@ -120,6 +120,40 @@ This observes execution, without establishing compiler-default equivalence or
 expanding native linker response files. The GPL component documentation links
 the retained run and its exact limitations.
 
+CLI ordinary and fleet oracles also require execution inspection. Their
+temporary Cargo baseline traces only the offline compilation phase, retaining
+`compiler-exec.log` and a matching `compiler-compile-arguments.jsonl` snapshot.
+Tests subsequently execute without tracing. The profile gate fingerprints all
+source compilation requests, preserving arguments, directory, Cargo metadata,
+and multiplicity while ignoring record ordering. It requires the full profiled
+source inventory to match the independently observed phase and binds the
+observed compiler's SHA-256 to the native-default conformance compiler.
+Later compiler queries without source files do not change this inventory;
+the inspector separately checks every compiler request in the traced phase.
+Run either `default.cargo-execution-inspection` or
+`fleet.cargo-execution-inspection` in `tools/bazel/tests/aos-cli.nix` to expose
+the inspection separately from case and profile parity. Observed GCC/linker
+commands and toolchain closure stay available for further native qualification.
+
+CLI requested-command inspection explicitly retains undecoded `???(` task
+records in `execution_capture.unresolved_task_records`; they never contribute
+an execution or satisfy a requested command. The ordinary parser mode still
+rejects them. Capture with any such record has `complete = false`, and the
+separate `default.cargo-complete-execution` and `fleet.cargo-complete-execution`
+gates fail. Earlier ordinary and fleet captures each contained an undecoded
+task record; kernel syscall filtering also reproduced the failure and is not
+a qualified repair. The latest retained ordinary and fleet captures contain
+no undecoded records and pass strict parsing. This qualifies those concrete
+captures without establishing a general tracer repair. `compiler-trace-conformance` exercises 96 queries, eight linked
+compilations and executions, exact requested-command coverage, and strict
+rejection of undecoded records. This bounded coverage must not be reported as
+a complete execution stream when unresolved records are present, or complete
+native compiler/linker equivalence. The
+[retained public CLI qualification](../tests/evidence/cli-observed-native-execution.json)
+binds 639 ordinary and 645 fleet source requests to independently observed
+compiler executions. It retains the earlier incomplete captures as strict
+negative controls, alongside the clean current captures.
+
 The compiler-option conformance gate checks selected interpretation rules
 against the declared source-built Rust compiler. Three compilations of a fixed
 `no_std` fixture establish that repeated metadata values accumulate: their LLVM
@@ -289,12 +323,12 @@ identical compiler cfg inventories.
 The profile verifier binds the conformance compiler's SHA-256 to each actual
 Bazel Rust compiler input and rejects targets outside the probed native target.
 Four rejection tests cover compiler/digest drift, missing or ambiguous inputs,
-unexecuted compilers, failed probes, and foreign targets. Cargo traces do not
-record executable digests, so their provenance still depends on the separately
-retained Nix derivations. The [native-default receipt](../tests/evidence/cli-native-profile-defaults.json)
+unexecuted compilers, failed probes, and foreign targets.
+The [native-default receipt](../tests/evidence/cli-native-profile-defaults.json)
 retains all probe results and bindings for 635 ordinary and 641 fleet Rust
 compiler actions, reusing the prior application test artifacts and native
-baselines. These checks support the selected profile default
+baselines. That historical receipt predates the independent native execution
+binding described above. These checks support the selected profile default
 interpretations; incremental compilation, codegen-unit defaults, procedural-macro
 linking, complete application artifact/ABI/runtime equivalence, and other
 platforms remain separate acceptance work.

@@ -2,6 +2,8 @@
 {
   pkgs,
   cargo,
+  compilerArguments ? "${cargo}/compiler-arguments.jsonl",
+  retainUnresolvedTasks ? false,
   pname ? "aos-bazel-compiler-execution-inspection",
 }: let
   toolNames = [
@@ -27,6 +29,8 @@
   inputs = {
     schema_version = 1;
     cargo = toString cargo;
+    compiler_arguments = toString compilerArguments;
+    retain_unresolved_tasks = retainUnresolvedTasks;
     toolchain_closure = toString compilerClosure;
     rustc = "${pkgs.rust}/bin/rustc.unwrapped";
     gcc = "${pkgs.gccUnwrapped}/bin/gcc";
@@ -42,8 +46,9 @@ in
       -s ${tools} -p test_compiler_execution.py -v > "$out/parser-tests.log" 2>&1
     ${pkgs.python3}/bin/python3 ${tools}/inspect_compiler_execution.py \
       --trace ${cargo}/compiler-exec.log \
-      --cargo-arguments ${cargo}/compiler-arguments.jsonl \
+      --cargo-arguments ${compilerArguments} \
       --rustc ${inputs.rustc} --gcc ${inputs.gcc} --linker ${inputs.linker} \
+      ${pkgs.lib.optionalString retainUnresolvedTasks "--retain-unresolved-tasks"} \
       --output "$out/execution.json"
     cp ${compilerClosure}/inventory.json "$out/toolchain-closure.json"
     printf '%s\n' ${pkgs.lib.escapeShellArg (builtins.toJSON inputs)} > "$out/inputs.json"

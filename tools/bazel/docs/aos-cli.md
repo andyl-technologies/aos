@@ -83,7 +83,8 @@ compiler defaults, native C/C++ and linker settings, ABI/runtime behavior,
 editor/release/foreign profiles, cache behavior, and performance require their
 own qualification. `test-parity` exposes the case comparison separately;
 `oracle` retains `parity.json`, `execution-profiles.json`, `strip-semantics.json`,
-and `profile-semantics.json`.
+`profile-semantics.json`, `native-compiler-execution.json`, and
+`native-toolchain-closure.json`.
 
 The ordinary and fleet profile gates also require complete external unit
 inventories, matched by package, version, crate name, Rust library kind,
@@ -109,12 +110,37 @@ through both the wrapped and unwrapped compiler with identical binary bytes.
 Five isolated comparisons require identical binaries, including implicit versus
 explicit native targets. The gate binds the probed unwrapped compiler's SHA-256
 to every Bazel Rust execution's compiler input and rejects foreign targets.
-Native Cargo traces lack executable digests; their provenance remains bound
-through the retained Nix derivations. These fixture comparisons do not qualify
+The independent native execution check binds every profiled source request to
+observed unwrapped compiler execution and requires that compiler to match the
+probe's digest. These fixture comparisons do not qualify
 incremental codegen or complete application/linker equivalence.
 The [compiler evidence guide](compiler-evidence.md) describes this bounded
 conformance check. Complete remaining compiler options, native C/linker and
 ABI/runtime/editor/platform/performance qualification remain separate work.
+
+`default.cargo-execution-inspection` and `fleet.cargo-execution-inspection`
+inspect source-built `strace` logs from the offline native compilation phase.
+Every requested compiler call must reach the declared unwrapped Rust compiler;
+the declared GCC and linker must also execute. Tracing stops before the test
+phase. A separate snapshot preserves exactly the compiler requests belonging
+to compilation; later noncompiling Cargo queries remain visible in the ordinary
+profile trace. Source-request fingerprints preserve duplicate requests,
+arguments, working directories, and captured Cargo metadata. Changed or
+unobserved requests, another compiler, or failed inspection reject the profile
+gate. An undecoded `???(` task record cannot satisfy any compiler request.
+CLI inspection explicitly retains these records and marks execution capture
+incomplete, while the parser's strict mode continues to reject them. The
+separate `default.cargo-complete-execution` and `fleet.cargo-complete-execution`
+gates reject such captures. Requested-command coverage does not qualify those
+gates. The concurrent `compiler-trace-conformance` probe checks this distinction
+with 96 compiler queries, eight linked compilations, and strict negative
+controls. The
+[retained public oracle run](../tests/evidence/cli-observed-native-execution.json)
+passes 543 ordinary and 551 fleet cases, with 1,261 and 1,270 uncached Linux
+sandbox actions. Both concrete native captures also pass strict parsing; the
+earlier incomplete captures remain negative controls, without a tracer repair
+claim. Native linker response files and complete native flag parity remain
+separate checks.
 
 The [retained native test-profile run](../tests/evidence/cli-native-test-profiles.json)
 passes all 543 ordinary and 551 fleet cases. It pairs 79 and 85 first-party

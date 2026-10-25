@@ -2,7 +2,7 @@
 
 import unittest
 
-from rust_profiles import bind_native_defaults, generator_sources, macro_key, match_macros, native_macros, option, profile
+from rust_profiles import bind_native_defaults, bind_native_execution, generator_sources, macro_key, match_macros, native_macros, option, profile
 
 
 class RustProfileTests(unittest.TestCase):
@@ -164,6 +164,72 @@ class NativeDefaultBindingTests(unittest.TestCase):
         receipt["status"] = "FAIL"
         with self.assertRaisesRegex(ValueError, "did not pass"):
             bind_native_defaults(receipt, actions, events)
+
+
+class NativeExecutionBindingTests(unittest.TestCase):
+    def fixture(self):
+        from inspect_compiler_execution import compilation_inventory
+
+        requests = [{"schema_version": 1, "directory": "/source/crates/demo",
+                     "arguments": ["rustc", "src/lib.rs"], "environment": {"CARGO_PKG_VERSION": "1.0.0"}}]
+        defaults = {"compiler_sha256": "a" * 64}
+        receipt = {"schema_version": 1,
+                   "status": "PASS: requested compiler invocations reached the declared unwrapped compiler",
+                   "tools": {"rustc": {"sha256": "a" * 64}},
+                   "requested_compilation_inventory": compilation_inventory(requests),
+                   "execution_capture": {"complete": True, "unresolved_task_records": []},
+                   "inputs_sha256": {"execution": "b" * 64}}
+        return requests, defaults, receipt
+
+    def test_profiles_bind_to_observed_requests_and_the_probed_compiler(self):
+        requests, defaults, receipt = self.fixture()
+        result = bind_native_execution(receipt, requests, defaults)
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["compilation_inventory"]["units"], 1)
+
+    def test_failed_inspection_and_another_compiler_are_rejected(self):
+        requests, defaults, receipt = self.fixture()
+        with self.assertRaisesRegex(ValueError, "requires"):
+            bind_native_execution(receipt, requests, None)
+        with self.assertRaisesRegex(ValueError, "different compiler"):
+            bind_native_execution(receipt, requests, {"compiler_sha256": "c" * 64})
+
+        receipt["status"] = "FAIL"
+        with self.assertRaisesRegex(ValueError, "did not pass"):
+            bind_native_execution(receipt, requests, defaults)
+
+    def test_unobserved_duplicate_or_changed_source_requests_are_rejected(self):
+        for mode in ["extra", "duplicate", "arguments", "environment", "directory"]:
+            requests, defaults, receipt = self.fixture()
+            if mode == "extra":
+                requests.append({"arguments": ["rustc", "src/other.rs"]})
+            elif mode == "duplicate":
+                requests *= 2
+            elif mode == "arguments":
+                requests[0]["arguments"].append("-Copt-level=3")
+            elif mode == "environment":
+                requests[0]["environment"]["CARGO_PKG_VERSION"] = "2.0.0"
+            else:
+                requests[0]["directory"] = "/other/source"
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "differ from observed"):
+                bind_native_execution(receipt, requests, defaults)
+
+    def test_later_noncompiling_queries_do_not_change_the_source_inventory(self):
+        requests, defaults, receipt = self.fixture()
+        requests.append({"schema_version": 1, "arguments": ["rustc", "-vV"]})
+        self.assertEqual(bind_native_execution(receipt, requests, defaults)["status"], "PASS")
+
+    def test_requested_command_binding_preserves_incomplete_capture(self):
+        requests, defaults, receipt = self.fixture()
+        receipt["execution_capture"] = {
+            "complete": False,
+            "unresolved_task_records": [{"pid": 109, "record": "???( <detached ...>"}],
+        }
+
+        result = bind_native_execution(receipt, requests, defaults)
+
+        self.assertFalse(result["execution_capture"]["complete"])
+        self.assertEqual(result["execution_capture"], receipt["execution_capture"])
 
 
 if __name__ == "__main__":

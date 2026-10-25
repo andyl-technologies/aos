@@ -25,6 +25,14 @@
   testConfiguration = fleet: let
     candidate = import ../../../tests/build/_bazel-aos-cli.nix {inherit pkgs fleet;};
     cargo = import ../../../tests/build/_bazel-aos-cli-cargo.nix {inherit pkgs fleet;};
+    cargo-execution-inspection = import ../../../tests/build/_bazel-compiler-execution.nix {
+      inherit pkgs cargo;
+      compilerArguments = "${cargo}/compiler-compile-arguments.jsonl";
+      # Some traced tasks disappear before strace can decode their syscall.
+      # Retain them without treating requested-command coverage as a complete trace.
+      retainUnresolvedTasks = true;
+      pname = "aos-bazel-aos-cli-${profile}-compiler-execution-inspection";
+    };
     editor = import ../../../tests/build/_bazel-aos-cli-editor.nix {inherit pkgs fleet;};
     profile =
       if fleet
@@ -41,6 +49,7 @@
       inherit pkgs cargo parity;
       compareStrip = true;
       compareNativeDefaults = true;
+      nativeExecution = cargo-execution-inspection;
       externalRepositoryPrefix = "@@+aos_tools_repository+aos_aos_cli_";
       pname = "aos-bazel-aos-cli-${profile}-test-profiles";
       build = candidate.tests;
@@ -49,7 +58,20 @@
     candidate
     // editor
     // {
-      inherit cargo execution-profiles;
+      inherit cargo cargo-execution-inspection execution-profiles;
+      cargo-complete-execution = pkgs.runCommand "aos-bazel-aos-cli-${profile}-complete-native-execution" {buildDeps = [pkgs.python3];} ''
+        mkdir -p "$out"
+        ${pkgs.python3}/bin/python3 - ${cargo-execution-inspection}/execution.json <<'PY'
+        import json
+        from pathlib import Path
+        import sys
+
+        capture = json.loads(Path(sys.argv[1]).read_text())["execution_capture"]
+        if not capture["complete"] or capture["unresolved_task_records"]:
+            raise ValueError("complete native execution capture remains unqualified: " + str(capture))
+        PY
+        cp ${cargo-execution-inspection}/execution.json "$out/execution.json"
+      '';
       test-parity = parity;
       oracle = pkgs.runCommand "aos-bazel-aos-cli-${profile}-qualified-test-profiles" {buildDeps = [parity execution-profiles];} ''
         mkdir -p "$out"
@@ -57,9 +79,12 @@
         cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
         cp ${execution-profiles}/strip-semantics.json "$out/strip-semantics.json"
         cp ${execution-profiles}/profile-semantics.json "$out/profile-semantics.json"
+        cp ${cargo-execution-inspection}/execution.json "$out/native-compiler-execution.json"
+        cp ${cargo-execution-inspection}/toolchain-closure.json "$out/native-toolchain-closure.json"
       '';
     };
 in {
+  compiler-trace-conformance = import ../qualification/compiler-trace.nix {inherit pkgs;};
   architecture = pkgs.runCommand "aos-bazel-architecture-cargo-parity" {buildDeps = [pkgs.python3];} ''
     mkdir -p "$out"
     ${pkgs.python3}/bin/python3 ${./verify_architecture.py} \

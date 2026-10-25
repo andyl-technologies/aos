@@ -15,7 +15,23 @@ import re
 from verify_compiler_options import cargo_compilation_source
 
 
-def parse_execution_trace(contents):
+def compilation_inventory(requested):
+    """Fingerprints source requests while preserving duplicates and metadata."""
+    compilations = sorted(
+        json.dumps(record, sort_keys=True, separators=(",", ":"))
+        for record in requested
+        if any(not argument.startswith("-") and argument.endswith(".rs")
+               for argument in record["arguments"])
+    )
+    if not compilations:
+        raise ValueError("native compiler request inventory has no source compilations")
+    return {
+        "units": len(compilations),
+        "sha256": hashlib.sha256(json.dumps(compilations, separators=(",", ":")).encode()).hexdigest(),
+    }
+
+
+def parse_execution_trace(contents, *, retain_unresolved_tasks=False):
     """Reassembles concurrent exec calls and rejects abbreviated or partial data."""
     if not contents or not contents.endswith("\n"):
         raise ValueError("empty or incomplete execution trace")
@@ -23,12 +39,20 @@ def parse_execution_trace(contents):
     decoder = json.JSONDecoder()
     pending = {}
     executions = []
+    unresolved = []
     failed = 0
     for line in contents.splitlines():
         prefix = re.fullmatch(r"(\d+)\s+(.*)", line)
         if prefix is None or int(prefix[1]) == 0:
             raise ValueError("unsupported execution trace prefix")
         pid, message = int(prefix[1]), prefix[2]
+        if retain_unresolved_tasks and message in {
+            "???( <detached ...>", "???( <unfinished ...>",
+        }:
+            if pid in pending:
+                raise ValueError("undecoded task interrupted a pending execution")
+            unresolved.append({"pid": pid, "record": message})
+            continue
         if message.endswith("<unfinished ...>"):
             if pid in pending or not message.startswith("execve("):
                 raise ValueError("ambiguous unfinished execution")
@@ -71,13 +95,14 @@ def parse_execution_trace(contents):
         raise ValueError("unfinished executions at end of trace")
     if not executions:
         raise ValueError("execution trace contains no successful calls")
-    return {"executions": executions, "failed_exec_attempts": failed}
+    return {"executions": executions, "failed_exec_attempts": failed,
+            "unresolved_task_records": unresolved}
 
 
-def inspect(trace, cargo_arguments, rustc, gcc, linker):
+def inspect(trace, cargo_arguments, rustc, gcc, linker, *, retain_unresolved_tasks=False):
     """Requires every requested compiler invocation to reach the declared compiler."""
     contents = trace.read_text()
-    parsed = parse_execution_trace(contents)
+    parsed = parse_execution_trace(contents, retain_unresolved_tasks=retain_unresolved_tasks)
     requested = [json.loads(line) for line in cargo_arguments.read_text().splitlines()]
     if not requested or any(record.get("schema_version") != 1 for record in requested):
         raise ValueError("missing or unsupported requested compiler invocations")
@@ -111,6 +136,11 @@ def inspect(trace, cargo_arguments, rustc, gcc, linker):
         "schema_version": 1,
         "status": "PASS: requested compiler invocations reached the declared unwrapped compiler",
         "compiler_invocations": len(compiler), "requested_invocations": len(requested),
+        "requested_compilation_inventory": compilation_inventory(requested),
+        "execution_capture": {
+            "complete": not parsed["unresolved_task_records"],
+            "unresolved_task_records": parsed["unresolved_task_records"],
+        },
         "direct_version_queries": [{"arguments": list(arguments), "count": count}
                                    for arguments, count in sorted(direct_queries.items())],
         "first_party_units": units,
@@ -125,6 +155,7 @@ def inspect(trace, cargo_arguments, rustc, gcc, linker):
             "The requested and unwrapped compiler arguments must match apart from argv[0]; future wrapper expansion requires an explicit mapping.",
             "Environment values and native linker response-file contents are not expanded here.",
             "This parser accepts the observed execve format; other syscall formats fail closed.",
+            "Explicitly retained undecoded task records never satisfy compiler coverage; their presence leaves complete execution capture unqualified.",
         ],
     }
 
@@ -137,8 +168,10 @@ def main():
     parser.add_argument("--gcc", type=Path, required=True)
     parser.add_argument("--linker", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--retain-unresolved-tasks", action="store_true")
     options = parser.parse_args()
-    report = inspect(options.trace, options.cargo_arguments, options.rustc, options.gcc, options.linker)
+    report = inspect(options.trace, options.cargo_arguments, options.rustc, options.gcc, options.linker,
+                     retain_unresolved_tasks=options.retain_unresolved_tasks)
     options.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 
 

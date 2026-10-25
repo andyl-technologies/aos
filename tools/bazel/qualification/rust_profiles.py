@@ -108,8 +108,37 @@ def bind_native_defaults(receipt, actions, events):
         "executed_compiler_paths": sorted(observed), "actions": len(actions),
         "limits": [
             "The probe compiler digest matches each executed Bazel Rust compiler input; selected native target spellings are checked.",
-            "Native Cargo traces do not retain executable digests; their compiler provenance still depends on the separately retained Nix derivations.",
+            "Without the optional native execution binding, Cargo compiler provenance still depends on the separately retained Nix derivations.",
             "This binding does not qualify incremental codegen, complete compiler options, linker/ABI, application bytes, or runtime closure.",
+        ],
+    }
+
+
+def bind_native_execution(receipt, invocations, defaults):
+    """Requires all profiled native source requests to reach the probed compiler."""
+    from inspect_compiler_execution import compilation_inventory
+
+    if defaults is None:
+        raise ValueError("native execution binding requires compiler-default conformance")
+    if receipt.get("schema_version") != 1 or receipt.get("status") != (
+        "PASS: requested compiler invocations reached the declared unwrapped compiler"
+    ):
+        raise ValueError("native compiler execution inspection did not pass")
+    if receipt["tools"]["rustc"]["sha256"] != defaults["compiler_sha256"]:
+        raise ValueError("native execution used a different compiler from the default probe")
+    inventory = compilation_inventory(invocations)
+    if receipt["requested_compilation_inventory"] != inventory:
+        raise ValueError("profiled native compilations differ from observed execution requests")
+    return {
+        "status": "PASS", "compiler_sha256": defaults["compiler_sha256"],
+        "compilation_inventory": inventory,
+        "execution_trace_sha256": receipt["inputs_sha256"]["execution"],
+        "execution_capture": receipt["execution_capture"],
+        "limits": [
+            "All source requests used by the profile audit belong to the independently observed compilation phase, with identical arguments, directories and captured Cargo metadata.",
+            "Compiler queries without source files are outside the inventory fingerprint; the execution inspector separately checks every traced request.",
+            "Observing the declared compiler, GCC and linker does not establish native flag, linker-response-file, ABI or runtime equivalence.",
+            "Requested-command coverage does not qualify a complete execution stream when the retained capture contains unresolved task records.",
         ],
     }
 
@@ -229,7 +258,14 @@ def match_macros(actions, reports, native, compare_strip=False):
     ]
 
 
-def verify(build, cargo, compare_strip=False, external_repository_prefix=None, native_defaults=None):
+def verify(
+    build,
+    cargo,
+    compare_strip=False,
+    external_repository_prefix=None,
+    native_defaults=None,
+    native_execution=None,
+):
     """Audits every first-party compiler unit and configured procedural macro."""
     evidence = build / "evidence"
     events = execution_events(build)
@@ -273,6 +309,10 @@ def verify(build, cargo, compare_strip=False, external_repository_prefix=None, n
 
     trace = cargo / "compiler-arguments.jsonl"
     invocations = [json.loads(line) for line in trace.read_text().splitlines()]
+    execution_binding = (
+        bind_native_execution(native_execution, invocations, defaults_binding)
+        if native_execution is not None else None
+    )
     reports = json.loads((build / "inventory.json").read_text())["configured_targets"]
     macros = match_macros(actions, reports, native_macros(invocations), compare_strip)
     external = None
@@ -287,6 +327,7 @@ def verify(build, cargo, compare_strip=False, external_repository_prefix=None, n
         "first_party_units": first_party, "procedural_macros": macros,
         "strip_compared": compare_strip, "external": external,
         "native_defaults": defaults_binding,
+        "native_execution": execution_binding,
         "evidence_sha256": {name: hashlib.sha256((evidence / name).read_bytes()).hexdigest()
                             for name in ["actions.json", "execution.json", "compiler-inputs.json"]},
         "native_trace_sha256": hashlib.sha256(trace.read_bytes()).hexdigest(),
@@ -307,9 +348,17 @@ def main():
     parser.add_argument("--compare-strip", action="store_true")
     parser.add_argument("--external-repository-prefix")
     parser.add_argument("--native-defaults", type=Path)
+    parser.add_argument("--native-execution", type=Path)
     options = parser.parse_args()
     defaults = json.loads(options.native_defaults.read_text()) if options.native_defaults else None
-    report = verify(options.build, options.cargo, options.compare_strip, options.external_repository_prefix, defaults)
+    execution = json.loads(options.native_execution.read_text()) if options.native_execution else None
+    report = verify(
+        options.build, options.cargo,
+        compare_strip=options.compare_strip,
+        external_repository_prefix=options.external_repository_prefix,
+        native_defaults=defaults,
+        native_execution=execution,
+    )
     options.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 
 

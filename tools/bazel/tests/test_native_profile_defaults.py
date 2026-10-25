@@ -7,4 +7,4 @@ from unittest.mock import patch
 
 qualification = Path(__file__).resolve().parents[1] / "qualification"
 with patch.object(sys, "path", [str(qualification), *sys.path]):
-    from test_rust_profiles import NativeDefaultBindingTests
+    from test_rust_profiles import NativeDefaultBindingTests, NativeExecutionBindingTests
