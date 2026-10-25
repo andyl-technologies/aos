@@ -1277,6 +1277,15 @@ oracle identity and trace hash are retained separately. Persistent editor
 lifecycle, shared-cache restoration, production cutover and performance
 acceptance remain separate.
 
+The [built-in cfg checkpoint](tests/evidence/quota-editor-profile-cfg.json)
+also requires all 12 configured editor crates to match the native compiler's
+optimized query. Both selected roots retain `rust_analyzer`, and whole-model
+inference remains complete with no diagnostics. The packaged editor route
+checks the same cfg values and authenticates its macro bytes; its 40 actions
+execute uncached in Linux sandboxes. All eight cases and ordinary compiler
+profile actions remain unchanged. The flight binary and VM derivation retain
+their qualified identities; this checkpoint reuses the earlier VM result.
+
 The quota family owns `aos-linux-project-quota`, its unit tests and the
 `project-quota-flight` example. Its separate `quota` dependency profile retains
 Cargo's small libc/rustix/thiserror feature graph rather than inheriting the

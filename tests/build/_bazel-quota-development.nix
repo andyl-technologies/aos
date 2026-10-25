@@ -3,6 +3,7 @@
   pkgs,
   editor,
   tests,
+  editorBuiltinCfg,
 }: let
   scripts = builtins.path {
     path = ../../tools/bazel/tests;
@@ -30,7 +31,7 @@ in
         //crates/linux/aos-linux-project-quota:project-quota-flight \
         --execution_log_json_file="$out/editor/evidence/execution.json"
     ln -s ${editor}/execution.json "$out/baseline/evidence/execution.json"
-    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${scripts} ${pkgs.python3}/bin/python3 - "$out" <<'PYTHON'
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${scripts} ${pkgs.python3}/bin/python3 - "$out" ${editorBuiltinCfg}/evidence.json <<'PYTHON'
     from collections import Counter
     import hashlib
     import json
@@ -47,6 +48,18 @@ in
             expected.extend(item["digest"]["hash"] for item in event["actualOutputs"] if item["path"].endswith(".so"))
     assert len(expected) == 1, expected
     project = json.loads((output / "editor/rust-project.json").read_text())
+    builtin_cfg = json.loads(Path(sys.argv[2]).read_text())
+    assert builtin_cfg["status"] == "PASS"
+    cfgs = builtin_cfg["native_cfg"]
+    names = ({cfg.partition("=")[0] for cfg in cfgs}
+             - {"feature", "test", "rust_analyzer", "proc_macro"}) | {"debug_assertions"}
+    for crate in project["crates"]:
+        actual_cfg = sorted(cfg for cfg in crate["cfg"]
+                            if cfg.partition("=")[0] in names or cfg.startswith("target_"))
+        assert actual_cfg == cfgs, (crate["root_module"], actual_cfg, cfgs)
+        if crate["is_workspace_member"]:
+            assert "rust_analyzer" in crate["cfg"], crate
+
     graph = verify(project, json.loads(Path("${tests}/inventory.json").read_text()),
                    {"aos-linux-project-quota": "crates/linux/aos-linux-project-quota"},
                    Path("${pkgs.aosBazelQuotaEditorWorkspace.source}"))
@@ -69,6 +82,8 @@ in
         "test_configuration": "${pkgs.aosBazelQuotaWorkspace.configuration}",
         "editor_configuration": "${pkgs.aosBazelQuotaEditorWorkspace.configuration}",
         "qualified_editor": "${editor}",
+        "qualified_builtin_cfg": str(Path(sys.argv[2]).parent),
+        "builtin_cfg_matches_native": True,
         "limits": [
             "Runs packaged launchers on immutable development snapshots with private batch output bases and no shared action cache.",
             "Eight ordinary unit cases run. Exported editor roots, features and macro bytes are authenticated; full analyzer diagnostics are qualified separately.",

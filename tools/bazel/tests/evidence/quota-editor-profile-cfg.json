@@ -1,0 +1,524 @@
+{
+  "all_selected_source_bytes_match_checkout": true,
+  "checkout_parent": "b34028e4e98e896e6257c3301135394ff1c1e924",
+  "command": "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-build default.nix -A checks.build.bazel.quota.all --no-out-link --keep-going --max-jobs 2 --cores 4 --option substitute false",
+  "declarations_sha256": {
+    "pkgs/build-support/_bazel/editor-cfg.nix": "6908fa795d6996378ab8971a1e1aead637bac78b8211e033c865ced677fe6ac6",
+    "tests/build/_bazel-editor-builtin-cfg.nix": "569c60535eaaa841abd6984d64b816f5d51635a1780584cf870795191744490c",
+    "tests/build/_bazel-quota-development.nix": "ca470afe2dd397f16260fa60afec0bbbb9a1f04c5998b9739808498b3319d72f",
+    "tests/build/_bazel-quota.nix": "555a2cfa0836f84a6f8ce836409ddc316c8bc3442d015d5a2e136fe11ba9d81d",
+    "tests/build/_bazel-rust-family.nix": "e382f159c5ddb3099ae4744686475174f09e5d570490b9bdd649b2873c473010",
+    "tests/build/_bazel-rust-test-profiles.nix": "80bb140556f108a56376909540c23510418ea559494b67f030d535362f9c7ff1",
+    "tools/bazel/metadata/editor_cfg.py": "814f64697b93b860de5dadbefb9ba337a9b5c5763a68bd21613ead487d83800a"
+  },
+  "development": {
+    "builtin_cfg_matches_native": true,
+    "editor_configuration": "/nix/store/b4rmy2i8fmp71mm58vfavzana9nrc06q-aos-bazel-configuration.json",
+    "editor_launcher": "/nix/store/4lcz649lgfai4a3i0cxnhvqkbdpvx7gl-aos-bazel",
+    "graph": {
+      "crate_count": 12,
+      "proc_macros": [
+        "thiserror_impl"
+      ],
+      "roots": {
+        "crates/linux/aos-linux-project-quota/examples/project-quota-flight.rs": [],
+        "crates/linux/aos-linux-project-quota/src/lib.rs": []
+      }
+    },
+    "limits": [
+      "Runs packaged launchers on immutable development snapshots with private batch output bases and no shared action cache.",
+      "Eight ordinary unit cases run. Exported editor roots, features and macro bytes are authenticated; full analyzer diagnostics are qualified separately.",
+      "The exported project names temporary sandbox paths and is retained as evidence, not a persistent editor configuration."
+    ],
+    "macro_sha256": {
+      "thiserror_impl": "46248ca30ce0b19d88a9ec1f993d0fd6841ac73dd34cb661837ab174233dbbf4"
+    },
+    "qualified_builtin_cfg": "/nix/store/gbq5hs6y98iszha9m833fkyllfci55dj-aos-bazel-quota-editor-builtin-cfg",
+    "qualified_editor": "/nix/store/vkkqynzwy87i6cxwvc6m79q21qxxj4b1-aos-bazel-quota-editor",
+    "runs": {
+      "editor": {
+        "actions": 40,
+        "execution_sha256": "fd3819910c4b7409794989b10fdcb5a3b940c7eb829c2e82bd79678396f20780",
+        "mnemonics": {
+          "CargoBuildScriptRun": 5,
+          "ExtractCargoTomlEnvVars": 13,
+          "Rustc": 22
+        }
+      },
+      "tests": {
+        "actions": 39,
+        "execution_sha256": "87c49961fccb3c71875204b462a4e0e84ffb0ff31c11033bef76aba39a5b5247",
+        "mnemonics": {
+          "CargoBuildScriptRun": 5,
+          "ExtractCargoTomlEnvVars": 13,
+          "Rustc": 20,
+          "TestRunner": 1
+        }
+      }
+    },
+    "schema_version": 1,
+    "status": "PASS",
+    "test_configuration": "/nix/store/4bwwzgpb3kqzak901gcn2aaglsnp0cbk-aos-bazel-configuration.json",
+    "test_launcher": "/nix/store/4qlkqpp31ppbqips453hmdp6iyk1gl34-aos-bazel"
+  },
+  "editor": {
+    "analysis": {
+      "complete_inference": true,
+      "exprs": {
+        "partial": 0,
+        "total": 3711,
+        "unknown": 0
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 746,
+        "unknown": 0
+      }
+    },
+    "diagnostics": [],
+    "roots": {
+      "crates/linux/aos-linux-project-quota/examples/project-quota-flight.rs": [],
+      "crates/linux/aos-linux-project-quota/src/lib.rs": []
+    }
+  },
+  "editor_builtin_cfg": {
+    "cargo": "/nix/store/5rwicmsl6b7mg70avmhcw2rkid8dzjd3-aos-bazel-quota-editor-cargo-oracle",
+    "compiler_query": {
+      "arguments": [
+        "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc",
+        "-O",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--print",
+        "cfg"
+      ],
+      "cfg": [
+        "panic=\"unwind\"",
+        "target_abi=\"\"",
+        "target_arch=\"x86_64\"",
+        "target_endian=\"little\"",
+        "target_env=\"gnu\"",
+        "target_family=\"unix\"",
+        "target_feature=\"fxsr\"",
+        "target_feature=\"sse\"",
+        "target_feature=\"sse2\"",
+        "target_has_atomic=\"16\"",
+        "target_has_atomic=\"32\"",
+        "target_has_atomic=\"64\"",
+        "target_has_atomic=\"8\"",
+        "target_has_atomic=\"ptr\"",
+        "target_has_atomic_primitive_alignment=\"16\"",
+        "target_has_atomic_primitive_alignment=\"32\"",
+        "target_has_atomic_primitive_alignment=\"64\"",
+        "target_has_atomic_primitive_alignment=\"8\"",
+        "target_has_atomic_primitive_alignment=\"ptr\"",
+        "target_os=\"linux\"",
+        "target_pointer_width=\"64\"",
+        "target_vendor=\"unknown\"",
+        "unix"
+      ]
+    },
+    "configuration_checks": {
+      "default_exporter_preserved": true,
+      "explicit_cfg_query_changes_configuration": true,
+      "foreign_target_cfg_rejected": true,
+      "invalid_cfg_flags_rejected": true
+    },
+    "configured_crates": 12,
+    "editor": "/nix/store/vkkqynzwy87i6cxwvc6m79q21qxxj4b1-aos-bazel-quota-editor",
+    "limits": [
+      "Compares explicit exported built-in cfg fields with the actual native analyzer query; feature, test, graph and diagnostic parity remain independent checks.",
+      "The native target cfg query is independent of host macro compilation. This does not qualify execution-tool compiler defaults or a foreign target."
+    ],
+    "native_cfg": [
+      "panic=\"unwind\"",
+      "target_abi=\"\"",
+      "target_arch=\"x86_64\"",
+      "target_endian=\"little\"",
+      "target_env=\"gnu\"",
+      "target_family=\"unix\"",
+      "target_feature=\"fxsr\"",
+      "target_feature=\"sse\"",
+      "target_feature=\"sse2\"",
+      "target_has_atomic=\"16\"",
+      "target_has_atomic=\"32\"",
+      "target_has_atomic=\"64\"",
+      "target_has_atomic=\"8\"",
+      "target_has_atomic=\"ptr\"",
+      "target_has_atomic_primitive_alignment=\"16\"",
+      "target_has_atomic_primitive_alignment=\"32\"",
+      "target_has_atomic_primitive_alignment=\"64\"",
+      "target_has_atomic_primitive_alignment=\"8\"",
+      "target_has_atomic_primitive_alignment=\"ptr\"",
+      "target_os=\"linux\"",
+      "target_pointer_width=\"64\"",
+      "target_vendor=\"unknown\"",
+      "unix"
+    ],
+    "native_query": [
+      "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc",
+      "-O",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "--print",
+      "cfg"
+    ],
+    "native_trace_sha256": "5fc1115b4be2adc9542c7ea552d6c085fb81940675dfbb9e2509eacb6e6c47a2",
+    "project_sha256": "90329aacc5d8c3d70190fb18df7ba9487e7744ba7f85c90ad16c88f8ef83fd49",
+    "schema_version": 1,
+    "selected_roots": {
+      "0": {
+        "cfg": [
+          "panic=\"unwind\"",
+          "rust_analyzer",
+          "target_abi=\"\"",
+          "target_arch=\"x86_64\"",
+          "target_endian=\"little\"",
+          "target_env=\"gnu\"",
+          "target_family=\"unix\"",
+          "target_feature=\"fxsr\"",
+          "target_feature=\"sse\"",
+          "target_feature=\"sse2\"",
+          "target_has_atomic=\"16\"",
+          "target_has_atomic=\"32\"",
+          "target_has_atomic=\"64\"",
+          "target_has_atomic=\"8\"",
+          "target_has_atomic=\"ptr\"",
+          "target_has_atomic_primitive_alignment=\"16\"",
+          "target_has_atomic_primitive_alignment=\"32\"",
+          "target_has_atomic_primitive_alignment=\"64\"",
+          "target_has_atomic_primitive_alignment=\"8\"",
+          "target_has_atomic_primitive_alignment=\"ptr\"",
+          "target_os=\"linux\"",
+          "target_pointer_width=\"64\"",
+          "target_vendor=\"unknown\"",
+          "test",
+          "unix"
+        ],
+        "root": "/build/workspace/crates/linux/aos-linux-project-quota/examples/project-quota-flight.rs"
+      },
+      "1": {
+        "cfg": [
+          "panic=\"unwind\"",
+          "rust_analyzer",
+          "target_abi=\"\"",
+          "target_arch=\"x86_64\"",
+          "target_endian=\"little\"",
+          "target_env=\"gnu\"",
+          "target_family=\"unix\"",
+          "target_feature=\"fxsr\"",
+          "target_feature=\"sse\"",
+          "target_feature=\"sse2\"",
+          "target_has_atomic=\"16\"",
+          "target_has_atomic=\"32\"",
+          "target_has_atomic=\"64\"",
+          "target_has_atomic=\"8\"",
+          "target_has_atomic=\"ptr\"",
+          "target_has_atomic_primitive_alignment=\"16\"",
+          "target_has_atomic_primitive_alignment=\"32\"",
+          "target_has_atomic_primitive_alignment=\"64\"",
+          "target_has_atomic_primitive_alignment=\"8\"",
+          "target_has_atomic_primitive_alignment=\"ptr\"",
+          "target_os=\"linux\"",
+          "target_pointer_width=\"64\"",
+          "target_vendor=\"unknown\"",
+          "test",
+          "unix"
+        ],
+        "root": "/build/workspace/crates/linux/aos-linux-project-quota/src/lib.rs"
+      }
+    },
+    "status": "PASS"
+  },
+  "evidence_sha256": {
+    "editor-builtin-cfg.json": "3bbeeb91f3edff50a10a785d9c439757813b7de5fe1ab2bbfa30af5cc7b6ff43",
+    "editor-parity.json": "28ff4bb2a8dc435d71125b82768956d0b6a68cd27149b65f4b6bb3a1c863db6c",
+    "execution-profiles.json": "e444a767f45c585366ac357e9c0d4dc499e4f42fbf1e8a0d3d2803209a5c516b",
+    "inventory.json": "895a1327f140f2cba11ce3eda44c5b65d6cecff5ae6fcea547db9e1f4be22f39",
+    "parity.json": "0d9bffc40bd50e9cf48ecf3ef595da05cbf85fb8cbf9b8cdfc734fa7185650c5"
+  },
+  "execution_profiles": {
+    "actions": {
+      "//crates/linux/aos-linux-project-quota:unit_binary": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2927581445",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "s",
+          "overflow-checks": "yes",
+          "strip": "none"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_quota_crates__thiserror-impl-2.0.18//:thiserror_impl": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2165323272",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "yes",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      }
+    },
+    "build": "/nix/store/nf2rbnlpllffkbsk6f2xbkfjxkwspq4n-aos-bazel-quota-tests-1",
+    "cargo": "/nix/store/yyardb7sh1qxbz0gbggp77rxld1lka8r-aos-bazel-quota-cargo-oracle-1",
+    "cargo_actions": {
+      "aos_linux_project_quota": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "aos_linux_project_quota",
+          "--edition=2024",
+          "linux/aos-linux-project-quota/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--emit=dep-info,link",
+          "-C",
+          "opt-level=s",
+          "-C",
+          "embed-bitcode=no",
+          "--deny=clippy::unwrap_used",
+          "--deny=clippy::float_arithmetic",
+          "--deny=clippy::expect_used",
+          "--deny=clippy::disallowed_types",
+          "--deny=clippy::disallowed_methods",
+          "--deny=clippy::all",
+          "-C",
+          "debug-assertions=on",
+          "--test",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=7e5046629a6b35b6",
+          "-C",
+          "extra-filename=-5c9414e7f9547cd3",
+          "--out-dir",
+          "/build/target/debug/deps",
+          "-C",
+          "incremental=/build/target/debug/incremental",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/debug/deps",
+          "--extern",
+          "libc=/build/target/debug/deps/liblibc-ccd9cfd7b3a04a24.rlib",
+          "--extern",
+          "rustix=/build/target/debug/deps/librustix-6217a4194f504ad2.rlib",
+          "--extern",
+          "thiserror=/build/target/debug/deps/libthiserror-2858908bc9777945.rlib"
+        ],
+        "compiler_options": {
+          "debug-assertions": "on",
+          "embed-bitcode": "no",
+          "extra-filename": "-5c9414e7f9547cd3",
+          "incremental": "/build/target/debug/incremental",
+          "opt-level": "s",
+          "strip": "debuginfo"
+        }
+      },
+      "thiserror_impl": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "thiserror_impl",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/thiserror-impl-2.0.18/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=62eac5bb1334cab3",
+          "-C",
+          "extra-filename=-e8cf5e400c92e407",
+          "--out-dir",
+          "/build/target/debug/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/debug/deps",
+          "--extern",
+          "proc_macro2=/build/target/debug/deps/libproc_macro2-dd78d7fcf2329066.rlib",
+          "--extern",
+          "quote=/build/target/debug/deps/libquote-99ec1feb57c81716.rlib",
+          "--extern",
+          "syn=/build/target/debug/deps/libsyn-3847ff59bf282c9c.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "embed-bitcode": "no",
+          "extra-filename": "-e8cf5e400c92e407",
+          "strip": "debuginfo"
+        }
+      }
+    },
+    "cargo_trace_sha256": "fa6031b006f874175ee3c63a79090d935462482e8c1314375debbc911c8ad6ee",
+    "evidence_sha256": {
+      "actions.json": "e9878a0f42a903be31b2c0801a4e7838e4cb4c7a9d51d9b679cae05feeabd83c",
+      "compiler-inputs.json": "4db862968817e665bf925bdb0b318b13180fd0a4851099fd9b4a30a47d9af07a",
+      "execution.json": "fae8ca6cd5cd6ce180e3ab2b3e4579ce4d994d457f652c6cd3c30192aba0f229"
+    },
+    "limits": [
+      "Checks selected target and macro profiles, not complete compiler/default, native ABI, linker, editor, production, or performance equivalence."
+    ],
+    "schema_version": 1,
+    "status": "PASS"
+  },
+  "family": "quota",
+  "limits": [
+    "Selected test and macro scalar profiles are checked against actual native Cargo requests. Complete compiler/default, ABI and linker equivalence remain separate.",
+    "Explicit built-in cfg fields match the actual native analyzer query. This does not qualify arbitrary effective analyzer cfg unions or foreign targets.",
+    "Persistent editor lifecycle, production cutover, shared-cache invalidation and performance acceptance remain separate qualification work.",
+    "The earlier quota VM evidence is retained for comparison and was not reexecuted by this editor-only checkpoint."
+  ],
+  "parity": {
+    "doctests": {
+      "//crates/linux/aos-linux-project-quota:doc": {}
+    },
+    "executed_cases": 8,
+    "first_party_features": {
+      "aos-linux-project-quota": [
+        []
+      ]
+    },
+    "ignored_cases": 0,
+    "libtest_reports": 1,
+    "upstream_feature_identities": 10
+  },
+  "paths": {
+    "all": "/nix/store/3b0f07178kwpl96c6rv7nhpk2na39mdc-aos-bazel-quota-qualified-checks",
+    "cargo": "/nix/store/yyardb7sh1qxbz0gbggp77rxld1lka8r-aos-bazel-quota-cargo-oracle-1",
+    "developer-build": "/nix/store/i6jr1vl13j3m8l2md3bnr81cxp2zwqra-aos-bazel-quota-developer-tools-1",
+    "developer-tests": "/nix/store/qvxcmbd867n3f7wg4jlxg46id57zadqy-aos-bazel-quota-format-1",
+    "development": "/nix/store/yap796b121zh0hnk22vjbs64y2ll1qfc-aos-bazel-quota-development",
+    "editor": "/nix/store/vkkqynzwy87i6cxwvc6m79q21qxxj4b1-aos-bazel-quota-editor",
+    "editor-builtin-cfg": "/nix/store/gbq5hs6y98iszha9m833fkyllfci55dj-aos-bazel-quota-editor-builtin-cfg",
+    "editor-cargo-oracle": "/nix/store/5rwicmsl6b7mg70avmhcw2rkid8dzjd3-aos-bazel-quota-editor-cargo-oracle",
+    "editor-parity": "/nix/store/bv912av36h475dsnq2bxz159rsswasqz-aos-bazel-quota-editor-parity",
+    "editorWorkspace": {
+      "configuration": "/nix/store/b4rmy2i8fmp71mm58vfavzana9nrc06q-aos-bazel-configuration.json",
+      "source": "/nix/store/ypi25qvqrb8hwzkjs1chn5q4p1vz10wd-aos-bazel-workspace"
+    },
+    "execution-profiles": "/nix/store/j8q925y0rgdvby8yd4fjf52yqwwdbn2f-aos-bazel-quota-execution-profiles",
+    "flight": "/nix/store/j4xb2wk2qkwfpvbwcb0nvzrpz9cxy3nj-aos-linux-project-quota-0.1.0",
+    "installation": "/nix/store/d7z14ma0s95rw2h2jhf481gbnnf0q8ab-aos-bazel-quota-flight-installation",
+    "oracle": "/nix/store/4vrk7crpw3hs4ij6mplhsxrk7adpiddx-aos-bazel-quota-cargo-parity",
+    "tests": "/nix/store/nf2rbnlpllffkbsk6f2xbkfjxkwspq4n-aos-bazel-quota-tests-1",
+    "vm": "/nix/store/gffk0lh3vh64qnbf0jparfqmqhmchb7f-aos-vm-test-crucible-project-quota-0",
+    "workspace": {
+      "configuration": "/nix/store/4bwwzgpb3kqzak901gcn2aaglsnp0cbk-aos-bazel-configuration.json",
+      "source": "/nix/store/ypi25qvqrb8hwzkjs1chn5q4p1vz10wd-aos-bazel-workspace"
+    }
+  },
+  "qualified_checks": "/nix/store/3b0f07178kwpl96c6rv7nhpk2na39mdc-aos-bazel-quota-qualified-checks",
+  "runs": {
+    "developer-build": {
+      "cache_hits": 0,
+      "executed_actions": 42,
+      "execution_sha256": "ca45634e8e3b537968d7d4d0f6f017eaf7900d2379d74b1d3d6eef0fc40b700f",
+      "mnemonics": {
+        "CargoBuildScriptRun": 5,
+        "Clippy": 3,
+        "ExtractCargoTomlEnvVars": 13,
+        "Rustc": 20,
+        "Rustdoc": 1
+      },
+      "path": "/nix/store/i6jr1vl13j3m8l2md3bnr81cxp2zwqra-aos-bazel-quota-developer-tools-1"
+    },
+    "developer-tests": {
+      "cache_hits": 0,
+      "executed_actions": 7,
+      "execution_sha256": "fa5629c25bdf960644fbcbcc5af0e9b0d7506dd701e572fd528c000aff9c9e95",
+      "mnemonics": {
+        "Rustc": 5,
+        "TestRunner": 2
+      },
+      "path": "/nix/store/qvxcmbd867n3f7wg4jlxg46id57zadqy-aos-bazel-quota-format-1"
+    },
+    "editor": {
+      "cache_hits": 0,
+      "executed_actions": 40,
+      "execution_sha256": "6aeaf2d23839c365b7a4c224c5dafcc0f1e48a786d8afd580ac91dc0dc930b5b",
+      "mnemonics": {
+        "CargoBuildScriptRun": 5,
+        "ExtractCargoTomlEnvVars": 13,
+        "Rustc": 22
+      },
+      "path": "/nix/store/vkkqynzwy87i6cxwvc6m79q21qxxj4b1-aos-bazel-quota-editor"
+    },
+    "packaged-editor": {
+      "cache_hits": 0,
+      "executed_actions": 40,
+      "execution_sha256": "fd3819910c4b7409794989b10fdcb5a3b940c7eb829c2e82bd79678396f20780",
+      "mnemonics": {
+        "CargoBuildScriptRun": 5,
+        "ExtractCargoTomlEnvVars": 13,
+        "Rustc": 22
+      },
+      "path": "/nix/store/yap796b121zh0hnk22vjbs64y2ll1qfc-aos-bazel-quota-development/editor"
+    },
+    "packaged-tests": {
+      "cache_hits": 0,
+      "executed_actions": 39,
+      "execution_sha256": "87c49961fccb3c71875204b462a4e0e84ffb0ff31c11033bef76aba39a5b5247",
+      "mnemonics": {
+        "CargoBuildScriptRun": 5,
+        "ExtractCargoTomlEnvVars": 13,
+        "Rustc": 20,
+        "TestRunner": 1
+      },
+      "path": "/nix/store/yap796b121zh0hnk22vjbs64y2ll1qfc-aos-bazel-quota-development/tests"
+    },
+    "tests": {
+      "cache_hits": 0,
+      "executed_actions": 46,
+      "execution_sha256": "fae8ca6cd5cd6ce180e3ab2b3e4579ce4d994d457f652c6cd3c30192aba0f229",
+      "mnemonics": {
+        "CargoBuildScriptRun": 5,
+        "ExtractCargoTomlEnvVars": 13,
+        "Rustc": 24,
+        "RustdocTestWriter": 1,
+        "TestRunner": 3
+      },
+      "path": "/nix/store/nf2rbnlpllffkbsk6f2xbkfjxkwspq4n-aos-bazel-quota-tests-1"
+    }
+  },
+  "schema_version": 1,
+  "source_files_checked": 5,
+  "source_hashes_sha256": "d0f9e319eca555f3b874aebd95622dbdc046fbbb6c93fad6a8191b891420121c",
+  "status": "PASS",
+  "unchanged_vm_baseline": {
+    "installed_flight": "/nix/store/j4xb2wk2qkwfpvbwcb0nvzrpz9cxy3nj-aos-linux-project-quota-0.1.0",
+    "installed_flight_sha256": "6fcb43df50a75c18ff45bd8f87e2de6e1275ad76444ed5bcf8dcb0eea0f5efda",
+    "reexecuted": false,
+    "report": "tools/bazel/tests/evidence/quota-profile-ext4-vm.json",
+    "serial_sha256": "75e335c49e09d9df86e632439ea59ac72a4ccd7aa212c0e55657f5a6d9d29be7",
+    "sha256": "3c496eb423ade1d6a911fce29c95bdbdb9620fd9b30e06b6fb24a4c1e856bfed",
+    "vm": "/nix/store/gffk0lh3vh64qnbf0jparfqmqhmchb7f-aos-vm-test-crucible-project-quota-0"
+  }
+}

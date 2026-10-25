@@ -14,6 +14,7 @@
     execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     # Native analyzer cfg queries are optimized independently of test targets.
     editorTargetRustcFlags = [];
+    editorCfgFlags = [];
     retainTestActionGraph = true;
     captureCompilerArguments = true;
   };
@@ -29,13 +30,22 @@
     workspace = family.workspace;
     targets = ["${label}:flight_package"];
   };
+  editor-builtin-cfg = import ./_bazel-editor-builtin-cfg.nix {
+    inherit pkgs;
+    inherit (family) editor;
+    pname = "aos-bazel-quota-editor-builtin-cfg";
+    cargo = family.editor-cargo-oracle;
+    workspace = family.editorWorkspace;
+    flags = [];
+  };
 in
   family
   // rec {
-    inherit execution-profiles;
+    inherit execution-profiles editor-builtin-cfg;
     development = import ./_bazel-quota-development.nix {
       inherit pkgs;
       inherit (family) editor tests;
+      editorBuiltinCfg = editor-builtin-cfg;
     };
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-quota-inventory";
@@ -94,7 +104,7 @@ in
       inherit (pkgs) lib;
       bazelProbe = flight;
     };
-    all = pkgs.runCommand "aos-bazel-quota-qualified-checks" {buildDeps = [family.all family.editor-parity flight installation execution-profiles development];} ''
+    all = pkgs.runCommand "aos-bazel-quota-qualified-checks" {buildDeps = [family.all family.editor-parity flight installation execution-profiles editor-builtin-cfg development];} ''
       mkdir -p "$out/editor"
       cp -r ${family.all}/evidence "$out/evidence"
       cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
@@ -104,6 +114,7 @@ in
       cp ${flight}/nix-support/bazel-package.json "$out/flight-package.json"
       cp ${installation}/installation.json "$out/installation.json"
       cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
+      cp ${editor-builtin-cfg}/evidence.json "$out/editor-builtin-cfg.json"
       cp ${development}/evidence.json "$out/development.json"
     '';
   }

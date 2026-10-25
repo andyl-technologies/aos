@@ -75,6 +75,11 @@ also matches native whole-model statistics, with complete inference and no
 diagnostic rows in this selected family. All five test targets and both host
 macros pass the independent captured-compiler scalar profile audit.
 
+The [quota cfg checkpoint](../tests/evidence/quota-editor-profile-cfg.json)
+checks all 12 configured crates in both qualification and packaged editor
+routes. Whole-model inference remains complete with no diagnostic rows, and
+the ordinary test compiler profiles and qualified VM identities are unchanged.
+
 `mkAosBazelWorkspace.editorCfgFlags` selects this adapter; `null` preserves the
 existing exporter during rollout. The adapter currently requires the default
 native target and rejects foreign target configurations. Other families and
