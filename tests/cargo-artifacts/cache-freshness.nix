@@ -3,7 +3,8 @@
 ##! Every unpack gives source files new mtimes. The shared-target configure
 ##! phase must give unchanged files an old mtime, keep changed files newer
 ##! than earlier outputs, and keep files changed by a failed attempt dirty
-##! until a build phase completes.
+##! until a whole builder succeeds. A build phase that completes before a
+##! later check fails must not mark the source compiled.
 {pkgs}: let
   phaseTemplates = import ../../stdenv/phases.nix;
   vendor = pkgs.runCommand "cargo-cache-freshness-vendor" {} ''
@@ -53,17 +54,37 @@ in
             cd "$source"
           }
 
+          # The configure phase installs the exit handler that records
+          # freshness, so each builder runs in its own subshell and its
+          # exit status decides whether the source counts as compiled.
           attempt() {
             unpack "$1" "$2"
-            (${configure})
+            (
+              ${configure}
+              exit 1
+            ) || true
             cd "$source"
           }
 
           succeed() {
             (
+              ${configure}
               cd "$source/crates"
               ${build}
             )
+            cd "$source"
+          }
+
+          # The build phase completes, then a later check or post-build
+          # step fails before it can rebuild its own targets.
+          failAfterBuild() {
+            (
+              ${configure}
+              cd "$source/crates"
+              ${build}
+              exit 1
+            ) || true
+            cd "$source"
           }
 
           mtime() {
@@ -118,8 +139,20 @@ in
           expectOld crates/fixture/src/lib.rs
           expectOld docs/included.md
 
+          # A builder that fails after its build phase keeps the change dirty.
+          attempt 'pub fn value() -> u8 { 3 }' 'third'
+          failAfterBuild
+          test ! -e "$CARGO_TARGET_DIR/.aos-source-hashes.next"
+          attempt 'pub fn value() -> u8 { 3 }' 'third'
+          expectNew crates/fixture/src/lib.rs
+          expectNew docs/included.md
+          succeed
+          attempt 'pub fn value() -> u8 { 3 }' 'third'
+          expectOld crates/fixture/src/lib.rs
+          expectOld docs/included.md
+
           # A new file has no recorded state and is dirty.
-          unpack 'pub fn value() -> u8 { 1 }' 'first'
+          unpack 'pub fn value() -> u8 { 3 }' 'third'
           printf '%s\n' 'pub fn extra() {}' > "$source/crates/fixture/src/extra.rs"
           (${configure})
           expectNew crates/fixture/src/extra.rs

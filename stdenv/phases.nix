@@ -659,12 +659,12 @@ in rec {
         )
       '';
 
-      # A failed or interrupted build must not claim that the new source
-      # was compiled; only a completed build phase records its hashes.
+      # A failed or interrupted builder must not claim that the new source
+      # was compiled; only the successful exit handler records its hashes.
       commit = ''
-        cp "$NIX_BUILD_TOP/aos-source-hashes" "$CARGO_TARGET_DIR/.aos-source-hashes.next"
-        mv -f "$CARGO_TARGET_DIR/.aos-source-hashes.next" "$CARGO_TARGET_DIR/.aos-source-hashes"
-        rm -f "$CARGO_TARGET_DIR/.aos-source-dirty" "$CARGO_TARGET_DIR/.aos-source-id"
+        cp "$NIX_BUILD_TOP/aos-source-hashes" "$CARGO_TARGET_DIR/.aos-source-hashes.next" &&
+          mv -f "$CARGO_TARGET_DIR/.aos-source-hashes.next" "$CARGO_TARGET_DIR/.aos-source-hashes" &&
+          rm -f "$CARGO_TARGET_DIR/.aos-source-dirty" "$CARGO_TARGET_DIR/.aos-source-id"
       '';
     };
 
@@ -727,6 +727,19 @@ in rec {
               finishSharedCargoCache() {
                 cargoCacheExitStatus=$?
                 trap - EXIT
+
+                # Test and lint binaries compile after the build phase, in
+                # check and post-build hooks. Record the source as compiled
+                # only when the whole builder succeeded, so a later phase
+                # that failed before rebuilding a target leaves it dirty.
+                if [ "$cargoCacheExitStatus" -eq 0 ]; then
+                  if ! {
+                    ${sharedSourceFreshness.commit}
+                  }; then
+                    echo "could not record shared Cargo source freshness" >&2
+                    cargoCacheExitStatus=1
+                  fi
+                fi
 
                 if ! find "$CARGO_TARGET_DIR" -type d -user "$(id -u)" \
                     ! -perm -0777 -exec chmod a+rwx {} \;; then
@@ -842,11 +855,6 @@ in rec {
           cargoBuildLogPart="$cargoBuildLog.part"
           : > "$cargoBuildLog"
           ${loggedBuildCommands}
-          ${
-            if cargoSourceId == null
-            then ""
-            else sharedSourceFreshness.commit
-          }
         '';
       }
     ]
