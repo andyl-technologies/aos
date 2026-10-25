@@ -102,8 +102,28 @@ collection work.
 
 Mandatory application-target compilation at `0677eb432c` passes in
 1,542.052 seconds. Complete review matches all 8,259 immutable source files
-and 190 test executables across 59 packages. This is compilation only;
-renewed native cache, manager and owning-gate runs remain in progress.
+and 190 test executables across 59 packages. This is compilation only.
+Renewed native-cache qualification at that source passes in 2,197.453 seconds.
+Complete review binds all 8,259 immutable source files, four retained Cargo
+executables per profile and three original guests per profile. The base profile
+runs 130 ordinary and five creator cases; all features runs 258 ordinary and
+five creator cases, including its five listener-retirement cases. Both execute
+the added directory-walk symlink, magic-link and parent-traversal refusal case.
+Actual unprivileged ext4 execution and original physical recovery/eviction
+assertions remain required. These component results grant no task acceptance.
+
+Renewed manager-image prerequisites pass in 1,415.976 seconds. Review accounts
+for all 98 missing derivations: 96 build in the isolated AOS guest and two
+compilation-only prerequisites are supplied by the concurrent successful
+application-target check. The fresh nonce, sandboxed build-user mapping,
+ext4 filesystems, imported image and clean builder shutdown are checked.
+The unchanged manager scenario then fails in 192.724 seconds. All fourteen
+enrollment controls complete, and the actual managed publisher creates its
+protected socket, resolving the earlier directory-open failure. Serve then
+refuses native-cache recovery before readiness; GC does not run successfully.
+The original capability-free identities and hardening remain in force.
+Diagnostic tracing remains separate from qualification. Owning-gate and
+feature-matrix qualification are still running; manager acceptance remains open.
 
 The `obs-blame` gate now builds a retained image for its original two SDK
 selectors and one CLI selector and executes them in a dedicated UID/GID 840
