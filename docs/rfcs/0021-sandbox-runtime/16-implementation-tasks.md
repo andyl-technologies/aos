@@ -37,8 +37,17 @@ Recent committed startup fixes close narrower prerequisites:
   transfer, denied procfs access, malformed ancillary messages, descriptor
   cleanup, and failed mapping/acknowledgment with denied signal delivery. The
   packaged view-preparer tool closure also passes. No `sys_ptrace` permission
-  is added. Installed enforcing view startup, restart and power-loss checks
-  remain separate.
+  is added. The focused `sandbox-journal-view-startup` enforcing QEMU/vTPM test
+  now passes initial startup, stop/start and hard power loss against the same
+  disk and TPM state. It checks all ten kernel mount roots and read-only flags,
+  the fixed preparers' successful inode/ownership checks, and a changed boot
+  UUID (`/nix/store/wmlv69cf27n7nq8kxn04k2a57q485xac-aos-fleet-test-sandbox-journal-view-startup-0`).
+  This frozen candidate includes pending Host transition, offline credential
+  cleanup and SwitchRoot/networkd changes and predates the dedicated D-Bus
+  transition. It is a fixed-view qualification, not a current-branch or full-boot
+  result. The preceding broader wait reached
+  both preparers after cold boot but timed out on native activation, which
+  remains open in the separate funded-startup qualification.
 - `b8999b8817` transitions the fixed D-Bus executable from PID 1 into
   `system_dbusd_t`, including the required nosuid transition. The linked
   production policy passes 172 unit tests and its negative fixtures. This
@@ -59,6 +68,16 @@ Recent committed startup fixes close narrower prerequisites:
   transition and executable mapping remain forbidden. The isolated production
   policy passes 173 unit tests, its linked-policy guard and negative fixtures.
   Installed admission and owner startup remain separate checks.
+
+- `38d0061a36` retains inherited PID 1 log-stream read/write access across the
+  fixed D-Bus transition; connect, accept and listener creation remain denied.
+  The isolated linked production policy passes 174 unit tests and negative
+  fixtures. The installed rerun passes that startup boundary and identifies a
+  context-file symlink as its next blocker. `f1e3d85a2a` materializes that fixed
+  file as regular immutable `0444` data. The selected-system EROFS conformance
+  check passes, including recursive policy-directory overlap and the complete
+  observed inode-label inventory. Installed offline preparation remains open;
+  neither change initializes a method-46 floor or grants public readiness.
 
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
