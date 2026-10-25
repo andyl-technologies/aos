@@ -546,6 +546,7 @@ qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/hot_fork/resource_u
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/hot_fork/resource_usage.rs|qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/hot_fork/test_support.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/hot_fork/test_support.rs|qemu
+qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/hot_fork/tests/clone_cost.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/hot_fork/tests.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/campaign_run.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/campaign_run.rs|qemu
