@@ -1207,8 +1207,10 @@ against actual Cargo invocations. Clippy, formatting, documentation, flight
 installation, and whole-model editor parity pass; all 135 retained actions
 execute in Linux sandboxes without cache hits. Editor inference is complete
 with no diagnostics. Its optimized target cfg query is selected independently
-of unoptimized host macros. The ordinary `aos-dev` workspace, current ext4 VM
-enforcement, production cutover, and performance acceptance remain separate.
+of unoptimized host macros. The [current ext4 VM check](tests/evidence/quota-profile-ext4-vm.json)
+also passes all four enforcement assertions with that installed Bazel flight
+in the existing x86_64 Firecracker/KVM guest. The ordinary `aos-dev` workspace,
+production cutover, and performance acceptance remain separate.
 
 The quota family owns `aos-linux-project-quota`, its unit tests and the
 `project-quota-flight` example. Its separate `quota` dependency profile retains
