@@ -40,8 +40,8 @@ def unmount(target):
     subprocess.run(["umount", str(target)], check=True, timeout=5)
 
 
-def grant_backing(channel, descriptor, worker_pid, release, sequence=1, path=b"a", received=None):
-    """Returns one original sealed fixture inode over the actual private channel."""
+def backing_request(channel, worker_pid, sequence=1, path=b"a"):
+    """Checks the original worker credentials and exact requested selection."""
     packet, ancillary, flags, _ = channel.recvmsg(4172, socket.CMSG_SPACE(12))
     require(not flags and len(ancillary) == 1
             and ancillary[0][:2] == (socket.SOL_SOCKET, socket.SCM_CREDENTIALS)
@@ -52,6 +52,12 @@ def grant_backing(channel, descriptor, worker_pid, release, sequence=1, path=b"a
             and packet[24:40] == struct.pack("<QQ", 1, sequence)
             and packet[72:] == struct.pack("<I", len(path)) + path,
             "kernel open requested a foreign fixture selection")
+    return packet
+
+
+def grant_backing(channel, descriptor, worker_pid, release, sequence=1, path=b"a", received=None):
+    """Returns one original sealed fixture inode over the actual private channel."""
+    packet = backing_request(channel, worker_pid, sequence, path)
     if received is not None:
         received.set()
     require(release.wait(5), "concurrent kernel opens never joined the original handoff")
@@ -88,7 +94,7 @@ def scenario(executable, directory, mode):
             "setpriv", "--reuid=840", "--regid=840", "--clear-groups",
             "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
             "--no-new-privs", str(executable), mode,
-        ], stdin=backing_child if mode in {"read", "late", "multi", "actor"} else subprocess.DEVNULL,
+        ], stdin=backing_child if mode in {"read", "late", "multi", "actor", "actor-stop", "actor-failure"} else subprocess.DEVNULL,
             stdout=child_socket, stderr=subprocess.PIPE,
             close_fds=True)
         child_socket.close()
@@ -111,6 +117,52 @@ def scenario(executable, directory, mode):
         os.close(descriptors.pop())
         require(supervisor.send(b"M") == 1, "mount-ready message was truncated")
         require(supervisor.recv(64) == b"READY", "actual kernel INIT did not complete")
+
+        if mode in {"actor-stop", "actor-failure"}:
+            executor = ThreadPoolExecutor(max_workers=2)
+            first = executor.submit(read_file, target / "a")
+            packet = backing_request(backing_server, child.pid)
+            pending = [first]
+            if mode == "actor-failure":
+                pending.append(executor.submit(read_file, target / "b"))
+                require(supervisor.recv(64) == b"COALESCED",
+                        "refused production fetch did not retain both original opens")
+                require(backing_server.send(packet) == len(packet),
+                        "malformed actual reply was truncated")
+                expected_errno = errno.EIO
+                expected_status = b"CLOSED"
+            else:
+                require(supervisor.send(b"U") == 1,
+                        "production actor stop was truncated")
+                expected_errno = errno.ENOTCONN
+                expected_status = b"STOPPED"
+            for waiting in pending:
+                try:
+                    waiting.result(timeout=5)
+                except OSError as error:
+                    require(error.errno == expected_errno,
+                            "production actor lost the original open failure errno")
+                else:
+                    raise RuntimeError("withheld production backing disclosed file bytes")
+            require(supervisor.recv(64) == expected_status,
+                    "production actor did not close its original connection")
+            try:
+                target.stat()
+            except OSError as error:
+                require(error.errno == errno.ENOTCONN,
+                        "stopped production connection still serves metadata")
+            else:
+                raise RuntimeError("stopped production actor accepted metadata")
+            unmount(target)
+            mounted = False
+            require(child.wait(timeout=5) == 0,
+                    "production actor control failed: " + child.stderr.read().decode(errors="replace"))
+            if mode == "actor-failure":
+                print("PASS production fallback worker returns EIO to every coalesced open before faulting a malformed backing reply", flush=True)
+            else:
+                print("PASS production fallback worker stop cancels an outstanding backing exchange and disconnects original kernel traffic", flush=True)
+            print("PASS actual confined FUSE transport " + mode, flush=True)
+            return
 
         if mode in {"serve", "metadata", "read", "late", "multi", "actor", "large", "readiness"}:
             metadata = target.stat()
@@ -333,5 +385,5 @@ def scenario(executable, directory, mode):
 
 if __name__ == "__main__":
     executable, directory = map(pathlib.Path, sys.argv[1:])
-    for selected in ["serve", "metadata", "read", "late", "multi", "actor", "large", "readiness", "timeout", "cancel"]:
+    for selected in ["serve", "metadata", "read", "late", "multi", "actor", "actor-stop", "actor-failure", "large", "readiness", "timeout", "cancel"]:
         scenario(executable, directory, selected)

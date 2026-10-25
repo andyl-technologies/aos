@@ -105,8 +105,8 @@ pub enum Event {
         /// Indicates that a distinct fetch is waiting for the private channel.
         waiting_for_channel: bool,
     },
-    /// An open has received EIO while its original fetch may remain pending.
-    OpenExpired {
+    /// An open has received EIO; its accepted physical work may remain retained.
+    OpenFailed {
         /// Original canonical node of the expired response.
         node: NonZeroU64,
     },
@@ -152,6 +152,7 @@ pub async fn serve(
     options.validate()?;
     tokio::pin!(stop);
     let mapping = tokio::select! {
+        biased;
         result = &mut stop => {
             result?;
             return Ok(Exit::Stopped);

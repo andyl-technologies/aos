@@ -15,16 +15,33 @@ use std::{future::pending, pin::Pin};
 type Fetch = Pin<Box<dyn Future<Output = (Ticket, WorkerClient, io::Result<BackingReply>, u64)>>>;
 
 pub(super) async fn run(
+    connection: Connection,
+    client: WorkerClient,
+    index: Index<'_>,
+    options: Options,
+    presentation: impl FnMut(Entry<'_>) -> Presentation,
+    observe: impl FnMut(Event) -> io::Result<()>,
+    stop: impl Future<Output = io::Result<()>>,
+) -> Result<Exit, Error> {
+    options.validate()?;
+    tokio::select! {
+        biased;
+        result = stop => {
+            result?;
+            Ok(Exit::Stopped)
+        },
+        result = run_connection(connection, client, index, options, presentation, observe) => result,
+    }
+}
+
+async fn run_connection(
     mut connection: Connection,
     client: WorkerClient,
     index: Index<'_>,
     options: Options,
     mut presentation: impl FnMut(Entry<'_>) -> Presentation,
     mut observe: impl FnMut(Event) -> io::Result<()>,
-    stop: impl Future<Output = io::Result<()>>,
 ) -> Result<Exit, Error> {
-    options.validate()?;
-    tokio::pin!(stop);
     let mut input = buffer(options.protocol.request_bytes)?;
     let mut output = buffer(options.protocol.request_bytes)?;
     let mut directory_page = buffer(options.protocol.request_bytes - 16)?;
@@ -34,17 +51,14 @@ pub(super) async fn run(
     let mut opens = fuse_open::Queue::new(options.opens)?;
     let mut backing_client = Some(client);
     let mut fetch: Option<Fetch> = None;
+    let mut fault = None;
 
     // A version retry accepts no filesystem operations. Every selected protocol
     // is published only after its original INIT reply has reached the kernel.
     let minor = loop {
-        let request = tokio::select! {
-            result = &mut stop => {
-                result?;
-                return Ok(Exit::Stopped);
-            },
-            result = connection.receive(&mut input, options.exchange_deadline) => result?,
-        };
+        let request = connection
+            .receive(&mut input, options.exchange_deadline)
+            .await?;
         let initialized =
             fuse_protocol::init::negotiate(request, options.protocol, options.passthrough, false)?;
         send_unique(
@@ -84,10 +98,16 @@ pub(super) async fn run(
             )
             .await?;
             if reply.outcome == Outcome::IoError {
-                observe(Event::OpenExpired {
+                observe(Event::OpenFailed {
                     node: reply.ticket.node(),
                 })?;
             }
+        }
+
+        // Fail each accepted open on the original device before disconnecting.
+        // Other queued nodes have no usable channel after a transport fault.
+        if let Some(error) = fault.take() {
+            return Err(error);
         }
         while let Some(node) = lifetime.next_unreferenced() {
             drop(backings.retire(node)?);
@@ -129,10 +149,26 @@ pub(super) async fn run(
                 let (ticket, client, reply, size) = result;
                 fetch = None;
                 backing_client = Some(client);
-                let file = FallbackBacking::from_reply(reply?, size, options.read_bytes)?;
-                backings.install(ticket, file).map_err(|rejected| rejected.error)?;
-                opens.complete(ticket, Outcome::Ready)?;
-                lifetime.unpin(ticket.node())?;
+                match reply.map_err(Error::Io).and_then(|reply| {
+                    FallbackBacking::from_reply(reply, size, options.read_bytes).map_err(Error::Read)
+                }) {
+                    Ok(file) => {
+                        backings.install(ticket, file).map_err(|rejected| rejected.error)?;
+                        opens.complete(ticket, Outcome::Ready)?;
+                        lifetime.unpin(ticket.node())?;
+                    }
+                    Err(error) => {
+                        backings.fail(ticket)?;
+                        opens.complete(ticket, Outcome::IoError)?;
+                        lifetime.unpin(ticket.node())?;
+                        while let Some(queued) = backings.next_fetch() {
+                            backings.fail(queued)?;
+                            opens.complete(queued, Outcome::IoError)?;
+                            lifetime.unpin(queued.node())?;
+                        }
+                        fault = Some(error);
+                    }
+                }
                 continue;
             },
             () = async {
@@ -142,10 +178,6 @@ pub(super) async fn run(
                 }
             } => continue,
             result = connection.wait_readable() => result,
-            result = &mut stop => {
-                result?;
-                return Ok(Exit::Stopped);
-            }
         };
         let received = match readable {
             Ok(()) => connection.try_receive(&mut input),

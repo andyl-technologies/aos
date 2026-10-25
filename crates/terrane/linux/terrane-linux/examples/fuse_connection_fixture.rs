@@ -55,6 +55,8 @@ fn main() -> Result {
             | "late"
             | "multi"
             | "actor"
+            | "actor-stop"
+            | "actor-failure"
             | "large"
             | "readiness"
             | "timeout"
@@ -104,13 +106,13 @@ fn main() -> Result {
         if mode == "large" && directory.len() <= 16 {
             return Err("large immutable index does not exceed the worker node budget".into());
         }
-        if mode == "actor" {
+        if matches!(mode.as_str(), "actor" | "actor-stop" | "actor-failure") {
             let client = WorkerClient::bind(
                 io::stdin().as_fd().try_clone_to_owned()?,
                 ExposureContext::new("0123456789abcdef0123456789abcdef", 1, [7; 32])?,
                 0,
             )?;
-            let exit = fuse_worker::native_fixture::serve_index(
+            let result = fuse_worker::native_fixture::serve_index(
                 connection,
                 client,
                 directory,
@@ -162,10 +164,24 @@ fn main() -> Result {
                         notify(b"QUEUED_DISTINCT").map_err(|error| io::Error::other(error.to_string()))
                     }
                     fuse_worker::Event::OpenQueued { .. } => Ok(()),
+                    fuse_worker::Event::OpenFailed { .. } if mode == "actor-failure" => Ok(()),
                     _ => Err(io::Error::other("unexpected production actor event")),
                 },
                 stopped(&control),
-            ).await?;
+            ).await;
+            let exit = match result {
+                Err(fuse_worker::Error::Io(error))
+                    if mode == "actor-failure" && error.kind() == io::ErrorKind::InvalidData =>
+                {
+                    notify(b"CLOSED")?;
+                    return Ok(());
+                }
+                Err(error) => return Err(error.into()),
+                Ok(_) if mode == "actor-failure" => {
+                    return Err("malformed reply did not fault the production actor".into());
+                }
+                Ok(exit) => exit,
+            };
             if exit == fuse_worker::Exit::Unmounted {
                 stopped(&control).await?;
             }
@@ -569,7 +585,7 @@ fn main() -> Result {
 fn metadata_bytes(mode: &str) -> Result<Vec<u8>> {
     if !matches!(
         mode,
-        "metadata" | "read" | "late" | "multi" | "actor" | "large"
+        "metadata" | "read" | "late" | "multi" | "actor" | "actor-stop" | "actor-failure" | "large"
     ) {
         return Ok(structural_index::compile([7; 32], &[], 1, 4096)?);
     }
@@ -720,6 +736,8 @@ mod tests {
             ("read", 7),
             ("multi", 7),
             ("actor", 7),
+            ("actor-stop", 7),
+            ("actor-failure", 7),
             ("late", 7),
             ("large", 71),
         ] {
