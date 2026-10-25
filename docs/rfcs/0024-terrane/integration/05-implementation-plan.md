@@ -121,10 +121,36 @@ worker channel. Mapping validation failure disconnects the channel and consumes
 the refused descriptor. The genuine signed-owner fixture uses this path, and
 the transport control now refuses an authenticated, sealed non-index inode
 without retaining its descriptor or reusing the faulted channel. Strict
-all-feature/all-target Clippy passes. Native success/refusal, confined-worker
-and mandatory application-target qualification remain pending.
+all-feature/all-target Clippy passes. All three native guests pass: transport
+and sealed non-index refusal in 216.240 seconds, genuine signed-owner grants
+and durable drain ordering in 630.862 seconds, and the confined worker in
+631.104 seconds. Complete independent reviews bind all 8,186 immutable source
+files and retained executables. The scoped review now matches the exact frozen
+130-case base inventory instead of its stale 128-case count; this image's
+inventory is not a claim that all base cases ran in these component guests.
+Mandatory application-target compilation passes in 668.100 seconds, with full
+review of 8,186 source files, 190 test executables and 59 packages. This
+establishes compilation only.
 
-Configured Realize/Gc, the production worker actor and launcher, broker and
+Checkpoints `015b84ac1b` and `73d1ee57a7` move the read-only request loop into
+the production `fuse_worker` module. It retains the channel-bound mapping,
+bounded touched-node metadata, kernel handles, original backing reservations
+and independent open deadlines. A supervisor stop interrupts the entire
+worker, including startup and device writes. A backing fault returns EIO to
+every retained open before disconnecting. Connection closure grants no
+physical release authority. Passthrough `Require` refuses this fallback
+implementation; fallback readiness reports its degraded feature.
+
+The existing kernel scenarios are retained. Three added scenarios exercise
+the production loop with distinct-node grants and hardlink coalescing, a stop
+during an outstanding fetch, and malformed backing refusal shared by two
+opens. These use explicitly synthetic indexes; they do not prove authenticated
+startup and kernel serving together. Strict Clippy, exact pure preparation and
+both closed source inventories pass. The twelve-scenario native guest and
+mandatory workspace compilation are running from `73d1ee57a7`. The unused
+intermediate qualification checkout was removed before running any build.
+
+Configured Realize/Gc, full production worker integration and launch, broker and
 passthrough integration, writable exposures, complete Distribution services,
 CI surfaces, sandbox integration and T6 remain outstanding. The detailed
 qualification history below retains earlier failures and component evidence.
