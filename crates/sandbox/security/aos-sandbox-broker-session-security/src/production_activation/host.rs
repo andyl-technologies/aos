@@ -51,7 +51,10 @@ impl ProductionHostReadinessV1 {
 /// Retains the exact three-listener Host activation profile.
 #[must_use = "retain the fixed listeners while serving Host sessions"]
 pub struct ProductionHostActivationV1 {
-    inner: ProductionBrokerSessionActivationV1,
+    // Host retains its listener and launch custody, without carrying the
+    // unrelated Storage cold-flight originals through every service move.
+    listeners: Vec<super::FixedListenerV1>,
+    _launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
     controller_cold: Option<Box<HostColdActivationOriginalV1>>,
     controller_failed: bool,
 }
@@ -66,11 +69,20 @@ impl ProductionBrokerSessionActivationV1 {
     ///
     /// # Errors
     ///
-    /// Rejects an activation profile other than the fixed three-listener Host profile.
+    /// Rejects an activation profile other than the fixed three-listener Host
+    /// profile, or any retained Storage startup or session attempt.
     pub fn into_host_activation(
-        self,
+        mut self,
     ) -> Result<ProductionHostActivationV1, ProductionBrokerSessionActivationErrorV1> {
-        if self.listeners.len() != 3
+        if self.storage_cold.is_some()
+            || self.storage_initial_acceptance.is_some()
+            || self.storage_initial.is_some()
+            || self.storage_prepare_fixed.is_some()
+            || self.storage_prepare_failure.is_some()
+            || self.storage_prepare_session.is_some()
+            || self.storage_prepare_complete
+            || self.selected_storage_startup.is_some()
+            || self.listeners.len() != 3
             || !matches!(
                 self.listeners[0].endpoint,
                 ProtectedBrokerSessionFixedEndpointV1::HostBroker
@@ -88,7 +100,12 @@ impl ProductionBrokerSessionActivationV1 {
                 "Host scheduling requires all three fixed role listeners",
             ));
         }
-        Ok(ProductionHostActivationV1 { inner: self, controller_cold: None, controller_failed: false })
+        Ok(ProductionHostActivationV1 {
+            listeners: std::mem::take(&mut self.listeners),
+            _launch_image: self.launch_image.take(),
+            controller_cold: None,
+            controller_failed: false,
+        })
     }
 }
 
@@ -143,7 +160,7 @@ impl ProductionHostActivationV1 {
         }));
         let original = match self.controller_cold.as_mut() { Some(original) => original, None => std::process::abort() };
         let result = original.cold.open_host_cleanup_once_v1(loan, &mut original.journal,
-            &mut self.inner.listeners[ProductionHostRoleV1::Controller.index()].listener,
+            &mut self.listeners[ProductionHostRoleV1::Controller.index()].listener,
             transport_cutoff).await;
         if let Err(error) = result { self.controller_failed = true; return Err(error.into()); }
         let session = original.cold.take_completed_host_session_v1()?;
@@ -193,7 +210,7 @@ impl ProductionHostActivationV1 {
         deadline: u64,
     ) -> Result<Option<DormantAuthenticatedBrokerSessionV1>, ProductionBrokerSessionActivationErrorV1>
     {
-        let fixed = &mut self.inner.listeners[role.index()];
+        let fixed = &mut self.listeners[role.index()];
         fixed.listener.validate_current()?;
         let socket = match fixed.listener.accept() {
             Ok(socket) => socket,
@@ -234,7 +251,7 @@ impl ProductionHostActivationV1 {
         let fd = match &sessions[role.index()] {
             Some(session) => session.as_fd()?,
             None => {
-                let listener = &self.inner.listeners[role.index()].listener;
+                let listener = &self.listeners[role.index()].listener;
                 listener.validate_current()?;
                 listener.as_fd()
             }
@@ -348,8 +365,59 @@ fn poll_host_readiness(
 mod tests {
     use super::*;
     use std::io::Write as _;
+    use std::os::fd::{AsFd as _, AsRawFd as _};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
+
+    const HOST_ENDPOINTS: [ProtectedBrokerSessionFixedEndpointV1; 3] = [
+        ProtectedBrokerSessionFixedEndpointV1::HostBroker,
+        ProtectedBrokerSessionFixedEndpointV1::RootMountHostBroker,
+        ProtectedBrokerSessionFixedEndpointV1::StorageHostBroker,
+    ];
+
+    fn host_profile(directory: &Path) -> ProductionBrokerSessionActivationV1 {
+        let mut activation = ProductionBrokerSessionActivationV1::prearm_storage_resource_recipient();
+        activation.listeners = HOST_ENDPOINTS
+            .into_iter()
+            .enumerate()
+            .map(|(index, endpoint)| super::super::FixedListenerV1 {
+                endpoint,
+                listener: RecordSubjectListener::bind(
+                    &directory.join(format!("{index}.sock")), 1,
+                ).unwrap(),
+            })
+            .collect();
+        activation
+    }
+
+    #[test]
+    fn host_conversion_retains_the_same_ordered_listener_descriptors() {
+        let directory = tempfile::tempdir().unwrap();
+        let activation = host_profile(directory.path());
+        let descriptors: Vec<_> = activation.listeners.iter()
+            .map(|fixed| fixed.listener.as_fd().as_raw_fd())
+            .collect();
+
+        let host = activation.into_host_activation().unwrap();
+
+        let retained: Vec<_> = host.listeners.iter()
+            .map(|fixed| fixed.listener.as_fd().as_raw_fd())
+            .collect();
+        assert_eq!(retained, descriptors);
+        for (index, fixed) in host.listeners.iter().enumerate() {
+            assert!(rustix::fs::fstat(fixed.listener.as_fd()).is_ok());
+            assert_eq!(fixed.endpoint, HOST_ENDPOINTS[index]);
+        }
+    }
+
+    #[test]
+    fn host_conversion_rejects_a_retained_storage_preparation() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut activation = host_profile(directory.path());
+        activation.storage_prepare_fixed = Some(Ok(()));
+
+        assert!(activation.into_host_activation().is_err());
+    }
 
     #[test]
     fn poll_observes_ready_peers_without_waiting_on_idle_peers() {

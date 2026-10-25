@@ -109,6 +109,28 @@ Recent committed startup fixes close narrower prerequisites:
   integration test-target compilation passes. Privileged installed component
   startup remains a separate pending qualification; no stack limit is raised.
 
+  The subsequent enforcing Host run still overflowed inside component
+  assembly. Its follow-up outlines sequential capture, manager, admission and
+  backend phases while borrowing the same resident owners. Host activation
+  retains its original listeners and launch image without carrying unrelated
+  Storage cold-flight custody; conversion rejects any retained Storage attempt.
+  Native component entry and service construction frames fall to about 1.9 and
+  3.7 MiB, respectively. The UID-zero user-namespace diagnostic now refuses
+  without overflow at 8 MiB; it is not an installed funding proof. The rebuilt
+  Host package passes 409 native tests with two expected skips, and complete
+  Rust unit and integration test-target compilation passes. The enforcing
+  installed rerun remains pending; production stack and resource limits stay
+  unchanged.
+
+- `a03d34dc15` replays only the ext4 journal before reading the protected
+  `/var` root label. The installed hard-loss diagnostic returned an empty raw
+  label before mounting. Native filesystem regressions reproduce a committed
+  label that is invisible until replay and reject an uncommitted label; the
+  exact-label guard still rejects absent and foreign labels. The hermetic
+  effects check passes, including 14 script cases and both real journal cases.
+  The enforcing QEMU/vTPM recovery rerun remains pending. This change neither
+  provisions a floor nor qualifies the public lifecycle.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they

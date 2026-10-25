@@ -277,6 +277,24 @@ impl ComponentAssembly {
 
     fn assemble(&mut self, nspawn: &str, guardian: &str, policy: &str) -> Result<()> {
         self.armed = true;
+        self.capture_control()?;
+        // Keep the actual environment snapshot through opening, as before.
+        let _credential_directory = self.capture_backend(nspawn, guardian, policy)?;
+        self.open_backend()
+    }
+
+    // Sequential phases borrow the same resident owners. Their temporary
+    // construction and future frames must not accumulate at assembly entry.
+    #[inline(never)]
+    fn capture_control(&mut self) -> Result<()> {
+        self.capture_original()?;
+        self.connect_manager()?;
+        self.admit_control()?;
+        self.install_service()
+    }
+
+    #[inline(never)]
+    fn capture_original(&mut self) -> Result<()> {
         let mut original = match self.startup.lock() {
             Ok(original) => original,
             Err(_) => {
@@ -298,7 +316,11 @@ impl ComponentAssembly {
             return Err(component_refusal());
         }
         drop(original);
+        Ok(())
+    }
 
+    #[inline(never)]
+    fn connect_manager(&mut self) -> Result<()> {
         self.boot[0] = Some(KernelBootId::current());
         if self.boot[0].as_ref().is_some_and(|result| result.is_err()) {
             self.first.get_or_insert(ComponentAssemblySite::OriginalBoot);
@@ -330,6 +352,15 @@ impl ComponentAssembly {
             Some(Ok(None)) => runtime.block_on(aos_systemd_client::SystemdClient::connect()).map(Arc::new),
             _ => std::process::abort(),
         });
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn admit_control(&mut self) -> Result<()> {
+        let runtime = match self.runtime.as_ref().and_then(|result| result.as_ref().ok()) {
+            Some(runtime) => runtime,
+            None => std::process::abort(),
+        };
         let manager = match self.manager.as_ref().and_then(|result| result.as_ref().ok()) {
             Some(manager) => manager,
             None => {
@@ -364,6 +395,11 @@ impl ComponentAssembly {
             return Err(component_refusal());
         }
         drop(original);
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn install_service(&mut self) -> Result<()> {
         if let Some(Ok(activation)) = self.activation.take() {
             // The sole selected producer above constructs exactly these three
             // endpoints. The ordinary converter's negative profile branch is
@@ -374,6 +410,19 @@ impl ComponentAssembly {
             self.first.get_or_insert(ComponentAssemblySite::Service);
             return Err(component_refusal());
         }
+        Ok(())
+    }
+
+    #[inline(never)]
+    fn capture_backend(
+        &mut self,
+        nspawn: &str,
+        guardian: &str,
+        policy: &str,
+    ) -> Result<std::ffi::OsString> {
+        let (Some(Ok(runtime)), Some(Ok(manager))) = (&self.runtime, &self.manager) else {
+            std::process::abort();
+        };
 
         self.cgroup_raw = Some(rustix::fs::open(CGROUP_ROOT,
             rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY
@@ -475,6 +524,14 @@ impl ComponentAssembly {
             self.first.get_or_insert(ComponentAssemblySite::Phase0);
             return Err(component_refusal());
         }
+        Ok(credential_directory)
+    }
+
+    #[inline(never)]
+    fn open_backend(&mut self) -> Result<()> {
+        let (Some(Ok(runtime)), Some(Ok(manager))) = (&self.runtime, &self.manager) else {
+            std::process::abort();
+        };
 
         let mut catalog = match self.catalog.take() {
             Some(Ok(value)) => Some(value),
@@ -630,6 +687,7 @@ fn component_refusal() -> HostError {
     HostError::Fence("original Host component/control startup is unavailable")
 }
 
+#[inline(never)]
 fn serve_host(
     runtime: &tokio::runtime::Runtime,
     service: &mut ProductionHostBrokerServiceV1,
