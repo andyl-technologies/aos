@@ -77,3 +77,19 @@ impl Write for ScalarWidth {
         Ok(())
     }
 }
+
+pub(super) fn counter_scratch_data() -> usize {
+    use std::mem::size_of;
+
+    size_of::<ScalarWidth>()
+        + size_of::<&mut CanonicalExtent>()
+        + size_of::<Number>()
+        + size_of::<Value>()
+        + size_of::<Option<Number>>()
+        + size_of::<[u8; 8]>()
+        + size_of::<u8>()
+        + size_of::<&str>()
+        + size_of::<std::str::Bytes<'static>>()
+        + size_of::<Result<(), Error>>()
+        + crucible_node_format::canonical::canonical_number_counter_scratch_bytes_data()
+}

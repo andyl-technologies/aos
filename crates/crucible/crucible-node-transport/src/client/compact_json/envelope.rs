@@ -13,6 +13,36 @@ mod canonical_extent;
 use canonical_extent::CanonicalExtent;
 
 impl CompactJson {
+    /// Names bounded preflight serializer controls without inspecting an owner.
+    ///
+    /// The concrete Envelope and Value serializers borrow their original trees.
+    /// These are requested layouts under the existing 64-container restriction,
+    /// not compiler frames or a physical machine-stack bound.
+    pub(in crate::client) fn envelope_preflight_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        let frame = size_of::<Compound<'static, 'static>>()
+            + size_of::<&mut Encoder<'static>>()
+            + size_of::<&serde_json::Value>()
+            + size_of::<&str>()
+            + size_of::<serde_json::map::Iter<'static>>()
+            + size_of::<std::collections::btree_map::Iter<'static, String, Value>>()
+            + size_of::<std::slice::Iter<'static, Value>>()
+            + size_of::<Option<usize>>()
+            + 4 * size_of::<usize>()
+            + size_of::<Result<(), Error>>();
+
+        size_of::<Encoder<'static>>()
+            + 65 * frame
+            + canonical_extent::counter_scratch_data()
+            + size_of::<&Envelope>()
+            + size_of::<[u8; 20]>()
+            + size_of::<[u8; 16]>()
+            + size_of::<[u8; 8]>()
+            + size_of::<Result<(usize, usize), ProviderError>>()
+            + size_of::<Result<(), ProviderError>>()
+    }
+
     /// Measures bank and exact canonical extents before any whole-value allocation.
     ///
     /// Ordering object members changes no byte count. Strings follow JSON's

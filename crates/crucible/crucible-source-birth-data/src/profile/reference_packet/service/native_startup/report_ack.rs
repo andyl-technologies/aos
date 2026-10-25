@@ -143,6 +143,24 @@ pub fn open_ack_storage(bytes: usize, fixed: &AckFixedLayoutData) -> Result<usiz
     sum(&[bytes, parser, validation])
 }
 
+const SERDE_ERROR_FIELD_NAMES: usize = 39;
+
+/// Names the fixed error-quote roster, arithmetic arrays and returning controls.
+///
+/// Diagnostic backing remains separate. The roster length also types the
+/// actual array below, so adding a field requires review of this declaration.
+pub const fn serde_error_storage_counter_scratch_data() -> usize {
+    size_of::<[&str; SERDE_ERROR_FIELD_NAMES]>()
+        + size_of::<std::slice::Iter<'static, &'static str>>()
+        + size_of::<[usize; 4]>()
+        + size_of::<[usize; 3]>()
+        + size_of::<&[usize]>()
+        + size_of::<std::slice::Iter<'static, usize>>()
+        + 3 * size_of::<Result<usize, ProviderError>>()
+        + 2 * size_of::<Option<usize>>()
+        + 10 * size_of::<usize>()
+}
+
 /// Bounds the original retained serde error and its formatting banks.
 ///
 /// # Errors
@@ -164,7 +182,7 @@ pub fn serde_error_storage(bytes: usize) -> Result<usize, ProviderError> {
     // string (Debug escaping <=6*UTF8 bytes), expected-field/variant roster,
     // fixed grammar text and two decimal source coordinates. The formatter's
     // String and final Box<str> may coexist during shrink-to-fit.
-    let fixed_names = [
+    let fixed_names: [&str; SERDE_ERROR_FIELD_NAMES] = [
         "protocol",
         "message",
         "session_id",

@@ -11,6 +11,9 @@ use crucible_node_format::{ContractError, canonical};
 use serde::Serialize;
 use std::io::{self, Write};
 
+mod storage;
+pub(super) use storage::{counter_scratch_data, storage_data};
+
 pub(super) fn request_hash(
     request: &Envelope,
     origin: RequestOrigin,

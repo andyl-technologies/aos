@@ -19,6 +19,7 @@ use std::{io::Read, os::unix::net::UnixStream, rc::Rc, time::Duration};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 mod identity;
+mod identity_work;
 
 const CONTENT_BYTES: usize = 262_144;
 const BANK_BYTES: usize = 9 * CONTENT_BYTES;
@@ -604,12 +605,12 @@ fn retry_preflight_allows_sequence_width_without_renewing_full_credit() -> TestR
     for origin in [RequestOrigin::Controller, RequestOrigin::Provider] {
         let content = ClientContent::new(canonical, 8, 1)?;
         let mut custody = CompactClientCustody::new(8, content, bank)?;
-        custody.retain_request(origin, &request, 0)?;
+        custody.retain_request(origin, &request, 0, canonical)?;
         assert_eq!(custody.retained_journal_bytes(), canonical);
         let mut retry = request.clone();
         retry.sequence = U64::new(u64::MAX);
 
-        custody.retain_request(origin, &retry, 0)?;
+        custody.retain_request(origin, &retry, 0, canonical)?;
 
         assert_eq!(custody.retained_journal_bytes(), canonical);
         assert_eq!(custody.originals().count(), 1);
@@ -708,7 +709,7 @@ fn full_journal_projection_keeps_both_namespaces_and_unresolved_prefixes() -> Te
                 "x".repeat(120)
             ))?));
             request.body = serde_json::from_value(json!({"nested": [{"": [0, -0.0, true]}]}))?;
-            custody.retain_request(origin, &request, 0)?;
+            custody.retain_request(origin, &request, 0, CONTENT_BYTES)?;
             if index % 2 == 0 {
                 let response = response(&request, json!({"complete": [false, {}]}), 2);
                 custody.hold(origin, response)?;

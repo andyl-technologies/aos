@@ -292,10 +292,11 @@ impl CompactClientCustody {
         origin: RequestOrigin,
         request: &Envelope,
         response_room: usize,
+        maximum_frame_bytes: usize,
     ) -> Result<(), ProviderError> {
         let id = request.request_id.0.as_ref().ok_or_else(changed)?;
         let retry = self.journal(origin).contains_key(id);
-        let bytes = self.preflight_envelope(request, retry)?;
+        let bytes = self.preflight_envelope_with_limit(request, retry, maximum_frame_bytes)?;
         let identity = identity::request_hash(request, origin, bytes)?;
         if let Some(original) = self.journal(origin).get(id) {
             if original.identity != identity {
@@ -354,6 +355,15 @@ impl CompactClientCustody {
     }
 
     fn preflight_envelope(&self, envelope: &Envelope, retry: bool) -> Result<usize, ProviderError> {
+        self.preflight_envelope_with_limit(envelope, retry, self.maximum_bytes)
+    }
+
+    fn preflight_envelope_with_limit(
+        &self,
+        envelope: &Envelope,
+        retry: bool,
+        maximum_canonical_bytes: usize,
+    ) -> Result<usize, ProviderError> {
         // Only sequence is mutable on a same-identity retry. Its decimal U64
         // string can grow to twenty bytes after the original was journaled.
         // This slack bounds preflight work only: no new bank or byte credit is
@@ -365,6 +375,7 @@ impl CompactClientCustody {
             .ok_or_else(credit)?;
         let canonical = self
             .maximum_bytes
+            .min(maximum_canonical_bytes)
             .checked_add(sequence_slack)
             .ok_or_else(credit)?;
         CompactJson::envelope_extents(envelope, bank, canonical).map(|(_, bytes)| bytes)
@@ -372,6 +383,61 @@ impl CompactClientCustody {
 }
 
 impl ClientSession {
+    /// Prices compact identity work at this actual connection's frame ceiling.
+    ///
+    /// The row is `[retained, transient, counter]` DATA. It includes borrowed
+    /// preflight, canonical ordering and escaping, exact output storage, hashing
+    /// and diagnostics. Incoming noncanonical frames retain their independent
+    /// raw-to-canonical expansion bound. It constructs no whole-envelope Value.
+    ///
+    /// Existing journal, content, caller and received owners, connection work,
+    /// materialization and observers need separate funding. This row admits no
+    /// Source, native phase, specialized import18 codec or quota change. The
+    /// caller admits the fixed counter before this query and authenticates both
+    /// original owners through its actual Source before consuming the result.
+    /// Reading these immutable limits does not authenticate a live connection.
+    ///
+    /// # Errors
+    /// Refuses unsupported frame geometry, checked overflow
+    /// or a complete identity row exceeding the independent supplied maximum.
+    pub fn compact_request_identity_storage_data(
+        &self,
+        custody: &CompactClientCustody,
+        maximum: usize,
+    ) -> Result<[usize; 3], ProviderError> {
+        let frame =
+            usize::try_from(self.authority.limits().frame_bytes.get()).map_err(|_| credit())?;
+        let mut row = identity::storage_data(frame, custody.maximum_bytes)?;
+        row[2] = Self::compact_request_identity_counter_scratch_data();
+        let peak = row.into_iter().try_fold(0usize, |total, axis| {
+            total.checked_add(axis).ok_or_else(credit)
+        })?;
+        if peak > maximum {
+            return Err(credit());
+        }
+        Ok(row)
+    }
+
+    /// Names preflight, identity and prospective-query controls before borrowing.
+    ///
+    /// These are actual requested control layouts; a physical stack bound,
+    /// dynamic backing and other SDK operations require separate admission.
+    pub fn compact_request_identity_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        identity::counter_scratch_data()
+            + size_of::<&Self>()
+            + size_of::<&CompactClientCustody>()
+            + size_of::<crate::handshake::Limits>()
+            + size_of::<[usize; 3]>()
+            + size_of::<std::array::IntoIter<usize, 3>>()
+            + size_of::<Result<[usize; 3], ProviderError>>()
+            + size_of::<Result<(), ProviderError>>()
+            + size_of::<Result<usize, std::num::TryFromIntError>>()
+            + size_of::<usize>() * 5
+            + size_of::<Option<usize>>()
+    }
+
     /// Exchanges one immutable original using compact persistent journals.
     ///
     /// Only the transport sequence of the borrowed request changes. The caller
@@ -417,7 +483,12 @@ impl ClientSession {
         request.sequence = self.sequence;
         let response_room =
             usize::try_from(self.authority.limits().frame_bytes.get()).map_err(|_| credit())?;
-        custody.retain_request(RequestOrigin::Controller, request, response_room)?;
+        custody.retain_request(
+            RequestOrigin::Controller,
+            request,
+            response_room,
+            response_room,
+        )?;
         let id = request.request_id.0.as_ref().ok_or_else(changed)?;
         if let Some(response) = custody
             .controller
