@@ -11639,3 +11639,16 @@ separation, observer restart and two internal reboots with advancing payload
 namespace generations and fresh payload cgroups. This standalone,
 non-enforcing component proof uses a fixture pin holder; it does not qualify
 the production launch compiler, enforcing Host service or public lifecycle.
+
+Commit `5de1116a1f` separately binds the actual Host compiler/Guardian worker
+test to that installed Host kernel. The clean QEMU run passes at
+`/nix/store/lq89zgk3n9bsaa79k7asvq40asrwk03h-aos-fleet-test-sandbox-host-worker-0`.
+It executes the production compiler's launch/refresh/stop test and real
+Guardian/systemd integration, including Guardian-before-payload ordering,
+restart and death, runtime isolation and expiry. Recovery cases cover exact
+receipt replay, payload-failure compensation, observation-only proof,
+expired-proof refusal, both-units-absent compensation, disappearing payload,
+fresh Guardian-pair verification and recycled-leader cgroup refusal.
+This non-enforcing component fixture does not qualify the enforcing Host
+daemon, its financial/currentness handoffs, TPM journal floors or public
+lifecycle. Those installed gates remain closed.
