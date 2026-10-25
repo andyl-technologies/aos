@@ -1347,6 +1347,23 @@ acceptance remain separate requirements.
 
 ## Control transport family
 
+The [profile qualification](tests/evidence/control-profile-qualification.json)
+passes all 116 cases in both default and test-support configurations. Fourteen
+actual compiler actions verify both unit binaries and all twelve macros against
+Cargo's ordinary test profiles. Clippy, documentation, formatting and the
+ten-root editor comparison pass; three selected diagnostics match, with
+incomplete inference and no claim of comparable raw multiplicity or aggregate
+statistics. All 2,077 retained actions execute in Linux sandboxes without cache
+hits. The required application unit/integration compilation also passes with
+the control-server lint repair.
+
+The native editor selector excludes `crucible-qemu-test-oracle` only after
+checking that its required feature is disabled. That binary belongs to its
+separate family. The report retains the prior failed comparison, where Cargo's
+analyzer included 312 extra diagnostics from that disabled binary; diagnostic
+equality remains required. Ordinary `aos-dev` enrollment, production cutover
+and performance acceptance remain separate.
+
 The `control` family selects `crucible-control-client` and
 `crucible-control-server`. Its separate dependency profile preserves the
 HTTP/2, TLS, UUID, and asynchronous transport features without widening the

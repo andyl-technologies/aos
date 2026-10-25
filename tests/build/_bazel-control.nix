@@ -46,10 +46,28 @@
     dependencyProfile = "control";
     editorComparisonScope = "selected-packages";
     editorRustcFlags = rustcFlags;
+    # The oracle binary belongs to its feature-specific family. Cargo's
+    # analyzer otherwise includes this explicitly disabled binary in its model.
+    excludedEditorBins = ["crucible-qemu-test-oracle"];
+    execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    # The editor oracle applies its global flags to host macros as well.
+    editorExecRustcFlags = rustcFlags;
+    retainTestActionGraph = true;
+    captureCompilerArguments = true;
     editorDiagnosticContext = true;
     editorLibraryTargets = builtins.mapAttrs (_: _: "lib_for_tests") packages;
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.control // {aos_native = pkgs.aosBazelStoreLibraries;};
     extraSourceDirectories = ["BUILD.bazel" "crates"];
+  };
+  execution-profiles = import ./_bazel-rust-test-profiles.nix {
+    inherit pkgs;
+    inherit (family) tests cargo;
+    pname = "aos-bazel-control-execution-profiles";
+    firstPartyTests = {
+      "//crates/crucible/crucible-control-client:unit_binary" = "crucible_control_client";
+      "//crates/crucible/crucible-control-server:unit_binary" = "crucible_control_server";
+    };
+    proceduralMacros = ["axum_macros" "curve25519_dalek_derive" "displaydoc" "futures_macro" "serde_derive" "thiserror_impl" "tokio_macros" "tracing_attributes" "yoke_derive" "zerocopy_derive" "zerofrom_derive" "zerovec_derive"];
   };
   variantTargets = suffix:
     pkgs.lib.concatMap (name: let
@@ -86,6 +104,7 @@
 in
   family
   // rec {
+    inherit execution-profiles;
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-control-inventory";
       workspace = family.workspace;
@@ -97,12 +116,13 @@ in
     test-support = featureVariant "test_support" ["test-support"];
     all =
       pkgs.runCommand "aos-bazel-control-qualified-checks" {
-        buildDeps = [family.all family.editor-parity test-support];
+        buildDeps = [family.all family.editor-parity test-support execution-profiles];
       } ''
         mkdir -p "$out/variants" "$out/editor"
         cp -r ${family.all}/evidence "$out/evidence"
         cp ${family.all}/inventory.json "$out/inventory.json"
         cp ${family.oracle}/parity.json "$out/default.json"
+        cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
         cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
         cp -r ${family.editor} "$out/editor/bazel"
         cp -r ${family.editor-cargo-oracle} "$out/editor/cargo"
