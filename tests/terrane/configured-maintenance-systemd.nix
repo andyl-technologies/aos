@@ -68,7 +68,7 @@
       chunkSeed = lib.concatStrings (builtins.genList (_: "07") 32);
     };
   };
-  system = mkSystem {
+  baseSystem = mkSystem {
     systemName = "terrane-managed-maintenance";
     modules = [
       ../../systems/server-test.nix
@@ -157,6 +157,24 @@
           maxDownloadMiB = lib.mkForce 4096;
         };
       }
+    ];
+  };
+  # The direct-kernel harness boots an ext4 test disk without a UKI root hash.
+  # Apply the selected platform's existing kernel-test policy in both retained
+  # boot scopes, as fleet tests do, before building its disk and initrd.
+  system = baseSystem.extendModules {
+    modules = [
+      (baseSystem.config.aos.image.platform.testMachineModule {
+        bakeAgentUnit = false;
+        bootMode = "kernel";
+        varProvisioning = "baked";
+        varSizeMiB = 256;
+        defaultAgentPackage = pkgs.aos-test-agent;
+        inherit (pkgs) writeTextFile;
+        ip = "192.0.2.1";
+        mac = "02:00:00:00:00:01";
+        debugMac = "02:00:00:00:00:02";
+      })
     ];
   };
   guest = pkgs.writeTextFile {

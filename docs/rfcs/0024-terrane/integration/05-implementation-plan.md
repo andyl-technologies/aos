@@ -199,6 +199,26 @@ Selector preservation, Python syntax, formatting, PLAN-2 and four-gate
 evaluation/dry-run pass. Committed-source runtime qualification remains
 required; these changes grant no surface or task acceptance.
 
+The original full-system prerequisites at `2ff796d82a` pass in 1,770.133
+seconds. All 127 missing derivations build in the isolated native builder,
+including twelve unchanged runtime-check packages (273 nextest and 30 Cargo
+cases pass; two original fixture-only tests remain ignored). Complete review
+binds the fresh nonce, kernel boot identity, actual build-user UID mapping,
+ext4 filesystems, imported image and orderly guest shutdown to unchanged
+tracked source. Only two metadata derivations and the original KVM check
+remain afterward; their execution audit finds no host native test execution.
+
+The actual manager run then fails in 214.181 seconds before its agent becomes
+ready. Its retained console shows production boot-identity validation rejecting
+the direct-kernel harness's `root=/dev/vda2`; no Terrane service assertion runs.
+The fixture correction applies the selected platform's existing kernel-test
+machine module before constructing both its system disk and initrd, matching
+fleet tests. That module retains the direct-kernel policy in both authenticated
+boot scopes and disables interactive initrd debug shells. The original Terrane
+unit identities, confinement, funding and native cache fs-verity requirements
+remain intact. Evaluation/dry-run passes; renewed committed-source runtime
+qualification remains required. The failed manager result remains evidence.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement
