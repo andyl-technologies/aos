@@ -55,6 +55,7 @@
         });
         aos.image = {
           erofsCompressionLevel = 1;
+          rawCompressionLevel = 3;
           rootPartitionMiB = 2048;
           budgets = {
             maxRuntimeClosureMiB = lib.mkForce 8192;
