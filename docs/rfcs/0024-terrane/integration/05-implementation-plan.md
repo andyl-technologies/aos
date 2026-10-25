@@ -94,6 +94,18 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+Shared-session copied first ownership at `144d310a76` passes its focused native
+guest in 1,569.881 seconds. Full review compares all 8,215 immutable source
+files and 5,467 crate inputs, verifies the actual retained Cargo library-test
+artifact and installed executable hash, and requires both exact cases to pass
+once as UID/GID 840 on ext4 with empty capabilities and no-new-privileges.
+The new case keeps a single original holder/epoch through genuine copied
+first ownership, full G/D elapsed observation, recurring permanent-owner hints,
+actual residue reconciliation and empty rechecks. The original standalone
+pack-only ownership case also passes. Foreign Original remains unavailable;
+this does not fix or accept the earlier copied-fixture ordinary-marking failure.
+Configured service and task acceptance remain unchanged.
+
 Exact-incarnation ordinary deletion status is now exposed on `Collection` and
 repository-retained `LocalCollection`. The lookup examines that cycle/pack's
 protected local-v1 directory independently of paged discovery, validates every
@@ -114,7 +126,7 @@ GC scheduling and task acceptance are unchanged.
 Mandatory workspace compilation at `144d310a76` and `5bb7e9db5b` passes in
 760.663 and 1,421.178 seconds respectively. Both full reviews verify all 8,215
 immutable source files, 190 test executables and 59 packages as compilation
-only. The shared-session copied-ownership native guest remains pending.
+only. Shared-session native qualification also passes as recorded above.
 
 Local collector settings now have an explicit `[gc]` vocabulary for lease,
 polling/cycle intervals, bounded marking/maintenance batches and the deletion
@@ -216,7 +228,7 @@ whole-guest bound for its two cases, actual ext4, UID/GID 840, empty capabilitie
 no-new-privileges and retained Cargo/source verification. Its new case checks
 actual full-G/D elapsed time, retained holder/epoch, permanent-owner preservation,
 complete native recovery, empty rechecks and zero extra data-body reads while
-foreign Original remains unavailable. Native qualification remains pending;
+foreign Original remains unavailable. Native qualification passes as recorded above;
 mandatory application-target compilation passes as recorded above. Both supported Tokio all-target
 strict lint profiles and the std-only library profile pass. Touched Python syntax, Nix formatting, PLAN-2
 ownership and diff checks pass. Configured GC and original-root
