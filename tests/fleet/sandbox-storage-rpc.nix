@@ -3,9 +3,13 @@
   lib,
   mkSystem,
   pkgs,
+  systems,
   seedInPrivateMountNamespace ? false,
   ...
-}: let
+} @ args: let
+  installedSystem = (import ./sandbox-lifecycle-funded-startup.nix args).machines.vm.system;
+  installedKernel = installedSystem.config.system.build.kernel;
+
   selectedFixture = "broker::tests::systemd_storage_rpc_vm_fixture";
   authorityDirectory = "/run/aos/sandbox-storage-authority";
   bootstrapDirectory = "/run/aos/sandbox-storage-bootstrap";
@@ -69,7 +73,7 @@
     '';
   };
 
-  system = mkSystem [
+  storageSystem = mkSystem [
     ../../systems/server-test.nix
     ({config, ...}: let
       zfs = pkgs.zfsForKernel config.system.build.kernel;
@@ -82,6 +86,10 @@
           --ignored --exact '${selectedFixture}' --test-threads=1 --nocapture
       '';
     in {
+      # Exercise the workspace and TPM transports against the exact installed
+      # lifecycle kernel, including its confinement and namespace configuration.
+      aos.kernel._extraConfigFragments = lib.mkForce installedSystem.config.aos.kernel._extraConfigFragments;
+
       # Selection-time fixture modules are not replayed as operator policy.
       # Retain the same identity in the native host activation input as well.
       aos.activation.stages.host.configuration = [
@@ -196,13 +204,17 @@
       };
     })
   ];
+  system =
+    if toString storageSystem.config.system.build.kernel == toString installedKernel
+    then storageSystem
+    else throw "Storage RPC proof must use the installed lifecycle kernel";
 in {
   name =
     if seedInPrivateMountNamespace
     then "sandbox-storage-rpc-stale-scope"
     else "sandbox-storage-rpc";
   timeout = 900;
-  bootTimeout = 180;
+  bootTimeout = 240;
 
   # Each signed denial retains its own unresolved history. Independent guests
   # prevent a later positive case from overwriting or adopting that pending cut.
@@ -367,7 +379,7 @@ in {
           assert effect_state() == before
           finish()
 
-      machine.wait_for_unit("multi-user.target", timeout=120)
+      machine.wait_for_unit("multi-user.target", timeout=180)
       controller_account = machine.succeed("getent passwd aos-sandboxd").strip().split(":")
       assert controller_account[2:4] == ["811", "811"], controller_account
       machine.wait_for_unit("aos-sandbox-zfs-ready.service", timeout=30)
