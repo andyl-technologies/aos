@@ -319,6 +319,21 @@ prerequisites remain present. T-HOST-2 acceptance still requires reconciliation
 with PROTO-58's explicitly named crash-recovery gate; this result does not
 establish full host readiness or manager restart recovery.
 
+All four host-cache owning gates at `a7e05fa6cd` pass in 5,105.835
+seconds. Independent review matches all 8,258 immutable source files, ten
+retained Cargo executables and seventeen actual guests: four UID-840 selector
+guests execute the original twenty-one ordered nonignored cases, and thirteen
+physical guests supply the ten original prerequisite results. The cache
+aggregate expands into three guests and the SDK aggregate into two; no
+aggregate result substitutes for their serial logs and clean exits. This
+includes the named `host-crash-recovery` gate required by PROTO-58. Review
+also rechecks 1,390 byte-identical production source, manifest, build-script
+and protocol inputs across the host-cache, publisher and manager checkpoints.
+This reconciles the publisher's crash-recovery evidence, without establishing
+the global one-protocol gate, complete production role deployment or T6's
+kill-every-role recovery. Task-wide audits remain required; acceptance stays
+28/64.
+
 The manager prerequisites at `4914e8a0dc` pass in 939.212 seconds. Review
 verifies all 49 missing derivations dispatch to the isolated builder, the
 twelve original runtime checks remain in the imported image closure, and
