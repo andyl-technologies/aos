@@ -33,6 +33,9 @@
   };
   family = import ./_bazel-rust-family.nix {
     inherit pkgs packages sourceInventory repositories rustcFlags;
+    execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no" "-Cstrip=symbols"];
+    # The editor oracle's global flags also apply to its native macro tools.
+    editorExecRustcFlags = rustcFlags;
     pname = "aos-bazel-accache";
     dependencyProfile = "accache";
     packageTargets = {
@@ -51,6 +54,7 @@
     cargoVendor = pkgs.accache.passthru.cargoDeps;
     cargoVendorConfig = vendorConfig;
     cargoFlags = ["--release"];
+    captureCompilerArguments = true;
     # The models enumerate different numbers of successfully inferred expressions.
     # Retain both statistics and compare diagnostics in the two package sources.
     editorComparisonScope = "selected-packages";
@@ -66,6 +70,11 @@ in
       workspace = family.workspace;
       targets = productionTargets;
       retainActionGraph = true;
+    };
+    execution-profiles = import ./_bazel-accache-execution-profiles.nix {
+      inherit pkgs production;
+      inherit (family) editorWorkspace cargo;
+      editorCargoOracle = family.editor-cargo-oracle;
     };
     package = pkgs.mkAosBazelPackage {
       pname = "accache";
@@ -161,7 +170,7 @@ in
     };
     all =
       pkgs.runCommand "aos-bazel-accache-checks" {
-        buildDeps = [family.all family.editor-parity package installation integration];
+        buildDeps = [family.all family.editor-parity package installation integration execution-profiles];
       } ''
         mkdir -p "$out"
         ln -s ${family.all} "$out/tests"
@@ -169,5 +178,6 @@ in
         ln -s ${package} "$out/package"
         ln -s ${installation} "$out/installation"
         ln -s ${integration} "$out/integration"
+        ln -s ${execution-profiles} "$out/execution-profiles"
       '';
   }

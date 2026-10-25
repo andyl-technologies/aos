@@ -2943,6 +2943,9 @@ dependency audit before that workspace's compilation targets migrate.
 
 ## Standalone accache build graph
 
+The [execution-profile guide](docs/accache.md) documents the independent release
+and editor macro settings and their retained compiler evidence.
+
 Accache and its borrowed GCC/Clang/Rust parser library now have ordinary Bazel
 binary, library, libtest, documentation, Clippy, formatting, license, source
 ownership, and installed-package targets. This family has a standalone lockfile;

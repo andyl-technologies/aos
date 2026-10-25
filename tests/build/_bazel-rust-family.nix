@@ -33,12 +33,14 @@
   nativeTools ? [],
   rustcFlags ? [],
   execRustcFlags ? [],
+  editorExecRustcFlags ? execRustcFlags,
   cargoSource ? import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;},
   cargoManifest ? "crates/Cargo.toml",
   cargoVendor ? pkgs.aos.passthru.cargoDeps,
   cargoVendorConfig ? "${cargoVendor}/.cargo/config.toml",
   cargoSetup ? "",
   cargoFlags ? [],
+  captureCompilerArguments ? false,
 }: let
   names = builtins.attrNames packages;
   cargoWorkspace = builtins.dirOf cargoManifest;
@@ -60,21 +62,30 @@
       == "regular"
       && pkgs.lib.hasSuffix ".rs" file
       && !(directoryName == "tests" && builtins.elem (pkgs.lib.removeSuffix ".rs" file) excludedTests)) (builtins.attrNames entries));
-  workspace = pkgs.mkAosBazelWorkspace {
-    root = ../..;
-    inherit sourceInventory dependencyProfile repositories rustcFlags execRustcFlags;
-    sourceDirectories = pkgs.lib.optionals (sourceInventory == null) ([
-        "tools/bazel/toolchains"
-        "tools/bazel/rules"
-        "tools/bazel/metadata"
-        "tools/bazel/testing"
-        "third_party/rust"
-      ]
-      ++ builtins.attrValues packages ++ extraSourceDirectories);
-    analysisTargets = assert builtins.attrNames packageTargets == names; map (name: "${label name}:${packageTargets.${name}.unit}") names;
-  };
+  workspaceFor = executionFlags:
+    pkgs.mkAosBazelWorkspace {
+      root = ../..;
+      inherit sourceInventory dependencyProfile repositories rustcFlags;
+      execRustcFlags = executionFlags;
+      sourceDirectories = pkgs.lib.optionals (sourceInventory == null) ([
+          "tools/bazel/toolchains"
+          "tools/bazel/rules"
+          "tools/bazel/metadata"
+          "tools/bazel/testing"
+          "third_party/rust"
+        ]
+        ++ builtins.attrValues packages ++ extraSourceDirectories);
+      analysisTargets = assert builtins.attrNames packageTargets == names; map (name: "${label name}:${packageTargets.${name}.unit}") names;
+    };
+  workspace = workspaceFor execRustcFlags;
+  # Cargo editor flags can reach host tools even when test/release flags do not.
+  # Keep the selected target graph while compiling editor macros independently.
+  editorWorkspace =
+    if editorExecRustcFlags == execRustcFlags
+    then workspace
+    else workspaceFor editorExecRustcFlags;
 in rec {
-  inherit workspace;
+  inherit workspace editorWorkspace;
   tests = pkgs.mkAosBazelCheck {
     pname = "${pname}-tests";
     inherit workspace;
@@ -97,6 +108,7 @@ in rec {
     targets = map (name: "${label name}:format") names;
   };
   editor = let
+    workspace = editorWorkspace;
     targets =
       pkgs.lib.concatMap (name:
         ["${label name}:${editorLibraryTargets.${name} or packageTargets.${name}.root}" "${label name}:${packageTargets.${name}.unit}_binary"]
@@ -222,7 +234,17 @@ in rec {
         CARGO_WRAPPER
         chmod +x "$TMPDIR/editor-cargo"
       ''}
-      ${cargoSetup}${pkgs.lib.optionalString (editorRustcFlags != []) ''
+      ${pkgs.lib.optionalString captureCompilerArguments ''
+        # The analyzer can replace RUSTC_WRAPPER for its own checks. Trace the
+        # compiler entry point so native macro builds remain observable.
+        cat > "$TMPDIR/editor-rustc" <<'RUSTC_WRAPPER'
+        #!${pkgs.bash}/bin/bash
+        exec ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/trace_cargo_rustc.py} \
+          ${workspace.toolchains}/bin/rustc "$@"
+        RUSTC_WRAPPER
+        chmod +x "$TMPDIR/editor-rustc"
+        export AOS_CARGO_RUSTC_TRACE="$out/compiler-arguments.jsonl"
+      ''}${cargoSetup}${pkgs.lib.optionalString (editorRustcFlags != []) ''
         # rust-analyzer queries Cargo with -O, so make semantic profile settings
         # explicit instead of hiding debug-assertion-gated first-party APIs.
         export RUSTFLAGS=${pkgs.lib.escapeShellArg (pkgs.lib.concatStringsSep " " editorRustcFlags)}
@@ -230,7 +252,11 @@ in rec {
         if editorCargoFlags == []
         then "${pkgs.rust}/bin/cargo"
         else ''"$TMPDIR/editor-cargo"''
-      } RUSTC=${workspace.toolchains}/bin/rustc \
+      } RUSTC=${
+        if captureCompilerArguments
+        then ''"$TMPDIR/editor-rustc"''
+        else "${workspace.toolchains}/bin/rustc"
+      } \
         RUST_SRC_PATH=${workspace.toolchains}/developer/rust-src/library RAYON_NUM_THREADS=4 \
         ${workspace.toolchains}/developer/bin/rust-analyzer${pkgs.lib.optionalString editorDiagnosticContext " -v -v"} analysis-stats "$PWD/source/${cargoWorkspace}" --output csv \
           --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \
@@ -276,7 +302,7 @@ in rec {
     PYTHON
   '';
   cargo = import ./_bazel-cargo-oracle.nix {
-    inherit pkgs nativeLibraries nativeTools cargoSource cargoManifest cargoVendor cargoVendorConfig cargoSetup cargoFlags;
+    inherit pkgs nativeLibraries nativeTools cargoSource cargoManifest cargoVendor cargoVendorConfig cargoSetup cargoFlags captureCompilerArguments;
     pname = "${pname}-cargo-oracle";
     packages = names;
   };
