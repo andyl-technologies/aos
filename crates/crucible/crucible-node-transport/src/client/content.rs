@@ -1,5 +1,6 @@
 //! Finite immutable byte custody for authenticated opposite-direction transfers.
 
+pub(in crate::client) mod capture_capacity;
 mod compact;
 mod compact_decode;
 

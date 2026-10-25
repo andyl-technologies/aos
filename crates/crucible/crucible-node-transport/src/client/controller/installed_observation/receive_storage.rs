@@ -62,6 +62,14 @@ impl CnpController {
         &self,
         maximum: usize,
     ) -> Result<OriginalObservationReceiveStorageData, ProviderError> {
+        self.observation_receive_storage_for_capture_data(maximum, None)
+    }
+
+    pub(in crate::client) fn observation_receive_storage_for_capture_data(
+        &self,
+        maximum: usize,
+        capacity: Option<&crate::client::content::capture_capacity::CaptureContentCapacityData>,
+    ) -> Result<OriginalObservationReceiveStorageData, ProviderError> {
         self.session
             .ensure_original_observation_receiver_idle_data()?;
         let limits = self.authority().limits();
@@ -102,14 +110,24 @@ impl CnpController {
             Ok::<_, ProviderError>(maximum.max(row.requested_total()?))
         })?;
         let reference = reference_projection(maximum)?;
-        let content = self
-            .custody
-            .content()
-            .observation_receive_content_storage_data(
-                reference.retained_value_backing_bytes,
-                requests,
-                frame,
-            )?;
+        let content = if let Some(capacity) = capacity {
+            self.custody
+                .content()
+                .observation_receive_capture_content_storage_data(
+                    reference.retained_value_backing_bytes,
+                    requests,
+                    frame,
+                    capacity,
+                )?
+        } else {
+            self.custody
+                .content()
+                .observation_receive_content_storage_data(
+                    reference.retained_value_backing_bytes,
+                    requests,
+                    frame,
+                )?
+        };
         let raw = original_json_value_storage_extent_data(frame)?;
         // All lifetime provider records can remain in ClientCustody after ACK.
         // Count its full unchanged finite map as a fresh prospective allocation;
@@ -332,6 +350,9 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<std::slice::Iter<'static, usize>>()
         + size_of::<std::slice::Iter<'static, OriginalSerializationStorageData>>()
         + size_of::<Option<usize>>()
+        + size_of::<Option<&crate::client::content::capture_capacity::CaptureContentCapacityData>>(
+        )
+        + size_of::<&crate::client::content::capture_capacity::CaptureContentCapacityData>()
         + size_of::<Result<(), ProviderError>>()
         + size_of::<[usize; 18]>()
         + 24 * size_of::<usize>()

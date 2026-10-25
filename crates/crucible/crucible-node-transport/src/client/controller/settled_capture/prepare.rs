@@ -24,6 +24,65 @@ impl CnpController {
         request: PacketRestoredSettledCaptureRequest,
         maximum_auxiliary_originals: [usize; 2],
     ) -> Result<PreparedOriginalRestoredSettledCapture<'_>, ProviderError> {
+        self.reserve_restored_settled_capture_data(
+            emitter,
+            request_id,
+            operation_id,
+            body,
+            request,
+            (maximum_auxiliary_originals, None),
+        )
+    }
+
+    /// Retains Capture and applies its independently admitted future capacity.
+    ///
+    /// The genuine Source/Window claim must admit the complete construction row
+    /// before entry. The row binds this Controller, launch and input geometry;
+    /// its receiver projection prices the enlarged journal/content allowances.
+    /// The existing one-use owner is installed before any quota changes. Old
+    /// consumed bytes, original IDs, transfers and immutable aliases stay held.
+    ///
+    /// # Errors
+    /// Refuses stale or mismatched construction DATA and every refusal of
+    /// [`Self::reserve_original_restored_settled_capture`]. Failed assignment
+    /// retains its once owner and cannot apply the capacity a second time.
+    pub fn reserve_original_restored_settled_capture_with_capacity_data(
+        &mut self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+        request_id: Id,
+        operation_id: Id,
+        body: BeginRequest,
+        request: PacketRestoredSettledCaptureRequest,
+        construction: (
+            &OriginalRestoredSettledCaptureConstructionData,
+            &crate::reference_packet::service::PacketNative5SourceLaunch,
+        ),
+    ) -> Result<PreparedOriginalRestoredSettledCapture<'_>, ProviderError> {
+        let (row, launch) = construction;
+        let counts = row.actual_auxiliary_originals_data(self, launch, &request, &body)?;
+        self.reserve_restored_settled_capture_data(
+            emitter,
+            request_id,
+            operation_id,
+            body,
+            request,
+            (counts, Some(row.capacity_data())),
+        )
+    }
+
+    fn reserve_restored_settled_capture_data(
+        &mut self,
+        emitter: &OriginalCanonicalBlobAckEmitter,
+        request_id: Id,
+        operation_id: Id,
+        body: BeginRequest,
+        request: PacketRestoredSettledCaptureRequest,
+        capacity: (
+            [usize; 2],
+            Option<crate::client::session::capture_capacity::CaptureCapacityData>,
+        ),
+    ) -> Result<PreparedOriginalRestoredSettledCapture<'_>, ProviderError> {
+        let (maximum_auxiliary_originals, capacity) = capacity;
         self.authenticate_restored_settled_capture_data(emitter)?;
         self.ensure_no_pending_original_ack_admit()?;
         self.ensure_no_pending_original_complete_restore()?;
@@ -107,6 +166,9 @@ impl CnpController {
             || state.request.capture_operation != state.operation_id
         {
             return Err(refused());
+        }
+        if let Some(capacity) = capacity {
+            self.custody.retain_capture_capacity_data(&capacity)?;
         }
         state.stage = Stage::Reserved;
         Ok(PreparedOriginalRestoredSettledCapture { controller: self })

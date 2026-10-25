@@ -16,13 +16,47 @@ impl ClientContent {
         maximum_new_requests: usize,
         maximum_wire_chunk: usize,
     ) -> Result<(usize, usize), ProviderError> {
+        self.observation_receive_content_storage_for_limits_data(
+            reference_backing,
+            maximum_new_requests,
+            maximum_wire_chunk,
+            self.maximum_bytes,
+            self.maximum_objects,
+        )
+    }
+
+    pub(in crate::client) fn observation_receive_capture_content_storage_data(
+        &self,
+        reference_backing: usize,
+        maximum_new_requests: usize,
+        maximum_wire_chunk: usize,
+        capacity: &capture_capacity::CaptureContentCapacityData,
+    ) -> Result<(usize, usize), ProviderError> {
+        self.authenticate_capture_capacity_data(capacity)?;
+        self.observation_receive_content_storage_for_limits_data(
+            reference_backing,
+            maximum_new_requests,
+            maximum_wire_chunk,
+            capacity.byte_ceiling(),
+            capacity.object_ceiling(),
+        )
+    }
+
+    fn observation_receive_content_storage_for_limits_data(
+        &self,
+        reference_backing: usize,
+        maximum_new_requests: usize,
+        maximum_wire_chunk: usize,
+        maximum_bytes: usize,
+        maximum_objects: usize,
+    ) -> Result<(usize, usize), ProviderError> {
         // A reserved length is numeric quota, not a Vec allocation. Every
         // append requires one newly journaled provider BlobChunk original.
         // Cached ACK replay returns before content mutation; a retained Chunk
         // without its ACK can only replay its original offset and bytes. Thus
         // each immutable request identity can append at most once.
         let chunk = self.maximum_chunk.min(maximum_wire_chunk);
-        let future_bytes = mul(maximum_new_requests, chunk)?.min(self.maximum_bytes);
+        let future_bytes = mul(maximum_new_requests, chunk)?.min(maximum_bytes);
         let unfinished_bytes = self
             .transfers
             .values()
@@ -33,28 +67,25 @@ impl ClientContent {
         // minimum for every possible bank; both Rc views remain visible to the
         // conservative census even when they share one immutable allocation.
         let possible_bytes = add(unfinished_bytes, future_bytes)?;
-        let one_view = add(mul(2, possible_bytes)?, mul(8, self.maximum_objects)?)?;
+        let one_view = add(mul(2, possible_bytes)?, mul(8, maximum_objects)?)?;
         let both_views = mul(2, one_view)?;
         let headers = mul(
-            mul(2, self.maximum_objects)?,
+            mul(2, maximum_objects)?,
             add(
                 size_of::<Vec<u8>>(),
                 shared_header_storage_data(1, align_of::<Vec<u8>>())?,
             )?,
         )?;
-        let reference_and_keys = mul(
-            self.maximum_objects,
-            add(mul(2, reference_backing)?, 128 + 64)?,
-        )?;
+        let reference_and_keys = mul(maximum_objects, add(mul(2, reference_backing)?, 128 + 64)?)?;
         let transfers = tree_storage_data(
             1,
-            self.maximum_objects,
+            maximum_objects,
             size_of::<Id>() + size_of::<Transfer>(),
             align_of::<(Id, Transfer)>(),
         )?;
         let objects = tree_storage_data(
             1,
-            self.maximum_objects,
+            maximum_objects,
             size_of::<String>() + size_of::<(ContentRef, Rc<Vec<u8>>)>(),
             align_of::<(String, (ContentRef, Rc<Vec<u8>>))>(),
         )?;
@@ -77,6 +108,8 @@ impl ClientContent {
             + size_of::<std::collections::btree_map::Values<'static, Id, Transfer>>()
             + size_of::<Option<&Transfer>>()
             + size_of::<[usize; 8]>()
+            + size_of::<[usize; 7]>() * 2
+            + size_of::<&capture_capacity::CaptureContentCapacityData>()
             + size_of::<std::array::IntoIter<usize, 5>>()
             + size_of::<Result<(usize, usize), ProviderError>>()
     }

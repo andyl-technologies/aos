@@ -8,21 +8,52 @@ use super::*;
 use crate::client::history_encoding17 as json;
 
 impl ClientContent {
+    #[cfg(test)]
     pub(in crate::client) fn capture_history_encoded_growth_data(
         &self,
         maximum_mutating_provider_originals: usize,
         frame: usize,
     ) -> Result<usize, ProviderError> {
+        self.capture_history_encoded_growth_for_limits_data(
+            maximum_mutating_provider_originals,
+            frame,
+            self.maximum_bytes,
+            self.maximum_objects,
+        )
+    }
+
+    pub(in crate::client) fn capture_history_encoded_growth_with_capacity_data(
+        &self,
+        maximum_mutating_provider_originals: usize,
+        frame: usize,
+        capacity: &capture_capacity::CaptureContentCapacityData,
+    ) -> Result<usize, ProviderError> {
+        self.authenticate_capture_capacity_data(capacity)?;
+        self.capture_history_encoded_growth_for_limits_data(
+            maximum_mutating_provider_originals,
+            frame,
+            capacity.byte_ceiling(),
+            capacity.object_ceiling(),
+        )
+    }
+
+    fn capture_history_encoded_growth_for_limits_data(
+        &self,
+        maximum_mutating_provider_originals: usize,
+        frame: usize,
+        maximum_bytes: usize,
+        maximum_objects: usize,
+    ) -> Result<usize, ProviderError> {
         let chunk = self.maximum_chunk.min(frame);
         let appended =
-            json::multiply(maximum_mutating_provider_originals, chunk)?.min(self.maximum_bytes);
+            json::multiply(maximum_mutating_provider_originals, chunk)?.min(maximum_bytes);
         let unfinished = self
             .transfers
             .values()
             .filter(|transfer| !transfer.complete)
             .try_fold(0usize, |sum, transfer| json::add(sum, transfer.bytes.len()))?;
         let payload = json::compact_bytes(json::add(unfinished, appended)?)?;
-        let rows = maximum_mutating_provider_originals.min(self.maximum_objects);
+        let rows = maximum_mutating_provider_originals.min(maximum_objects);
         let reference = json::content_reference()?;
         let alias = json::array(1, json::literal("transfer")?)?
             .checked_add(json::DECIMAL + 1)

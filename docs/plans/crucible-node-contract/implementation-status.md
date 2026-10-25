@@ -10,6 +10,40 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Source-funded settled Capture capacity
+
+The actual Source Capture17 bridge now applies its independently admitted SDK
+construction row through the retained one-use Capture assignment. The row derives
+additional journal credit from the prospective originals, retained unanswered
+originals and the defining canonical expansion bound. Four maximum output lengths
+supply additional content-byte reservations and four object/transfer slots.
+Existing ceilings and consumed credit remain independently held; namespace and
+negotiated limits stay unchanged. This is a per-operation Capture17 handoff, not
+the complete Source18 runtime funding path.
+
+The receiver and content-history projections use the enlarged prospective caps
+before Source admits the row. Generic journal history also uses canonical
+expansion: raw frame length alone cannot bound normalized numeric details.
+Current quota/consumption counters must still match at assignment. The Capture
+owner is installed before quota changes; partial reservation failures stay spent.
+All fallible checks precede the paired journal/content mutation. Existing content
+allocations, aliases, original IDs and consumed journal bytes remain intact.
+
+Eight new capacity controls and two construction controls pass in both codec
+builds. Both complete Transport suites pass 2,225 tests with zero failures and
+twenty ignored using frozen compiler-selected artifacts. All-feature/all-target
+checking, scoped formatting and six architecture checks pass. Strict Transport
+Clippy keeps the exact previous diagnostic multiset: four existing errors and
+1,725 warnings; it is not a strict lint pass. Application test-target compilation
+passes with 185 test artifacts across 58 packages, including 76 integration
+targets. Its captured source matches all 690 frozen owned Rust/Cargo inputs.
+Protected user changes remain outside this commit. No new native Capture flight
+or clean published-PR qualification is claimed.
+
+Complete future SDK R/T/S, the genuine Source18 runtime owner and handoff, the
+five-phase recipe producer, Native18 selection and full RFC qualification remain
+unfinished. The PR description remains unchanged.
+
 ## Independent compact journal and content ceilings
 
 Compact SDK construction can now retain content under its own unchanged byte

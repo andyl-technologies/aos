@@ -23,6 +23,7 @@ mod assigned_publication;
 pub(in crate::client) use assigned_publication::OriginalAssignedPublicationData;
 
 mod bootstrap_cut;
+pub(in crate::client) mod capture_capacity;
 mod compact_journal;
 mod fresh_restore_query;
 mod journal_storage;

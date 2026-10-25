@@ -142,13 +142,13 @@ impl CaptureSdkOwners {
         }
 
         let mut prepared = controller
-            .reserve_original_restored_settled_capture(
+            .reserve_original_restored_settled_capture_with_capacity_data(
                 emitter,
                 self.request_id.clone(),
                 self.operation_id.clone(),
                 self.body.clone(),
                 self.request.clone(),
-                counts,
+                (sdk, launch),
             )
             .map_err(|_| RuntimeError::InvalidReceipt)?;
         if prepared

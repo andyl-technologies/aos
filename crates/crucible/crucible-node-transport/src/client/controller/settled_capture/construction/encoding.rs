@@ -1,7 +1,8 @@
 //! Prices additional serialized SDK/journal ownership after completed Capture.
 //!
 //! These field rosters mirror settled_capture/history.rs and ClientOriginal.
-//! Each raw Envelope fits the actual negotiated encoded frame. Standalone
+//! Generic journals use the canonical expansion of the negotiated raw frame.
+//! Successful closed SDK envelopes retain their separate frame bounds. Standalone
 //! request/context/artifact/continuation DTOs satisfy their defining artifact
 //! caps before successful completion; their heap backing is not an encoding cap.
 
@@ -112,14 +113,16 @@ pub(super) fn journals_data(
     outgoing: usize,
     incoming: usize,
 ) -> Result<usize, ProviderError> {
+    let canonical = original_json_value_storage_extent_data(frame)?.maximum_canonical_encoded_bytes;
     let original = json::object(&[
-        ("request", frame),
+        ("request", canonical),
         ("identity", json::hash("cnp.request.v1")?),
-        ("response", frame),
+        ("response", canonical),
     ])?;
     let entry = json::add(json::add(json::string(128)?, original)?, 2)?;
-    // Existing custody counters are numeric usize tokens. No original is
+    // Consumed journal bytes are a numeric usize token. No original is
     // removed or admitted from this row; both namespaces keep their old limits.
+    // The enclosing construction separately prices the changed quota scalars.
     json::add(
         json::multiply(json::add(outgoing, incoming)?, entry)?,
         json::DECIMAL,
@@ -151,6 +154,9 @@ mod tests {
         assert!(sdk_history_data(usize::MAX, [3, 3]).is_err());
         let journals = journals_data(65_536, 8, 9)?;
         assert!(journals > journals_data(65_536, 8, 8)?);
+        let canonical =
+            original_json_value_storage_extent_data(65_536)?.maximum_canonical_encoded_bytes;
+        assert!(journals >= 2 * (8 + 9) * canonical);
         assert!(a > json::raw_bytes(65_536)?);
         Ok(())
     }

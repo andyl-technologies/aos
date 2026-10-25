@@ -1,10 +1,11 @@
 //! Prices future SDK Capture17 owners before the Controller once-slot is installed.
 //!
-//! Every current journal and receiver ceiling stays unchanged. This independent
-//! row covers new SDK metadata/partials and every permitted incoming transfer;
+//! The row derives additional journal and four output reservations, then prices
+//! new SDK metadata/partials and every permitted incoming transfer at those caps;
 //! the Source and native rows remain separate. No quote is a spending permit.
 
 use super::*;
+use crate::client::session::capture_capacity::CaptureCapacityData;
 use crate::envelope::RequestOrigin;
 use crate::reference_packet::service::{
     PacketNative5SourceLaunch,
@@ -62,6 +63,7 @@ pub struct OriginalRestoredSettledCaptureConstructionData {
     chunk: usize,
     auxiliary: [usize; 2],
     incoming: usize,
+    capacity: CaptureCapacityData,
     controller_history_encoded_growth: usize,
     retained: usize,
     transient: usize,
@@ -70,6 +72,10 @@ pub struct OriginalRestoredSettledCaptureConstructionData {
 }
 
 impl OriginalRestoredSettledCaptureConstructionData {
+    pub(super) const fn capacity_data(&self) -> CaptureCapacityData {
+        self.capacity
+    }
+
     /// Returns the actual same Controller's unchanged negotiated frame ceiling.
     pub const fn maximum_frame_bytes_data(&self) -> usize {
         self.frame
@@ -221,6 +227,9 @@ impl OriginalRestoredSettledCaptureConstructionData {
         {
             return Err(refused());
         }
+        controller
+            .custody
+            .authenticate_capture_capacity_data(&self.capacity)?;
         let mut observer = MetadataObserver::new();
         observer.observe(request)?;
         if requested_metadata_backing_storage_data(&observer.finish())? > self.request_backing {
@@ -421,9 +430,12 @@ impl CnpController {
         .map(|value| usize::try_from(value.get()).map_err(|_| refused()));
         let [snapshot, control, anchor, after] = output_lengths;
         let output_lengths = [snapshot?, control?, anchor?, after?];
-        // Expected output roles remain independently checked; the receiver can
-        // retain other partials before rejecting the terminal, so price its
-        // entire actual unchanged logical ceilings rather than only four roles.
+        let capacity =
+            self.custody
+                .capture_capacity_data(outgoing, incoming, frame, output_lengths)?;
+        // The four additional output reservations retain all old allowances.
+        // Unexpected and incomplete transfers can consume the enlarged caps,
+        // so the receiver quote below must use these prospective ceilings.
         let expected_content =
             crate::client::ClientContent::restored_settled_capture_future_content_storage_data(
                 output_lengths,
@@ -435,7 +447,8 @@ impl CnpController {
         // append payload bytes. The defining causal projection therefore bounds
         // all accepted and failed receiver owners without pretending the numeric
         // ContentStore reservation allocated its entire logical quota up front.
-        let receiver = self.original_observation_receive_storage_data(maximum)?;
+        let receiver =
+            self.observation_receive_storage_for_capture_data(maximum, Some(capacity.content()))?;
         let content = add(expected_content, receiver.retained)?;
         let retained = sum(&[
             requests,
@@ -481,8 +494,15 @@ impl CnpController {
             encoding::journals_data(frame, outgoing, encoding_provider_originals)?,
             self.custody
                 .content()
-                .capture_history_encoded_growth_data(encoding_provider_originals, frame)?,
+                .capture_history_encoded_growth_with_capacity_data(
+                    encoding_provider_originals,
+                    frame,
+                    capacity.content(),
+                )?,
             self.session.capture_history_encoded_growth_data()?,
+            // The additional journal, content-byte and object ceilings change
+            // three independent history scalars beside consumed reservations.
+            multiply(3, crate::client::history_encoding17::DECIMAL)?,
         ])?;
         let scratch = add(
             Self::original_restored_settled_capture_counter_scratch_data(),
@@ -507,6 +527,7 @@ impl CnpController {
             chunk: geometry.maximum_chunk_bytes_data(),
             auxiliary,
             incoming,
+            capacity,
             controller_history_encoded_growth,
             retained,
             transient,
@@ -594,6 +615,14 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<[usize;2]>()
         + crate::connection::original_serialized_credit_counter_scratch_data()
         + size_of::<OriginalRestoredSettledCaptureConstructionData>()
+        + size_of::<CaptureCapacityData>() * 2
+        + size_of::<Result<CaptureCapacityData, ProviderError>>()
+        + size_of::<crate::client::content::capture_capacity::CaptureContentCapacityData>() * 2
+        + size_of::<Result<crate::client::content::capture_capacity::CaptureContentCapacityData, ProviderError>>()
+        + size_of::<[usize; 7]>() * 2
+        + size_of::<[usize; 5]>() * 2
+        + size_of::<crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData>()
+        + size_of::<Result<crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData, ProviderError>>()
         + size_of::<Result<OriginalRestoredSettledCaptureConstructionData,ProviderError>>()
         + size_of::<&CnpController>()
         + size_of::<&PacketNative5SourceLaunch>()
