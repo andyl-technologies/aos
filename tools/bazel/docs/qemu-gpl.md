@@ -192,6 +192,12 @@ The later [package-owned recipe rebuild](../tests/evidence/package-owned-gpl-off
 uses a unique trial and executes all 107 actions again from the exported entry
 point. It has zero action-cache hits and produces the same plugin and gateway
 bytes after extracting the production recipes into `pkgs/emulation/`.
+The [publication-snapshot rebuild](../tests/evidence/publication-gpl-offline-source-rebuild.json)
+repeats the exported entry point with a fresh trial after the execution-profile
+plumbing changes. All 107 actions execute in the Linux sandbox without cache
+hits; both installed binaries remain byte-identical to the checkout packages.
+Its immutable source artifact includes the pending publication preview repair,
+whose separate policy check is not qualified by this rebuild.
 
 The live white-box gate runs unchanged against `installed.plugin`:
 
