@@ -1,4 +1,4 @@
-//! Measures only the inherited PID1 image and this actual producer executable.
+//! Measures original PID1/self images and owns the separate runtime module.
 //!
 //! The same startup source pays fixed descriptor/metadata work before native IO,
 //! then pays hashing from the retained same-file length before acquisition. The
@@ -13,6 +13,9 @@ use aos_sandbox_broker::profile_data::schema::ImagePinV1;
 use super::*;
 
 const MAXIMUM_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
+
+mod runtime;
+pub(super) use runtime::InitialRuntimeOriginalV1;
 
 pub(super) struct InitialImagesOriginalV1 {
     pid1: ImageOriginalV1,

@@ -288,6 +288,19 @@ Recent committed startup fixes close narrower prerequisites:
   protected writer custody and actual initial-floor publication remain missing;
   these mechanical results grant no provisioning or readiness authority.
 
+- The same initial-producer Source now pays runtime-inventory and immutable
+  policy-file acquisitions, using each held file's actual metadata length for
+  later hashing. It also prepays the actual self-maps read and its independent
+  owed post. Borrowed measured-file references leave every acquisition owner
+  and native prefix in place; both observer entry points share the canonical
+  maps engine and one-shot fence. A refused file post or incomplete roster
+  cannot suppress the paid maps read or Source after-observation. All 19 focused
+  regressions pass, including actual-reader cause retention and these negative
+  ordering cases. Complete Rust targets for the exact new sources are running.
+  No production binary calls this owner yet; positive installed capture, full
+  unit/live-policy/key admission, protected writer custody, approved intent,
+  TPM initialization and public lifecycle qualification remain incomplete.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they

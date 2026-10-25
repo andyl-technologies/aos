@@ -287,6 +287,16 @@ pub(crate) fn require_actual_mappings_retaining_v1(
     require_actual_mappings_recipe(files, required, original, true)
 }
 
+pub(crate) fn require_borrowed_actual_mappings_retaining_v1(
+    files: &[&RetainedImmutableFileV1],
+    required: &[&str],
+    original: &mut super::shared_read::BoundedFileReadOriginalV1,
+) -> Result<(), NormalRootStartupErrorV1> {
+    original.read_once("/proc/self/maps", MAXIMUM_MAPS_BYTES, true, true)
+        .map_err(|_| NormalRootStartupErrorV1::Image)?;
+    require_executable_mapping_iter(files.iter().copied(), required, &original.text)
+}
+
 fn require_actual_mappings_recipe(
     files: &[RetainedImmutableFileV1],
     required: &[&str],
@@ -315,11 +325,19 @@ pub fn require_executable_mapping_data_v2(
     required: &[&str],
     maps: &str,
 ) -> Result<(), NormalRootStartupErrorV1> {
+    require_executable_mapping_iter(files.iter(), required, maps)
+}
+
+fn require_executable_mapping_iter<'file>(
+    files: impl ExactSizeIterator<Item = &'file RetainedImmutableFileV1> + Clone,
+    required: &[&str],
+    maps: &str,
+) -> Result<(), NormalRootStartupErrorV1> {
     if maps.len() as u64 > MAXIMUM_MAPS_BYTES {
         return Err(NormalRootStartupErrorV1::Image);
     }
     let identities = files
-        .iter()
+        .clone()
         .map(|file| file.physical_identity())
         .collect::<Vec<_>>();
     let mut present = vec![false; files.len()];
@@ -344,7 +362,7 @@ pub fn require_executable_mapping_data_v2(
             continue;
         }
         let member = files
-            .iter()
+            .clone()
             .zip(&identities)
             .position(|(file, identity)| {
                 device
@@ -361,7 +379,7 @@ pub fn require_executable_mapping_data_v2(
     }
     if required.iter().any(|path| {
         !files
-            .iter()
+            .clone()
             .zip(&present)
             .any(|(file, present)| *present && file.path().to_str() == Some(*path))
     }) {
