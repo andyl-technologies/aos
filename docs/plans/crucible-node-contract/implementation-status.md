@@ -10,6 +10,42 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Isolated ordinary compact exchanges
+
+The actual compact ClientSession now checks that the connection has no unresolved
+outgoing request, incoming request or response publication before renewing its
+deadline, changing the caller's sequence or retaining a journal original. A
+successful response rechecks that empty boundary. Exclusive session access and
+synchronous provider ACK publication therefore bound this ordinary exchange to
+one controller request, one provider request and its independently owned writing
+response at a time. Failed publication retains the existing correlation owners.
+
+Completed sequence and journal history remain eligible. Local lifetime journal
+limits and negotiated request credit are unchanged. This ordinary path refuses
+an overlapping reserved Native18 Prepare; that specialized flow still requires
+its own complete Source consumer and funding. The enforced boundary supplies neither a
+Source grant nor complete SDK R/T/S or a Source18 handoff.
+
+Four new controls pass in both codec builds. Actual socket controls check that
+unrelated incoming and outgoing originals refuse before publication, journal
+retention, caller changes or deadline renewal. Connection controls preserve all
+three unresolved populations and the failure flag, and accept retired history
+without changing negotiated credit. All thirty SDK/history and nine canonical
+publication controls pass in both builds. Both complete Transport suites pass
+2,205 tests with zero failures and twenty ignored, using frozen compiler-selected
+artifacts. Both Format suites pass 39 tests with one ignored; both SourceBirth
+suites pass all 62 tests. All-feature/all-target checking, scoped formatting and
+six architecture checks pass. Strict Format and SourceBirth Clippy pass. Strict
+Transport Clippy retains the exact preceding code/message multiset: four existing
+errors and 1,725 warnings, with no added diagnostics. It is not a strict Transport
+lint pass.
+
+Application test-target compilation passes. Actual metadata records 185 test
+artifacts across 58 packages, including 76 integration targets; its captured
+source matches all 677 frozen owned Rust/Cargo inputs. Complete Source18 SDK
+funding and runtime handoff, the five-phase recipe producer and full RFC
+qualification remain unfinished.
+
 ## Borrowed canonical body validation
 
 Shared typed body decoding now validates the borrowed object through the defining

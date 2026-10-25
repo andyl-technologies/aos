@@ -481,6 +481,13 @@ impl ClientSession {
     /// fallible accounting or copy; errors fence this stream without dropping
     /// that slot. An unresolved wire original remains in the compact journal.
     ///
+    /// The actual connection must have no unresolved transport correlation
+    /// before journal retention or deadline renewal. Exclusive session access
+    /// then permits one controller request and one synchronous provider request
+    /// and ACK at a time. Successful return rechecks the empty boundary. This
+    /// ordinary path cannot overlap a separately reserved Native18 Prepare.
+    /// Lifetime journals and negotiated request ceilings remain independent.
+    ///
     /// Cached response materialization and all encoding/receive work require the
     /// caller's independent transient admission. These SDK mechanics establish
     /// no Source lifecycle, allocation permission or native semantic evidence.
@@ -514,6 +521,7 @@ impl ClientSession {
         if custody.pending.is_some() || custody.unexpected.is_some() {
             return Err(changed());
         }
+        self.connection.authenticate_compact_exchange_idle()?;
         self.deadline.reset(budget)?;
         request.sequence = self.sequence;
         let response_room =
@@ -562,6 +570,7 @@ impl ClientSession {
                     request.matches_response(
                         &custody.pending.as_ref().ok_or_else(changed)?.envelope,
                     )?;
+                    self.connection.authenticate_compact_exchange_idle()?;
                     return custody.complete_response(id);
                 }
                 ReceivedBody::Request(body) => {

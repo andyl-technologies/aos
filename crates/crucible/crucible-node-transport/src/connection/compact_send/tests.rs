@@ -83,6 +83,81 @@ fn framed(envelope: &Envelope) -> Vec<u8> {
     bytes
 }
 
+fn empty_connection(authority: ConnectionAuthority) -> Result<Connection<Stream>, ProviderError> {
+    Connection::new(
+        Stream {
+            input: Cursor::new(Vec::new()),
+            output: Vec::new(),
+            remaining: usize::MAX,
+            fenced: false,
+        },
+        authority,
+        Rc::new(Supervisor::default()),
+        Rc::new(Schemas),
+        EndpointRole::Controller,
+    )
+}
+
+#[test]
+fn compact_idle_boundary_preserves_each_unresolved_correlation_population() -> TestResult {
+    for owner in ["outgoing", "incoming", "writing", "failed"] {
+        let (_lease, authority) = crate::handshake::tests::authority();
+        let request = frame(&authority);
+        let mut connection = empty_connection(authority)?;
+        match owner {
+            "outgoing" => connection.guard.register_request(request)?,
+            "incoming" => connection.guard.receive(&request)?,
+            "writing" => {
+                connection.guard.receive(&request)?;
+                let mut response = request;
+                response.message = MessageKind::Response;
+                connection.guard.register_outgoing(response)?;
+            }
+            "failed" => connection.guard.fence(),
+            _ => unreachable!(),
+        }
+        let before = serde_json::to_value(connection.guard.protocol_view())?;
+
+        let result = connection.authenticate_compact_exchange_idle();
+
+        assert!(
+            matches!(result, Err(ProviderError::Conflict(_))),
+            "{owner}: {result:?}"
+        );
+        assert_eq!(
+            serde_json::to_value(connection.guard.protocol_view())?,
+            before
+        );
+        assert!(connection.reader.stream_mut().output.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn compact_idle_boundary_accepts_retired_history_and_keeps_negotiated_credit() -> TestResult {
+    let (_lease, authority) = crate::handshake::tests::authority();
+    let request = frame(&authority);
+    let mut connection = empty_connection(authority)?;
+    let before = serde_json::to_value(connection.guard.protocol_view())?;
+    connection.authenticate_compact_exchange_idle()?;
+    connection.guard.receive(&request)?;
+    let mut response = request;
+    response.message = MessageKind::Response;
+    connection.guard.register_outgoing(response.clone())?;
+    connection.guard.confirm_response_sent(&response)?;
+    let retired = serde_json::to_value(connection.guard.protocol_view())?;
+    assert!(!connection.guard.unused());
+
+    connection.authenticate_compact_exchange_idle()?;
+
+    assert_eq!(
+        serde_json::to_value(connection.guard.protocol_view())?,
+        retired
+    );
+    assert_eq!(before[5], retired[5]);
+    Ok(())
+}
+
 #[test]
 fn borrowed_send_preserves_wire_literal_and_correlation_with_either_bank() -> TestResult {
     for with_bank in [false, true] {

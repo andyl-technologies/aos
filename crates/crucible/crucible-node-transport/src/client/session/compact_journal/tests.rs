@@ -20,6 +20,7 @@ pub(super) type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 mod identity;
 mod identity_work;
+mod isolated_exchange;
 
 const CONTENT_BYTES: usize = 262_144;
 pub(super) const BANK_BYTES: usize = 9 * CONTENT_BYTES;

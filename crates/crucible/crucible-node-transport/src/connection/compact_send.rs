@@ -7,6 +7,25 @@
 use super::*;
 
 impl<S: ProviderStream> Connection<S> {
+    /// Checks the empty correlation boundary around an ordinary compact exchange.
+    ///
+    /// Historical sequence and journal use need not be empty. The settled-cut
+    /// predicate checks all three actual correlation maps and the failure flag;
+    /// it grants no capture or Source permission and changes no request credit.
+    ///
+    /// # Errors
+    /// Refuses a fenced or revoked connection, a pending native response, or any
+    /// unresolved outgoing request, incoming request or response publication.
+    pub(crate) fn authenticate_compact_exchange_idle(&mut self) -> Result<(), ProviderError> {
+        self.ensure_no_pending_native_restore_response()?;
+        self.check_authority()?;
+        self.guard
+            .protocol_cut(crate::protocol_snapshot::ProtocolCaptureCut::HostSettled)
+            .map_err(|_| {
+                ProviderError::Conflict("compact exchange has unresolved connection custody")
+            })
+    }
+
     pub(crate) fn send_compact(&mut self, envelope: &Envelope) -> Result<(), ProviderError> {
         self.ensure_no_pending_native_restore_response()?;
         self.check_authority()?;
