@@ -6,7 +6,13 @@
   family,
 }: let
   directory = root + "/third_party/rust/${family}";
-  inventory = builtins.fromJSON (builtins.readFile (directory + "/sources.json"));
+  # The lock records historical generator store paths as provenance. When read
+  # from a corresponding-source output, Nix attaches those references to the
+  # text, which fromJSON rejects. They are not build dependencies: the current
+  # toolchain comes from pkgs and each source/build file is declared below.
+  inventory = builtins.fromJSON (builtins.unsafeDiscardStringContext (
+    builtins.readFile (directory + "/sources.json")
+  ));
   validBasename = name: builtins.match "[a-zA-Z0-9][a-zA-Z0-9._+-]*" name != null && !lib.hasInfix ".." name;
   validRelative = name: !lib.hasPrefix "/" name && builtins.all (part: !builtins.elem part ["" "." ".."]) (lib.splitString "/" name);
   valid =

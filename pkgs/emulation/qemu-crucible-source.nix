@@ -13,18 +13,26 @@
   crucibleSource = import ../tools/crucible/_source.nix {inherit lib;};
   repoRoot = ../..;
   repoRootString = toString repoRoot;
+  # Retain both build definitions during the migration. A suite selecting the
+  # Bazel plugin needs the root module and pinned repository specifications.
   sourceEntries = [
+    ".bazelrc"
     ".dockerignore"
     ".envrc"
     ".gitattributes"
     ".gitignore"
     "AGENTS.md"
+    "BUILD.bazel"
     "CLAUDE.md"
     "CONTRIBUTING.md"
     "LICENSE"
     "LICENSES"
+    "MODULE.bazel"
+    "MODULE.bazel.lock"
     "README.md"
     "aos-dev"
+    "api"
+    "bazel-shell.nix"
     "containers"
     "crates"
     "default.nix"
@@ -35,14 +43,17 @@
     "justfile"
     "lib"
     "modules"
+    "native"
     "pkgs"
     "qualification"
     "stdenv"
     "systems"
     "tests"
+    "third_party"
     "tools"
   ];
   characterizationGoldens = "${toString repoRoot}/tests/fixtures/system-characterization-goldens";
+  bazelQualificationEvidence = "${toString repoRoot}/tools/bazel/tests/evidence";
   aosBuildSource = builtins.path {
     path = repoRoot;
     name = "aos-qemu-build-source";
@@ -56,6 +67,8 @@
       && base != ".worktrees"
       && base != "target"
       && base != "result"
+      && base != "__pycache__"
+      && !lib.hasSuffix ".pyc" base
       # Process core dumps are generated diagnostics, never rebuild inputs.
       # Keep them out of the exported source even in a populated worktree.
       && builtins.match "core[.][0-9]+" base == null
@@ -76,7 +89,11 @@
       # required to rebuild QEMU. Excluding them also prevents the base-lib's
       # frozen package inventory from feeding this package back into its own
       # characterization store paths.
-      && !lib.hasPrefix characterizationGoldens pathString;
+      && !lib.hasPrefix characterizationGoldens pathString
+      # Recorded output identities are qualification results, not build inputs.
+      # Excluding them avoids feeding a source artifact's own proof back into it.
+      && pathString != bazelQualificationEvidence
+      && !lib.hasPrefix "${bazelQualificationEvidence}/" pathString;
   };
   cargoDepsHash = import ../tools/crucible/_cargo-deps-hash.nix {cargoDeps = aosWorkspaceVendor;};
   crucibleCargoDeps = aosWorkspaceVendor;
@@ -231,6 +248,9 @@ in
           plugin_workspace_root=plugin/workspace/crates
           plugin_cargo_vendor=plugin/cargo-vendor
           plugin_cargo_deps_hash=${cargoDepsHash}
+          plugin_bazel_entrypoint=build/aos/tools/bazel/tests/corresponding-source.nix
+          plugin_bazel_module=build/aos/MODULE.bazel
+          plugin_bazel_source_lock=build/aos/third_party/rust/qemu-gpl-production/sources.json
           plugin_license=GPL-2.0-only
           boundary_crates_license_option=MIT
           third_party_license_metadata=plugin/cargo-vendor/*/Cargo.toml
@@ -262,6 +282,19 @@ in
           headers. Evaluate build/aos/default.nix and select
           `qemu-crucible`; the adjacent package, library, stdenv, test, and
           workspace sources preserve the hermetic AOS build configuration.
+
+          During the Bazel migration, build/aos also retains MODULE.bazel,
+          MODULE.bazel.lock, the first-party BUILD files, and pinned third-party
+          source specifications. From build/aos, run:
+
+            nix-build tools/bazel/tests/corresponding-source.nix \
+              --argstr sourceArtifact /nix/store/<this-source-package> \
+              -A installed.plugin -A installed.gateway --no-out-link
+
+          This uses the exported repository tree and a distinct uncached Bazel
+          derivation. Offline rebuilding requires the source-built toolchain
+          and fixed-output source dependencies to be available in the Nix
+          store; the Bazel launcher never downloads repositories or tools.
 
           The top-level licenses field and licenses/ directory record AOS/QEMU
           project-component scopes, including both QEMU GPL variants and the
