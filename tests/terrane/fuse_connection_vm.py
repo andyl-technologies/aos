@@ -88,7 +88,7 @@ def scenario(executable, directory, mode):
             "setpriv", "--reuid=840", "--regid=840", "--clear-groups",
             "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
             "--no-new-privs", str(executable), mode,
-        ], stdin=backing_child if mode in {"read", "late", "multi"} else subprocess.DEVNULL,
+        ], stdin=backing_child if mode in {"read", "late", "multi", "actor"} else subprocess.DEVNULL,
             stdout=child_socket, stderr=subprocess.PIPE,
             close_fds=True)
         child_socket.close()
@@ -112,7 +112,7 @@ def scenario(executable, directory, mode):
         require(supervisor.send(b"M") == 1, "mount-ready message was truncated")
         require(supervisor.recv(64) == b"READY", "actual kernel INIT did not complete")
 
-        if mode in {"serve", "metadata", "read", "late", "multi", "large", "readiness"}:
+        if mode in {"serve", "metadata", "read", "late", "multi", "actor", "large", "readiness"}:
             metadata = target.stat()
             require(stat.S_ISDIR(metadata.st_mode) and metadata.st_mode & 0o7777 == 0o555
                     and metadata.st_ino == 16
@@ -179,7 +179,7 @@ def scenario(executable, directory, mode):
                 require(os.readlink(original + b"/link") == b"./directory/../a\xff"
                         and (target / "link").lstat().st_size == len(b"./directory/../a\xff"),
                         "actual READLINK normalized or decoded original symlink bytes")
-                if mode in {"read", "late", "multi"}:
+                if mode in {"read", "late", "multi", "actor"}:
                     source = directory / "backing" / ("original-" + mode)
                     with source.open("xb") as output:
                         output.write(b"abc")
@@ -191,7 +191,7 @@ def scenario(executable, directory, mode):
                     argument = struct.pack("=III", 1, 1, 4096) + bytes(116)
                     fcntl.ioctl(backing, 0x40806685, argument)
                     os.lseek(backing, 1, os.SEEK_SET)
-                    executor = ThreadPoolExecutor(max_workers=4 if mode == "multi" else 3)
+                    executor = ThreadPoolExecutor(max_workers=4 if mode in {"multi", "actor"} else 3)
                     release = Event()
                     first_received = Event()
                     grant = executor.submit(grant_backing, backing_server, backing, child.pid,
@@ -216,14 +216,14 @@ def scenario(executable, directory, mode):
                     require(supervisor.recv(64) == b"COALESCED",
                             "concurrent kernel opens did not share their original handoff")
                     expected = (b"a", b"bc", b"c", b"")
-                    if mode == "multi":
+                    if mode in {"multi", "actor"}:
                         distinct = executor.submit(read_file, target / "directory" / "file")
                         require(supervisor.recv(64) == b"QUEUED_DISTINCT",
                                 "distinct-node open lost its bounded backing reservation")
                         require((target / "directory").stat().st_mode & 0o7777 == 0o750,
                                 "queued distinct-node open blocked kernel metadata")
                     release.set()
-                    if mode == "multi":
+                    if mode in {"multi", "actor"}:
                         grant.result(timeout=5)
                         second_release = Event()
                         second_received = Event()
@@ -239,7 +239,7 @@ def scenario(executable, directory, mode):
                         second_grant.result(timeout=5)
                     require(alias.result(timeout=5) == expected,
                             "actual FUSE fallback READ changed sealed bytes or EOF")
-                    if mode in {"read", "multi"}:
+                    if mode in {"read", "multi", "actor"}:
                         require(first.result(timeout=5) == expected,
                                 "coalesced original kernel open lost its response")
                     if mode == "read":
@@ -256,6 +256,8 @@ def scenario(executable, directory, mode):
                         os.posix_fadvise(first_handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
                         require(first_handle.read() == b"bc",
                                 "closing one hard-link handle invalidated another live handle")
+                        if mode == "actor":
+                            os.fsync(first_handle.fileno())
                     if mode == "read":
                         print("PASS original kernel handles survive peer RELEASE and repeated opens", flush=True)
                     original_stat = grant.result(timeout=5)
@@ -274,6 +276,8 @@ def scenario(executable, directory, mode):
                         print("PASS actual kernel FUSE READ uses one original sealed grant for repeated hard-link opens with unchanged backing cursor", flush=True)
                     if mode == "multi":
                         print("PASS distinct kernel inodes queue separate original fetches while hardlinks coalesce and metadata remains responsive", flush=True)
+                    if mode == "actor":
+                        print("PASS production fallback worker loop serves original distinct-inode grants, coalesced hardlinks and responsive metadata", flush=True)
                     if mode == "late":
                         print("PASS expired kernel open returns EIO while its original fetch survives for a later hard-link open and retained reads", flush=True)
             try:
@@ -329,5 +333,5 @@ def scenario(executable, directory, mode):
 
 if __name__ == "__main__":
     executable, directory = map(pathlib.Path, sys.argv[1:])
-    for selected in ["serve", "metadata", "read", "late", "multi", "large", "readiness", "timeout", "cancel"]:
+    for selected in ["serve", "metadata", "read", "late", "multi", "actor", "large", "readiness", "timeout", "cancel"]:
         scenario(executable, directory, selected)

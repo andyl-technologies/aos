@@ -21,6 +21,8 @@ pub mod configured_sdk;
 pub mod fuse_backing;
 #[cfg(all(feature = "surface-fuse", feature = "tokio"))]
 pub mod fuse_connection;
+#[cfg(all(feature = "surface-fuse", feature = "tokio"))]
+pub mod fuse_worker;
 #[cfg(feature = "surface-fuse")]
 pub mod fuse_directory;
 #[cfg(feature = "surface-fuse")]

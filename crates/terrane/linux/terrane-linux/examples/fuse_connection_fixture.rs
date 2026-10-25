@@ -32,6 +32,7 @@ use terrane_linux::{
     fuse_open::{self, Enqueued, Outcome, Ticket},
     fuse_protocol::{self, Reply, Request},
     fuse_read::{self, Backing as FallbackBacking},
+    fuse_worker,
     fuse_xattr::Policy as XattrPolicy,
     quota_confinement,
     structural_index::{self, Index, Kind},
@@ -53,6 +54,7 @@ fn main() -> Result {
             | "read"
             | "late"
             | "multi"
+            | "actor"
             | "large"
             | "readiness"
             | "timeout"
@@ -95,9 +97,6 @@ fn main() -> Result {
     runtime.block_on(async {
         let mut connection = Connection::new(device.into(), confinement, LIMIT, LIMIT)?;
         let control = tokio::io::unix::AsyncFd::new(io::stdout())?;
-        let mut input = vec![0; LIMIT];
-        let mut output = vec![0; LIMIT];
-        let mut directory_page = vec![0; LIMIT - 16];
         // This empty metadata fixture is not an authenticated repository view.
         // It exercises the production encoder against actual kernel READDIR.
         let directory_bytes = metadata_bytes(&mode)?;
@@ -105,6 +104,77 @@ fn main() -> Result {
         if mode == "large" && directory.len() <= 16 {
             return Err("large immutable index does not exceed the worker node budget".into());
         }
+        if mode == "actor" {
+            let client = WorkerClient::bind(
+                io::stdin().as_fd().try_clone_to_owned()?,
+                ExposureContext::new("0123456789abcdef0123456789abcdef", 1, [7; 32])?,
+                0,
+            )?;
+            let exit = fuse_worker::native_fixture::serve_index(
+                connection,
+                client,
+                directory,
+                fuse_worker::Options {
+                    index_bytes: LIMIT,
+                    protocol: fuse_protocol::init::Limits {
+                        request_bytes: LIMIT,
+                        readahead_bytes: 65536,
+                        background_requests: 8,
+                    },
+                    read_bytes: 131072,
+                    metadata: MetadataLimits {
+                        namespace_entries: 16,
+                        namespace_bytes: 4096,
+                        inodes: 16,
+                        inode_bytes: 65536,
+                    },
+                    lifetime: fuse_lifetime::Limits {
+                        nodes: 16,
+                        handles: 16,
+                        bytes: 4096,
+                    },
+                    opens: fuse_open::Limits {
+                        nodes: 16,
+                        waiters: 16,
+                        bytes: 4096,
+                    },
+                    backings: fuse_backing::Limits {
+                        nodes: 16,
+                        bytes: 4096,
+                    },
+                    forget_entries: 1024,
+                    cache: CachePolicy::Revalidate,
+                    xattrs: XattrPolicy::Recorded,
+                    passthrough: fuse_protocol::init::Passthrough::Off,
+                    open_deadline: DEADLINE,
+                    fetch_deadline: DEADLINE,
+                    exchange_deadline: DEADLINE,
+                },
+                |_| Presentation::default(),
+                |event| match event {
+                    fuse_worker::Event::Ready { minor: 40, degraded: true } => {
+                        notify(b"READY").map_err(|error| io::Error::other(error.to_string()))
+                    }
+                    fuse_worker::Event::OpenQueued { shared: true, .. } => {
+                        notify(b"COALESCED").map_err(|error| io::Error::other(error.to_string()))
+                    }
+                    fuse_worker::Event::OpenQueued { waiting_for_channel: true, .. } => {
+                        notify(b"QUEUED_DISTINCT").map_err(|error| io::Error::other(error.to_string()))
+                    }
+                    fuse_worker::Event::OpenQueued { .. } => Ok(()),
+                    _ => Err(io::Error::other("unexpected production actor event")),
+                },
+                stopped(&control),
+            ).await?;
+            if exit == fuse_worker::Exit::Unmounted {
+                stopped(&control).await?;
+            }
+            notify(b"STOPPED")?;
+            return Ok(());
+        }
+        let mut input = vec![0; LIMIT];
+        let mut output = vec![0; LIMIT];
+        let mut directory_page = vec![0; LIMIT - 16];
         let mut metadata = Metadata::new(
             directory,
             MetadataLimits {
@@ -497,7 +567,10 @@ fn main() -> Result {
 
 /// Builds synthetic metadata without a repository, content source or exposure.
 fn metadata_bytes(mode: &str) -> Result<Vec<u8>> {
-    if !matches!(mode, "metadata" | "read" | "late" | "multi" | "large") {
+    if !matches!(
+        mode,
+        "metadata" | "read" | "late" | "multi" | "actor" | "large"
+    ) {
         return Ok(structural_index::compile([7; 32], &[], 1, 4096)?);
     }
     let content: [u8; 32] = TERRANE_V1
@@ -646,6 +719,7 @@ mod tests {
             ("metadata", 7),
             ("read", 7),
             ("multi", 7),
+            ("actor", 7),
             ("late", 7),
             ("large", 71),
         ] {

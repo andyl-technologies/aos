@@ -399,6 +399,12 @@ def source_unit_inventory(workspace):
     shared.require((root / "fuse_connection.rs").is_file(),
         "FUSE connection feature module missing")
     gated.append(("fuse_connection", "lib.rs", "pub mod fuse_connection;"))
+    shared.require('#[cfg(all(feature = "surface-fuse", feature = "tokio"))]\n'
+        'pub mod fuse_worker;' in (root / "lib.rs").read_text(),
+        "FUSE worker lost its explicit runtime/surface feature gate")
+    shared.require((root / "fuse_worker.rs").is_file(),
+        "FUSE worker feature module missing")
+    gated.append(("fuse_worker", "lib.rs", "pub mod fuse_worker;"))
     declared = []
     for path in sorted(root.rglob("*.rs")):
         relative = path.relative_to(root).as_posix()
