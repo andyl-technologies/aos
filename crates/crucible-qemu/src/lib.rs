@@ -146,8 +146,8 @@ pub use inertness::{
     assert_qemu_control_plane_inert,
 };
 pub use launch::{
-    CrucibleAcceleratorDevice, CrucibleShmem9pDevice, CrucibleShmemBlockDevice,
-    CrucibleShmemNetworkDevice, DEFAULT_CRUCIBLE_ACCELERATOR_DEVICE_ID,
+    CODE_BUFFER_GUEST_RAM_DIVISOR, CrucibleAcceleratorDevice, CrucibleShmem9pDevice,
+    CrucibleShmemBlockDevice, CrucibleShmemNetworkDevice, DEFAULT_CRUCIBLE_ACCELERATOR_DEVICE_ID,
     DEFAULT_CRUCIBLE_SHMEM_9P_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_9P_FSDEV_ID,
     DEFAULT_CRUCIBLE_SHMEM_9P_MOUNT_TAG, DEFAULT_CRUCIBLE_SHMEM_BLOCK_NODE_NAME,
     DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_CRUCIBLE_SHMEM_NETDEV_ID,
