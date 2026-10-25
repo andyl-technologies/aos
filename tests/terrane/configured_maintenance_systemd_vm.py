@@ -212,11 +212,22 @@ def run(driver, image):
         driver.require(len(serve_identity) == 1 and serve_identity[0]["pid"] == int(serve["MainPID"])
                        and len([line for line in serve_log.splitlines() if line.startswith("completed SDK snapshot ")]) == 2,
                        "manager readiness did not belong to the original SDK process")
+        mount_policy = [json.loads(line.removeprefix("TERRANE_MANAGED_MOUNT_POLICY "))
+                        for line in serve_log.splitlines()
+                        if line.startswith("TERRANE_MANAGED_MOUNT_POLICY ")]
+        expected_mounts = [{"domain": domain, "directory": label,
+                            "readonly": label not in {"chunks", "objects", "quarantine", "state/cache"}}
+                           for domain in tomllib.loads(expected["configuration"])["host_tier"]["domains"]
+                           for label in [".", "chunks", "objects", "quarantine", "state/cache",
+                                         "sealed", "staging", "pending-delete", "state/publication"]]
+        driver.require(mount_policy == [expected_mounts],
+                       "managed Serve mount observations are missing, duplicated or differ from policy")
         # The journal merges stdout and stderr. Compare that combined stream
         # directly; do not manufacture separate process-stream receipts for the
         # standalone CLI verifier. Its independent guest retains that control.
         completion = [line for line in serve_log.splitlines()
-                      if not line.startswith("TERRANE_MANAGED_ACTOR_IDENTITY ")]
+                      if not line.startswith(("TERRANE_MANAGED_ACTOR_IDENTITY ",
+                                              "TERRANE_MANAGED_MOUNT_POLICY "))]
         commit = (repository / "expected.commit").read_bytes()
         driver.require(len(commit) == 32, "managed original commit witness length differs")
         expected_completion = [f'completed SDK snapshot "{name}": commit {commit.hex()}, state Stopped, '
@@ -242,6 +253,7 @@ def run(driver, image):
         print("TERRANE_MANAGED_SERVICE_PROOF " + json.dumps({
             "source": str(driver.SOURCE), "image": str(image), "serve": serve, "gc": gc,
             "gc_identities": identities, "serve_identity": serve_identity[0],
+            "serve_mount_policy": mount_policy[0],
             "listener_inodes": original_inodes, "original_state_inodes": original_state,
             "listener_names_retired": True, "cli_combined_journal": completion,
             "units_sha256": {name: hashlib.sha256(text.encode()).hexdigest() for name, text in expected["units"].items()},

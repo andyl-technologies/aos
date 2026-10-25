@@ -91,6 +91,15 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-25)
 
+The managed journal verifier now requires exactly one complete set of Serve
+mount observations against the generated domain policy before checking the
+original two CLI snapshot completion lines. The diagnostic record introduced
+with the allocation-mount correction is retained in the final service proof;
+it cannot be ignored as arbitrary journal noise. Source review caught the
+previous exact-output comparison including that additional record before the
+new manager scenario ran. Native manager qualification of this verifier
+correction remains pending; no task acceptance changes.
+
 Trunk acceptance is **28/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance. Pack compaction
 (GC-18 to GC-21) is explicitly deferred from T-GC-1 to T-GC-2 on B-jobs;
