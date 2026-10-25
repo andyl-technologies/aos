@@ -10,6 +10,7 @@ import runpy
 import select
 import shutil
 import signal
+import socket
 import struct
 import stat
 import types
@@ -136,17 +137,17 @@ def manifest_payload():
 
 
 def actor(driver, image, label, arguments, success=True, mount_policy=None, maintained=False,
-          launcher=False, on_ready=None):
+          launcher=False, on_ready=None, environment=None):
     """Runs one fresh source-bound actor under the original supervisor's bounds."""
     with contextlib.ExitStack() as stack:
         command = namespace_actor(driver, image, arguments, mount_policy, stack, launcher)
-        return run_actor(driver, label, command, success, mount_policy, maintained, on_ready)
+        return run_actor(driver, label, command, success, mount_policy, maintained, on_ready, environment)
 
 
-def run_actor(driver, label, command, success, mount_policy, maintained, on_ready=None):
+def run_actor(driver, label, command, success, mount_policy, maintained, on_ready=None, environment=None):
     """Collects bounded actor output and retains every namespace observation."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               start_new_session=True)
+                               start_new_session=True, env=environment)
     output = [bytearray(), bytearray()]
     streams = {process.stdout: output[0], process.stderr: output[1]}
     started = time.monotonic()
@@ -166,7 +167,7 @@ def run_actor(driver, label, command, success, mount_policy, maintained, on_read
                     if stop_at is None:
                         state_inodes = verify_owner_locks(driver, True)
                         if on_ready is not None:
-                            on_ready()
+                            on_ready(process.pid)
                             verify_owner_locks(driver, True, state_inodes)
                         stop_at = time.monotonic() + 2
                     if time.monotonic() >= stop_at:
@@ -374,6 +375,11 @@ def maintenance_exchange(driver, image, config, label, success=True, foreign=Fal
             "actual GC identity or private-state refusal witness differs")
     else:
         driver.require(not result.stdout, "refused GC synthesized successful responses")
+    print("CONFIGURED_MAINTENANCE_EXCHANGE_PROOF " + json.dumps({
+        "label": label, "image": str(image), "exit_status": result.returncode,
+        "stdout": result.stdout.decode(), "stderr": result.stderr.decode(),
+        "elapsed_seconds": time.monotonic() - started, "deadline_seconds": remaining,
+    }, sort_keys=True), flush=True)
     return result
 
 
@@ -391,7 +397,13 @@ def run_maintenance(driver, image):
     root = repository_parent / "repository"
     config = driver.ROOT / "configured-maintenance.toml"
     sockets = [parent / name for name in ["public.sock", "private.sock"]]
+    notify_path = parent / "notify.sock"
+    notifier = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     try:
+        notifier.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        notifier.bind(str(notify_path))
+        notify_path.chmod(0o666)
+        notifier.settimeout(2)
         actor(driver, image, "maintenance-setup", ["configured-sdk-cache-example", "setup-public", root, 840])
         text = (root / "config.toml").read_text() + host_configuration(driver)
         for domain in ["public", "private:fixture"]:
@@ -400,7 +412,16 @@ def run_maintenance(driver, image):
         config.write_text(text)
         original_inodes = []
 
-        def ready():
+        def ready(expected_pid):
+            message, ancillary, flags, _ = notifier.recvmsg(256, socket.CMSG_SPACE(struct.calcsize("3i")))
+            driver.require(message == b"READY=1\nSTATUS=Serving configured Terrane snapshots and host cache"
+                           and flags == 0 and len(ancillary) == 1,
+                           "configured serving readiness notification differs")
+            level, kind, credentials = ancillary[0]
+            pid, uid, gid = struct.unpack("3i", credentials)
+            driver.require(level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS
+                           and pid == expected_pid and uid == 840 and gid == 840,
+                           "configured serving notification lacks actual kernel identity")
             original_inodes.extend((path.stat().st_dev, path.stat().st_ino) for path in sockets)
             for path in sockets:
                 metadata = path.lstat()
@@ -413,10 +434,24 @@ def run_maintenance(driver, image):
             driver.require(original_inodes == [(path.stat().st_dev, path.stat().st_ino) for path in sockets],
                            "GC replaced original listener inodes")
             print("PASS configured Serve binds both protected domain listeners before readiness; two fresh confined GC CLI processes authenticate original owners while private state remains denied", flush=True)
+            print("PASS actual configured CLI sends one complete manager readiness datagram as kernel UID/GID 840 after original owners and protected listeners are ready", flush=True)
+            print("CONFIGURED_MAINTENANCE_READY " + json.dumps({
+                "sender_pid": pid, "main_pid": expected_pid, "uid": uid, "gid": gid,
+                "listener_inodes": original_inodes, "owners_locked": True,
+                "notification": message.decode(),
+            }, sort_keys=True), flush=True)
 
         stdout, stderr = actor(driver, image, "maintenance-serve",
               ["configured-sdk-cache-cli", "--config", config, "--role", "serve"],
-              mount_policy="readonly", maintained=True, on_ready=ready)
+              mount_policy="readonly", maintained=True, on_ready=ready,
+              environment=dict(os.environ, NOTIFY_SOCKET=str(notify_path)))
+        notifier.setblocking(False)
+        try:
+            notifier.recv(256)
+        except BlockingIOError:
+            pass
+        else:
+            raise RuntimeError("configured CLI sent repeated readiness notifications")
         maintenance_exchange(driver, image, config, "maintenance-gc-stopped", success=False)
         driver.require(original_inodes == [(path.stat().st_dev, path.stat().st_ino) for path in sockets],
                        "failed GC rebound stopped owner listeners")
@@ -428,6 +463,8 @@ def run_maintenance(driver, image):
               ["configured-sdk-cache-example", "verify-cli", root, 840])
         print("PASS configured GC refuses stopped serving owners without rebinding listeners; original owner locks release after acknowledged SIGTERM and signed publication remains intact", flush=True)
     finally:
+        notifier.close()
+        notify_path.unlink(missing_ok=True)
         for path in sockets:
             path.unlink(missing_ok=True)
         parent.rmdir()

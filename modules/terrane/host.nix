@@ -256,7 +256,10 @@
       Type =
         if role == "gc"
         then "oneshot"
+        else if role == "serve" && maintenanceEnabled
+        then "notify"
         else "simple";
+      NotifyAccess = "main";
       ExecStart = "${cfg.package}/bin/terrane --config /etc/terrane/terrane.toml --role ${role}";
       User = userFor role;
       Group = userFor role;

@@ -55,6 +55,8 @@ in [
     pass =
       lib.hasInfix "d /run/terrane-maintenance 2750 terrane terrane-maintenance - -" cfg.environment.etc."tmpfiles.d/terrane.conf".text
       && builtins.elem "/run/terrane-maintenance" serve.serviceConfig.ReadWritePaths
+      && serve.serviceConfig.Type == "notify"
+      && serve.serviceConfig.NotifyAccess == "main"
       && builtins.elem "terrane-serve.service" gc.after
       && builtins.elem "terrane-serve.service" gc.requires;
   }

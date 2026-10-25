@@ -18,6 +18,8 @@ use terrane_sdk::config::Config;
 use terrane_sdk::role::Role;
 
 mod local;
+#[cfg(target_os = "linux")]
+mod service_ready;
 
 #[derive(Parser)]
 #[command(
@@ -156,5 +158,6 @@ fn report_snapshots(
             snapshot.endpoint()
         )?;
     }
-    output.flush()
+    output.flush()?;
+    service_ready::notify()
 }

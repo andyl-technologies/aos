@@ -18647,3 +18647,20 @@ the failed maintenance guest. The new startup-restoration, original-session,
 preownership, configured-maintenance and configured-GC CLI guests, plus mandatory
 application compilation, are running against frozen `21871350bf`; their outcomes
 remain pending. Acceptance remains 28/64.
+
+
+Configured maintenance Serve now uses `Type=notify` with `NotifyAccess=main`.
+The actual CLI sends one nonblocking readiness datagram only from its serving
+callback, after original-owner checks, completed snapshots and all protected
+maintenance listener binds. Standalone execution without `NOTIFY_SOCKET` keeps
+its original behavior; an invalid or unavailable configured manager endpoint
+fails startup. This follows the service-manager
+[readiness protocol](https://www.freedesktop.org/software/systemd/man/latest/sd_notify.html).
+Strict CLI all-target linting and both pure filesystem/abstract address tests
+pass; all 109 declarative module checks pass with the notify/dependency checks.
+The guest proof additionally requires one exact notification from the actual
+Serve PID with kernel UID/GID 840 and records both original listener inodes and
+owner locks. All original maintenance identity, denial, response, stopped-owner
+and 30/240-second bounds remain required. Native notification and actual
+service-manager ordering are not yet qualified. Restart cleanup remains open;
+acceptance remains 28/64.
