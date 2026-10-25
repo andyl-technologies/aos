@@ -68,7 +68,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The subsequent daemon dependency check reports 622 host-library errors, predominantly large error carriers. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 653 bindings: 634 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 657 bindings: 638 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Integration with origin/master
 
@@ -157,6 +157,48 @@ content-bound responsibility review includes this output ownership check. All
 95 policy controls, the source-bound hygiene gate and strict Store/RAM Clippy
 pass after the repair. Production client admission is unchanged, and no Native
 authority is issued.
+
+#### Record constructor refusal ownership
+
+Record child, partition and codec construction now retain the explicit caller
+when admission refuses. The existing original-aware conversion preserves the
+actual typed cause and caller custody without a new allocation or reservation.
+An unrelated active decoding scope supplies neither credit nor error custody.
+
+Three controls revoke the original before construction or immediately after the
+real partition reservation. All three fail with the preceding conversion:
+the caller's 4,627 prepaid bytes return while its error remains alive. All three
+pass after the correction, retaining that account until error close while the
+unused partition and unrelated account close independently.
+
+The current-toolchain hermetic Store gate passes all 133 bound cases at
+`v5xipmkjpc5ak9n0gqm72nya3kplfcd7-crucible-gate-ram-store-transfer-0`.
+Independent verification checks the registered output, frozen case inventory,
+actual listings and 154 successful nonempty summaries. All 5,475 retained
+Rust/TOML inputs and the complete lockfile match signed revision
+`76faeb2713f229de0c43f95bbb57e02f64754a61`. These are component results;
+Native activation, physical return and full RFC qualification remain open.
+
+The broader library run exposes an older poisoned-parent control that leaves
+the refusal's account-custody field alive while expecting diagnostic-only
+retention. The corrected control explicitly retains and closes that field. It
+checks the full account's exact baseline first, then the independently cloned
+cause's smaller diagnostic loan through final alias close. The preceding control
+fails and the corrected control passes. Production error behavior is unchanged.
+
+All 783 ordinary Store tests pass after that fixture correction. Strict
+Store/RAM Clippy passes across all targets with warnings denied, and all five
+engineering-hygiene and 90 testing-standard controls pass after refreshing the
+test module's content-bound review. Inventory
+`vfgcm9c3kljlbklnnr9yzv96s3ij3dwr` binds the corrected poisoned-account
+control, bringing the total to 657 cases without changing qualification status.
+
+The expanded hermetic Store gate passes 134 bound cases at
+`429jkgzcl5ldy7awpkhsk3mzg1r8smnf-crucible-gate-ram-store-transfer-0`.
+Independent verification checks its registered output, exact case records and
+155 successful nonempty summaries. All 5,475 retained Rust/TOML inputs and the
+complete lockfile match signed revision
+`daa4fbd60af42756c3d28444a3705b7a02c94b7d`.
 
 #### Current-toolchain component checks
 
