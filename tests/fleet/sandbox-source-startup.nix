@@ -77,9 +77,9 @@ in
             vm.succeed(f"{python} -c {shlex.quote(change)}")
             start_source()
 
-            # Volatile external credentials disappear on reboot. Reprovision only
-            # those inputs and require a new genuine startup over the same image.
-            vm.reboot()
+            # Cold restart discards volatile credentials while retaining the
+            # same disk and TPM state. Reprovision only those external inputs.
+            power_cycle_and_require_new_boot(vm)
             vm.wait_for_unit("multi-user.target", timeout=300)
             vm.succeed("${command} external-source-credentials-bootstrap")
             start_source()

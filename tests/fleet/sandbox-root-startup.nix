@@ -104,9 +104,9 @@ in
             vm.succeed(f"cp {original_project_key} {project_key}")
             start_root()
 
-            # Reboot removes only the volatile inputs. The installed startup and
-            # persistent owner state must still admit the freshly delivered pins.
-            vm.reboot()
+            # Cold restart retains the original disk and TPM state. Installed
+            # startup must still admit freshly delivered volatile pins.
+            power_cycle_and_require_new_boot(vm)
             vm.wait_for_unit("multi-user.target", timeout=300)
             wait_for_history_accept()
             vm.succeed("${command} external-source-credentials-bootstrap")

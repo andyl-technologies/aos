@@ -31,6 +31,7 @@ in {
 
   testScript =
     builtins.readFile ./_sandbox-startup-diagnostics.py
+    + builtins.readFile ./_sandbox-cold-boot.py
     +
     # python
     ''
@@ -100,7 +101,7 @@ in {
 
       with startup_diagnostics(vm):
           check_startup_enclosure()
-          vm.reboot()
+          power_cycle_and_require_new_boot(vm)
           check_startup_enclosure()
     '';
 }

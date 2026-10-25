@@ -73,6 +73,12 @@ Recovery may adopt only the exact sealed object or quarantine it.
 
 ## Runtime VM tests
 
+Host restart receipts compare the guest kernel boot ID before and after the
+restart. Agent readiness alone cannot prove a new boot. QEMU cold-start
+fixtures kill and reap both QEMU and swtpm, then restart against the same disk
+and persistent TPM state. These fixtures model process power loss; orderly
+systemd shutdown and host storage-media failure require separate scenarios.
+
 Production-equivalent VM tests prove:
 
 - a booted nspawn sandbox with machined absent and `--register=no`;
