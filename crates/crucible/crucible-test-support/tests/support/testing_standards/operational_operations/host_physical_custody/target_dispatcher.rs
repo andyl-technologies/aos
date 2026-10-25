@@ -89,14 +89,14 @@ pub(super) const CONTRACT: Contract = Contract {
             1,
         ),
         (
-            r#"fn report_retirement_history(&mut self) -> Result<(), LinuxQemuCgroupError> {
+            r#"fn report_retirement_history(&mut self) -> Result<(), LinuxQemuTargetDispatcherError> {
         let panicked = self.worker_panic().is_some();
         if self
             .join_observations
             .iter()
             .any(|(pre, post)| pre.is_some() || post.is_some())
         {
-            return Err(failure(
+            return Err(retirement_failure(
                 &self.path,
                 format_args!(
                     "Target worker return history: {:?}; startup {}; panic {panicked}",
@@ -106,7 +106,7 @@ pub(super) const CONTRACT: Contract = Contract {
         }
         if self.startup_history.has_failure() {
             return Err(if panicked {
-                failure(
+                retirement_failure(
                     &self.path,
                     format_args!(
                         "{}; Target dispatcher physically joined after worker panic",
@@ -114,11 +114,11 @@ pub(super) const CONTRACT: Contract = Contract {
                     ),
                 )
             } else {
-                failure(&self.path, &self.startup_history)
+                retirement_failure(&self.path, &self.startup_history)
             });
         }
         if panicked {
-            return Err(failure(
+            return Err(retirement_failure(
                 &self.path,
                 "Target dispatcher physically joined after worker panic",
             ));
@@ -128,13 +128,13 @@ pub(super) const CONTRACT: Contract = Contract {
             1,
         ),
         (
-            r#"pub(crate) fn finish(&mut self) -> Result<(), LinuxQemuCgroupError> {
+            r#"pub(crate) fn finish(&mut self) -> Result<(), LinuxQemuTargetDispatcherError> {
         if self
             .worker
             .as_ref()
             .is_some_and(|worker| !worker.belongs_to_current_process())
         {
-            return Err(failure(
+            return Err(retirement_failure(
                 &self.path,
                 "Target worker belongs to another process",
             ));
@@ -151,13 +151,16 @@ pub(super) const CONTRACT: Contract = Contract {
                 Ok(slots) => slots,
                 Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
                 Err(TryLockError::WouldBlock) => {
-                    return Err(failure(&path, "Target retirement custody is pending"));
+                    return Err(retirement_failure(
+                        &path,
+                        "Target retirement custody is pending",
+                    ));
                 }
             };
             if slots.iter().any(|slot| {
                 slot.phase != JobPhase::Idle || slot.control.is_some() || slot.original.is_some()
             }) {
-                return Err(failure(
+                return Err(retirement_failure(
                     &path,
                     "Target dispatcher still owns an actual job or returned control",
                 ));
@@ -166,11 +169,17 @@ pub(super) const CONTRACT: Contract = Contract {
                 Ok(running) => running,
                 Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
                 Err(TryLockError::WouldBlock) => {
-                    return Err(failure(&path, "Target worker custody is pending"));
+                    return Err(retirement_failure(
+                        &path,
+                        "Target worker custody is pending",
+                    ));
                 }
             };
             if running.iter().any(Option::is_some) {
-                return Err(failure(&path, "Target worker still owns actual controls"));
+                return Err(retirement_failure(
+                    &path,
+                    "Target worker still owns actual controls",
+                ));
             }
             // Only the complete absence of every actual slot/worker owner
             // permits retiring poison; individual job recovery never does.
@@ -181,19 +190,19 @@ pub(super) const CONTRACT: Contract = Contract {
             self.cleanup = Some(
                 self.purpose
                     .as_ref()
-                    .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+                    .ok_or_else(|| retirement_failure(&path, "Target dispatcher payer is absent"))?
                     .retained_cleanup()
-                    .map_err(|source| failure(&path, source))?,
+                    .map_err(|source| retirement_failure(&path, source))?,
             );
         }
         let cleanup = self
             .cleanup
             .as_ref()
-            .ok_or_else(|| failure(&path, "Target dispatcher Cleanup is absent"))?;
+            .ok_or_else(|| retirement_failure(&path, "Target dispatcher Cleanup is absent"))?;
         if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running) {
             if let Some(state) = self.state.as_ref() {
                 state.shutdown.store(true, Ordering::Release);
-                wake(&state.wake).map_err(|source| failure(&path, source))?;
+                wake(&state.wake).map_err(|source| retirement_failure(&path, source))?;
             }
             loop {
                 let before = cleanup.wait_slice();
@@ -204,13 +213,18 @@ pub(super) const CONTRACT: Contract = Contract {
                     Some(worker) => self
                         .purpose
                         .as_mut()
-                        .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+                        .ok_or_else(|| {
+                            retirement_failure(&path, "Target dispatcher payer is absent")
+                        })?
                         .observe_worker_return(worker, cleanup)
-                        .map_err(|source| failure(&path, source)),
+                        .map_err(|source| retirement_failure(&path, source)),
                     None if self.phase == WorkerPhase::Reserved => {
                         Ok(NativeJoinObservation::Returned)
                     }
-                    None => Err(failure(&path, "Target native join owner is absent")),
+                    None => Err(retirement_failure(
+                        &path,
+                        "Target native join owner is absent",
+                    )),
                 };
                 // The actual native zero is recorded before independent post.
                 if matches!(observed, Ok(NativeJoinObservation::Returned)) {
@@ -224,8 +238,8 @@ pub(super) const CONTRACT: Contract = Contract {
                 match observed? {
                     NativeJoinObservation::Returned => break,
                     NativeJoinObservation::Pending => {
-                        before.map_err(|source| failure(&path, source))?;
-                        after.map_err(|source| failure(&path, source))?;
+                        before.map_err(|source| retirement_failure(&path, source))?;
+                        after.map_err(|source| retirement_failure(&path, source))?;
                         let wait_before = cleanup.wait_slice();
                         if self.join_observations[1].0.is_none() {
                             self.join_observations[1].0 = wait_before.as_ref().err().copied();
@@ -237,8 +251,8 @@ pub(super) const CONTRACT: Contract = Contract {
                         if self.join_observations[1].1.is_none() {
                             self.join_observations[1].1 = wait_after.as_ref().err().copied();
                         }
-                        wait_before.map_err(|source| failure(&path, source))?;
-                        wait_after.map_err(|source| failure(&path, source))?;
+                        wait_before.map_err(|source| retirement_failure(&path, source))?;
+                        wait_after.map_err(|source| retirement_failure(&path, source))?;
                     }
                 }
             }
@@ -246,7 +260,7 @@ pub(super) const CONTRACT: Contract = Contract {
         if self.phase == WorkerPhase::Joined {
             if let Some(state) = self.state.as_mut() {
                 let state = Arc::get_mut(state).ok_or_else(|| {
-                    failure(&path, "Target dispatcher has surviving queue aliases")
+                    retirement_failure(&path, "Target dispatcher has surviving queue aliases")
                 })?;
                 let outcome = match state.outcome.get_mut() {
                     Ok(outcome) => outcome,
@@ -256,7 +270,12 @@ pub(super) const CONTRACT: Contract = Contract {
                 let outcome = match outcome {
                     Some(outcome) => outcome,
                     None if !self.worker_born => Ok(()),
-                    None => return Err(failure(&path, "Target worker outcome was not delivered")),
+                    None => {
+                        return Err(retirement_failure(
+                            &path,
+                            "Target worker outcome was not delivered",
+                        ));
+                    }
                 };
                 if let Err(payload) = outcome {
                     let history = match self.worker_panic.get_mut() {
@@ -271,17 +290,17 @@ pub(super) const CONTRACT: Contract = Contract {
         }
         self.purpose
             .as_mut()
-            .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+            .ok_or_else(|| retirement_failure(&path, "Target dispatcher payer is absent"))?
             .retire_worker_debits(cleanup)
-            .map_err(|source| failure(&path, source))?;
+            .map_err(|source| retirement_failure(&path, source))?;
         cleanup
             .wait_slice()
-            .map_err(|source| failure(&path, source))?;
+            .map_err(|source| retirement_failure(&path, source))?;
         self.purpose
             .as_mut()
-            .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+            .ok_or_else(|| retirement_failure(&path, "Target dispatcher payer is absent"))?
             .complete_cleanup(cleanup)
-            .map_err(|source| failure(&path, source))?;
+            .map_err(|source| retirement_failure(&path, source))?;
         self.cleanup = None;
         self.phase = WorkerPhase::Complete;
         self.report_retirement_history()
@@ -292,7 +311,7 @@ pub(super) const CONTRACT: Contract = Contract {
             r#"fn retry_quarantined(
     state: &DispatcherState,
     slot: &mut JobSlot,
-) -> Result<(), LinuxQemuCgroupError> {
+) -> Result<(), LinuxQemuTargetDispatcherError> {
     let phase = |original: &mut Option<TargetWatcherOriginal>| -> Result<(), crate::OriginalActorAccountError> {
         match original.as_mut() {
             Some(original) => original.wait_slice(true).map(|_| ()),
@@ -303,7 +322,7 @@ pub(super) const CONTRACT: Contract = Contract {
         }
     };
     if let Err(source) = phase(&mut slot.original) {
-        let error = failure(&state.path, &source);
+        let error = retirement_failure(&state.path, &source);
         slot.failure
             .get_or_insert_default()
             .after
@@ -317,19 +336,18 @@ pub(super) const CONTRACT: Contract = Contract {
                 .get_or_insert_default()
                 .cadence
                 .get_or_insert(source);
-            return Err(failure(&state.path, source));
+            return Err(retirement_failure(&state.path, source));
         }
     };
     if !delay.is_zero() {
-        return Err(failure(
+        return Err(retirement_failure(
             &state.path,
             "Target physical retry cadence is pending",
         ));
     }
-    let control = slot
-        .control
-        .as_mut()
-        .ok_or_else(|| failure(&state.path, "Target quarantine lost its actual control"))?;
+    let control = slot.control.as_mut().ok_or_else(|| {
+        retirement_failure(&state.path, "Target quarantine lost its actual control")
+    })?;
     let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         control.kill_members()?;
         control.is_populated()
@@ -358,7 +376,7 @@ pub(super) const CONTRACT: Contract = Contract {
         }
     };
     if !physical || after_failed {
-        return Err(failure(
+        return Err(retirement_failure(
             &state.path,
             "Target physical retry remains retained",
         ));
@@ -370,7 +388,7 @@ pub(super) const CONTRACT: Contract = Contract {
                 .get_or_insert_default()
                 .poller
                 .get_or_insert_with(|| failure(&state.path, source));
-            return Err(failure(&state.path, source));
+            return Err(retirement_failure(&state.path, source));
         }
     }
     // Historical first/post failure remains factual even after this physical
@@ -416,8 +434,8 @@ match job.retire() {
     if !slot.failure_reported {
         slot.failure_reported = true;
         let source = match slot.failure.as_ref() {
-            Some(cause) => failure(&state.path, cause),
-            None => failure(&state.path, "Target control is quarantined"),
+            Some(cause) => retirement_failure(&state.path, cause),
+            None => retirement_failure(&state.path, "Target control is quarantined"),
         };
         drop(slots);
         return Err((self, source));
@@ -428,7 +446,7 @@ match job.retire() {
     }
 }
 if slot.epoch != self.epoch || slot.phase != JobPhase::Returned {
-    let source = failure(
+    let source = retirement_failure(
         &state.path,
         "Target job has not returned its actual control",
     );
@@ -478,7 +496,9 @@ Ok(TargetReturnedControl {
             r#"let slot = slots
     .get_mut(self.index)
     .filter(|slot| slot.epoch == self.epoch)
-    .ok_or_else(|| failure(&self.state.path, "Target poisoned return epoch is stale"))?;"#,
+    .ok_or_else(|| {
+        retirement_failure(&self.state.path, "Target poisoned return epoch is stale")
+    })?;"#,
             1,
         ),
         (
@@ -486,7 +506,7 @@ Ok(TargetReturnedControl {
     || slot.original.is_some()
     || entry.as_ref().is_none_or(|job| job.epoch != self.epoch)
 {
-    return Err(failure(
+    return Err(retirement_failure(
         &self.state.path,
         "Target poisoned ownership does not match",
     ));

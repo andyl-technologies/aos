@@ -252,7 +252,7 @@ impl TargetDispatcher {
     }
 
     /// Reuses the exact occupied slot when its caller facade has disappeared.
-    fn retry_abandoned_jobs(&mut self) -> Result<(), LinuxQemuCgroupError> {
+    fn retry_abandoned_jobs(&mut self) -> Result<(), LinuxQemuTargetDispatcherError> {
         let Some(state) = self.state.as_ref() else {
             return Ok(());
         };
@@ -263,11 +263,17 @@ impl TargetDispatcher {
                     Ok(slots) => slots,
                     Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
                     Err(TryLockError::WouldBlock) => {
-                        return Err(failure(&state.path, "Target abandoned custody is pending"));
+                        return Err(retirement_failure(
+                            &state.path,
+                            "Target abandoned custody is pending",
+                        ));
                     }
                 };
                 let Some(slot) = slots.get_mut(index) else {
-                    return Err(failure(&state.path, "Target abandoned slot is absent"));
+                    return Err(retirement_failure(
+                        &state.path,
+                        "Target abandoned slot is absent",
+                    ));
                 };
                 if slot.facade_live || slot.phase == JobPhase::Idle {
                     continue;
@@ -456,13 +462,13 @@ impl TargetDispatcher {
     ///
     /// # Errors
     /// Retains live jobs, aliases, expired Cleanup, failed join or window close.
-    pub(crate) fn finish(&mut self) -> Result<(), LinuxQemuCgroupError> {
+    pub(crate) fn finish(&mut self) -> Result<(), LinuxQemuTargetDispatcherError> {
         if self
             .worker
             .as_ref()
             .is_some_and(|worker| !worker.belongs_to_current_process())
         {
-            return Err(failure(
+            return Err(retirement_failure(
                 &self.path,
                 "Target worker belongs to another process",
             ));
@@ -479,13 +485,16 @@ impl TargetDispatcher {
                 Ok(slots) => slots,
                 Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
                 Err(TryLockError::WouldBlock) => {
-                    return Err(failure(&path, "Target retirement custody is pending"));
+                    return Err(retirement_failure(
+                        &path,
+                        "Target retirement custody is pending",
+                    ));
                 }
             };
             if slots.iter().any(|slot| {
                 slot.phase != JobPhase::Idle || slot.control.is_some() || slot.original.is_some()
             }) {
-                return Err(failure(
+                return Err(retirement_failure(
                     &path,
                     "Target dispatcher still owns an actual job or returned control",
                 ));
@@ -494,11 +503,17 @@ impl TargetDispatcher {
                 Ok(running) => running,
                 Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
                 Err(TryLockError::WouldBlock) => {
-                    return Err(failure(&path, "Target worker custody is pending"));
+                    return Err(retirement_failure(
+                        &path,
+                        "Target worker custody is pending",
+                    ));
                 }
             };
             if running.iter().any(Option::is_some) {
-                return Err(failure(&path, "Target worker still owns actual controls"));
+                return Err(retirement_failure(
+                    &path,
+                    "Target worker still owns actual controls",
+                ));
             }
             // Only the complete absence of every actual slot/worker owner
             // permits retiring poison; individual job recovery never does.
@@ -509,19 +524,19 @@ impl TargetDispatcher {
             self.cleanup = Some(
                 self.purpose
                     .as_ref()
-                    .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+                    .ok_or_else(|| retirement_failure(&path, "Target dispatcher payer is absent"))?
                     .retained_cleanup()
-                    .map_err(|source| failure(&path, source))?,
+                    .map_err(|source| retirement_failure(&path, source))?,
             );
         }
         let cleanup = self
             .cleanup
             .as_ref()
-            .ok_or_else(|| failure(&path, "Target dispatcher Cleanup is absent"))?;
+            .ok_or_else(|| retirement_failure(&path, "Target dispatcher Cleanup is absent"))?;
         if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running) {
             if let Some(state) = self.state.as_ref() {
                 state.shutdown.store(true, Ordering::Release);
-                wake(&state.wake).map_err(|source| failure(&path, source))?;
+                wake(&state.wake).map_err(|source| retirement_failure(&path, source))?;
             }
             loop {
                 let before = cleanup.wait_slice();
@@ -532,13 +547,18 @@ impl TargetDispatcher {
                     Some(worker) => self
                         .purpose
                         .as_mut()
-                        .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+                        .ok_or_else(|| {
+                            retirement_failure(&path, "Target dispatcher payer is absent")
+                        })?
                         .observe_worker_return(worker, cleanup)
-                        .map_err(|source| failure(&path, source)),
+                        .map_err(|source| retirement_failure(&path, source)),
                     None if self.phase == WorkerPhase::Reserved => {
                         Ok(NativeJoinObservation::Returned)
                     }
-                    None => Err(failure(&path, "Target native join owner is absent")),
+                    None => Err(retirement_failure(
+                        &path,
+                        "Target native join owner is absent",
+                    )),
                 };
                 // The actual native zero is recorded before independent post.
                 if matches!(observed, Ok(NativeJoinObservation::Returned)) {
@@ -552,8 +572,8 @@ impl TargetDispatcher {
                 match observed? {
                     NativeJoinObservation::Returned => break,
                     NativeJoinObservation::Pending => {
-                        before.map_err(|source| failure(&path, source))?;
-                        after.map_err(|source| failure(&path, source))?;
+                        before.map_err(|source| retirement_failure(&path, source))?;
+                        after.map_err(|source| retirement_failure(&path, source))?;
                         let wait_before = cleanup.wait_slice();
                         if self.join_observations[1].0.is_none() {
                             self.join_observations[1].0 = wait_before.as_ref().err().copied();
@@ -565,8 +585,8 @@ impl TargetDispatcher {
                         if self.join_observations[1].1.is_none() {
                             self.join_observations[1].1 = wait_after.as_ref().err().copied();
                         }
-                        wait_before.map_err(|source| failure(&path, source))?;
-                        wait_after.map_err(|source| failure(&path, source))?;
+                        wait_before.map_err(|source| retirement_failure(&path, source))?;
+                        wait_after.map_err(|source| retirement_failure(&path, source))?;
                     }
                 }
             }
@@ -574,7 +594,7 @@ impl TargetDispatcher {
         if self.phase == WorkerPhase::Joined {
             if let Some(state) = self.state.as_mut() {
                 let state = Arc::get_mut(state).ok_or_else(|| {
-                    failure(&path, "Target dispatcher has surviving queue aliases")
+                    retirement_failure(&path, "Target dispatcher has surviving queue aliases")
                 })?;
                 let outcome = match state.outcome.get_mut() {
                     Ok(outcome) => outcome,
@@ -584,7 +604,12 @@ impl TargetDispatcher {
                 let outcome = match outcome {
                     Some(outcome) => outcome,
                     None if !self.worker_born => Ok(()),
-                    None => return Err(failure(&path, "Target worker outcome was not delivered")),
+                    None => {
+                        return Err(retirement_failure(
+                            &path,
+                            "Target worker outcome was not delivered",
+                        ));
+                    }
                 };
                 if let Err(payload) = outcome {
                     let history = match self.worker_panic.get_mut() {
@@ -599,17 +624,17 @@ impl TargetDispatcher {
         }
         self.purpose
             .as_mut()
-            .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+            .ok_or_else(|| retirement_failure(&path, "Target dispatcher payer is absent"))?
             .retire_worker_debits(cleanup)
-            .map_err(|source| failure(&path, source))?;
+            .map_err(|source| retirement_failure(&path, source))?;
         cleanup
             .wait_slice()
-            .map_err(|source| failure(&path, source))?;
+            .map_err(|source| retirement_failure(&path, source))?;
         self.purpose
             .as_mut()
-            .ok_or_else(|| failure(&path, "Target dispatcher payer is absent"))?
+            .ok_or_else(|| retirement_failure(&path, "Target dispatcher payer is absent"))?
             .complete_cleanup(cleanup)
-            .map_err(|source| failure(&path, source))?;
+            .map_err(|source| retirement_failure(&path, source))?;
         self.cleanup = None;
         self.phase = WorkerPhase::Complete;
         self.report_retirement_history()
@@ -636,14 +661,14 @@ impl TargetDispatcher {
         history.as_deref()
     }
 
-    fn report_retirement_history(&mut self) -> Result<(), LinuxQemuCgroupError> {
+    fn report_retirement_history(&mut self) -> Result<(), LinuxQemuTargetDispatcherError> {
         let panicked = self.worker_panic().is_some();
         if self
             .join_observations
             .iter()
             .any(|(pre, post)| pre.is_some() || post.is_some())
         {
-            return Err(failure(
+            return Err(retirement_failure(
                 &self.path,
                 format_args!(
                     "Target worker return history: {:?}; startup {}; panic {panicked}",
@@ -653,7 +678,7 @@ impl TargetDispatcher {
         }
         if self.startup_history.has_failure() {
             return Err(if panicked {
-                failure(
+                retirement_failure(
                     &self.path,
                     format_args!(
                         "{}; Target dispatcher physically joined after worker panic",
@@ -661,11 +686,11 @@ impl TargetDispatcher {
                     ),
                 )
             } else {
-                failure(&self.path, &self.startup_history)
+                retirement_failure(&self.path, &self.startup_history)
             });
         }
         if panicked {
-            return Err(failure(
+            return Err(retirement_failure(
                 &self.path,
                 "Target dispatcher physically joined after worker panic",
             ));
@@ -762,12 +787,15 @@ impl TargetDispatcher {
     }
 }
 
+fn retirement_failure(
+    path: &Path,
+    source: impl std::fmt::Display,
+) -> LinuxQemuTargetDispatcherError {
+    LinuxQemuTargetDispatcherError::new(path.to_owned(), io::Error::other(source.to_string()))
+}
+
 fn failure(path: &Path, source: impl std::fmt::Display) -> LinuxQemuCgroupError {
-    LinuxQemuCgroupError::Io {
-        operation: "maintain actual Target dispatcher",
-        path: path.to_owned(),
-        source: io::Error::other(source.to_string()),
-    }
+    retirement_failure(path, source).into()
 }
 
 fn wake(fd: &OwnedFd) -> Result<(), io::Error> {
@@ -1115,7 +1143,7 @@ fn run(state: Arc<DispatcherState>, event_capacity: usize) {
 fn retry_quarantined(
     state: &DispatcherState,
     slot: &mut JobSlot,
-) -> Result<(), LinuxQemuCgroupError> {
+) -> Result<(), LinuxQemuTargetDispatcherError> {
     let phase = |original: &mut Option<TargetWatcherOriginal>| -> Result<(), crate::OriginalActorAccountError> {
         match original.as_mut() {
             Some(original) => original.wait_slice(true).map(|_| ()),
@@ -1126,7 +1154,7 @@ fn retry_quarantined(
         }
     };
     if let Err(source) = phase(&mut slot.original) {
-        let error = failure(&state.path, &source);
+        let error = retirement_failure(&state.path, &source);
         slot.failure
             .get_or_insert_default()
             .after
@@ -1140,19 +1168,18 @@ fn retry_quarantined(
                 .get_or_insert_default()
                 .cadence
                 .get_or_insert(source);
-            return Err(failure(&state.path, source));
+            return Err(retirement_failure(&state.path, source));
         }
     };
     if !delay.is_zero() {
-        return Err(failure(
+        return Err(retirement_failure(
             &state.path,
             "Target physical retry cadence is pending",
         ));
     }
-    let control = slot
-        .control
-        .as_mut()
-        .ok_or_else(|| failure(&state.path, "Target quarantine lost its actual control"))?;
+    let control = slot.control.as_mut().ok_or_else(|| {
+        retirement_failure(&state.path, "Target quarantine lost its actual control")
+    })?;
     let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         control.kill_members()?;
         control.is_populated()
@@ -1181,7 +1208,7 @@ fn retry_quarantined(
         }
     };
     if !physical || after_failed {
-        return Err(failure(
+        return Err(retirement_failure(
             &state.path,
             "Target physical retry remains retained",
         ));
@@ -1193,7 +1220,7 @@ fn retry_quarantined(
                 .get_or_insert_default()
                 .poller
                 .get_or_insert_with(|| failure(&state.path, source));
-            return Err(failure(&state.path, source));
+            return Err(retirement_failure(&state.path, source));
         }
     }
     // Historical first/post failure remains factual even after this physical
@@ -1220,7 +1247,7 @@ impl TargetWatchJob {
     }
 
     /// Recovers only this exact retained cell after worker exit or unwind.
-    fn recover_abandoned_job(&self) -> Result<(), LinuxQemuCgroupError> {
+    fn recover_abandoned_job(&self) -> Result<(), LinuxQemuTargetDispatcherError> {
         let exited = self.state.worker_exited.load(Ordering::Acquire);
         let poisoned = self.state.running.is_poisoned();
         if !exited && !poisoned {
@@ -1230,7 +1257,7 @@ impl TargetWatchJob {
             Ok(running) => running,
             Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
             Err(TryLockError::WouldBlock) => {
-                return Err(failure(
+                return Err(retirement_failure(
                     &self.state.path,
                     "Target worker custody is pending",
                 ));
@@ -1240,7 +1267,7 @@ impl TargetWatchJob {
             Ok(slots) => slots,
             Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
             Err(TryLockError::WouldBlock) => {
-                return Err(failure(
+                return Err(retirement_failure(
                     &self.state.path,
                     "Target return custody is pending",
                 ));
@@ -1249,10 +1276,12 @@ impl TargetWatchJob {
         let slot = slots
             .get_mut(self.index)
             .filter(|slot| slot.epoch == self.epoch)
-            .ok_or_else(|| failure(&self.state.path, "Target poisoned return epoch is stale"))?;
+            .ok_or_else(|| {
+                retirement_failure(&self.state.path, "Target poisoned return epoch is stale")
+            })?;
         if slot.phase == JobPhase::Queued && exited {
             if slot.control.is_none() || running.get(self.index).is_none_or(Option::is_some) {
-                return Err(failure(
+                return Err(retirement_failure(
                     &self.state.path,
                     "Target queued ownership does not match",
                 ));
@@ -1273,14 +1302,14 @@ impl TargetWatchJob {
         if slot.phase != JobPhase::Running {
             return Ok(());
         }
-        let entry = running
-            .get_mut(self.index)
-            .ok_or_else(|| failure(&self.state.path, "Target poisoned running cell is absent"))?;
+        let entry = running.get_mut(self.index).ok_or_else(|| {
+            retirement_failure(&self.state.path, "Target poisoned running cell is absent")
+        })?;
         if slot.control.is_some()
             || slot.original.is_some()
             || entry.as_ref().is_none_or(|job| job.epoch != self.epoch)
         {
-            return Err(failure(
+            return Err(retirement_failure(
                 &self.state.path,
                 "Target poisoned ownership does not match",
             ));
@@ -1311,7 +1340,9 @@ impl TargetWatchJob {
         Ok(())
     }
 
-    pub(super) fn retire(self) -> Result<TargetReturnedControl, (Self, LinuxQemuCgroupError)> {
+    pub(super) fn retire(
+        self,
+    ) -> Result<TargetReturnedControl, (Self, LinuxQemuTargetDispatcherError)> {
         if let Err(source) = self.recover_abandoned_job() {
             return Err((self, source));
         }
@@ -1320,11 +1351,14 @@ impl TargetWatchJob {
             Ok(slots) => slots,
             Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
             Err(TryLockError::WouldBlock) => {
-                return Err((self, failure(&state.path, "Target job return is pending")));
+                return Err((
+                    self,
+                    retirement_failure(&state.path, "Target job return is pending"),
+                ));
             }
         };
         let Some(slot) = slots.get_mut(self.index) else {
-            let source = failure(&state.path, "Target job slot is absent");
+            let source = retirement_failure(&state.path, "Target job slot is absent");
             drop(slots);
             return Err((self, source));
         };
@@ -1334,8 +1368,8 @@ impl TargetWatchJob {
             if !slot.failure_reported {
                 slot.failure_reported = true;
                 let source = match slot.failure.as_ref() {
-                    Some(cause) => failure(&state.path, cause),
-                    None => failure(&state.path, "Target control is quarantined"),
+                    Some(cause) => retirement_failure(&state.path, cause),
+                    None => retirement_failure(&state.path, "Target control is quarantined"),
                 };
                 drop(slots);
                 return Err((self, source));
@@ -1346,7 +1380,7 @@ impl TargetWatchJob {
             }
         }
         if slot.epoch != self.epoch || slot.phase != JobPhase::Returned {
-            let source = failure(
+            let source = retirement_failure(
                 &state.path,
                 "Target job has not returned its actual control",
             );
@@ -1354,7 +1388,7 @@ impl TargetWatchJob {
             return Err((self, source));
         }
         let Some(control) = slot.control.take() else {
-            let source = failure(&state.path, "Target returned control is absent");
+            let source = retirement_failure(&state.path, "Target returned control is absent");
             drop(slots);
             return Err((self, source));
         };

@@ -69,7 +69,39 @@ failed attempts appear in the dated entries below.
 | Native compiler correction | Signed atomic `cb9a5e825a` and conventional `0d49fac971` preserve the complete integration while correcting declarations, const projections and shadowed locals. Fresh configure, the POSIX thread object and source extraction pass. | The startup Source object still fails on its unchanged uncalled RR birth routine with all warnings retained. No whole QEMU build, Windows compilation, native execution or lifecycle qualification is established. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 125 errors: 105 large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 672 bindings: 653 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 673 bindings: 654 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+
+#### Actual Target dispatcher maintenance errors
+
+The closed dispatcher retirement chain now returns
+`LinuxQemuTargetDispatcherError`, retaining its actual diagnostic path and I/O
+cause. The containing report's borrowed dispatcher observer exposes that type.
+Watcher and startup boundaries move it back into the same general cgroup I/O
+category without allocating or replacing its owned payload. General cgroup
+admission variants remain outside this maintenance-only result. The report's
+retry classification follows the actual I/O-only path; it supplies no new retry
+operation, Cleanup interval or physical-return proof.
+
+All thirteen dispatcher component controls and three retirement-report controls
+pass. The new adapter control preserves the exact path allocation, boxed I/O
+payload, operation label and display text with zero allocations or reallocations.
+The independent pool refusal and dispatcher-first error source remain available.
+All 95 policy controls pass after updating the exact source anchors, including a
+formatter-introduced closure block. Existing causal mutations remain intact.
+The private measurement configuration compiles with its fourteen known warnings,
+and the source-bound engineering-hygiene gate passes. Strict host-library Clippy
+still reports 125 errors; other large variants continue to trigger the same
+return-size checks. This checkpoint claims no passing strict or license gate.
+
+Mandatory application compilation for the preceding signed retirement checkpoint
+`6485a1c6fe` passes at `8j2ky5kj9z88q5c13zzmqyvc2mqi70mf`. Its source and
+output audit verifies 185 compiler artifacts across 58 packages and 56 library
+unit targets, with all 5,466 frozen Rust/TOML inputs and the lockfile matching
+that commit. These targets compile without executing. Current-checkpoint
+application compilation is running separately. Inventory
+`svj2il6d78i9rc0k60w5pp0hmyy3hqwx` retains 673 bindings, 142 uncovered
+requirements and zero qualifications. Native activation, complete diagnostic
+funding, physical return, paging and performance qualification remain open.
 
 #### Existing native control retirement errors
 

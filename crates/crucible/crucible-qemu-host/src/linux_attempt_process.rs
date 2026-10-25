@@ -574,7 +574,9 @@ impl LinuxQemuAttemptProcessFactory {
     ///
     /// # Errors
     /// Retains actual job, queue, worker and Cleanup custody on every refusal.
-    pub(crate) fn finish_target_dispatcher(&mut self) -> Result<(), LinuxQemuCgroupError> {
+    pub(crate) fn finish_target_dispatcher(
+        &mut self,
+    ) -> Result<(), crate::LinuxQemuTargetDispatcherError> {
         self.target_dispatcher_terminal = true;
         if let Some(dispatcher) = self.target_dispatcher.as_mut() {
             dispatcher.finish()?;

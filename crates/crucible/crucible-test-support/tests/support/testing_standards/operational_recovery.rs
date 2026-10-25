@@ -65,7 +65,7 @@ const DISPATCHER_STARTUP_REQUIRED: &[&str] = &[
     }"#,
     r#"if self.startup_history.has_failure() {
             return Err(if panicked {
-                failure(
+                retirement_failure(
                     &self.path,
                     format_args!(
                         "{}; Target dispatcher physically joined after worker panic",
@@ -73,7 +73,7 @@ const DISPATCHER_STARTUP_REQUIRED: &[&str] = &[
                     ),
                 )
             } else {
-                failure(&self.path, &self.startup_history)
+                retirement_failure(&self.path, &self.startup_history)
             });
         }"#,
     r#".checked_add(u64::try_from(std::mem::size_of::<Self>()).ok()?)?"#,

@@ -33,6 +33,8 @@ use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
 use crate::{QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
 mod attempt_owner;
+mod dispatcher_error;
+pub use dispatcher_error::LinuxQemuTargetDispatcherError;
 #[cfg(feature = "private-measurement-domain")]
 pub(crate) mod measurement_domain;
 mod memory_control;
@@ -481,7 +483,10 @@ impl WatcherCompletion {
             Self::Target(job) => job
                 .retire()
                 .map(WatcherReturnedControl::Target)
-                .map_err(|(job, source)| WatcherCompletionError::Target { job, source }),
+                .map_err(|(job, source)| WatcherCompletionError::Target {
+                    job,
+                    source: source.into(),
+                }),
         }
     }
 }

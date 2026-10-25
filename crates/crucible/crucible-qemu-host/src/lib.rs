@@ -80,7 +80,9 @@ mod linux_attempt_storage;
 // sealed process owner needed by the still-separate quota/session composition.
 mod linux_cgroup;
 #[cfg(target_os = "linux")]
-pub use linux_cgroup::{LinuxQemuCgroupError, LinuxQemuMemoryLimitFailure};
+pub use linux_cgroup::{
+    LinuxQemuCgroupError, LinuxQemuMemoryLimitFailure, LinuxQemuTargetDispatcherError,
+};
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 mod private_parent_vm;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]

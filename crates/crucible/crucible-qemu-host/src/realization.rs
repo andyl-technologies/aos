@@ -573,14 +573,14 @@ fn validate_baked_genesis_node_set(
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct QemuTargetDispatcherRetirementError {
-    dispatcher: Option<crate::linux_cgroup::LinuxQemuCgroupError>,
+    dispatcher: Option<crate::LinuxQemuTargetDispatcherError>,
     pool: Option<crate::OriginalAccountRetirementError>,
 }
 
 #[cfg(target_os = "linux")]
 impl QemuTargetDispatcherRetirementError {
     pub(crate) fn combine(
-        dispatcher: Result<(), crate::linux_cgroup::LinuxQemuCgroupError>,
+        dispatcher: Result<(), crate::LinuxQemuTargetDispatcherError>,
         pool: Result<(), crate::OriginalAccountRetirementError>,
     ) -> Result<(), QemuVmRealizationError> {
         let dispatcher = dispatcher.err();
@@ -595,7 +595,7 @@ impl QemuTargetDispatcherRetirementError {
 
     /// Borrows the original dispatcher error without exposing raw cgroup control.
     #[must_use]
-    pub fn dispatcher_error(&self) -> Option<&crate::LinuxQemuCgroupError> {
+    pub fn dispatcher_error(&self) -> Option<&crate::LinuxQemuTargetDispatcherError> {
         self.dispatcher.as_ref()
     }
 
@@ -605,20 +605,14 @@ impl QemuTargetDispatcherRetirementError {
         self.pool.as_ref()
     }
 
-    /// Preserves the prior dispatcher-first operational failure classification.
+    /// Reports the existing retryable category of actual retirement failures.
     ///
-    /// Pool-only refusal previously used the retryable model-copy category.
-    /// When dispatcher history is present, its original I/O/namespace category
-    /// remains retryable; its other errors retain terminal classification.
+    /// Dispatcher maintenance produces only I/O reports; pool-only refusals
+    /// retain their prior retryable model-copy category. This classification
+    /// issues no retry authority or new Cleanup interval.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
-        self.dispatcher.as_ref().is_none_or(|error| {
-            matches!(
-                error,
-                crate::linux_cgroup::LinuxQemuCgroupError::Io { .. }
-                    | crate::linux_cgroup::LinuxQemuCgroupError::NamespaceLocked { .. }
-            )
-        })
+        true
     }
 }
 
