@@ -11737,3 +11737,15 @@ fails systemd's `SwitchRoot` SELinux check for
 The agent and Host assertions never run. The older Root, offline-provisioning
 and lifecycle-enclosure build batch was canceled after this shared boot
 blocker was identified; it supplies no qualification result.
+
+The isolated candidate containing the two pending networkd/manager permission
+patches passes all 161 policy tests, the normal merged-policy scan, and all
+eight negative fixture checks at
+`/nix/store/diyccfy1lkf0chnyz9fbggr037177c56-aos-selinux-production-policy-1`
+(NAR hash `sha256-0q9/C/5jf/sLqskHqZTZKRoC8UrrkDZlbXl9rKA4JCI=`).
+Its effective-policy report admits manager self-`reboot` while rejecting
+Controller, Storage and Root reboot requests and manager cross-owner requests.
+Systemd shares this permission between SwitchRoot, reboot, soft-reboot and
+kexec; it is not a SwitchRoot-only permission. These changes remain uncommitted
+pending their specific approvals. This build receipt establishes neither
+installed startup nor permission to publish the candidate policy.
