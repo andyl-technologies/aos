@@ -199,6 +199,42 @@ Clippy profiles pass. Native qualification and mandatory workspace compilation
 of this keyring change remain pending; no configured key-file parser, GC role
 service or process confinement is claimed.
 
+The four-case maintenance guest at `c83791dad3` fails in 307.276 seconds.
+Ordinary configured Serve startup passes; the subsequent maintenance test fails
+with exact `guard-install` denial before collection. Its additional unrelated
+key changes the canonical installed Guard snapshot: both issuer rows and
+retirement bounds are protected configuration, not merely verifier hints.
+The new test incorrectly expected reopening to install that change. The original
+failed snapshot and receipt are retained. Corrected success uses the existing
+installed keyring; refusal controls require the exact denial for an added key
+in either order and a changed retirement bound. No Guard comparison or native
+publication check is weakened. An authorized key-rotation transition remains
+unimplemented and is not inferred from key-file decoding or this constructor.
+
+Configured GC maintenance now has an explicit repository opener using the
+existing `tokens.issuer_public_keys` file locators. Each bounded, versioned TOML
+file declares an issuer, key identifier, lowercase Ed25519 public key and optional
+retirement timestamp. The reader traverses nofollow directory descriptors,
+requires root or the configured owner and no group/other write permission,
+checks a single-link regular file before reading, bounds files to 16 KiB and
+the keyring to 256 entries, and compares descriptor metadata after reading.
+Malformed input errors exclude loaded content; no host-token or signing-file
+fallback exists. Non-GC roles and unsupported store shapes refuse before key
+I/O. The ordinary Serve opener retains its original behavior.
+
+The maintenance guest now selects seven exact cases. New controls require
+configured reopening after signing/token removal with the original installed
+keyring, role/store refusal before missing-key access, and malformed, duplicate,
+symlink, hardlink, writable-path and FIFO refusal. The file loader separately
+retains multiple public keys and retirement bounds without installing them. Native execution and mandatory
+workspace compilation of this composition remain pending. This factory creates
+no service loop or collector lease and establishes no process confinement;
+configured GC service completion remains outstanding.
+Final strict all-target Clippy passes for both Tokio/surface and Tokio-only
+profiles; portable std-only library Clippy also passes. Guest syntax, diff checks
+and PLAN-2 requirement ownership pass. The initial decoder lint rejected a
+constant-sized chunk iterator; the final implementation uses checked byte pairs.
+
 The initial maintenance guest at `6570934587` fails in 261.665 seconds before
 executing a Rust case: its separately interpolated Python entry point is absent
 from the guest closure. The corrected guest invokes that same checked-in script
@@ -234,7 +270,9 @@ encoded-body lengths, completion times and errors. These are diagnostics only:
 no source bytes, cache/read budgets, required fetch counts, custody assertions
 or deadlines change. Both strict Linux all-target Clippy profiles pass; the
 final framed fixture also passes its own feature-enabled check. Native
-diagnosis remains pending.
+diagnosis remains pending. Mandatory workspace compilation at `becb606eaf`
+passes in 697.654 seconds. Independent review verifies 8,204 immutable source
+files, 190 test executables and 59 packages, as compilation only.
 
 Native permanent reconciliation now borrows a collection's original mutable
 session instead of acquiring a second singleton lease. `Recovery::reconcile`
@@ -260,6 +298,22 @@ through fixup. Final strict all-target Clippy passes for both Tokio/surface
 and Tokio-only profiles; the portable std-only library also passes. Python
 syntax, touched Nix formatting, PLAN-2 coverage and diff checks pass. This is
 GC service integration groundwork and accepts no new trunk task.
+
+The original-session reconciliation guest at `5609defd30` fails in 1,557.480
+seconds. Its first exact case reaches genuine permanent ownership but collection
+startup returns `Invalid(MalformedRequest)` before the new reconciliation call.
+The other four cases are not executed. The failure and frozen source remain
+retained; the complete collection-start checkpoint path still needs diagnosis.
+
+The framed mounted-manifest guest at `becb606eaf` fails in 1,164.039 seconds.
+It reaches authenticated index startup, the original eight-root readonly
+namespace, and actual kernel coalescing. The signed 2,097,153-byte manifest has
+original chunk lengths 1,080,024 and 1,017,129; actual manifest and both chunk
+reads succeed (331, 1,080,025 and 1,017,130 encoded bytes). The worker then reports
+`OpenFailed`, and the original kernel open observes connection abort. This
+narrows the failure beyond successful lower reads but proves neither the cause
+nor manifest-open conformance. No input, fetch count, custody assertion or
+original deadline is changed. Both native failures remain unqualified.
 
 The complete `fuse-index-roundtrip` owning gate at `91abbf8445` passes in
 1,567.153 seconds. Independent review verifies all six retained prerequisite

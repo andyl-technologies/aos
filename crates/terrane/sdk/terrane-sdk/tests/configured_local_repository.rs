@@ -8,6 +8,9 @@
 #[path = "local_sdk/fixture.rs"]
 mod fixture;
 
+#[path = "configured_local_repository/public_issuers.rs"]
+mod public_issuers;
+
 use fixture::{Fixture, MAIN, OLD, TestResult};
 use terrane_format::auth::{Attenuation, Grant, Token, Verbs};
 use terrane_sdk::{
@@ -25,12 +28,8 @@ async fn local_maintenance_reopens_without_secrets_and_resumes_collection() -> T
 
     let fixture = Fixture::new().await?;
     let commit = fixture.commit_bytes(OLD).await?;
-    let mut other_key = fixture.authority.issuer_key().clone();
-    other_key.key_id = "another-rotation".into();
-    other_key.public_key = terrane_format::auth::public_key_from_secret(&[91; 32]);
-    other_key.retirement = Some(0);
     let identity = LocalMaintenanceIdentity {
-        issuer_keys: vec![other_key, fixture.authority.issuer_key().clone()],
+        issuer_keys: vec![fixture.authority.issuer_key().clone()],
         owner_uid: fixture.owner,
     };
     let registration_path = fixture.location.authority.join("registration.cbor");
@@ -153,7 +152,7 @@ async fn local_maintenance_refuses_foreign_trust_and_corrupt_registration() -> T
 }
 
 #[tokio::test]
-async fn local_maintenance_rejects_empty_ambiguous_or_retired_keyrings() -> TestResult {
+async fn local_maintenance_rejects_invalid_or_uninstalled_keyrings() -> TestResult {
     use terrane_sdk::repository::{LocalMaintenanceIdentity, LocalRepositoryLocation, Repository};
 
     let fixture = Fixture::new().await?;
@@ -184,34 +183,36 @@ async fn local_maintenance_rejects_empty_ambiguous_or_retired_keyrings() -> Test
         assert!(!location.bucket.exists() && !location.authority.exists());
     }
 
-    let mut retired = fixture.authority.issuer_key().clone();
+    let genuine = fixture.authority.issuer_key().clone();
+    let mut retired = genuine.clone();
     retired.retirement = Some(0);
-    let identity = LocalMaintenanceIdentity {
-        issuer_keys: vec![retired],
-        owner_uid: fixture.owner,
-    };
-    // An otherwise genuine signing key cannot bypass its configured retirement
-    // when the original retained history and roots are independently verified.
-    if let Ok(repository) = Repository::open_local_maintenance(
-        &fixture.location,
-        &identity,
-        fixture::policy()?,
-        TokioLocalFs,
-        TokioClock,
-    )
-    .await
-    {
-        assert!(
-            repository
-                .start_local_collection(
-                    "retired-verifier".into(),
-                    1_000,
-                    1,
-                    terrane_format::gc::Windows::new(30, 60, 60, 90)?,
-                )
-                .await
-                .is_err()
-        );
+    let mut additional = retired.clone();
+    additional.key_id = "uninstalled-rotation".into();
+    additional.public_key = terrane_format::auth::public_key_from_secret(&[91; 32]);
+    for issuer_keys in [
+        vec![retired],
+        vec![additional.clone(), genuine.clone()],
+        vec![genuine, additional],
+    ] {
+        let identity = LocalMaintenanceIdentity {
+            issuer_keys,
+            owner_uid: fixture.owner,
+        };
+        let result = Repository::open_local_maintenance(
+            &fixture.location,
+            &identity,
+            fixture::policy()?,
+            TokioLocalFs,
+            TokioClock,
+        )
+        .await;
+
+        // Reopening must not replace the installed Guard, even with an unused
+        // verification key or a changed retirement bound for the genuine key.
+        assert!(matches!(result, Err(Error::Store(error)) if matches!(
+            error.kind(),
+            terrane_sdk::store::StoreErrorKind::Denied { verb: "guard-install", .. }
+        )));
     }
     Ok(())
 }

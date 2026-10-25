@@ -10,6 +10,9 @@ use serde::Deserialize;
 
 use super::ConfigError;
 
+#[cfg(all(feature = "std", unix))]
+pub mod issuer;
+
 /// Holds credential locators used by the selected process role.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]

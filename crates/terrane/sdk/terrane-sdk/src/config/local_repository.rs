@@ -153,6 +153,8 @@ impl LocalCommitTiming {
 }
 
 #[cfg(all(feature = "std", unix))]
+mod maintenance;
+#[cfg(all(feature = "std", unix))]
 mod open;
 #[cfg(all(feature = "std", unix))]
 pub use open::LocalOpenError;

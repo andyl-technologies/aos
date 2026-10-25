@@ -28,6 +28,8 @@ pub enum LocalOpenError {
     Role(RoleError),
     /// Rejects invalid trusted policy without manufacturing replacements.
     Configuration(ConfigError),
+    /// Rejects missing, ambiguous or unsafe configured public issuer files.
+    IssuerKeys(crate::config::token::issuer::IssuerKeyError),
     /// Rejects capabilities incompatible with the opened store's position.
     Capabilities(crate::config::expression::validation::ValidationError),
     /// Preserves the existing T1 protected reopen and authorization failures.
@@ -104,7 +106,7 @@ impl Config {
 }
 
 impl TrustedLocalRepository {
-    fn policy(
+    pub(super) fn policy(
         &self,
         locality: &crate::config::host::Locality,
     ) -> Result<LocalRepositoryPolicy, LocalOpenError> {
@@ -162,6 +164,7 @@ impl fmt::Display for LocalOpenError {
             ),
             Self::Role(error) => fmt::Display::fmt(error, formatter),
             Self::Configuration(error) => fmt::Display::fmt(error, formatter),
+            Self::IssuerKeys(error) => fmt::Display::fmt(error, formatter),
             Self::Capabilities(error) => fmt::Display::fmt(error, formatter),
             Self::Repository(error) => fmt::Display::fmt(error, formatter),
         }
@@ -173,6 +176,7 @@ impl std::error::Error for LocalOpenError {
         match self {
             Self::Role(error) => Some(error),
             Self::Configuration(error) => Some(error),
+            Self::IssuerKeys(error) => Some(error),
             Self::Capabilities(error) => Some(error),
             Self::Repository(error) => Some(error),
             Self::MissingConfiguration | Self::UnsupportedStore | Self::WrongRole(_) => None,
