@@ -38,6 +38,8 @@ allow aos_sandbox_view_preparer { root_t usr_t etc_t var_t var_lib_t var_run_t }
 allow aos_sandbox_view_preparer lib_t:file { execute getattr map open read };
 allow aos_sandbox_view_preparer ld_so_t:file { execute getattr map open read };
 allow aos_sandbox_view_preparer self:process { fork getattr sigchld signal };
+# Fixed scripts collect private stat/findmnt output through anonymous pipes.
+allow aos_sandbox_view_preparer self:fifo_file { create getattr read write };
 allow aos_sandbox_view_preparer self:capability { chown dac_read_search setgid setuid sys_admin };
 allow aos_sandbox_view_preparer self:user_namespace create;
 allow aos_sandbox_view_preparer proc_t:filesystem getattr;
