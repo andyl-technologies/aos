@@ -134,6 +134,11 @@ fn mapped_start_retains_observed_state_without_requiring_a_generation_fence()
             mapped.runtime.checkpoint_idle_coordinate,
             initial_checkpoint.then_some(100)
         );
+        // A stall report names the guard this advance started with.
+        assert_eq!(
+            mapped.runtime.advance_classification,
+            crate::quantum::AdvanceClassification::begin(initial_checkpoint.then_some(100))
+        );
 
         mapped.runtime.prepare_advance_completion(budget)?;
         assert!(!mapped.runtime.advance_initial_state_observed);

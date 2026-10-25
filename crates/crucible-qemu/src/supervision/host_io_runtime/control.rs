@@ -650,7 +650,12 @@ impl QemuLiveHostIoRuntime {
                     request.generation,
                     request.fault_command_frontier,
                     observed,
-                );
+                )
+                .map(|boundary| {
+                    boundary.with_classification(
+                        self.advance_classification.classified(snapshot.publish_gen),
+                    )
+                });
                 #[cfg(target_os = "linux")]
                 let console_accepted = if let Some(custody) = &self.console_custody {
                     let boundary = self.completed_boundary.ok_or_else(|| {

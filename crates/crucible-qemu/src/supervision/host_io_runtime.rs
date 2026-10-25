@@ -39,7 +39,7 @@ use super::block_io_servicer::{
     BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, QemuLiveBlockIoServicer,
 };
 use super::ninep_io_servicer::{NinepIoDiagnostics, QemuLive9pIoServicer};
-use crate::quantum::idle_state_from_snapshot;
+use crate::quantum::{CheckpointGuardRelease, idle_state_from_snapshot};
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::supervision::HostSupervisionDeadline;
 use crate::{
@@ -107,6 +107,8 @@ pub struct QemuLiveHostIoRuntime {
     checkpoint_idle_coordinate: Option<u64>,
     /// A live start observation cannot be replaced by the first later poll.
     advance_initial_state_observed: bool,
+    /// Guard and generation evidence a stall report reads for this advance.
+    advance_classification: crate::quantum::AdvanceClassification,
     /// Outbound producer frontier covered by the preceding completed quantum.
     completed_outbound_write_index: u64,
     /// Immutable original clamp publication for this runtime's current advance.
@@ -289,6 +291,7 @@ impl QemuLiveHostIoRuntime {
             device_wake_publish_generation: None,
             checkpoint_idle_coordinate: None,
             advance_initial_state_observed: false,
+            advance_classification: crate::quantum::AdvanceClassification::default(),
             completed_outbound_write_index,
             completed_boundary: None,
             block: None,
@@ -458,6 +461,8 @@ impl QemuLiveHostIoRuntime {
                     // Standalone providers without a pending start observation
                     // retain their existing coherent first-poll classification.
                     self.checkpoint_idle_coordinate = checkpoint_idle_coordinate(&snapshot);
+                    self.advance_classification
+                        .note_guard_start(self.checkpoint_idle_coordinate);
                 }
                 self.wait_observation
                     .retain_initial_advance(&snapshot, self.checkpoint_idle_coordinate);
@@ -492,7 +497,10 @@ impl QemuLiveHostIoRuntime {
                     // Only a genuine new node publication releases this marker.
                     // The fresh report still goes through the original timer,
                     // output-stop, device and full-body Acceptance checks.
-                    self.checkpoint_idle_coordinate = None;
+                    if self.checkpoint_idle_coordinate.take().is_some() {
+                        self.advance_classification
+                            .note_release(CheckpointGuardRelease::NativeReport);
+                    }
                 }
                 self.scheduler_input_publish_generation = None;
             }
@@ -513,8 +521,13 @@ impl QemuLiveHostIoRuntime {
                     self.checkpoint_idle_coordinate,
                     &snapshot,
                 );
-            if !checkpoint_idle_unreleased {
-                self.checkpoint_idle_coordinate = None;
+            if !checkpoint_idle_unreleased && self.checkpoint_idle_coordinate.take().is_some() {
+                self.advance_classification
+                    .note_release(checkpoint_guard_release(
+                        output_stop.is_some(),
+                        console_output_stop,
+                        &snapshot,
+                    ));
             }
             // Service block I/O before classifying the boundary: a guest blocked
             // on a probe read cannot reach the ceiling until its response is
@@ -880,6 +893,8 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
                 .filter(|deadline| deadline.retired <= state.current_icount.retired)
                 .map(|_| state.current_icount.retired)
         });
+        self.advance_classification =
+            crate::quantum::AdvanceClassification::begin(self.checkpoint_idle_coordinate);
     }
 
     fn arm_advance_completion_fence(
@@ -893,6 +908,8 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         }
         self.scheduler_input_publish_generation =
             fence.map(|fence| fence.initial_publish_generation);
+        self.advance_classification
+            .note_fence(self.scheduler_input_publish_generation);
         self.advance_stop_condition = fence
             .map(|fence| fence.stop_condition)
             .unwrap_or(crate::QemuQuantumStopCondition::Ceiling);

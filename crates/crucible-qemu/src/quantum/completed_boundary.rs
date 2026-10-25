@@ -21,6 +21,7 @@ pub struct QemuCompletedQuantumBoundary {
     request_generation: u32,
     snapshot: NodeSlotSnapshot,
     console_output_sequence: Option<u64>,
+    classification: Option<crate::quantum::AdvanceClassification>,
 }
 
 impl QemuCompletedQuantumBoundary {
@@ -153,7 +154,24 @@ impl QemuCompletedQuantumBoundary {
             request_generation,
             snapshot,
             console_output_sequence: None,
+            classification: None,
         })
+    }
+
+    /// Attaches the guard and generation record of the classified advance.
+    ///
+    /// The record is diagnostic only and joins no validation below.
+    pub(crate) const fn with_classification(
+        mut self,
+        classification: crate::quantum::AdvanceClassification,
+    ) -> Self {
+        self.classification = Some(classification);
+        self
+    }
+
+    /// Returns the guard and generation record of the classified advance.
+    pub(crate) const fn classification(self) -> Option<crate::quantum::AdvanceClassification> {
+        self.classification
     }
 
     /// Returns the original coherent logical/raw retirement pair.

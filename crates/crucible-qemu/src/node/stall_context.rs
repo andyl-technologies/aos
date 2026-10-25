@@ -12,17 +12,21 @@
 //! carries them as one row:
 //!
 //! ```text
-//! CRUCIBLE-STALL-CONTEXT-V1 resume_pending=none pause_requested=false pending_outputs=0 last_marker=fault.transport.ready@2025602651300 unproven_marker=none discovery=ceiling:2770726265650,status:1,device_io:0,control_request:23520,control_ack:23520,logical:2770600228574,raw:4563176038,idle_wake:2770600228574,advance_sequence:47343,settled_ceiling:0,settled_sequence:0 clamp=ceiling:2770600228574,status:1,device_io:0,control_request:23520,control_ack:23521,logical:2770600228574,raw:4563176038,idle_wake:2770600228574,advance_sequence:47344,settled_ceiling:2770600228574,settled_sequence:47344
+//! CRUCIBLE-STALL-CONTEXT-V1 resume_pending=none pause_requested=false pending_outputs=0 last_marker=fault.transport.ready@2025602651300 unproven_marker=none discovery=ceiling:2770726265650,status:1,device_io:0,control_request:23520,control_ack:23520,logical:2770600228574,raw:4563176038,idle_wake:2770600228574,advance_sequence:47343,settled_ceiling:0,settled_sequence:0,publish_gen:9310 clamp=ceiling:2770600228574,status:1,device_io:0,control_request:23520,control_ack:23521,logical:2770600228574,raw:4563176038,idle_wake:2770600228574,advance_sequence:47344,settled_ceiling:2770600228574,settled_sequence:47344,publish_gen:9314 classification=guard_start:2770600228574,guard_release:none,fence_gen:9306,discovery_gen:9310
 //! ```
 //!
 //! The clamp always shows an idle wake at its own coordinate, because the
 //! control callback publishes an exact-ceiling idle boundary; the discovery
-//! is the publication the step classified. The row is read from host memory
+//! is the publication the step classified. The classification says whether
+//! the checkpoint guard was armed for that advance and what released it, so
+//! a stale boundary left by the previous clamp is told apart from a fresh
+//! zero-length answer to the new advance. The row is read from host memory
 //! only. It changes no scheduling decision and grants no guest time.
 
 use std::fmt;
 
 use super::QemuNode;
+use crate::quantum::AdvanceClassification;
 
 /// Campaign marker the host drained beside a stop it could not prove.
 ///
@@ -50,6 +54,7 @@ pub(crate) struct StallBoundary {
     pub(crate) advance_sequence: u64,
     pub(crate) settled_ceiling: u64,
     pub(crate) settled_sequence: u64,
+    pub(crate) publish_gen: u32,
 }
 
 impl StallBoundary {
@@ -70,6 +75,7 @@ impl StallBoundary {
             advance_sequence: snapshot.advance_publication_sequence,
             settled_ceiling: snapshot.settled_ceiling_tick,
             settled_sequence: snapshot.settled_publication_sequence,
+            publish_gen: snapshot.publish_gen,
         }
     }
 }
@@ -78,7 +84,7 @@ impl fmt::Display for StallBoundary {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "ceiling:{},status:{},device_io:{},control_request:{},control_ack:{},logical:{},raw:{},idle_wake:{},advance_sequence:{},settled_ceiling:{},settled_sequence:{}",
+            "ceiling:{},status:{},device_io:{},control_request:{},control_ack:{},logical:{},raw:{},idle_wake:{},advance_sequence:{},settled_ceiling:{},settled_sequence:{},publish_gen:{}",
             self.ceiling,
             self.status,
             self.device_io_active,
@@ -90,6 +96,7 @@ impl fmt::Display for StallBoundary {
             self.advance_sequence,
             self.settled_ceiling,
             self.settled_sequence,
+            self.publish_gen,
         )
     }
 }
@@ -103,6 +110,7 @@ pub(crate) struct QemuNodeStallContext {
     last_marker: Option<String>,
     unproven_marker: Option<UnprovenCampaignMarker>,
     boundaries: Option<(StallBoundary, StallBoundary)>,
+    classification: Option<AdvanceClassification>,
 }
 
 impl QemuNodeStallContext {
@@ -114,6 +122,7 @@ impl QemuNodeStallContext {
         last_marker: Option<String>,
         unproven_marker: Option<UnprovenCampaignMarker>,
         boundaries: Option<(StallBoundary, StallBoundary)>,
+        classification: Option<AdvanceClassification>,
     ) -> Self {
         Self {
             resume_pending: resume_pending
@@ -125,6 +134,7 @@ impl QemuNodeStallContext {
             last_marker,
             unproven_marker,
             boundaries,
+            classification,
         }
     }
 }
@@ -162,9 +172,14 @@ impl fmt::Display for QemuNodeStallContext {
 
         match self.boundaries {
             Some((discovery, clamp)) => {
-                write!(formatter, " discovery={discovery} clamp={clamp}")
+                write!(formatter, " discovery={discovery} clamp={clamp}")?;
             }
-            None => formatter.write_str(" discovery=none clamp=none"),
+            None => formatter.write_str(" discovery=none clamp=none")?,
+        }
+
+        match self.classification {
+            Some(classification) => write!(formatter, " {classification}"),
+            None => formatter.write_str(" classification=none"),
         }
     }
 }
@@ -186,6 +201,8 @@ impl QemuNode {
             self.unproven_campaign_marker.clone(),
             self.last_step_completed_boundary
                 .map(crate::QemuCompletedQuantumBoundary::stall_boundaries),
+            self.last_step_completed_boundary
+                .and_then(crate::QemuCompletedQuantumBoundary::classification),
         )
     }
 
@@ -225,6 +242,7 @@ mod tests {
             advance_sequence: 88,
             settled_ceiling: 0,
             settled_sequence: 0,
+            publish_gen: control_ack * 2,
         }
     }
 
@@ -237,11 +255,12 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         assert_eq!(
             context.to_string(),
-            "CRUCIBLE-STALL-CONTEXT-V1 resume_pending=none pause_requested=unknown pending_outputs=0 last_marker=none unproven_marker=none discovery=none clamp=none"
+            "CRUCIBLE-STALL-CONTEXT-V1 resume_pending=none pause_requested=unknown pending_outputs=0 last_marker=none unproven_marker=none discovery=none clamp=none classification=none"
         );
     }
 
@@ -261,11 +280,12 @@ mod tests {
                 stop_tick: 1_100,
             }),
             Some((boundary(2_000, 1_100, 7), boundary(1_100, 1_100, 8))),
+            Some(AdvanceClassification::begin(Some(1_100)).classified(14)),
         );
 
         assert_eq!(
             context.to_string(),
-            "CRUCIBLE-STALL-CONTEXT-V1 resume_pending=network-output,campaign-marker pause_requested=true pending_outputs=2 last_marker=fault.transport.ready@100 unproven_marker=fault.transport.ready@100/stop=1100 discovery=ceiling:2000,status:1,device_io:0,control_request:7,control_ack:7,logical:1100,raw:11,idle_wake:1100,advance_sequence:88,settled_ceiling:0,settled_sequence:0 clamp=ceiling:1100,status:1,device_io:0,control_request:7,control_ack:8,logical:1100,raw:11,idle_wake:1100,advance_sequence:88,settled_ceiling:0,settled_sequence:0"
+            "CRUCIBLE-STALL-CONTEXT-V1 resume_pending=network-output,campaign-marker pause_requested=true pending_outputs=2 last_marker=fault.transport.ready@100 unproven_marker=fault.transport.ready@100/stop=1100 discovery=ceiling:2000,status:1,device_io:0,control_request:7,control_ack:7,logical:1100,raw:11,idle_wake:1100,advance_sequence:88,settled_ceiling:0,settled_sequence:0,publish_gen:14 clamp=ceiling:1100,status:1,device_io:0,control_request:7,control_ack:8,logical:1100,raw:11,idle_wake:1100,advance_sequence:88,settled_ceiling:0,settled_sequence:0,publish_gen:16 classification=guard_start:1100,guard_release:none,fence_gen:none,discovery_gen:14"
         );
     }
 }

@@ -292,6 +292,29 @@ pub(super) fn checkpoint_idle_publication_is_unreleased(
     })
 }
 
+/// Names what released an armed checkpoint guard at this poll.
+///
+/// A stop owner takes the publication before the coordinate check runs, so
+/// it is named first; otherwise the slot itself no longer matched.
+pub(super) const fn checkpoint_guard_release(
+    output_stop: bool,
+    console_output_stop: bool,
+    snapshot: &crucible_shmem::NodeSlotSnapshot,
+) -> CheckpointGuardRelease {
+    if output_stop {
+        CheckpointGuardRelease::OutputStop
+    } else if console_output_stop {
+        CheckpointGuardRelease::ConsoleStop
+    } else {
+        CheckpointGuardRelease::Changed {
+            status: snapshot.status,
+            logical: snapshot.current_icount,
+            idle_wake: snapshot.idle_wake_icount,
+            publish_gen: snapshot.publish_gen,
+        }
+    }
+}
+
 /// Returns whether checkpoint pause needs a QEMU main-loop control edge.
 pub(super) fn checkpoint_pause_requires_control_doorbell(
     snapshot: &crucible_shmem::NodeSlotSnapshot,

@@ -31,6 +31,8 @@ use crate::{
     QemuShmemHotPathChannel,
 };
 
+mod advance_classification;
+pub(crate) use advance_classification::{AdvanceClassification, CheckpointGuardRelease};
 mod channel;
 mod completed_boundary;
 pub use completed_boundary::QemuCompletedQuantumBoundary;
