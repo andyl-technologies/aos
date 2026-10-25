@@ -1066,6 +1066,26 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(helper, owner, "unix_stream_socket", permission)
                     )
 
+    def test_offline_policy_readback_withholds_policy_administration(self) -> None:
+        owner = effective_policy.owner_policy
+        self.assert_missing_allow_rejected(
+            effective_policy.Access(owner.OFFLINE_PREPARE, "security_t", "security", "read_policy")
+        )
+
+        forbidden = [
+            effective_policy.Access(owner.OFFLINE_PREPARE, "security_t", "security", permission)
+            for permission in ("load_policy", "setenforce", "setbool", "setsecparam")
+        ]
+        forbidden.append(
+            effective_policy.Access(owner.OFFLINE_HELPER, "security_t", "security", "read_policy")
+        )
+        for access in forbidden:
+            with self.subTest(access=access):
+                policy = self._storage_policy()
+                policy.allows[access] = [FakeRule("unexpected policy authority")]
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_source_observer_requires_status_and_exact_socket_targets(self) -> None:
         source = "aos_sandbox_source_signer_t"
         for target, object_class, permission in (

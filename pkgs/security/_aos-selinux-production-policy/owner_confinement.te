@@ -91,6 +91,8 @@ allow aos_nix_offline_prepare_t self:lnk_file { getattr read };
 allow aos_nix_offline_prepare_t security_t:dir { getattr open read search };
 allow aos_nix_offline_prepare_t security_t:filesystem getattr;
 allow aos_nix_offline_prepare_t security_t:file { getattr open read };
+# selinuxfs checks this class separately when opening and reading /policy.
+allow aos_nix_offline_prepare_t security_t:security read_policy;
 allow aos_nix_offline_prepare_t cgroup_t:dir { getattr open read search };
 allow aos_nix_offline_prepare_t cgroup_t:file { getattr open read };
 allow aos_nix_offline_prepare_t sysctl_t:dir search;
