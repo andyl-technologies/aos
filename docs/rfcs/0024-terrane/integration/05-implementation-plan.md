@@ -91,6 +91,36 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-25)
 
+The corrected manager image at `4d6fa29019` passes its original isolated
+prerequisite build in 878.486 seconds. Complete review accounts for all 49
+remote derivations, the two imported outputs, the fresh capability-free ext4
+sandbox proof and clean guest shutdown. Twelve unchanged package checks keep
+their previously reviewed guest results; no new execution is claimed. The
+original service-manager scenario then fails in 185.054 seconds. Serve
+observes all 18 expected allocation mounts and passes native cache recovery,
+but SDK presentation fails before readiness and dependent GC startup. The
+original logs, manifest, script and guest configuration are preserved. A
+separate guest-only trace is diagnostic; it cannot qualify service behavior.
+
+The six host/publisher owning gates at `0677eb432c` pass in 4,511.141 seconds
+and both full reviews pass. The host review matches all 8,259 immutable source
+files, four images, ten Cargo executables, 17 guests, the 21 original selectors
+and ten physical prerequisites. The publisher review matches the same source,
+eleven Cargo executables, eight original guests and the original publication,
+protocol and socket controls. These passes predate the allocation-mount
+correction and qualify only their recorded source and scope.
+
+The still-running feature matrix at `4914e8a0dc` reports a failure in
+`permanent_local_collection_reconciles_with_its_original_live_session`.
+The original focused collection-reconciliation guest reproduces that failure
+on byte-identical SDK/format sources and the same SDK features and test
+profile: collection startup returns `Invalid(MalformedRequest)` before the
+reconciliation call. Its failed run takes 178.333 seconds; the original first
+case fails after 67.00 seconds. Raw guest and compiler-bound evidence is
+preserved. No lease, clock, retention, timeout or assertion has been relaxed;
+the original matrix continues while an isolated test-only diagnostic locates
+the refusal. No task acceptance changes.
+
 The renewed native-cache aggregate at `492c410e29` fails in 1,236.907 seconds.
 Its all-feature recovery guest stops during immutable image verification:
 `host_cache_mount_views_vm.py` is installed, checksummed and byte-identical
@@ -108,8 +138,9 @@ original two CLI snapshot completion lines. The diagnostic record introduced
 with the allocation-mount correction is retained in the final service proof;
 it cannot be ignored as arbitrary journal noise. Source review caught the
 previous exact-output comparison including that additional record before the
-new manager scenario ran. Native manager qualification of this verifier
-correction remains pending; no task acceptance changes.
+new manager scenario ran. The manager run above reaches SDK presentation and fails before journal
+completion verification; qualification of the complete scenario remains
+pending. No task acceptance changes.
 
 Mandatory application-target compilation at `492c410e29` passes in 730.275
 seconds. Complete review matches all 8,263 immutable source files and 190
