@@ -174,6 +174,19 @@ pub(crate) fn preparation_check(error: &anyhow::Error) -> &'static str {
         ("stage preparation: read lease", "read_lease"),
         ("stage preparation: request", "request"),
         ("stage preparation: foreground cutoff", "foreground_cutoff"),
+        (
+            "direct foreground budget elapsed or invalid",
+            "foreground_elapsed",
+        ),
+        (
+            "direct original stage admission no longer eligible",
+            "original_admission",
+        ),
+        ("direct stage creation canceled", "canceled"),
+        (
+            "direct provider capacity wait bound reached",
+            "capacity_wait_bound",
+        ),
     ];
 
     CHECKS

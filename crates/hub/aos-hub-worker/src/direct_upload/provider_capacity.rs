@@ -9,7 +9,7 @@ use std::{
     task::{Poll, Waker},
 };
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 
 /// One-use transfers of actual reserved source capacity within the same pool.
 pub(crate) mod transfer;
@@ -38,6 +38,7 @@ impl Class {
 struct Waiter {
     id: u64,
     class: Class,
+    count: u32,
     waker: Waker,
 }
 
@@ -68,6 +69,21 @@ impl Pool {
             dispatches: Cell::new(0),
             interval_peaks: RefCell::new(Vec::new()),
         }
+    }
+
+    fn class_limit(&self, class: Class) -> u32 {
+        match class {
+            Class::Bulk => self.maximum.saturating_sub(1),
+            Class::Foreground | Class::Metadata => self.maximum,
+        }
+    }
+
+    fn available(&self, class: Class) -> u32 {
+        let aggregate = self.maximum.saturating_sub(self.active.get());
+        let class = self
+            .class_limit(class)
+            .saturating_sub(self.by_class[class.index()].get());
+        aggregate.min(class)
     }
 
     fn wake(&self) {
@@ -222,13 +238,9 @@ pub(crate) async fn acquire_class_checked<F: Fn() -> Result<()>>(
     check: &F,
 ) -> Result<Permit> {
     let pool = POOL.with(|current| Rc::clone(&current.borrow()));
-    let class_limit = match class {
-        Class::Foreground => pool.maximum,
-        Class::Bulk => pool.maximum.saturating_sub(1),
-        // Metadata keeps the reserved slot under bulk load and borrows unused
-        // aggregate capacity when the isolate is processing only metadata.
-        Class::Metadata => pool.maximum,
-    };
+    // Bulk cannot consume the final slot. Metadata and short foreground work
+    // share the remaining capacity without an unbounded class priority.
+    let class_limit = pool.class_limit(class);
     ensure!(
         count > 0 && count <= class_limit,
         "direct provider operation exceeds accepted capacity"
@@ -247,15 +259,14 @@ pub(crate) async fn acquire_class_checked<F: Fn() -> Result<()>>(
         if let Err(error) = check() {
             return Poll::Ready(Err(error));
         }
-        let metadata_waiting = pool
+        // An older request that fits goes first. Skip requests that cannot fit
+        // so a queued bulk pair cannot block metadata's reserved single slot.
+        let older_eligible = pool
             .waiters
             .borrow()
             .iter()
-            .any(|waiter| waiter.class == Class::Metadata && waiter.id != id);
-        if pool.active.get() <= pool.maximum - count
-            && pool.by_class[class.index()].get() <= class_limit - count
-            && !(class == Class::Foreground && metadata_waiting)
-        {
+            .any(|waiter| waiter.id < id && pool.available(waiter.class) >= waiter.count);
+        if pool.available(class) >= count && !older_eligible {
             pool.active.set(pool.active.get() + count);
             pool.peak.set(pool.peak.get().max(pool.active.get()));
             for peak in pool
@@ -291,6 +302,7 @@ pub(crate) async fn acquire_class_checked<F: Fn() -> Result<()>>(
             waiters.push(Waiter {
                 id,
                 class,
+                count,
                 waker: context.waker().clone(),
             });
         }
@@ -376,6 +388,52 @@ mod tests {
         assert!(excess_bulk.as_mut().poll(&mut context).is_pending());
         drop(bulk);
         drop(excess_bulk.await.unwrap());
+        configure(2).unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_metadata_cannot_bypass_a_queued_stage_creation() {
+        configure(3).unwrap();
+        let occupied = acquire_class(3, Class::Metadata).await.unwrap();
+        let mut creation = Box::pin(acquire_class(1, Class::Foreground));
+        let mut metadata = Box::pin(acquire_class(1, Class::Metadata));
+        let waker = futures_util::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+
+        assert!(creation.as_mut().poll(&mut context).is_pending());
+        assert!(metadata.as_mut().poll(&mut context).is_pending());
+        drop(occupied);
+
+        assert!(metadata.as_mut().poll(&mut context).is_pending());
+        let creation = creation.await.unwrap();
+        let metadata = metadata.await.unwrap();
+        assert_eq!(observation().active, 2);
+
+        drop(metadata);
+        drop(creation);
+        configure(2).unwrap();
+    }
+
+    #[tokio::test]
+    async fn metadata_keeps_its_place_ahead_of_new_foreground_work() {
+        configure(3).unwrap();
+        let occupied = acquire_class(3, Class::Foreground).await.unwrap();
+        let mut metadata = Box::pin(acquire_class(1, Class::Metadata));
+        let mut creation = Box::pin(acquire_class(1, Class::Foreground));
+        let waker = futures_util::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+
+        assert!(metadata.as_mut().poll(&mut context).is_pending());
+        assert!(creation.as_mut().poll(&mut context).is_pending());
+        drop(occupied);
+
+        assert!(creation.as_mut().poll(&mut context).is_pending());
+        let metadata = metadata.await.unwrap();
+        let creation = creation.await.unwrap();
+        assert_eq!(observation().active, 2);
+
+        drop(creation);
+        drop(metadata);
         configure(2).unwrap();
     }
 
