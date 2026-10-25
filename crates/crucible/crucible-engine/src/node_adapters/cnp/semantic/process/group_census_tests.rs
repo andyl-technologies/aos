@@ -1,11 +1,11 @@
 //! Exercises incomplete kernel census reads without assuming group reclamation.
 
-use super::complete_group_stat_read;
+use super::{GroupStatFile, complete_group_stat_read, group_stat_group, open_group_stat};
 use crucible_node_transport::ProviderError;
 use std::{
     fs::File,
     io::{Error, ErrorKind, Read},
-    os::unix::process::CommandExt,
+    os::{fd::AsRawFd, unix::process::CommandExt},
     process::{Command, Stdio},
 };
 
@@ -64,5 +64,81 @@ fn other_stat_read_failures_cannot_become_reclamation_evidence() {
             complete_group_stat_read(Err(Error::from(kind))),
             Err(ProviderError::Io(error)) if error.kind() == kind
         ));
+    }
+}
+
+#[test]
+fn a_task_reaped_before_stat_open_requires_another_complete_census()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut child = Command::new(std::env::current_exe()?)
+        .args([
+            "--ignored",
+            "--exact",
+            "node_adapters::cnp::semantic::tests::process::generic_owned_process",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .process_group(0)
+        .spawn()?;
+    let path = format!("/proc/{}", child.id());
+    let directory = File::open(&path);
+    let live = open_group_stat(&std::path::Path::new(&path).join("stat"));
+
+    // Hold the actual proc directory across reaping. This reproduces a task
+    // disappearing between pathname lookup and opening its stat entry.
+    drop(child.stdin.take());
+    let status = child.wait();
+    let directory = directory?;
+    assert!(status?.success());
+    assert!(matches!(live?, GroupStatFile::Present(_)));
+    let departed = format!("/proc/self/fd/{}/stat", directory.as_raw_fd());
+
+    assert!(matches!(
+        open_group_stat(std::path::Path::new(&departed))?,
+        GroupStatFile::Departed,
+    ));
+    Ok(())
+}
+
+#[test]
+fn absent_proc_rows_remain_distinct_from_other_open_errors()
+-> Result<(), Box<dyn std::error::Error>> {
+    // PID zero has no task directory, independently of process allocation.
+    assert!(matches!(
+        open_group_stat(std::path::Path::new("/proc/0/stat"))?,
+        GroupStatFile::Absent,
+    ));
+    assert!(matches!(
+        open_group_stat(std::path::Path::new("/proc/self/stat/child")),
+        Err(ProviderError::Io(error)) if error.kind() == ErrorKind::NotADirectory,
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_kernel_unavailable_group_row_requires_another_complete_census() {
+    // do_task_stat's literal -1 is a kernel sentinel, not a reclamation proof.
+    // Spaces and parenthesis in comm do not change the group field's position.
+    let row = b"123 (departing task (worker)) X 1 -1 -1 0 -1 0\n";
+    assert_eq!(group_stat_group(row).unwrap(), None);
+    for group in [0, 1, 123, u32::MAX] {
+        let row = format!("123 (live task (worker)) S 1 {group} 1 0 -1 0\n");
+        assert_eq!(group_stat_group(row.as_bytes()).unwrap(), Some(group));
+    }
+}
+
+#[test]
+fn malformed_kernel_group_rows_still_refuse_reclamation() {
+    for row in [
+        b"123 missing-comm S 1 123 1".as_slice(),
+        b"123 (task) S 1",
+        b"123 (task) S 1 -2 1",
+        b"123 (task) S 1 -01 1",
+        b"123 (task) S 1 4294967296 1",
+        b"123 (task) S 1 invalid 1",
+        b"123 (task) S 1 12\xff 1",
+    ] {
+        assert!(group_stat_group(row).is_err(), "{row:?}");
     }
 }

@@ -674,10 +674,10 @@ fn group_empty(group: u32) -> Result<bool, ProviderError> {
         {
             continue;
         }
-        let file = match File::open(entry.path().join("stat")) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
+        let file = match open_group_stat(&entry.path().join("stat"))? {
+            GroupStatFile::Present(file) => file,
+            GroupStatFile::Absent => continue,
+            GroupStatFile::Departed => return Ok(false),
         };
         let mut bytes = Vec::new();
         if !complete_group_stat_read(file.take(65_537).read_to_end(&mut bytes))? {
@@ -690,22 +690,56 @@ fn group_empty(group: u32) -> Result<bool, ProviderError> {
                 "generic kernel census row",
             ));
         }
-        let text = std::str::from_utf8(&bytes)
-            .map_err(|_| ProviderError::Frame("generic kernel census encoding"))?;
-        let close = text
-            .rfind(')')
-            .ok_or(ProviderError::Frame("generic kernel census shape"))?;
-        let actual = text[close + 1..]
-            .split_ascii_whitespace()
-            .nth(2)
-            .ok_or(ProviderError::Frame("generic kernel group absent"))?
-            .parse::<u32>()
-            .map_err(|_| ProviderError::Frame("generic kernel group invalid"))?;
+        let Some(actual) = group_stat_group(&bytes)? else {
+            return Ok(false);
+        };
         if actual == group {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+// Linux do_task_stat leaves pgid=-1 when lock_task_sighand cannot recover
+// the departing task's signal state. That row cannot establish group absence;
+// retry a complete census while retaining errors for every malformed group.
+fn group_stat_group(bytes: &[u8]) -> Result<Option<u32>, ProviderError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| ProviderError::Frame("generic kernel census encoding"))?;
+    let close = text
+        .rfind(')')
+        .ok_or(ProviderError::Frame("generic kernel census shape"))?;
+    let group = text[close + 1..]
+        .split_ascii_whitespace()
+        .nth(2)
+        .ok_or(ProviderError::Frame("generic kernel group absent"))?;
+    if group == "-1" {
+        return Ok(None);
+    }
+    group
+        .parse::<u32>()
+        .map(Some)
+        .map_err(|_| ProviderError::Frame("generic kernel group invalid"))
+}
+
+// A vanished task during open does not prove the rest of its group absent.
+// ENOENT names an absent row; ESRCH requires another complete census, just as
+// a task that vanishes during the subsequent stat read does.
+enum GroupStatFile {
+    Present(File),
+    Absent,
+    Departed,
+}
+
+fn open_group_stat(path: &Path) -> Result<GroupStatFile, ProviderError> {
+    match File::open(path) {
+        Ok(file) => Ok(GroupStatFile::Present(file)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(GroupStatFile::Absent),
+        Err(error) if error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) => {
+            Ok(GroupStatFile::Departed)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 // ESRCH identifies a task that exited during this already-open proc read. All

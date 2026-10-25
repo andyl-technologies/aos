@@ -10,6 +10,37 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Process-group census races
+
+Process-group reclamation now retries the complete census when a task departs
+while its stat entry is being opened, matching the existing departed-task read
+handling. A missing proc row remains distinct from an open failure. Linux's
+literal process-group `-1` marker also requires another census; it cannot prove
+that a group is empty. Other malformed values, inaccessible entries and read
+failures still refuse reclamation.
+
+Real owned-child controls hold a proc directory or stat descriptor across
+reaping and exercise the actual kernel `ESRCH` paths. Parser controls distinguish
+Linux's unavailable-group marker from malformed rows. All six census controls
+and the complete Engine suite pass: 2,078 passed, zero failed and thirty-four
+ignored. Five-package all-feature/all-target checks, two-file formatting and all
+six architecture gates pass. Required application test-target compilation passes
+with 185 artifacts across 58 packages and 76 integration targets; all 754
+selected frozen Rust/Cargo inputs match current and captured source.
+
+An intermediate Engine run passed 2,075 tests and failed one with an invalid
+kernel-group error. Linux initializes that field to `-1` when a departing task's
+signal state is unavailable, as documented by its
+[stat implementation](https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git/+/refs/tags/v6.6.37/fs/proc/array.c).
+The failed row was not captured, so the marker is a supported kernel case and a
+plausible explanation, rather than a proven diagnosis of that specific failure.
+The intermediate source passed its native inactive-lifecycle control in 719.09
+seconds. The rebuilt final source passes the same uninstrumented native control
+in 694.43 seconds, including exact and one-byte-short census restrictions,
+retirement and kernel-resource reclamation. Its size-optimized, no-DWARF test
+profile and sixty-second Initial deadline remain unchanged. These census checks
+establish no Source18 handoff, Arm/Capture qualification or full RFC completion.
+
 ## Runtime construction and funding inputs
 
 The Engine's existing runtime slot now holds `PacketRuntimeController`. The
@@ -51,7 +82,7 @@ pass 2,272 tests with twenty ignored. Both Engine suites pass 2,074 with
 thirty-four ignored; an initial standard run returned OS error 3 during process
 cleanup, and its complete repeat passes with the same frozen Engine and
 source-built companions. A separately reproduced real proc-directory stat-open
-case identifies a conservative census retry fix still required. Scoped
+case identified the conservative census retry fix described above. Scoped
 formatting of twenty changed Rust files and
 five-package all-feature/all-target checks pass. SourceBirth strict Clippy is
 clean; Transport retains exactly the preceding four errors and 1,725 warnings,
