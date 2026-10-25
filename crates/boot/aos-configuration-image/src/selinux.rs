@@ -1,4 +1,4 @@
-//! Retains immutable image labeling inputs for native configuration lowers.
+//! Retains image labeling inputs and live contexts for native configuration.
 //!
 //! The signed root image supplies its selected contexts as a direct EROFS
 //! inode, avoiding the writable store overlay and the active `/etc` view.
@@ -127,6 +127,41 @@ fn read(mut file: File) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Preserves an existing inode's actual SELinux context in a staged upper.
+///
+/// Neither path follows its final symlink. Labels come from the live inode,
+/// preserving local labeling decisions rather than consulting a new policy.
+///
+/// # Errors
+/// Returns an error when either inode is inaccessible, the original label is
+/// missing or exceeds the fixed buffer, or the destination cannot retain it.
+pub(super) fn copy_context(source: &Path, destination: &Path) -> Result<()> {
+    copy_attribute(source, destination, "security.selinux", &mut [0_u8; 4096])
+}
+
+fn copy_attribute(source: &Path, destination: &Path, name: &str, bytes: &mut [u8]) -> Result<()> {
+    let length = rustix::fs::lgetxattr(source, name, &mut *bytes).with_context(|| {
+        format!(
+            "reading retained configuration label at {}",
+            source.display()
+        )
+    })?;
+    ensure!(length > 0, "retained configuration label is empty");
+    rustix::fs::lsetxattr(
+        destination,
+        name,
+        &bytes[..length],
+        rustix::fs::XattrFlags::empty(),
+    )
+    .with_context(|| {
+        format!(
+            "preserving configuration label at {}",
+            destination.display()
+        )
+    })?;
+    Ok(())
+}
+
 /// Reads a bounded SELinux context from a real configuration directory.
 ///
 /// The directory descriptor rejects symlink substitution. The returned context
@@ -176,6 +211,105 @@ fn parse_root_context(bytes: &[u8]) -> Result<String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+    const TEST_ATTRIBUTE: &str = "user.aos-configuration-label";
+
+    #[test]
+    #[ignore = "requires kernel xattrs; mandatory in the offline-preparation VM"]
+    fn upper_label_copy_preserves_exact_bytes_for_files_and_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        for is_directory in [false, true] {
+            let source = directory.path().join(format!("source-{is_directory}"));
+            let destination = directory.path().join(format!("destination-{is_directory}"));
+            if is_directory {
+                fs::create_dir(&source).unwrap();
+                fs::create_dir(&destination).unwrap();
+            } else {
+                fs::write(&source, "original").unwrap();
+                fs::write(&destination, "retained").unwrap();
+            }
+            let label = b"system_u:object_r:etc_t:s0:c0,c3.c7\0";
+            rustix::fs::lsetxattr(
+                &source,
+                TEST_ATTRIBUTE,
+                label,
+                rustix::fs::XattrFlags::empty(),
+            )
+            .unwrap();
+
+            copy_attribute(&source, &destination, TEST_ATTRIBUTE, &mut [0_u8; 4096]).unwrap();
+
+            let mut observed = [0_u8; 4096];
+            let length =
+                rustix::fs::lgetxattr(&destination, TEST_ATTRIBUTE, &mut observed[..]).unwrap();
+            assert_eq!(&observed[..length], label);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires kernel xattrs; mandatory in the offline-preparation VM"]
+    fn missing_or_oversized_original_label_leaves_destination_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let destination = directory.path().join("destination");
+        fs::write(&source, "original").unwrap();
+        fs::write(&destination, "retained").unwrap();
+        rustix::fs::lsetxattr(
+            &destination,
+            TEST_ATTRIBUTE,
+            b"existing",
+            rustix::fs::XattrFlags::empty(),
+        )
+        .unwrap();
+
+        assert!(copy_attribute(&source, &destination, TEST_ATTRIBUTE, &mut [0_u8; 64]).is_err());
+        rustix::fs::lsetxattr(
+            &source,
+            TEST_ATTRIBUTE,
+            &[b'x'; 65],
+            rustix::fs::XattrFlags::empty(),
+        )
+        .unwrap();
+        assert!(copy_attribute(&source, &destination, TEST_ATTRIBUTE, &mut [0_u8; 64]).is_err());
+
+        let mut observed = [0_u8; 64];
+        let length =
+            rustix::fs::lgetxattr(&destination, TEST_ATTRIBUTE, &mut observed[..]).unwrap();
+        assert_eq!(&observed[..length], b"existing");
+    }
+
+    #[test]
+    #[ignore = "requires kernel xattrs; mandatory in the offline-preparation VM"]
+    fn upper_label_copy_does_not_follow_source_or_destination_symlinks() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let destination = directory.path().join("destination");
+        let source_link = directory.path().join("source-link");
+        let destination_link = directory.path().join("destination-link");
+        fs::write(&source, "original").unwrap();
+        fs::write(&destination, "retained").unwrap();
+        symlink(&source, &source_link).unwrap();
+        symlink(&destination, &destination_link).unwrap();
+        for (path, value) in [
+            (&source, b"original".as_slice()),
+            (&destination, b"retained"),
+        ] {
+            rustix::fs::lsetxattr(path, TEST_ATTRIBUTE, value, rustix::fs::XattrFlags::empty())
+                .unwrap();
+        }
+
+        assert!(
+            copy_attribute(&source_link, &destination, TEST_ATTRIBUTE, &mut [0_u8; 64]).is_err()
+        );
+        assert!(
+            copy_attribute(&source, &destination_link, TEST_ATTRIBUTE, &mut [0_u8; 64]).is_err()
+        );
+
+        let mut observed = [0_u8; 64];
+        let length =
+            rustix::fs::lgetxattr(&destination, TEST_ATTRIBUTE, &mut observed[..]).unwrap();
+        assert_eq!(&observed[..length], b"retained");
+    }
 
     #[test]
     fn root_context_preserves_non_mls_and_category_ranges() {

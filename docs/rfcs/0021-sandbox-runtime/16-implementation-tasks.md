@@ -122,14 +122,35 @@ Recent committed startup fixes close narrower prerequisites:
   installed rerun remains pending; production stack and resource limits stay
   unchanged.
 
+  The frozen v10 candidate now reaches its fixed kernel boot-ID read, which
+  SELinux denies at `sysctl_kernel_t:dir search`. Its refusal aborts and PID 1
+  correctly refuses a replacement original delivery. Host startup remains
+  unqualified; a read-only boot-ID policy follow-up is under separate checks.
+
 - `a03d34dc15` replays only the ext4 journal before reading the protected
   `/var` root label. The installed hard-loss diagnostic returned an empty raw
   label before mounting. Native filesystem regressions reproduce a committed
   label that is invisible until replay and reject an uncommitted label; the
   exact-label guard still rejects absent and foreign labels. The hermetic
   effects check passes, including 14 script cases and both real journal cases.
-  The enforcing QEMU/vTPM recovery rerun remains pending. This change neither
-  provisions a floor nor qualifies the public lifecycle.
+  The enforcing QEMU/vTPM rerun passes the complete startup enclosure both
+  before and after hard QEMU/swtpm power loss on the same backing state,
+  requiring a new boot UUID
+  (`/nix/store/knkzs9awiabsxf50a27hrx6vcp47k2gg-aos-fleet-test-sandbox-funded-startup-0`).
+  This frozen candidate includes pending Host, SwitchRoot, networkd and offline
+  cleanup changes. It qualifies that recovery boundary, rather than the clean
+  committed branch, a floor provisioner or the public lifecycle.
+
+- Native configuration activation preserves each retained upper inode's live
+  SELinux context before publishing its new overlay. Bounded nofollow xattr
+  reads and writes reject missing, oversized and symlink-substituted labels.
+  All 29 native tests pass, and complete Rust unit and integration targets
+  compile. The enforcing offline-preparation VM explicitly runs all three
+  mandatory kernel xattr cases and passes live `/etc/systemd` label comparisons.
+  The actual preparer then refuses traversal of the correctly labeled
+  `systemd_unit_t` directory; its separate read-only policy fix remains open.
+  The whole offline test fails at that later boundary. No generic `tmpfs_t`
+  access or relabel permission is added, and preparation is not qualified.
 
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending

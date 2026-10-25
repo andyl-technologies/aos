@@ -163,7 +163,7 @@ pub fn apply(lower: &Lower, mount: &Path, tools: &Tools) -> Result<()> {
         options.push_str(&format!(",rootcontext=\"{context}\""));
     }
     if !mounted_at(&activation, "overlay", &configuration.to_string_lossy())? {
-        preserve_user_upper(lower, &upper.join("dir"))?;
+        preserve_user_upper(lower, &upper.join("dir"), root_context.is_some())?;
         let status = Command::new(mount)
             .env_clear()
             .args(["-t", "overlay", "overlay", "-o", &options])
@@ -276,7 +276,7 @@ fn publish_upper_link(upper: &Path) -> Result<()> {
     Ok(())
 }
 
-fn preserve_user_upper(lower: &Lower, destination: &Path) -> Result<()> {
+fn preserve_user_upper(lower: &Lower, destination: &Path, labeled: bool) -> Result<()> {
     let source = Path::new("/run/etc/upper/dir");
     ensure!(
         source.is_dir(),
@@ -291,6 +291,7 @@ fn preserve_user_upper(lower: &Lower, destination: &Path) -> Result<()> {
         destination,
         &replaced,
         Path::new("/etc"),
+        labeled,
     )
 }
 
@@ -300,6 +301,7 @@ fn copy_user_entries(
     destination: &Path,
     managed: &[String],
     visible: &Path,
+    labeled: bool,
 ) -> Result<()> {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
@@ -317,7 +319,14 @@ fn copy_user_entries(
         let target = destination.join(&relative);
         if metadata.is_dir() {
             fs::create_dir_all(&target)?;
-            copy_user_entries(&entry.path(), &relative, destination, managed, visible)?;
+            copy_user_entries(
+                &entry.path(),
+                &relative,
+                destination,
+                managed,
+                visible,
+                labeled,
+            )?;
             fs::set_permissions(
                 &target,
                 fs::Permissions::from_mode(metadata.mode() & 0o7777),
@@ -349,6 +358,18 @@ fn copy_user_entries(
                 std::os::unix::fs::chown(&target, Some(metadata.uid()), Some(metadata.gid()))?;
             }
         }
+
+        if labeled {
+            // Recreated upper inodes otherwise inherit the staging tmpfs label
+            // and shadow correctly labeled lower directories after publication.
+            // Whiteouts have no visible inode; retain their upper label instead.
+            let original = if metadata.file_type().is_char_device() && metadata.rdev() == 0 {
+                entry.path()
+            } else {
+                visible.join(&relative)
+            };
+            crate::selinux::copy_context(&original, &target)?;
+        }
     }
     Ok(())
 }
@@ -375,7 +396,15 @@ mod tests {
         }
         let replaced = vec!["instance".into(), "retired".into()];
 
-        copy_user_entries(&source, Path::new(""), &destination, &replaced, &visible).unwrap();
+        copy_user_entries(
+            &source,
+            Path::new(""),
+            &destination,
+            &replaced,
+            &visible,
+            false,
+        )
+        .unwrap();
 
         for name in ["persistent", "foreign-changed"] {
             assert_eq!(

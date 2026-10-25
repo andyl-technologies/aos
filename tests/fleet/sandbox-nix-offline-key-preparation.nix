@@ -6,6 +6,10 @@
   ...
 }: let
   nodeHex = "41414141414141414141414141414141";
+  configurationTests = import ./_sandbox-native-unit-tests.nix {
+    inherit lib pkgs;
+    crate = "aos-configuration-image";
+  };
   runtimeSystem = (import ./_sandbox-funded-system.nix {inherit lib pkgs systems;}).extendModules {
     modules = [{systemd.services.aos-sandboxd.wantedBy = lib.mkForce [];}];
   };
@@ -90,7 +94,7 @@
           wantedBy = ["multi-user.target"];
           after = ["aos-sandboxd.service"];
         };
-        environment.systemPackages = [pkgs.coreutils pkgs.python3 pkgs.systemd];
+        environment.systemPackages = [pkgs.coreutils pkgs.python3 pkgs.systemd configurationTests];
         environment.etc = {
           "credstore/node-id" = {
             source = "${publicInputs}/node-id";
@@ -187,6 +191,19 @@ in {
     audit = dict(line.split(maxsplit=1) for line in vm.succeed("auditctl -s").splitlines())
     assert audit["lost"] == "0", audit
     assert int(audit["backlog_limit"]) == ${toString system.config.aos.security.audit.backlogLimit}, audit
+    # Nix rejects kernel xattr writes in build sandboxes. Require every native
+    # copy case here on the installed kernel; an empty filter cannot pass.
+    for case in (
+        "upper_label_copy_preserves_exact_bytes_for_files_and_directories",
+        "missing_or_oversized_original_label_leaves_destination_unchanged",
+        "upper_label_copy_does_not_follow_source_or_destination_symlinks",
+    ):
+        output = vm.succeed(
+            "${configurationTests}/bin/sandbox-unit-tests --ignored --exact "
+            f"selinux::tests::{case} --test-threads=1"
+        )
+        assert "test result: ok. 1 passed;" in output, (case, output)
+
     configuration_labels = r"""
     import os
 
@@ -194,6 +211,17 @@ in {
     for path in ('/var/etc', '/var/etc/ssh', '/etc/ssh'):
         observed = os.getxattr(path, 'security.selinux').rstrip(b'\0')
         assert observed == expected, (path, observed)
+
+    # Activation retains these image-owned directories in its writable upper.
+    # Their labels must survive that copy before the confined preparer reads
+    # its fixed unit fragment through the published /etc view.
+    for relative in ('systemd', 'systemd/system'):
+        original = '/run/etc/system/metadata/' + relative
+        retained = '/etc/' + relative
+        expected = os.getxattr(original, 'security.selinux', follow_symlinks=False)
+        observed = os.getxattr(retained, 'security.selinux', follow_symlinks=False)
+        assert expected.rstrip(b'\0') != b'system_u:object_r:tmpfs_t', (original, expected)
+        assert observed == expected, (retained, observed, original, expected)
     """
     vm.succeed(f"{python} -c {shlex.quote(configuration_labels)}")
     assert "[confidentiality]" in vm.succeed("cat /sys/kernel/security/lockdown")
