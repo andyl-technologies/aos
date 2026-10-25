@@ -417,9 +417,13 @@ where
         source: &ScenarioDefForm,
         // crucible-lint: allow host-nondeterminism-state -- The wrapper forwards the sealed stop boundary unchanged.
         boundary: &Configuration,
+        replay: &crucible::SignalFaultCampaignReplayPlan,
     ) -> crate::QemuRetainedSourcePreparation<Self::Lifecycle> {
         let PackagedStatusLifecycle { inner, mut status } = lifecycle;
-        match self.inner.prepare_retained_source(inner, source, boundary) {
+        match self
+            .inner
+            .prepare_retained_source(inner, source, boundary, replay)
+        {
             crate::QemuRetainedSourcePreparation::Prepared(world) => {
                 // Converting a drained world into a source finishes this
                 // attempt's lifecycle; it is no longer an unfinished teardown.

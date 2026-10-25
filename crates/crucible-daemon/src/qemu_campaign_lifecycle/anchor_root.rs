@@ -224,32 +224,33 @@ where
             }
         }
 
-        let world =
-            match self
-                .lifecycles
-                .prepare_retained_source(lifecycle, input.scenario(), &plan.anchor)
-            {
-                QemuRetainedSourcePreparation::Prepared(world) => world,
-                QemuRetainedSourcePreparation::Recovered(mut lifecycle) => {
-                    shut_down_anchor(&mut lifecycle)?;
-                    return Ok(declined(
-                        input,
-                        Some(&plan.anchor),
-                        "anchor-source-preparation-declined",
-                    ));
-                }
-                QemuRetainedSourcePreparation::Quarantined => {
-                    record_anchor_decision(
-                        input,
-                        Some(&plan.anchor),
-                        "quarantined",
-                        &"anchor-source-preparation-failed".into(),
-                    );
-                    return Ok(QemuAnchorRootOutcome::Declined(
-                        "anchor-source-preparation-failed",
-                    ));
-                }
-            };
+        let world = match self.lifecycles.prepare_retained_source(
+            lifecycle,
+            input.scenario(),
+            &plan.anchor,
+            input.signal_fault_replay(),
+        ) {
+            QemuRetainedSourcePreparation::Prepared(world) => world,
+            QemuRetainedSourcePreparation::Recovered(mut lifecycle) => {
+                shut_down_anchor(&mut lifecycle)?;
+                return Ok(declined(
+                    input,
+                    Some(&plan.anchor),
+                    "anchor-source-preparation-declined",
+                ));
+            }
+            QemuRetainedSourcePreparation::Quarantined => {
+                record_anchor_decision(
+                    input,
+                    Some(&plan.anchor),
+                    "quarantined",
+                    &"anchor-source-preparation-failed".into(),
+                );
+                return Ok(QemuAnchorRootOutcome::Declined(
+                    "anchor-source-preparation-failed",
+                ));
+            }
+        };
         if let Some(reason) = anchor_world_mismatch(&world, &plan, proof, input) {
             world.retire().map_err(|error| {
                 AttemptWorkerFailure::Terminal(

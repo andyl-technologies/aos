@@ -624,3 +624,34 @@ fn network_fault_crossing_failure_belongs_to_the_edge_only_at_the_edge() {
     assert!(!cursor.failed_before(&failure, branch_index));
     assert!(cursor.failed_before(&failure, branch_index + 1));
 }
+
+/// A source retained past a network fault branch keeps that branch, because
+/// its network adapter has already committed it and children inherit it.
+#[test]
+fn a_retained_source_past_a_network_branch_resumes_with_that_branch() {
+    let (input, target) = network_fault_branch_input_with_tail(VirtualTime { ticks: 40 }, 2);
+    let committed = input.signal_fault_replay().network_branches().to_vec();
+
+    let replay = source_retention::boundary_network_replay(input.signal_fault_replay(), &target)
+        .expect("committed network replay")
+        .expect("the boundary committed one network branch");
+
+    assert_eq!(replay.target(), &target);
+    assert_eq!(replay.network_branches(), committed.as_slice());
+    assert!(replay.branches().is_empty());
+}
+
+/// A source retained at a branch's own parent has not committed the branch,
+/// so an exact resume there installs no network fault replay.
+#[test]
+fn a_retained_source_before_a_network_branch_resumes_without_it() {
+    let (input, _target) = network_fault_branch_input(VirtualTime { ticks: 40 });
+    let parent = input.signal_fault_replay().network_branches()[0]
+        .parent()
+        .clone();
+
+    let replay = source_retention::boundary_network_replay(input.signal_fault_replay(), &parent)
+        .expect("committed network replay");
+
+    assert!(replay.is_none());
+}

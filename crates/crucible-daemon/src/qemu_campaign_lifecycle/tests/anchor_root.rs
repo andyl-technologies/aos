@@ -280,6 +280,7 @@ impl QemuFreshAttemptLifecycleFactory for AnchorFactory {
         lifecycle: Self::Lifecycle,
         _source: &ScenarioDefForm,
         _boundary: &Configuration,
+        _replay: &crucible::SignalFaultCampaignReplayPlan,
     ) -> QemuRetainedSourcePreparation<Self::Lifecycle> {
         self.order.lock().expect("anchor order").push("prepare");
         match self.preparation.take() {

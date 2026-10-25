@@ -31,7 +31,10 @@
 use std::io::Write;
 use std::sync::Arc;
 
-use crucible::{Configuration, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry};
+use crucible::{
+    Configuration, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
+    SignalFaultCampaignReplayPlan,
+};
 use crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorld;
 use crucible_api::{ProductionVmLifecycleConfig, ProductionVmLifecycleLoop};
 use crucible_campaign::{
@@ -245,21 +248,33 @@ type RetentionAttempt<F, D> = QemuPublishedRootAttempt<
 ///
 /// Children forked from a source inherit its configuration, so the world is
 /// rebound to exactly what an exact resume at `boundary` would use: the
-/// boundary's own replay inputs, no attempt-start network selections or
-/// signal-fault replay, and unbounded advance completion in place of the
+/// boundary's own replay inputs, the attempt's network fault branches the
+/// boundary has already committed, no attempt-start network selections or
+/// signal-fault branches, and unbounded advance completion in place of the
 /// attempt's watchdog deadline.
 pub(super) fn prepare_production_retained_source(
     base: &ProductionVmLifecycleConfig,
     lifecycle: ProductionVmLifecycleLoop,
     source: &ScenarioDefForm,
     boundary: &Configuration,
+    replay: &SignalFaultCampaignReplayPlan,
 ) -> QemuRetainedSourcePreparation<ProductionVmLifecycleLoop> {
+    let boundary_replay = match boundary_network_replay(replay, boundary) {
+        Ok(boundary_replay) => boundary_replay,
+        Err(error) => {
+            note_source_preparation_decline(&HotForkRefusal::with_detail(
+                "source-network-replay-unavailable",
+                error,
+            ));
+            return QemuRetainedSourcePreparation::Recovered(lifecycle);
+        }
+    };
     let config = match production_lifecycle_config_for_start(
         base,
         source,
         boundary,
         AppRandomLaunchWindow::RestoredTarget,
-        None,
+        boundary_replay.as_ref(),
         &[],
     ) {
         Ok(config) => config.with_unbounded_advance_completion(),
@@ -286,6 +301,42 @@ pub(super) fn prepare_production_retained_source(
             }
         }
     }
+}
+
+/// Returns the network fault replay an exact resume at `boundary` installs.
+///
+/// The world's network adapter has committed every branch of `replay` whose
+/// decision `boundary` already contains, and the source rebind requires the
+/// resume plan to name exactly those. Branches still ahead of the boundary
+/// belong to the attempt, not to children of the source, and signal-fault
+/// branches are already settled in the boundary's history. Returns `None`
+/// when the boundary has committed no network fault branch.
+///
+/// # Errors
+///
+/// Returns [`crucible::NetworkFaultSelectableError`] when the committed
+/// branches do not certify `boundary`.
+pub(super) fn boundary_network_replay(
+    replay: &SignalFaultCampaignReplayPlan,
+    boundary: &Configuration,
+) -> Result<Option<SignalFaultCampaignReplayPlan>, crucible::NetworkFaultSelectableError> {
+    let history = boundary.schedule.decision_history();
+    let committed = replay
+        .network_branches()
+        .iter()
+        .filter(|branch| {
+            let index = branch.parent().schedule.len();
+            index < boundary.schedule.len() && history.get(index) == Some(branch.decision())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if committed.is_empty() {
+        return Ok(None);
+    }
+
+    SignalFaultCampaignReplayPlan::empty(boundary.clone())
+        .with_network_branches(committed)
+        .map(Some)
 }
 
 /// Writes why a drained world could not become a retained source.
@@ -480,6 +531,7 @@ where
             lifecycle,
             input.scenario(),
             &plan.boundary,
+            input.signal_fault_replay(),
         ) {
             QemuRetainedSourcePreparation::Prepared(world) => world,
             QemuRetainedSourcePreparation::Recovered(lifecycle) => {

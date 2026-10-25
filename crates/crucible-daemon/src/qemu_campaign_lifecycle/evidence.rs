@@ -760,11 +760,12 @@ where
         source: &crucible::ScenarioDefForm,
         // crucible-lint: allow host-nondeterminism-state -- the sealed stop boundary is forwarded unchanged to the guarded lifecycle factory.
         boundary: &crucible::Configuration,
+        replay: &crucible::SignalFaultCampaignReplayPlan,
     ) -> QemuRetainedSourcePreparation<Self::Lifecycle> {
         let (lifecycle, observation) = lifecycle.into_observation_parts();
         match self
             .inner
-            .prepare_retained_source(lifecycle, source, boundary)
+            .prepare_retained_source(lifecycle, source, boundary, replay)
         {
             QemuRetainedSourcePreparation::Prepared(world) => {
                 QemuRetainedSourcePreparation::Prepared(world)

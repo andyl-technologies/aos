@@ -1167,15 +1167,17 @@ pub(crate) trait QemuFreshAttemptLifecycleFactory {
     /// Prepares a drained lifecycle as a retained source at `boundary`.
     ///
     /// The lifecycle has settled its final boundary with no new entries, and
-    /// `boundary` is the configuration it stopped at. Factories rebind the
-    /// world to the configuration an exact resume at that boundary would use
-    /// before preparation. Factories that cannot retain worlds return the
-    /// lifecycle unchanged through the default.
+    /// `boundary` is the configuration it stopped at. `replay` is the plan the
+    /// attempt launched with; only the part `boundary` has committed carries
+    /// over. Factories rebind the world to the configuration an exact resume
+    /// at that boundary would use before preparation. Factories that cannot
+    /// retain worlds return the lifecycle unchanged through the default.
     fn prepare_retained_source(
         &mut self,
         lifecycle: Self::Lifecycle,
         _source: &ScenarioDefForm,
         _boundary: &Configuration,
+        _replay: &crucible::SignalFaultCampaignReplayPlan,
     ) -> QemuRetainedSourcePreparation<Self::Lifecycle> {
         QemuRetainedSourcePreparation::Recovered(lifecycle)
     }
@@ -2551,12 +2553,14 @@ where
         lifecycle: Self::Lifecycle,
         source: &ScenarioDefForm,
         boundary: &Configuration,
+        replay: &crucible::SignalFaultCampaignReplayPlan,
     ) -> QemuRetainedSourcePreparation<Self::Lifecycle> {
         source_retention::prepare_production_retained_source(
             &self.config,
             lifecycle,
             source,
             boundary,
+            replay,
         )
     }
 }

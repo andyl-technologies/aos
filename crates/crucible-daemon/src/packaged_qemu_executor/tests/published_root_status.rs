@@ -118,9 +118,12 @@ fn retained_world_finishes_its_packaged_lifecycle_without_invalidation() {
     let source = crucible::crash_restart_scenario()
         .expect("built-in scenario")
         .scenario;
-    let crate::QemuRetainedSourcePreparation::Prepared(world) =
-        factory.prepare_retained_source(lifecycle, &source, &boundary)
-    else {
+    let crate::QemuRetainedSourcePreparation::Prepared(world) = factory.prepare_retained_source(
+        lifecycle,
+        &source,
+        &boundary,
+        &crucible::SignalFaultCampaignReplayPlan::empty(boundary.clone()),
+    ) else {
         panic!("the scripted preparation yields a source world")
     };
 
@@ -147,8 +150,13 @@ fn declined_preparation_shuts_down_from_post_processing() {
         .expect("built-in scenario")
         .scenario;
     let boundary = Configuration::genesis(source.scenario_def());
-    let crate::QemuRetainedSourcePreparation::Recovered(mut lifecycle) =
-        factory.prepare_retained_source(lifecycle, &source, &boundary)
+    let crate::QemuRetainedSourcePreparation::Recovered(mut lifecycle) = factory
+        .prepare_retained_source(
+            lifecycle,
+            &source,
+            &boundary,
+            &crucible::SignalFaultCampaignReplayPlan::empty(boundary.clone()),
+        )
     else {
         panic!("the scripted preparation declines")
     };

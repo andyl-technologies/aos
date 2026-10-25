@@ -253,6 +253,7 @@ impl QemuFreshAttemptLifecycleFactory for RetentionFactory {
         lifecycle: Self::Lifecycle,
         _source: &ScenarioDefForm,
         _boundary: &Configuration,
+        _replay: &crucible::SignalFaultCampaignReplayPlan,
     ) -> QemuRetainedSourcePreparation<Self::Lifecycle> {
         self.order.lock().expect("retention order").push("prepare");
         match self.preparation.take() {
