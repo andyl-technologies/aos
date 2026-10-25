@@ -240,3 +240,20 @@ Reconstruct an already retained build without its removed private execution tree
 python3 tools/bazel/tests/reconstruct_compiler_inputs.py \
   --build BUILD_OUTPUT --output compiler-invocations.json
 ```
+
+Native target and execution roles can be recovered from compiler artifact
+relationships even when Cargo writes both roles into the same directory.
+`qualification/native_compiler_units.py` follows recorded `--extern` paths from
+explicit first-party target roots and custom-build/procedural-macro execution
+roots. It rejects missing producers, ambiguous outputs, unreachable units, and
+artifacts shared by both roles. It preserves `proc_macro` sysroot references
+and separately records capability queries and probes without Cargo artifacts.
+The model currently accepts ordinary Linux Rust artifact names; unsupported
+output forms fail closed.
+
+The [retained native artifact audit](../tests/evidence/native-compiler-artifact-roles.json)
+classifies all 631 ordinary and 637 fleet CLI compiler units. Optimization
+settings are checked after role classification. Eight focused tests cover role
+propagation and rejected inputs. This audit qualifies native role assignment;
+Bazel unit matching and complete compiler, linker, ABI, and runtime equivalence
+still require their own checks.
