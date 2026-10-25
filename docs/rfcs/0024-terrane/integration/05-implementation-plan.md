@@ -96,6 +96,17 @@ production worker, mount-broker or full RFC conformance. Pack compaction
 (GC-18 to GC-21) is explicitly deferred from T-GC-1 to T-GC-2 on B-jobs;
 that optional workline is outside this agreed trunk completion scope.
 
+Corrected eleven-case restoration qualification at `ea10cabb8d` passes in
+1,490.789 seconds. Complete independent review verifies all 8,227 immutable
+source files, 5,477 crate inputs and the actual retained Cargo library-test
+artifact plus installed executable hash. Every exact selector executes once as
+UID/GID 840 on ext4 with empty capabilities and no-new-privileges, including
+fresh-cycle missing-Trash preservation of carried signed dependencies. Original
+failed attempts remain retained. This qualifies the restoration component at
+that checkpoint, not the later session handoff, startup scan or configured GC
+service. Those later native checks and mandatory compilation are running from
+frozen `7f11415ca9` and `0c2fbb6668` sources.
+
 Configured startup now scans nonburned exclusions in bounded ascending pages
 before ordinary marking, using the same restoration session. Its nonwrapping
 cursor advances only after current held catalog revalidation and completes even
@@ -173,8 +184,8 @@ All supported SDK and both Linux strict compiler profiles pass for this
 restoration handoff and the corrected scheduler/observer. Python AST, original
 selector preservation, touched Nix formatting and PLAN-2 checks pass. These
 corrections still require fresh native qualification. Corrected eleven-case
-restoration and mandatory application qualification continue from the original
-frozen `ea10cabb8d` source.
+restoration and mandatory application qualification at the original frozen
+`ea10cabb8d` source now pass as recorded above.
 
 Mandatory workspace compilation at `ea10cabb8d` passes in 1,426.986 seconds.
 Complete independent review verifies all 8,227 immutable source files, 190 test
@@ -223,8 +234,8 @@ new loss generation, changing their encoded digests. The corrected test uses
 the existing independent carried-lineage oracle to require preserved source,
 Original, signed views, controls, issuers, disclosures and interpretations, with
 the new loss generation. Binding, Guard and burn owners are also checked
-explicitly. No production behavior or timing changes. Corrected guest
-qualification remains pending; the original failure is retained. Mandatory
+explicitly. No production behavior or timing changes. Corrected eleven-case guest qualification passes at `ea10cabb8d` as recorded
+above; the original failed checkpoint remains retained. Mandatory
 compilation at the failed checkpoint separately passes in 1,591.580 seconds,
 with full review of 8,216 source files, 190 executables and 59 packages.
 
