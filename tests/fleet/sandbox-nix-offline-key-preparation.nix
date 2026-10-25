@@ -250,7 +250,7 @@ in {
         )
         vm.execute(f"systemctl reset-failed {unit}")
 
-    with startup_diagnostics(vm, unit):
+    with startup_diagnostics(vm, unit, "dbus.service"):
         vm.succeed(f"systemctl start {unit}")
         vm.wait_until_succeeds(
             f"test $(systemctl show {unit} --property=ActiveState --value) = inactive || "
