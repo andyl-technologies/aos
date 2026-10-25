@@ -144,8 +144,15 @@ pub(crate) fn run(
     inputs: &config::Inputs,
 ) -> Result<()> {
     runtime.block_on(async {
+        let started = tokio::time::Instant::now();
+        let stage = |phase| {
+            eprintln!("MOUNTED_STAGE phase={phase} elapsed_ms={}", started.elapsed().as_millis());
+        };
+        stage("repository-start");
         let fixture = RepositoryFixture::new(&inputs.domain).await?;
+        stage("repository-ready");
         fixture.commit(BODY).await?;
+        stage("commit-ready");
         let target = ViewTarget::Ref(MAIN.parse()?);
         let selection = fixture
             .repository
@@ -157,17 +164,22 @@ pub(crate) fn run(
             )
             .await?;
         let served = owner.prepare_surface_mapping(selection).await?;
+        stage("index-ready");
         let deadline = exposure::now()? + 90;
         let lease = owner.retain_surface_exposure(&served, deadline).await?;
+        stage("exposure-ready");
         let identity = TERRANE_V1.calculate(IdentityKind::Chunk, BODY)?;
         let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, BODY)?;
         let publication = owner
             .publish_inline(descriptor, [vec![0], BODY.to_vec()].concat())
             .await?;
+        stage("publication-ready");
         let mut channel = launched.bind(&lease)?;
         launched.send_context(&lease, identity.digest().try_into()?)?;
+        stage("context-sent");
 
         let request = channel.receive_bounded(Duration::from_secs(10)).await?;
+        stage("index-request");
         let selection = fixture
             .repository
             .prepare_root_read(
@@ -178,7 +190,9 @@ pub(crate) fn run(
             )
             .await?;
         request.grant_index(owner, &served, selection).await?;
+        stage("index-granted");
         expect(launched.control.as_fd(), b"READY")?;
+        stage("worker-ready");
         send(io::stdout().as_fd(), b"READY")?;
 
         // Hold the genuine request until the original worker has coalesced both

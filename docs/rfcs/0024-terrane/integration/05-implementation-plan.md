@@ -174,7 +174,14 @@ flag as a refusal. A bounded Unix-socket probe confirms that exact returned
 flag and actual close-on-exec descriptor. The correction permits only that
 flag, preserving original credentials, exact descriptor count, device identity
 and truncation refusal. The failed source and guest remain retained; corrected
-native qualification is pending.
+native qualification at `cc78a166a7` passes that handoff, then fails in 697.553
+seconds while waiting for the production worker's READY control. The original
+actor and exchange deadlines remain unchanged. Bounded owner-stage timing
+diagnostics now identify repository preparation, index and exposure admission,
+publication, authenticated request/grant and worker readiness without exposing
+credentials. This startup remains unqualified. Mandatory workspace compilation
+at `0d9081f2d5` passes in 1,526.842 seconds; complete review binds 8,191 immutable
+files, 190 test executables and 59 packages, with no test-execution claim.
 
 The native preparation boundary now independently checks the selected signed
 storage policy before index admission or file pin effects, and before granting
