@@ -78,10 +78,10 @@ const HELD_TEST: &str = r#"fn contended_cleanup_retains_the_same_binding_and_pai
 const RETIRED_BODY: &str = r#"fn retire_with_post_free(
         &mut self,
         post_free: impl FnOnce(),
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountRetirementError> {
         if let Some(held) = self.held.as_mut() {
             if self.retiring_credits.iter().any(Option::is_some) {
-                return Err(OriginalActorAccountError::Unavailable);
+                return Err(OriginalAccountRetirementError::Unavailable);
             }
             held.retire_body(
                 |state| {
@@ -160,23 +160,23 @@ pub(in super::super::super) const RECONCILE_BODY: &str = r#"pub fn retry_unsettl
         close_slot(slot).map_err(original_error)?;
         slot.unsettled = None;
     }
-    launch_return.map_err(original_error)
+    launch_return.map_err(|source| original_error(source.into()))
 }"#;
 
-pub(in super::super::super) const FAILED_BODIES: &str = r#"pub(super) fn retry_failed_launch_bodies(&self) -> Result<(), OriginalActorAccountError> {
+pub(in super::super::super) const FAILED_BODIES: &str = r#"pub(super) fn retry_failed_launch_bodies(&self) -> Result<(), OriginalAccountRetirementError> {
     let Some(held) = self.held.as_ref() else { return Ok(()); };
-    let count = held.try_lock().map_err(|_| OriginalActorAccountError::Unavailable)?.slots.len();
+    let count = held.try_lock().map_err(|_| OriginalAccountRetirementError::Unavailable)?.slots.len();
     let mut returned = true;
     for index in 0..count {
         let retained = {
-            let state = held.try_lock().map_err(|_| OriginalActorAccountError::Unavailable)?;
+            let state = held.try_lock().map_err(|_| OriginalAccountRetirementError::Unavailable)?;
             state.slots.get(index).and_then(|slot| slot.source_controller.as_ref()).cloned()
         };
         if let Some(retained) = retained {
             returned &= retained.retry_physical_cleanup();
         }
     }
-    if returned { Ok(()) } else { Err(OriginalActorAccountError::Unavailable) }
+    if returned { Ok(()) } else { Err(OriginalAccountRetirementError::Unavailable) }
 }"#;
 
 // Keep all consumers on the same Source assignment, Original and return facts.
@@ -203,11 +203,11 @@ pub(super) const CONTRACT: Contract = Contract {
         (
             r#"pub(in crate::linux_attempt_host) fn verify_quiescent(
     &self,
-) -> Result<(), OriginalActorAccountError> {
+) -> Result<(), OriginalAccountRetirementError> {
     if let Some(held) = self.held.as_ref() {
         let state = held
             .try_lock()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountRetirementError::Unavailable)?;
         for slot in &state.slots {
             verify_closed_slot(slot)?;
             if let Some(credit) = slot.credit.as_ref() {
@@ -223,7 +223,7 @@ pub(super) const CONTRACT: Contract = Contract {
             1,
         ),
         (
-            r#"pub fn try_close(&mut self) -> Result<(), OriginalActorAccountError> {
+            r#"pub fn try_close(&mut self) -> Result<(), OriginalAccountRetirementError> {
     self.retry_failed_launch_bodies()?;
     self.retire_with_post_free(|| {})
 }"#,
@@ -232,7 +232,7 @@ pub(super) const CONTRACT: Contract = Contract {
         (FAILED_BODIES, 1),
         (RETIRED_BODY, 1),
         (
-            r#"fn verify_closed_slot(slot: &NativeSlot) -> Result<(), OriginalActorAccountError> {
+            r#"fn verify_closed_slot(slot: &NativeSlot) -> Result<(), OriginalAccountRetirementError> {
     if slot.fork_target.is_owned()
         || slot.active.is_some()
         || slot.node_bindings_live != 0
@@ -247,7 +247,7 @@ pub(super) const CONTRACT: Contract = Contract {
         || slot.cleanup.is_some()
         || slot.unsettled.is_some()
     {
-        return Err(OriginalActorAccountError::Unavailable);
+        return Err(OriginalAccountRetirementError::Unavailable);
     }
     Ok(())
 }"#,
@@ -429,7 +429,9 @@ slot.source_cleanup_assigned = false;"#,
                     1,
                 ),
                 (
-                    r#"pub(super) fn retire_after_control_free(&mut self) -> Result<(), OriginalActorAccountError> {
+                    r#"pub(super) fn retire_after_control_free(
+        &mut self,
+    ) -> Result<(), OriginalAccountRetirementError> {
     let Some(retained) = self.original.as_ref() else {
         return Ok(());
     };
@@ -439,7 +441,7 @@ slot.source_cleanup_assigned = false;"#,
             .original
             .as_mut()
             .and_then(|retained| retained.normal.as_mut())
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountRetirementError::Unavailable)?;
         let result = normal.retire_after_control_free(&cleanup);
         if normal.is_physically_returned() {
             drop(self.original.take());
@@ -455,7 +457,7 @@ slot.source_cleanup_assigned = false;"#,
                     1,
                 ),
                 (
-                    r#"pub(super) fn require_return_phase(&self) -> Result<(), OriginalActorAccountError> {
+                    r#"pub(super) fn require_return_phase(&self) -> Result<(), OriginalAccountCheckError> {
     match self.original.as_ref() {
         Some(retained) => match retained.normal.as_ref() {
             Some(normal) => {
@@ -463,7 +465,7 @@ slot.source_cleanup_assigned = false;"#,
                 normal.verify_world_cleanup(&cleanup)?;
                 Ok(())
             }
-            None => self.require_original().map_err(Into::into),
+            None => self.require_original(),
         },
         None => Ok(()),
     }

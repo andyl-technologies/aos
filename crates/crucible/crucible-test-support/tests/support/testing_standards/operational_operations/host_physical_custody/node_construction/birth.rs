@@ -50,7 +50,7 @@ pub(in super::super::super) const NODE_BIRTH: Companion = Companion {
             1,
         ),
         (
-            r#"pub(super) fn sweep_retired(&mut self) -> Result<(), OriginalActorAccountError> {
+            r#"pub(super) fn sweep_retired(&mut self) -> Result<(), OriginalAccountRetirementError> {
         for entry in &mut self.nodes {
             let Some(node) = entry.as_mut() else {
                 continue;
@@ -70,7 +70,7 @@ pub(in super::super::super) const NODE_BIRTH: Companion = Companion {
                 Ok(()) => {}
                 // Existing competing aliases remain pending without starving
                 // independent rows. A typed phase/post refusal remains visible.
-                Err(OriginalActorAccountError::Unavailable) if !returned => {}
+                Err(OriginalAccountRetirementError::Unavailable) if !returned => {}
                 Err(error) => return Err(error),
             }
         }

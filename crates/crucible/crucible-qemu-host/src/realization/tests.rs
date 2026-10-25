@@ -93,7 +93,7 @@ fn dispatcher_retirement_preserves_both_actual_leaf_errors_and_first_source() {
 
     let error = super::QemuTargetDispatcherRetirementError::combine(
         Err(dispatcher),
-        Err(crate::OriginalActorAccountError::Supervision(original)),
+        Err(crate::OriginalAccountRetirementError::Supervision(original)),
     )
     .unwrap_err();
 
@@ -105,7 +105,7 @@ fn dispatcher_retirement_preserves_both_actual_leaf_errors_and_first_source() {
         matches!(dispatcher, LinuxQemuCgroupError::Io { source, .. } if source.raw_os_error() == Some(libc::EIO))
     );
     assert!(
-        matches!(source.pool_error(), Some(crate::OriginalActorAccountError::Supervision(actual)) if *actual == original)
+        matches!(source.pool_error(), Some(crate::OriginalAccountRetirementError::Supervision(actual)) if *actual == original)
     );
     assert!(std::ptr::eq(
         std::error::Error::source(&source)
@@ -124,7 +124,7 @@ fn dispatcher_retirement_keeps_single_failure_class_and_success_distinct() {
     assert!(super::QemuTargetDispatcherRetirementError::combine(Ok(()), Ok(())).is_ok());
     let pool_only = super::QemuTargetDispatcherRetirementError::combine(
         Ok(()),
-        Err(crate::OriginalActorAccountError::Unavailable),
+        Err(crate::OriginalAccountRetirementError::Unavailable),
     )
     .unwrap_err();
     let super::QemuVmRealizationError::TargetDispatcherRetirement { source } = pool_only else {
@@ -136,7 +136,7 @@ fn dispatcher_retirement_keeps_single_failure_class_and_success_distinct() {
 
     let both = super::QemuTargetDispatcherRetirementError::combine(
         Err(LinuxQemuCgroupError::InvalidLimit),
-        Err(crate::OriginalActorAccountError::Unavailable),
+        Err(crate::OriginalAccountRetirementError::Unavailable),
     )
     .unwrap_err();
     let super::QemuVmRealizationError::TargetDispatcherRetirement { source } = both else {

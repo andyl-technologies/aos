@@ -21,7 +21,7 @@ impl LinuxQemuAttemptHostFactory {
             .as_ref()
             .ok_or_else(|| missing_authority("verify normal QEMU node pool quiescence"))?
             .verify_quiescent()
-            .map_err(original_roster::original_error)
+            .map_err(|source| original_roster::original_error(source.into()))
     }
 
     /// Binds this genuine factory once to its admitted external account roster.

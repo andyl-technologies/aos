@@ -574,14 +574,14 @@ fn validate_baked_genesis_node_set(
 #[derive(Debug)]
 pub struct QemuTargetDispatcherRetirementError {
     dispatcher: Option<crate::linux_cgroup::LinuxQemuCgroupError>,
-    pool: Option<crate::OriginalActorAccountError>,
+    pool: Option<crate::OriginalAccountRetirementError>,
 }
 
 #[cfg(target_os = "linux")]
 impl QemuTargetDispatcherRetirementError {
     pub(crate) fn combine(
         dispatcher: Result<(), crate::linux_cgroup::LinuxQemuCgroupError>,
-        pool: Result<(), crate::OriginalActorAccountError>,
+        pool: Result<(), crate::OriginalAccountRetirementError>,
     ) -> Result<(), QemuVmRealizationError> {
         let dispatcher = dispatcher.err();
         let pool = pool.err();
@@ -601,7 +601,7 @@ impl QemuTargetDispatcherRetirementError {
 
     /// Borrows the independent actual native-pool return refusal.
     #[must_use]
-    pub fn pool_error(&self) -> Option<&crate::OriginalActorAccountError> {
+    pub fn pool_error(&self) -> Option<&crate::OriginalAccountRetirementError> {
         self.pool.as_ref()
     }
 

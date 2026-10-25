@@ -144,6 +144,51 @@ impl From<OriginalAccountCheckError> for OriginalActorAccountError {
     }
 }
 
+/// Reports closure of existing native controls and their original accounting.
+///
+/// Retirement preserves both the actual physical-return cause and its separate
+/// saved-Cleanup postcut. It cannot issue a pool, World or Source, so birth
+/// refusal custody remains in [`OriginalActorAccountError`]. Conversion into
+/// that broader error moves the same concrete causes without allocating.
+#[derive(Debug, thiserror::Error)]
+pub enum OriginalAccountRetirementError {
+    /// The same retained purpose refused its checked return phase.
+    #[error("normal native purpose refused: {0}")]
+    NativePurpose(#[from] ServiceBirthError),
+    /// Actual physical return and its independent saved-Cleanup post refused.
+    #[error("normal native return refused: {0}")]
+    NativeReturn(
+        #[from] crucible_host_resources::host_services::process_birth::NativePoolReturnError,
+    ),
+    /// The existing private or component Original refused closure.
+    #[error("original actor supervision refused: {0}")]
+    Supervision(#[from] HostSupervisionError),
+    /// A retained control, alias or accounting owner prevents closure.
+    #[error("original actor custody is unavailable")]
+    Unavailable,
+}
+
+impl From<OriginalAccountCheckError> for OriginalAccountRetirementError {
+    fn from(source: OriginalAccountCheckError) -> Self {
+        match source {
+            OriginalAccountCheckError::NativePurpose(source) => Self::NativePurpose(source),
+            OriginalAccountCheckError::Supervision(source) => Self::Supervision(source),
+            OriginalAccountCheckError::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+impl From<OriginalAccountRetirementError> for OriginalActorAccountError {
+    fn from(source: OriginalAccountRetirementError) -> Self {
+        match source {
+            OriginalAccountRetirementError::NativePurpose(source) => Self::NativePurpose(source),
+            OriginalAccountRetirementError::NativeReturn(source) => Self::NativeReturn(source),
+            OriginalAccountRetirementError::Supervision(source) => Self::Supervision(source),
+            OriginalAccountRetirementError::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
 /// Retains the actual original native pair outside its future native allocation.
 ///
 /// These immutable extents describe the pair; they do not certify Source,
@@ -222,7 +267,9 @@ impl OriginalNativeAccountCredit {
     ///
     /// # Errors
     /// Preserves the same preparation's original refusal before pair release.
-    pub(super) fn retire_after_control_free(&mut self) -> Result<(), OriginalActorAccountError> {
+    pub(super) fn retire_after_control_free(
+        &mut self,
+    ) -> Result<(), OriginalAccountRetirementError> {
         let Some(retained) = self.original.as_ref() else {
             return Ok(());
         };
@@ -232,7 +279,7 @@ impl OriginalNativeAccountCredit {
                 .original
                 .as_mut()
                 .and_then(|retained| retained.normal.as_mut())
-                .ok_or(OriginalActorAccountError::Unavailable)?;
+                .ok_or(OriginalAccountRetirementError::Unavailable)?;
             let result = normal.retire_after_control_free(&cleanup);
             if normal.is_physically_returned() {
                 drop(self.original.take());
@@ -246,18 +293,16 @@ impl OriginalNativeAccountCredit {
         Ok(())
     }
 
-    pub(super) fn verify_quiescent_custody(&self) -> Result<(), OriginalActorAccountError> {
+    pub(super) fn verify_quiescent_custody(&self) -> Result<(), OriginalAccountCheckError> {
         match self.original.as_ref() {
-            Some(retained) if retained.normal.is_none() => {
-                self.require_original().map_err(Into::into)
-            }
+            Some(retained) if retained.normal.is_none() => self.require_original(),
             // Normal custody was authentically moved into this credit before
             // birth; closed-slot observation neither returns it nor admits work.
             _ => Ok(()),
         }
     }
 
-    pub(super) fn require_return_phase(&self) -> Result<(), OriginalActorAccountError> {
+    pub(super) fn require_return_phase(&self) -> Result<(), OriginalAccountCheckError> {
         match self.original.as_ref() {
             Some(retained) => match retained.normal.as_ref() {
                 Some(normal) => {
@@ -265,7 +310,7 @@ impl OriginalNativeAccountCredit {
                     normal.verify_world_cleanup(&cleanup)?;
                     Ok(())
                 }
-                None => self.require_original().map_err(Into::into),
+                None => self.require_original(),
             },
             None => Ok(()),
         }

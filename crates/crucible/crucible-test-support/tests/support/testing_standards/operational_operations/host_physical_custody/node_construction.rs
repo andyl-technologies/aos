@@ -85,18 +85,18 @@ struct NodeConstruction {
         1,
     ),
     (
-        r#"pub(super) fn verify_quiescent(&self) -> Result<(), OriginalActorAccountError> {
+        r#"pub(super) fn verify_quiescent(&self) -> Result<(), OriginalAccountRetirementError> {
         match &self.state {
             NormalNodeState::Published { roster, .. } => roster.verify_quiescent(),
             // No roster/binding or physical Source constructor has been
             // published from this state. Real funding still needs retirement.
-            NormalNodeState::Constructing(construction) => construction.verify_custody(),
+            NormalNodeState::Constructing(construction) => { construction.verify_custody().map_err(Into::into) }
         }
     }"#,
         1,
     ),
     (
-        r#"pub(super) fn try_close(&mut self) -> Result<(), OriginalActorAccountError> {
+        r#"pub(super) fn try_close(&mut self) -> Result<(), OriginalAccountRetirementError> {
         match &mut self.state {
             NormalNodeState::Constructing(construction) => construction.retire(),
             NormalNodeState::Published { roster, binding } => {
@@ -124,24 +124,24 @@ struct NodeConstruction {
         match &mut self.state {
             NormalNodeState::Constructing(construction) => construction
                 .retire()
-                .map_err(original_roster::original_error),
+                .map_err(|source| original_roster::original_error(source.into())),
             NormalNodeState::Published { roster, .. } => {
                 roster.retry_unsettled()?;
                 roster
                     .verify_quiescent()
-                    .map_err(original_roster::original_error)
+                    .map_err(|source| original_roster::original_error(source.into()))
             }
         }
     }"#,
         1,
     ),
     (
-        r#"fn verify_custody(&self) -> Result<(), OriginalActorAccountError> {
+        r#"fn verify_custody(&self) -> Result<(), OriginalAccountCheckError> {
         let owners = usize::from(self.node.is_some())
             + usize::from(self.subdivision.is_some())
             + usize::from(self.credit.is_some());
         if owners > 1 || (!self.attempted && owners != 0) {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         Ok(())
     }"#,
@@ -188,7 +188,7 @@ struct NodeConstruction {
         1,
     ),
     (
-        r#"fn retire(&mut self) -> Result<(), OriginalActorAccountError> {
+        r#"fn retire(&mut self) -> Result<(), OriginalAccountRetirementError> {
         self.verify_custody()?;
         if let Some(node) = self.node.as_mut() {
             let result = node.retire_before_subdivision();

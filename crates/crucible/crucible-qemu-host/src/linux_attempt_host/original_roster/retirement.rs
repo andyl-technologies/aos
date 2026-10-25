@@ -17,11 +17,11 @@ impl OriginalNativeAccountRoster {
     /// Refuses competing access, poison, live Source/Target custody or original.
     pub(in crate::linux_attempt_host) fn verify_quiescent(
         &self,
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountRetirementError> {
         if let Some(held) = self.held.as_ref() {
             let state = held
                 .try_lock()
-                .map_err(|_| OriginalActorAccountError::Unavailable)?;
+                .map_err(|_| OriginalAccountRetirementError::Unavailable)?;
             for slot in &state.slots {
                 verify_closed_slot(slot)?;
                 if let Some(credit) = slot.credit.as_ref() {
@@ -46,18 +46,18 @@ impl OriginalNativeAccountRoster {
     /// Refuses real strong borrowers, unfunded weak bindings, poisoned or
     /// contended bookkeeping, live native slots or controls, and the retained
     /// Original before pair release.
-    pub fn try_close(&mut self) -> Result<(), OriginalActorAccountError> {
+    pub fn try_close(&mut self) -> Result<(), OriginalAccountRetirementError> {
         self.retry_failed_launch_bodies()?;
         self.retire_with_post_free(|| {})
     }
 
-    pub(super) fn retry_failed_launch_bodies(&self) -> Result<(), OriginalActorAccountError> {
+    pub(super) fn retry_failed_launch_bodies(&self) -> Result<(), OriginalAccountRetirementError> {
         let Some(held) = self.held.as_ref() else {
             return Ok(());
         };
         let count = held
             .try_lock()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?
+            .map_err(|_| OriginalAccountRetirementError::Unavailable)?
             .slots
             .len();
         let mut returned = true;
@@ -65,7 +65,7 @@ impl OriginalNativeAccountRoster {
             let retained = {
                 let state = held
                     .try_lock()
-                    .map_err(|_| OriginalActorAccountError::Unavailable)?;
+                    .map_err(|_| OriginalAccountRetirementError::Unavailable)?;
                 state
                     .slots
                     .get(index)
@@ -82,17 +82,17 @@ impl OriginalNativeAccountRoster {
         if returned {
             Ok(())
         } else {
-            Err(OriginalActorAccountError::Unavailable)
+            Err(OriginalAccountRetirementError::Unavailable)
         }
     }
 
     fn retire_with_post_free(
         &mut self,
         post_free: impl FnOnce(),
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountRetirementError> {
         if let Some(held) = self.held.as_mut() {
             if self.retiring_credits.iter().any(Option::is_some) {
-                return Err(OriginalActorAccountError::Unavailable);
+                return Err(OriginalAccountRetirementError::Unavailable);
             }
             held.retire_body(
                 |state| {
@@ -133,7 +133,7 @@ impl OriginalNativeAccountRoster {
     }
 }
 
-fn verify_closed_slot(slot: &NativeSlot) -> Result<(), OriginalActorAccountError> {
+fn verify_closed_slot(slot: &NativeSlot) -> Result<(), OriginalAccountRetirementError> {
     if slot.fork_target.is_owned()
         || slot.active.is_some()
         || slot.node_bindings_live != 0
@@ -148,7 +148,7 @@ fn verify_closed_slot(slot: &NativeSlot) -> Result<(), OriginalActorAccountError
         || slot.cleanup.is_some()
         || slot.unsettled.is_some()
     {
-        return Err(OriginalActorAccountError::Unavailable);
+        return Err(OriginalAccountRetirementError::Unavailable);
     }
     Ok(())
 }
@@ -290,7 +290,7 @@ mod tests {
         });
         assert!(matches!(
             result,
-            Err(OriginalActorAccountError::Supervision(_))
+            Err(OriginalAccountRetirementError::Supervision(_))
         ));
         assert!(roster.held.is_none());
         assert!(roster.retiring_credits[0].is_some());

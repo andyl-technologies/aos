@@ -273,14 +273,14 @@ impl NormalNativePool {
             .find(|binding| target.belongs_to_factory(binding))
     }
 
-    pub(super) fn verify_quiescent(&self) -> Result<(), OriginalActorAccountError> {
+    pub(super) fn verify_quiescent(&self) -> Result<(), OriginalAccountRetirementError> {
         for node in self.nodes.iter().flatten() {
             node.verify_quiescent()?;
         }
         Ok(())
     }
 
-    pub(super) fn sweep_retired(&mut self) -> Result<(), OriginalActorAccountError> {
+    pub(super) fn sweep_retired(&mut self) -> Result<(), OriginalAccountRetirementError> {
         for entry in &mut self.nodes {
             let Some(node) = entry.as_mut() else {
                 continue;
@@ -300,7 +300,7 @@ impl NormalNativePool {
                 Ok(()) => {}
                 // Existing competing aliases remain pending without starving
                 // independent rows. A typed phase/post refusal remains visible.
-                Err(OriginalActorAccountError::Unavailable) if !returned => {}
+                Err(OriginalAccountRetirementError::Unavailable) if !returned => {}
                 Err(error) => return Err(error),
             }
         }
@@ -329,11 +329,11 @@ impl NormalNativePool {
         self.nodes.iter().all(Option::is_none) && self.worlds.iter().all(Option::is_none)
     }
 
-    pub(super) fn finish(&mut self) -> Result<(), OriginalActorAccountError> {
+    pub(super) fn finish(&mut self) -> Result<(), OriginalAccountRetirementError> {
         self.verify_quiescent()?;
         self.sweep_retired()?;
         if self.nodes.iter().any(Option::is_some) || self.worlds.iter().any(Option::is_some) {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountRetirementError::Unavailable);
         }
         Ok(())
     }
@@ -664,7 +664,7 @@ impl LinuxQemuAttemptHostFactory {
         let mut proven_unassigned = false;
         let result = (|| {
             pool.sweep_retired()
-                .map_err(original_roster::original_error)?;
+                .map_err(|source| original_roster::original_error(source.into()))?;
             if pool.worlds.iter().all(Option::is_some) {
                 // No new assignment callback has run. Retained bodies still
                 // consume real capacity without poisoning the containing Main.

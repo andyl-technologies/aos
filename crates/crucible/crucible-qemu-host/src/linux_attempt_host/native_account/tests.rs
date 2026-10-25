@@ -152,4 +152,79 @@ fn checked_cancellation_keeps_its_actual_operation_when_adapted() {
     assert!(metadata.reserve_resources(0, 0, 1).is_err());
 }
 
+#[test]
+fn retirement_adapter_preserves_physical_return_payload_without_allocating() {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let source = std::io::Error::new(
+        std::io::ErrorKind::Other,
+        std::io::Error::from_raw_os_error(libc::EIO),
+    );
+    let payload = source.get_ref().unwrap() as *const _;
+    let physical =
+        crucible_host_resources::host_services::process_birth::NativePoolReturnError::from(
+            ServiceBirthError::Kernel {
+                operation: "observe actual native return",
+                source,
+            },
+        );
+    let refusal = OriginalAccountRetirementError::NativeReturn(physical);
+
+    let (report, counts) =
+        TestAllocationObserver::count(|| OriginalActorAccountError::from(refusal));
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    let OriginalActorAccountError::NativeReturn(physical) = report else {
+        panic!("the actual physical-return error must remain available");
+    };
+    let Some(ServiceBirthError::Kernel { operation, source }) = physical.first_error() else {
+        panic!("the concrete kernel failure must remain available");
+    };
+    assert_eq!(*operation, "observe actual native return");
+    assert!(std::ptr::eq(source.get_ref().unwrap(), payload));
+    assert_eq!(
+        source
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap()
+            .raw_os_error(),
+        Some(libc::EIO),
+    );
+    assert!(physical.post_error().is_none());
+}
+
+#[test]
+fn retirement_refusal_keeps_original_paired_credit_without_allocating() {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let (mut credit, supervisor, resident, metadata) = credit();
+    let before = supervisor.operation_statuses().unwrap();
+    supervisor.cancel().unwrap();
+
+    let (report, counts) = TestAllocationObserver::count(|| {
+        credit
+            .retire_after_control_free()
+            .map_err(OriginalActorAccountError::from)
+    });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert!(matches!(
+        report,
+        Err(OriginalActorAccountError::Supervision(
+            HostSupervisionError::Terminal { .. }
+        ))
+    ));
+    assert!(!credit.is_physically_returned());
+    assert!(resident.reserve_resources(0, 0, 1).is_err());
+    assert!(metadata.reserve_resources(0, 0, 1).is_err());
+    let after = supervisor.operation_statuses().unwrap();
+    assert_eq!(after.len(), before.len());
+    assert_eq!(after[0].operation_id, before[0].operation_id);
+}
+
 mod node_custody;

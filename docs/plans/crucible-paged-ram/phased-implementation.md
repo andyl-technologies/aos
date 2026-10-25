@@ -67,9 +67,47 @@ failed attempts appear in the dated entries below.
 | Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Earlier legacy configuration and thirteen read-only Ninja queries pass; later target attempts retain generator, interpreter and unavailable-process refusals. The latest original invocation refuses during configure because a disappeared wrapper lacks original exit-observation custody; its complete signed result and diagnosis pass independent review. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Native compiler correction | Signed atomic `cb9a5e825a` and conventional `0d49fac971` preserve the complete integration while correcting declarations, const projections and shadowed locals. Fresh configure, the POSIX thread object and source extraction pass. | The startup Source object still fails on its unchanged uncalled RR birth routine with all warnings retained. No whole QEMU build, Windows compilation, native execution or lifecycle qualification is established. |
-| Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 272 errors: 252 large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 125 errors: 105 large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 670 bindings: 651 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 672 bindings: 653 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+
+#### Existing native control retirement errors
+
+Roster, pre-roster node and normal pool retirement now use
+`OriginalAccountRetirementError`. It retains the complete
+`NativePoolReturnError`, including its first cause and independent saved-Cleanup
+post, alongside the actual purpose, supervision or unavailable refusal. These
+closure paths cannot issue a pool, World or Source. Their adapters into the
+broader account error move the same concrete leaf errors without allocating.
+`try_close` and the dispatcher report's borrowed pool observer expose the narrow
+retirement type; realization adapters preserve the prior broad classification.
+
+The actual physical ordering remains unchanged: known node/World return is
+observed before removing each owner, roster credit moves outside the allocation
+before its body closes, and independent pool return still follows known dispatcher
+closure even when dispatcher history reports a failure. No journal, error Box,
+new reservation or cleanup operation is added.
+
+All 53 roster controls, eight account controls, two dispatcher-report controls and
+95 policy controls pass. New controls preserve an existing typed physical-return
+kernel payload through broad adaptation without allocating, and keep both
+original component loans occupied when canceled credit refuses retirement. The
+initial roster run catches an incorrectly changed test downcast; restoring its
+existing broad-boundary assertion passes all 53 controls. Source contracts retain
+all existing causal mutations while adopting the narrow signatures and adapters.
+The private measurement configuration compiles with its fourteen existing
+warnings. The strict host-library check removes 147 diagnostics without adding
+any, leaving 125: 105 large-error returns, seventeen unused-code diagnostics and
+three large enum variants. This remains an incomplete strict check.
+
+The preceding signed account-check checkpoint's hermetic supervision gate
+passes all 418 exact component cases at
+`r3rn4l6m9234652j5c5541kb3b35f5bz`. Independent verification checks every case
+log, registered output and all 5,477 frozen Rust/TOML inputs plus the lockfile
+against that signed source. Inventory
+`57vwa5h34y0v7x522955jaw723gj1lp9` retains 672 bindings, 142 uncovered
+requirements and zero qualifications. No Native activation, physical-return or
+paging capability follows from these component results.
 
 #### Original consumer control prepayment
 

@@ -380,7 +380,7 @@ impl LinuxQemuAttemptHostFactory {
         let pool = self
             .normal_pool
             .as_mut()
-            .ok_or(OriginalActorAccountError::Unavailable)
+            .ok_or(OriginalAccountRetirementError::Unavailable)
             .and_then(|pool| pool.finish());
         // Return both actual leaf refusals. A historical dispatcher panic
         // neither skips pool return nor replaces its independent failure.

@@ -6,7 +6,7 @@
 //! component/private rosters have no such payer and still require Arc uniqueness
 //! across both strong and weak owners before returning native credit.
 
-use super::{Mutex, NativeRoster, OriginalActorAccountError};
+use super::{Mutex, NativeRoster, OriginalAccountRetirementError};
 use crucible_host_resources::host_services::process_birth::NativeRosterAllocationFunding;
 use std::ops::Deref;
 use std::sync::{Arc, Weak};
@@ -48,14 +48,14 @@ impl RosterOwner {
     /// already checked credits into their prepaid external retirement slots.
     pub(super) fn retire_body(
         &mut self,
-        verify: impl FnOnce(&NativeRoster) -> Result<(), OriginalActorAccountError>,
+        verify: impl FnOnce(&NativeRoster) -> Result<(), OriginalAccountRetirementError>,
         consume: impl FnOnce(&mut NativeRoster),
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountRetirementError> {
         let Some(funding) = self.funding.as_ref() else {
             let state = Arc::get_mut(&mut self.shared)
-                .ok_or(OriginalActorAccountError::Unavailable)?
+                .ok_or(OriginalAccountRetirementError::Unavailable)?
                 .get_mut()
-                .map_err(|_| OriginalActorAccountError::Unavailable)?;
+                .map_err(|_| OriginalAccountRetirementError::Unavailable)?;
             verify(state)?;
             consume(state);
             return Ok(());
@@ -64,13 +64,13 @@ impl RosterOwner {
         let mut state = self
             .shared
             .try_lock()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountRetirementError::Unavailable)?;
         verify(&state)?;
         let gate = funding
             .try_open()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountRetirementError::Unavailable)?;
         if Arc::strong_count(&self.shared) != 1 {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountRetirementError::Unavailable);
         }
 
         // Every upgrade holds this same gate through actual Arc acquisition.

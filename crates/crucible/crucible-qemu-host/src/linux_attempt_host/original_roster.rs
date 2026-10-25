@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 use crucible_host_resources::host_supervision::HostOperationGuard;
 
 use super::native_account::{
-    OriginalAccountCheckError, OriginalActorAccountError, OriginalNativeAccountCredit,
+    OriginalAccountCheckError, OriginalAccountRetirementError, OriginalActorAccountError,
+    OriginalNativeAccountCredit,
 };
 use super::native_resources::NativeResourceState;
 use super::native_resources::OriginalNativeControlRetirement;
@@ -1300,7 +1301,7 @@ impl OriginalNativeAccountRoster {
             close_slot(slot).map_err(original_error)?;
             slot.unsettled = None;
         }
-        launch_return.map_err(original_error)
+        launch_return.map_err(|source| original_error(source.into()))
     }
 }
 
