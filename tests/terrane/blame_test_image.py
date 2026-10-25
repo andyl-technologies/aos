@@ -21,7 +21,8 @@ TARGETS = {
     "cli-tests": ("terrane-cli", "terrane/cli/terrane-cli", "local_cli", "test"),
     "cli": ("terrane-cli", "terrane/cli/terrane-cli", "terrane", "bin"),
 }
-SDK_FEATURES = ["send", "std", "surface-sdk", "tokio"]
+SDK_FEATURES = ["default", "send", "std", "surface-sdk", "tokio"]
+CLI_SDK_FEATURES = ["send", "std", "surface-sdk", "tokio"]
 
 
 def require(condition, message):
@@ -87,7 +88,8 @@ def select(events, packages, workspace, target_dir, name):
     dependencies = [item for item in events if item.get("reason") == "compiler-artifact"
                     and item.get("package_id") == sdk[0]["id"]
                     and item.get("target", {}).get("kind") == ["lib"]]
-    require(dependencies and all(sorted(item["features"]) == SDK_FEATURES for item in dependencies),
+    expected_features = SDK_FEATURES if name == "sdk" else CLI_SDK_FEATURES
+    require(dependencies and all(sorted(item["features"]) == expected_features for item in dependencies),
             "blame artifact SDK dependency profile mismatch")
     return artifact, executable, dependencies
 
