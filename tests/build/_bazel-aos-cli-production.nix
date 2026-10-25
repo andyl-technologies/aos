@@ -1,15 +1,20 @@
 ##! Builds the complete fifteen-program CLI suite before production cutover.
-{pkgs}: let
+{
+  pkgs,
+  sourceInventory ? null,
+}: let
   declarations = import ./_bazel-aos-cli.nix {inherit pkgs;};
   prefix = "//crates/cli/aos-cli:";
   targets = map (name: prefix + name) ["production_binaries" "production_suite_license_closure"];
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
+    inherit sourceInventory;
     dependencyProfile = "aos-cli-production";
-    sourceDirectories =
+    sourceDirectories = pkgs.lib.optionals (sourceInventory == null) (
       ["tools/bazel" "third_party/rust" "api/proto"]
       ++ builtins.attrValues declarations.packages
-      ++ builtins.attrValues declarations.dependencyPackages;
+      ++ builtins.attrValues declarations.dependencyPackages
+    );
     repositories =
       pkgs.aosBazelRepositories
       // pkgs.aosBazelRustRepositories.aos-cli-production

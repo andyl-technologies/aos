@@ -39,5 +39,9 @@ in {
   default = testConfiguration false;
   fleet = testConfiguration true;
   production = import ../../../tests/build/_bazel-aos-cli-production.nix {inherit pkgs;};
+  production-precise = import ../../../tests/build/_bazel-aos-cli-production.nix {
+    inherit pkgs;
+    sourceInventory = ../../../tools/bazel/metadata/aos-cli-inventory.json;
+  };
   execution-profiles = import ../../../tests/build/_bazel-aos-cli-execution-profiles.nix {inherit pkgs;};
 }

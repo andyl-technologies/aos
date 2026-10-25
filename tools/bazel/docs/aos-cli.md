@@ -138,6 +138,23 @@ without entering their privileged command bodies. Split package outputs,
 private dispatch identities, runtime tool wrappers, and their closure policy
 still require production qualification.
 
+The opt-in `production-precise` entry point uses the checked-in configured
+source inventory. Its [qualification report](../tests/evidence/cli-production-source-inventory.json)
+retains passing compilation, installation, all fifteen loader checks, three CLI
+help checks, and Clippy. Its 580 configured targets and 761 selected source files
+match the conservative build exactly. All selected source bytes match the
+checkout; documentation, retained evidence, and first-party Cargo manifests are
+absent from the strict snapshot. Both builds have identical reconstructed
+arguments and environments for all 547 compiler requests.
+
+Four installed binaries match byte for byte. Eleven differ only in `.rodata`
+strings containing the numeric Bazel sandbox directory used by native library
+builds; their executable code sections match. Replacing those paths was used
+only to diagnose the difference. The installed artifacts remain unchanged,
+and raw-byte repeatability remains unqualified. The ordinary production helper
+still uses conservative source selection while that repair and the remaining
+production gates are pending.
+
 `../tests/evidence/aos-cli-source-graph.json` records the 57 frozen SDK exports
 and 41 configured source inventory families. The previous 54 SDKs preserve all
 13,060 existing lock and generated files. Runtime evidence is separate from
