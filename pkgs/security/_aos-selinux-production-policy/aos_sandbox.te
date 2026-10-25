@@ -77,6 +77,9 @@ allow init_t dbusd_unit_t:service { start status };
 allow init_t system_dbusd_t:process transition;
 allow init_t system_dbusd_t:process2 nosuid_transition;
 type_transition init_t dbusd_exec_t:process system_dbusd_t;
+# The transitioned daemon retains PID 1's already connected log streams.
+# It receives no permission to initiate connections to manager sockets.
+allow system_dbusd_t init_t:unix_stream_socket { read write };
 # The same native activation reconciles the fixed image audit service.
 allow init_t auditd_unit_t:service { start status };
 # Native activation starts and observes the fixed image time-sync service.

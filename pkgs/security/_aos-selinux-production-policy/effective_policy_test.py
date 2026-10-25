@@ -321,6 +321,28 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(source, "system_dbusd_t", object_class, permission)
                     )
 
+    def test_native_bus_inherits_streams_without_manager_connections(self) -> None:
+        for object_class, permissions in (
+            ("fd", ("use",)),
+            ("unix_stream_socket", ("read", "write")),
+        ):
+            for permission in permissions:
+                with self.subTest(object_class=object_class, permission=permission):
+                    self.assert_missing_allow_rejected(
+                        effective_policy.Access("system_dbusd_t", "init_t", object_class, permission)
+                    )
+
+        for permission in ("accept", "bind", "connect", "connectto", "create", "listen"):
+            with self.subTest(permission=permission):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access("system_dbusd_t", "init_t", "unix_stream_socket", permission)
+                )
+
+        policy = self._storage_policy()
+        policy.permissive.add("system_dbusd_t")
+        with self.assertRaisesRegex(ValueError, "protected domain is permissive: system_dbusd_t"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_native_manager_requires_labeled_dbus_start(self) -> None:
         for access in (
             effective_policy.Access("init_t", "dbusd_unit_t", "service", "start"),

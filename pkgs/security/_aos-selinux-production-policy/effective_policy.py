@@ -83,6 +83,7 @@ GUEST_PROTECTED_FILES = (
 ENFORCING_DOMAINS = (
     "kernel_t",
     "init_t",
+    "system_dbusd_t",
     HANDOFF_DOMAIN,
     PROVISIONER_DOMAIN,
     GUEST_ROOT_PUBLISHER,
@@ -256,6 +257,8 @@ def execution_access() -> tuple[Access, ...]:
 POSITIVE_ACCESS = (
     Access("init_t", "system_dbusd_t", "process", "transition"),
     Access("init_t", "system_dbusd_t", "process2", "nosuid_transition"),
+    Access("system_dbusd_t", "init_t", "fd", "use"),
+    *accesses("system_dbusd_t", "init_t", "unix_stream_socket", ("read", "write")),
     Access("init_t", "init_t", "user_namespace", "create"),
     # Native host activation requires the manager and generated-unit API;
     # owner_policy separately forbids manager mutation by Sandbox services.
@@ -1193,6 +1196,10 @@ NEGATIVE_ACCESS = (
             *accesses(source, "system_dbusd_t", "process2",
                       ("nnp_transition", "nosuid_transition")),
         )
+    ),
+    *accesses(
+        "system_dbusd_t", "init_t", "unix_stream_socket",
+        ("accept", "bind", "connect", "connectto", "create", "listen"),
     ),
     *negative_access(), *OWNER_NEGATIVE,
     Access("init_t", "init_t", "system", "start"),
