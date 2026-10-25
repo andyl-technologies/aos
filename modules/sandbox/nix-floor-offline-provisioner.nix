@@ -95,6 +95,7 @@ in {
           selected.wantedBy
           == []
           && selected.requiredBy == []
+          && (selected.environment.DBUS_SYSTEM_BUS_ADDRESS or null) == "unix:path=/run/dbus/system_bus_socket"
           && (service.ExecStart or null) == command
           && (service.ExecStartPre or []) == []
           && (service.ExecStartPost or []) == []
@@ -164,6 +165,9 @@ in {
       requiredBy = [];
       requires = ["dbus.service"];
       after = ["dbus.service"];
+
+      # zbus otherwise follows the state volume's compatibility /var/run link.
+      environment.DBUS_SYSTEM_BUS_ADDRESS = "unix:path=/run/dbus/system_bus_socket";
 
       serviceConfig =
         {
