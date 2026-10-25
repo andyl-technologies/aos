@@ -33,7 +33,7 @@ const MAXIMUM_ROWS: usize = 32;
 const MAXIMUM_ROW_BYTES: usize = 512;
 
 /// Row prefixes that make a line a candidate control diagnostic.
-const CANDIDATE_PREFIXES: [&[u8]; 12] = [
+const CANDIDATE_PREFIXES: [&[u8]; 15] = [
     b"CRUCIBLE-CHECKPOINT-STOP-V1 ",
     b"CRUCIBLE-CONTROL-STAGE-V1 ",
     b"CRUCIBLE-NATIVE-STOP-CONTEXT-V1 ",
@@ -46,17 +46,29 @@ const CANDIDATE_PREFIXES: [&[u8]; 12] = [
     b"CRUCIBLE-ZERO-LENGTH-QUERY-V1 ",
     b"CRUCIBLE-DEVICE-WAIT-V1 ",
     b"CRUCIBLE-IDLE-PLAN-V1 ",
+    b"CRUCIBLE-CLOCK-DOMAIN-V1 ",
+    b"qemu-system-",
+    b"crucible-qemu-plugin: ",
 ];
 
 /// Opt-in plugin trace schemas whose rows name the child in a `pid=` field.
 ///
 /// They are off unless a diagnostic flight forwards their opt-in, and a hot
 /// fork's private stream is the only place its rows can be seen.
-const PLUGIN_TRACE_SCHEMAS: [&str; 3] = [
+const PLUGIN_TRACE_SCHEMAS: [&str; 4] = [
     "CRUCIBLE-ZERO-LENGTH-QUERY-V1",
     "CRUCIBLE-DEVICE-WAIT-V1",
     "CRUCIBLE-IDLE-PLAN-V1",
+    "CRUCIBLE-CLOCK-DOMAIN-V1",
 ];
+
+/// Prefixes of the fatal lines QEMU's `error_report` and the plugin's
+/// fail-loud paths write just before a child exits.
+///
+/// A child that exits on such an error leaves nothing else in its private
+/// stream, so the line is kept as an advisory row. It names no PID and is not
+/// an execution receipt.
+const FATAL_LINE_PREFIXES: [&str; 2] = ["qemu-system-", "crucible-qemu-plugin: "];
 
 /// Incremental row fold over one child's private diagnostics stream.
 ///
@@ -149,7 +161,11 @@ fn valid_row(row: &str, child_process_id: Option<u32>) -> bool {
     {
         return false;
     }
-    if crate::spawn::valid_rr_control_boundary_row(row) {
+    if crate::spawn::valid_rr_control_boundary_row(row)
+        || FATAL_LINE_PREFIXES
+            .iter()
+            .any(|prefix| row.starts_with(prefix))
+    {
         return true;
     }
     let Some(child_process_id) = child_process_id else {
@@ -507,6 +523,27 @@ mod tests {
         assert!(summary.contains(zero_length));
         assert!(summary.contains(publication));
         assert!(!summary.contains("pid=132"));
+    }
+
+    #[test]
+    fn a_child_fatal_line_and_its_clock_rows_survive_the_summary() {
+        let clock = "CRUCIBLE-CLOCK-DOMAIN-V1 pid=153 reason=repeated count=1 plugin_ps=587001000000 deadline_ps=587001000000 raw=1213 virtual_ps=587001000000 qemu_deadline_ps=587001000000 qemu_raw=1213 sim_tick_bias=586940350000 icount_bias_ps=0 warp_start=-1";
+        let foreign_clock = clock.replace("pid=153", "pid=132");
+        let qemu_fatal = "qemu-system-x86_64: Crucible sim idle warp exceeds the clock";
+        let plugin_fatal =
+            "crucible-qemu-plugin: RUN control reader panicked; aborting QEMU process";
+        let bytes = format!(
+            "unrelated private payload\n{clock}\n{foreign_clock}\n{qemu_fatal}\n{plugin_fatal}\nqemu-system-x86_64: \x1b[31m\n"
+        );
+
+        let summary = control_diagnostics_summary(bytes.as_bytes(), 153);
+
+        assert!(summary.contains("accepted_rows=3 rejected_rows=2"));
+        assert!(summary.contains(clock));
+        assert!(summary.contains(qemu_fatal));
+        assert!(summary.contains(plugin_fatal));
+        assert!(!summary.contains("pid=132"));
+        assert!(!summary.contains("unrelated private payload"));
     }
 
     #[test]
