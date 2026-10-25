@@ -1317,6 +1317,28 @@ class EffectivePolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_view_preparer_idmap_permission_stays_role_local(self) -> None:
+        for role in ("source", "cache"):
+            preparer = f"aos_sandbox_{role}_view_preparer_t"
+            with self.subTest(role=role):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access(preparer, preparer, "cap_userns", "sys_admin")
+                )
+                other_preparer = "cache" if role == "source" else "source"
+                for other in (
+                    "init_t",
+                    "aos_sandbox_controller_t",
+                    f"aos_sandbox_{other_preparer}_view_preparer_t",
+                    "aos_sandbox_source_signer_t",
+                    "aos_sandbox_cache_signer_t",
+                ):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(preparer, other, "cap_userns", "sys_admin")
+                    )
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access(preparer, preparer, "cap_userns", "sys_ptrace")
+                )
+
     def test_view_preparer_cannot_modify_generic_ancestry_or_foreign_target(self) -> None:
         for target, object_class, permission in (
             ("var_lib_t", "dir", "add_name"),

@@ -5,6 +5,7 @@ require {
     type tmpfs_t;
     type nsfs_t;
     class capability { chown dac_override dac_read_search setgid setuid sys_admin };
+    class cap_userns sys_admin;
     class filesystem { associate getattr remount unmount };
     class dir mounton;
     class user_namespace create;
@@ -41,6 +42,8 @@ allow aos_sandbox_view_preparer self:process { fork getattr sigchld signal };
 # Fixed scripts collect private stat/findmnt output through anonymous pipes.
 allow aos_sandbox_view_preparer self:fifo_file { create getattr read write };
 allow aos_sandbox_view_preparer self:capability { chown dac_read_search setgid setuid sys_admin };
+# Writing the fixed idmap requires CAP_SYS_ADMIN in the child user namespace.
+allow aos_sandbox_view_preparer self:cap_userns sys_admin;
 allow aos_sandbox_view_preparer self:user_namespace create;
 allow aos_sandbox_view_preparer proc_t:filesystem getattr;
 allow aos_sandbox_view_preparer proc_t:dir { getattr open read search };

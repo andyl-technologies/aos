@@ -76,6 +76,10 @@ def matrix(Access, Transition, accesses, roles):
         positive.extend(accesses(preparer, preparer, "capability", (
             "chown", "dac_read_search", "setgid", "setuid", "sys_admin",
         )))
+        positive.append(Access(preparer, preparer, "cap_userns", "sys_admin"))
+        for actor in actors:
+            if actor != preparer:
+                negative.append(Access(preparer, actor, "cap_userns", "sys_admin"))
         positive.append(Access(preparer, preparer, "user_namespace", "create"))
         positive.extend(accesses(preparer, preparer, "fifo_file", ("create", "getattr", "read", "write")))
         negative.extend(accesses(preparer, preparer, "fifo_file", ("open", "unlink")))
