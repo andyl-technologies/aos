@@ -50,6 +50,28 @@ in {
           vm.wait_for_unit("aos-activate.service", timeout=60)
           vm.succeed("${pkgs.python3}/bin/python3 -c \"" + root_labels + "\"")
           vm.succeed("test -c /dev/tpmrm0; test $(cat /sys/fs/selinux/enforce) = 1")
+
+          # Native activation succeeding does not prove that early socket
+          # owners exist: PID 1 can reach multi-user with failed socket units.
+          for principal, identity in (
+              ("aos-sandboxd", 811),
+              ("aos-source-signer", 814),
+              ("aos-sandbox-zfs-worker", 992),
+          ):
+              row = vm.succeed(f"getent passwd {principal}").strip().split(":")
+              assert len(row) == 7 and row[0] == principal, row
+              assert row[2:4] == [str(identity)] * 2, row
+              assert row[6] == "/sbin/nologin", row
+
+          for socket in (
+              "aos-sandbox-hostd.socket",
+              "aos-sandbox-mountd.socket",
+              "aos-netd.socket",
+              "aos-sandbox-ownershipd.socket",
+              "aos-storaged.socket",
+          ):
+              vm.wait_for_unit(socket, timeout=30)
+
           assert int(vm.succeed("nproc --all").strip()) == 16
           memory = dict(line.split(":", 1) for line in vm.succeed("cat /proc/meminfo").splitlines())
           assert int(memory["MemTotal"].split()[0]) >= 32 * 1024 * 1024
