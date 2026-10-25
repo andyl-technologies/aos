@@ -3,80 +3,55 @@
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/shared-inventory.json,
 }: let
-  packages = ["aos-core" "aos-artifact-evidence" "aos-oci-types"];
-  packagePaths = {
+  packages = {
     aos-core = "crates/core/aos-core";
     aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
     aos-oci-types = "crates/artifacts/aos-oci-types";
   };
-  label = name: "//${packagePaths.${name}}";
-  integrationTargets = name: let
-    directory = ../.. + "/${packagePaths.${name}}/tests";
-    entries =
-      if builtins.pathExists directory
-      then builtins.readDir directory
-      else {};
-  in
-    map (file: "${label name}:" + pkgs.lib.removeSuffix ".rs" file)
-    (builtins.filter (file: entries.${file} == "regular" && pkgs.lib.hasSuffix ".rs" file) (builtins.attrNames entries));
-  workspace = pkgs.mkAosBazelWorkspace {
-    root = ../..;
-    inherit sourceInventory;
-    sourceDirectories = pkgs.lib.optionals (sourceInventory == null) ([
-        "tools/bazel/toolchains"
-        "tools/bazel/rules"
-        "tools/bazel/metadata"
-        "tools/bazel/testing"
-        "third_party/rust"
-      ]
-      ++ map (name: packagePaths.${name}) packages);
+  family = import ./_bazel-rust-family.nix {
+    inherit pkgs packages sourceInventory;
+    pname = "aos-bazel-shared";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core;
-    analysisTargets = map (name: "${label name}:unit") packages;
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    # The analyzer's native query uses -O independently of Cargo's test profile.
+    editorCfgFlags = [];
+    retainTestActionGraph = true;
+    captureCompilerArguments = true;
   };
-in rec {
-  inherit workspace;
-
-  tests = pkgs.mkAosBazelCheck {
-    pname = "aos-bazel-shared-tests";
-    inherit workspace;
-    targets = pkgs.lib.concatMap (name:
-      ["${label name}:license_closure" "${label name}:unit" "${label name}:doc"]
-      ++ integrationTargets name)
-    packages;
-  };
-  developer-build = pkgs.mkAosBazelBuild {
-    pname = "aos-bazel-shared-developer-tools";
-    inherit workspace;
-    targets = pkgs.lib.concatMap (name: ["${label name}:clippy" "${label name}:documentation"]) packages;
-  };
-  developer-tests = pkgs.mkAosBazelCheck {
-    pname = "aos-bazel-shared-format";
-    inherit workspace;
-    targets = map (name: "${label name}:format") packages;
-  };
-  cargo = import ./_bazel-cargo-oracle.nix {
-    inherit pkgs packages;
-    pname = "aos-bazel-shared-cargo-oracle";
-  };
-  oracle = let
-    verifier = builtins.path {
-      path = ../../tools/bazel/tests;
-      name = "aos-shared-parity-tools";
-      filter = path: type: type == "regular" && builtins.elem (baseNameOf path) ["verify_protocol.py" "verify_pilot.py"];
+  execution-profiles = import ./_bazel-rust-test-profiles.nix {
+    inherit pkgs;
+    inherit (family) tests cargo;
+    pname = "aos-bazel-shared-execution-profiles";
+    firstPartyTests = {
+      "//crates/core/aos-core:unit_binary" = "aos_core";
+      "//crates/artifacts/aos-artifact-evidence:unit_binary" = "aos_artifact_evidence";
+      "//crates/artifacts/aos-oci-types:unit_binary" = "aos_oci_types";
+      "//crates/artifacts/aos-oci-types:golden_binary" = "golden";
+      "//crates/artifacts/aos-oci-types:reference_vectors_binary" = "reference_vectors";
     };
-    packageOptions = pkgs.lib.concatMap (name: ["--package-path" "${name}=${packagePaths.${name}}"]) packages;
-  in
-    pkgs.runCommand "aos-bazel-shared-cargo-parity" {buildDeps = [pkgs.python3];} ''
-      mkdir -p "$out"
-      ${pkgs.python3}/bin/python3 ${verifier}/verify_protocol.py \
-        --tests ${tests}/evidence/tests --inventory ${tests}/inventory.json \
-        --messages ${cargo}/cargo-messages.jsonl --cargo-log ${cargo}/cargo-tests.log --output "$out/parity.json" \
-        ${pkgs.lib.escapeShellArgs packageOptions}
-    '';
-  all = pkgs.runCommand "aos-bazel-shared-checks" {buildDeps = [tests oracle developer-build developer-tests];} ''
-    mkdir -p "$out"
-    cp -r ${tests}/evidence "$out/evidence"
-    cp ${tests}/inventory.json "$out/inventory.json"
-    cp ${oracle}/parity.json "$out/parity.json"
-  '';
-}
+    proceduralMacros = ["serde_derive" "thiserror_impl"];
+  };
+  editor-builtin-cfg = import ./_bazel-editor-builtin-cfg.nix {
+    inherit pkgs;
+    inherit (family) editor;
+    pname = "aos-bazel-shared-editor-builtin-cfg";
+    cargo = family.editor-cargo-oracle;
+    workspace = family.editorWorkspace;
+    flags = [];
+  };
+in
+  family
+  // {
+    inherit execution-profiles editor-builtin-cfg;
+    all =
+      pkgs.runCommand "aos-bazel-shared-qualified-checks" {
+        buildDeps = [family.all family.editor-parity execution-profiles editor-builtin-cfg];
+      } ''
+        mkdir -p "$out"
+        cp -r ${family.all}/evidence "$out/evidence"
+        cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
+        cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
+        cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
+        cp ${editor-builtin-cfg}/evidence.json "$out/editor-builtin-cfg.json"
+      '';
+  }

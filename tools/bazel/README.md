@@ -938,6 +938,18 @@ case inventories, and configuration fingerprints are recorded in
 compilation and developer workflows; production builder changes still require
 the RFC's platform, runtime, and performance acceptance work.
 
+The [current profile and editor qualification](tests/evidence/shared-profile-editor-qualification.json)
+uses the common Rust-family helper and makes both compiler-profile and editor
+checks mandatory. All 69 cases and the compile-only doctest pass against the
+offline Cargo oracle. Captured compiler requests qualify all five test targets
+at optimization `s` with assertions and both host macros at optimization 0.
+The separate editor model matches native whole-model inference statistics with
+zero unknown or partial inferences and no diagnostic rows. Its 28 configured
+crates use the native compiler's built-in cfg query, covering five selected
+roots. The retained test, developer, format and editor runs contain 288 uncached
+Linux sandbox actions. Ordinary development launcher enrollment and production
+cutover remain separate work.
+
 ## WebAssembly toolchain qualification
 
 The native Linux compiler repository also exposes a `wasm32-unknown-unknown`

@@ -69,6 +69,12 @@ features, and both macro artifacts match the independent editor profile build.
 The ordinary route executes 135 uncached sandbox actions. Its selected
 diagnostic rows still match, with incomplete inference.
 
+The [shared-library qualification](../tests/evidence/shared-profile-editor-qualification.json)
+enrolls all 28 configured crates and five selected roots. Its editor comparison
+also matches native whole-model statistics, with complete inference and no
+diagnostic rows in this selected family. All five test targets and both host
+macros pass the independent captured-compiler scalar profile audit.
+
 `mkAosBazelWorkspace.editorCfgFlags` selects this adapter; `null` preserves the
 existing exporter during rollout. The adapter currently requires the default
 native target and rejects foreign target configurations. Other families and
