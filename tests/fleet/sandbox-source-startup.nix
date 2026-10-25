@@ -8,7 +8,15 @@
   base = import ./sandbox-funded-startup.nix args;
   probe = import ./_sandbox-q04-probe.nix {inherit lib pkgs;};
   system = base.machines.vm.system.extendModules {
-    modules = [{environment.systemPackages = [probe pkgs.python3];}];
+    modules = [
+      {
+        environment.systemPackages = [probe pkgs.python3];
+        # Retain the genuine Controller and its reserved envelope while this
+        # fixture provisions only Source inputs. Starting dependent brokers
+        # without their credentials would fence the shared bank first.
+        systemd.services.aos-sandboxd.wantedBy = lib.mkForce [];
+      }
+    ];
   };
   command = "${probe}/bin/aos-sandbox-q04-bootstrap-vm-probe";
 in
@@ -54,6 +62,12 @@ in
             return wait_for_original_accept()
 
         with startup_diagnostics(vm, unit):
+            assert vm.succeed(
+                "systemctl show aos-sandboxd.service --property=LoadState --value"
+            ).strip() == "loaded"
+            assert vm.succeed(
+                "systemctl show aos-sandboxd.service --property=ActiveState --value"
+            ).strip() == "inactive"
             vm.succeed("${command} external-source-credentials-bootstrap")
             first = start_source()
             vm.succeed(f"systemctl restart {unit}")
