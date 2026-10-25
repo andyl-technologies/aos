@@ -680,6 +680,9 @@ allow init_t aos_sandbox_nix_t:dir { getattr search open read lock ioctl };
 allow init_t aos_sandbox_nix_t:file { getattr open read lock ioctl };
 allow init_t aos_sandbox_nix_t:lnk_file { getattr read };
 
+# PID 1 pins the shipped profile directory over its writable-overlay path.
+allow init_t aos_nix_startup_profile_t:dir { getattr mounton };
+
 # The same selected profile supplies immutable image comparisons to both real
 # owners. These type-wide observations are not full executable/Ready authority.
 allow { aos_sandbox_controller_t aos_sandbox_nix_t } aos_nix_startup_profile_t:dir { getattr open read search };

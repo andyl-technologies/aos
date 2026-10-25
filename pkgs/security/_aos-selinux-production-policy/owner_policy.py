@@ -1069,6 +1069,10 @@ def _online_nix_matrix(Access, Transition, accesses, all_roles):
     for principal in (controller, owner):
         positive.extend(accesses(principal, "aos_nix_startup_profile_t", "file", file_read))
         positive.extend(accesses(principal, "aos_nix_startup_profile_t", "dir", (*file_read, "search")))
+    # The handoff inspects and pins the profile root without editing its DATA.
+    positive.extend(accesses("init_t", "aos_nix_startup_profile_t", "dir", ("getattr", "mounton")))
+    negative.extend(accesses("init_t", "aos_nix_startup_profile_t", "dir", (*dir_mutate, "relabelfrom", "relabelto")))
+    negative.extend(accesses("init_t", "aos_nix_startup_profile_t", "file", (*file_mutate, "execute", "execute_no_trans", "map")))
     for source, target in ((controller, owner), (owner, controller)):
         positive.extend(accesses(source, target, "file", file_read))
         positive.extend(accesses(source, target, "dir", (*file_read, "search")))

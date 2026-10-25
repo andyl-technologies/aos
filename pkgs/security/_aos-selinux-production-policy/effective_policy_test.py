@@ -2976,6 +2976,38 @@ class OnlineNixPolicyTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "forbidden.*(selectors|grant)"):
                         self._check_selected(policy)
 
+    def test_selected_profile_pinning_rejects_missing_metadata_and_mutation(self) -> None:
+        owner = effective_policy.owner_policy
+        with patch.object(owner, "ONLINE_NIX_DOMAINS", owner.ONLINE_NIX_KNOWN_DOMAINS):
+            positive, negative, _ = owner._online_nix_matrix(
+                effective_policy.Access, effective_policy.Transition,
+                effective_policy.accesses, (*effective_policy.DOMAINS, *owner.ENFORCING, "init_t"),
+            )
+
+        def profile_access(access: effective_policy.Access) -> bool:
+            return access.source == "init_t" and access.target == "aos_nix_startup_profile_t"
+
+        required = tuple(filter(profile_access, positive))
+        forbidden = tuple(filter(profile_access, negative))
+        self.assertEqual(set(required), set(effective_policy.accesses(
+            "init_t", "aos_nix_startup_profile_t", "dir", ("getattr", "mounton"),
+        )))
+        self.assertIn(effective_policy.Access(
+            "init_t", "aos_nix_startup_profile_t", "file", "write",
+        ), forbidden)
+
+        with (
+            patch.object(effective_policy, "POSITIVE_ACCESS", (*effective_policy.POSITIVE_ACCESS, *required)),
+            patch.object(effective_policy, "NEGATIVE_ACCESS", (*effective_policy.NEGATIVE_ACCESS, *forbidden)),
+        ):
+            checks = EffectivePolicyTest()
+            for access in required:
+                with self.subTest(missing=access):
+                    checks.assert_missing_allow_rejected(access)
+            for access in forbidden:
+                with self.subTest(forbidden=access):
+                    checks.assert_forbidden_allow_rejected(access)
+
     def test_selected_matrix_is_readonly_and_has_no_contradictory_cells(self) -> None:
         owner = effective_policy.owner_policy
         arguments = (
