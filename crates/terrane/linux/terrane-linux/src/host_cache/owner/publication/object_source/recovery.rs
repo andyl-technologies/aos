@@ -39,6 +39,11 @@ impl RecoveredOrigin {
         running: Arc<PublisherRunningContext>,
     ) -> io::Result<Self> {
         executor.check_physical_worker()?;
+        if owner.faulted || owner.recovery_required {
+            return Err(invalid(
+                "whole-file lookup requires writable Running custody",
+            ));
+        }
         let source = match identity.kind() {
             IdentityKind::Chunk => {
                 let mut selected = None;
@@ -70,12 +75,7 @@ impl RecoveredOrigin {
             }
             _ => return Err(invalid("recovered whole file requires a content identity")),
         }
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "verified recovered whole file absent",
-            )
-        })?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, super::MissingWholeFile))?;
         source.check_registration(owner)?;
         Ok(source)
     }

@@ -15,6 +15,7 @@ mod view;
 
 pub(in crate::host_cache::owner) use lifecycle::{acquire, acquire_object, release, renew};
 pub use scoped_file::NativeFileBacking;
+pub(crate) use scoped_file::NativeFilePreparation;
 pub(in crate::host_cache::owner) use sweep::{background as sweep_background, run as sweep};
 pub use view::NativeSealedBacking;
 pub(in crate::host_cache::owner) use view::{ReadBudget, ReadView};

@@ -43,6 +43,44 @@ pub struct NativeFileBacking {
     exposure: Option<crate::host_cache::NativeExposureLease>,
 }
 
+/// Preserves the original scoped Read across a native publication lookup.
+pub(crate) enum NativeFilePreparation<'repository, S, C> {
+    Ready(Box<PreparedNativeFile<'repository, S, C>>),
+    Missing(Box<PreparedFileRead<'repository, S, C>>),
+}
+
+/// Keeps native backing and its original selection private until Read finishes.
+pub(crate) struct PreparedNativeFile<'repository, S, C> {
+    backing: NativeFileBacking,
+    selection: PreparedFileRead<'repository, S, C>,
+}
+
+impl<S: Store, C: Clock> PreparedNativeFile<'_, S, C> {
+    /// Closes the retained original selection before exposing its native grant.
+    ///
+    /// # Errors
+    /// Refuses closing Read denial or an expired grant. Failed cleanup retains
+    /// accepted physical obligations with their owner.
+    pub(crate) async fn finish(
+        self,
+        owner: &NativeMetadataOwner,
+    ) -> Result<NativeFileBacking, Error> {
+        let lease = self.backing.lease.clone();
+        let result = async {
+            self.selection.finish().await?;
+            lease
+                .expires_at()
+                .map_err(|error| native_failure(error, lease.identity()))?;
+            Ok(self.backing)
+        }
+        .await;
+        if result.is_err() {
+            let _ = owner.release_sealed_object_lease(&lease).await;
+        }
+        result
+    }
+}
+
 impl AsFd for NativeFileBacking {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.backing.as_fd()
@@ -145,30 +183,66 @@ impl NativeMetadataOwner {
         expires: u64,
         #[cfg(feature = "surface-fuse")] exposure: Option<&crate::host_cache::NativeExposureLease>,
     ) -> Result<NativeFileBacking, Error> {
+        match self
+            .try_prepare_selected_file(
+                selection,
+                expires,
+                #[cfg(feature = "surface-fuse")]
+                exposure,
+            )
+            .await?
+        {
+            NativeFilePreparation::Ready(prepared) => prepared.finish(self).await,
+            NativeFilePreparation::Missing(selection) => {
+                Err(StoreFailure::new(StoreErrorKind::Absent(file_identity(&selection)?)).into())
+            }
+        }
+    }
+
+    /// Prepares private backing, preserving the selected Read on a registry miss.
+    ///
+    /// `Missing` means only that no original whole-file publication or recovery
+    /// source was registered. All failures involving a selected original source
+    /// propagate, including ordinary filesystem NotFound. The returned value
+    /// exposes no descriptor until the same selection successfully finishes.
+    ///
+    /// # Errors
+    /// Refuses signed storage policy, foreign domains or exposure context, invalid
+    /// deadlines, changed backing and native integrity, quota or custody failures.
+    pub(crate) async fn try_prepare_selected_file<'repository, S: Store, C: Clock>(
+        &self,
+        selection: PreparedFileRead<'repository, S, C>,
+        expires: u64,
+        #[cfg(feature = "surface-fuse")] exposure: Option<&crate::host_cache::NativeExposureLease>,
+    ) -> Result<NativeFilePreparation<'repository, S, C>, Error> {
         // A native caller can supply a preparation from a repository without
         // a read driver. Enforce sealed storage policy at this boundary too.
         selection.validate_storage_policy(&crate::host_cache::NativeSealedReadPolicy)?;
-        let (kind, digest) = match selection.content() {
-            ContentRef::Inline(digest) => (IdentityKind::Chunk, digest),
-            ContentRef::Manifest(digest) => (IdentityKind::Manifest, digest),
-        };
-        let identity = TERRANE_V1
-            .from_digest(kind, &digest)
-            .map_err(|_| StoreFailure::new(StoreErrorKind::Unsupported))?;
+        let identity = file_identity(&selection)?;
         let domain = selection.storage_domain();
         self.admission_bounds
             .check(domain.len(), 0)
             .map_err(|error| native_failure(error, &identity))?;
         #[cfg(feature = "surface-fuse")]
         if let Some(exposure) = exposure {
-            self.check_surface_exposure(exposure)
+            self.check_surface_file_deadline(exposure, expires)
                 .await
                 .map_err(|error| native_failure(error, &identity))?;
         }
-        let lease = self
+        let lease = match self
             .pin_object(identity.clone(), Some(domain.to_owned()), expires)
             .await
-            .map_err(|error| native_failure(error, &identity))?;
+        {
+            Ok(lease) => lease,
+            Err(error)
+                if error.get_ref().is_some_and(|source| {
+                    source.is::<super::super::publication::object_source::MissingWholeFile>()
+                }) =>
+            {
+                return Ok(NativeFilePreparation::Missing(Box::new(selection)));
+            }
+            Err(error) => return Err(native_failure(error, &identity).into()),
+        };
 
         let prepared = async {
             let backing = lease
@@ -192,20 +266,18 @@ impl NativeMetadataOwner {
                     .await
                     .map_err(|error| native_failure(error, &identity))?;
             }
-            selection.finish().await?;
-            lease
-                .expires_at()
-                .map_err(|error| native_failure(error, &identity))?;
-
-            Ok(NativeFileBacking {
-                backing,
-                lease: lease.clone(),
-                commit,
-                root,
-                size,
-                #[cfg(feature = "surface-fuse")]
-                exposure: exposure.cloned(),
-            })
+            Ok(NativeFilePreparation::Ready(Box::new(PreparedNativeFile {
+                backing: NativeFileBacking {
+                    backing,
+                    lease: lease.clone(),
+                    commit,
+                    root,
+                    size,
+                    #[cfg(feature = "surface-fuse")]
+                    exposure: exposure.cloned(),
+                },
+                selection,
+            })))
         }
         .await;
 
@@ -216,4 +288,16 @@ impl NativeMetadataOwner {
         }
         prepared
     }
+}
+
+fn file_identity<S: Store, C: Clock>(
+    selection: &PreparedFileRead<'_, S, C>,
+) -> Result<terrane_format::identity::Identity, Error> {
+    let (kind, digest) = match selection.content() {
+        ContentRef::Inline(digest) => (IdentityKind::Chunk, digest),
+        ContentRef::Manifest(digest) => (IdentityKind::Manifest, digest),
+    };
+    TERRANE_V1
+        .from_digest(kind, &digest)
+        .map_err(|_| StoreFailure::new(StoreErrorKind::Unsupported).into())
 }

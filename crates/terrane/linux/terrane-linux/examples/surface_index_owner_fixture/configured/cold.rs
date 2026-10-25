@@ -198,18 +198,32 @@ pub(super) async fn verify(cache: NativeConfiguredCache, source_parent: &Path) -
             );
         }
 
-        let object = driver
-            .prepare_cold_file(&selection, mode, Duration::from_secs(10))
-            .await?;
-        let metadata = object.handle().metadata()?;
-        terrane_linux::verity::measure(object.handle())?;
-        verify_bytes(object.handle(), expected)?;
-        let grant = owner.prepare_file_backing(selection, now()? + 30).await;
-        // Failed authorization must still attempt genuine completed cache
-        // handoff; it never turns valid cached data into a disclosed result.
-        let handoff = object.into_cache().await;
-        let grant = grant?;
-        handoff?;
+        let (grant, metadata) = if is_manifest {
+            // Exercise the complete miss-to-cache bridge with the very same
+            // opaque SDK selection retained across publication and closing Read.
+            let grant = driver
+                .prepare_file_backing(selection, mode, Duration::from_secs(10), now()? + 30)
+                .await?;
+            let file = std::fs::File::from(grant.as_fd().try_clone_to_owned()?);
+            terrane_linux::verity::measure(&file)?;
+            verify_bytes(&file, expected)?;
+            let metadata = file.metadata()?;
+            (grant, metadata)
+        } else {
+            let object = driver
+                .prepare_cold_file(&selection, mode, Duration::from_secs(10))
+                .await?;
+            let metadata = object.handle().metadata()?;
+            terrane_linux::verity::measure(object.handle())?;
+            verify_bytes(object.handle(), expected)?;
+            let grant = owner.prepare_file_backing(selection, now()? + 30).await;
+            // Failed authorization must still attempt genuine completed cache
+            // handoff; it never turns valid cached data into a disclosed result.
+            let handoff = object.into_cache().await;
+            let grant = grant?;
+            handoff?;
+            (grant, metadata)
+        };
         let actual = std::fs::File::from(grant.as_fd().try_clone_to_owned()?).metadata()?;
         if (actual.dev(), actual.ino()) != (metadata.dev(), metadata.ino()) {
             return Err("cold grant substituted the original sealed publication inode".into());
@@ -224,7 +238,9 @@ pub(super) async fn verify(cache: NativeConfiguredCache, source_parent: &Path) -
         let selection = repository
             .prepare_file_read(&view, b"file", fixture.authority.token(), "sdk")
             .await?;
-        let warm = owner.prepare_file_backing(selection, now()? + 30).await?;
+        let warm = driver
+            .prepare_file_backing(selection, mode, Duration::from_secs(10), now()? + 30)
+            .await?;
         let actual = std::fs::File::from(warm.as_fd().try_clone_to_owned()?).metadata()?;
         if (actual.dev(), actual.ino()) != (metadata.dev(), metadata.ino())
             || (

@@ -221,6 +221,36 @@ pending. The fixture retains the existing actor and VM deadlines. Production
 worker cold dispatch, retained fetch lifetime after open expiry and cancellation,
 and exposure/drain composition are still required before accepting T-FUSE-2.
 
+The next bridge joins warm and missing-file preparation without reconstructing
+repository authorization. A private preparation owns the exact original opaque
+SDK selection until its closing Read. Only a typed absence from the original
+whole-file registry permits cold fetching; filesystem NotFound, failed existing
+publication, faulted custody and integrity errors propagate. Warm grants retain
+the original inode and perform no lower content or manifest reads. Cold results
+attempt actual producer cache handoff even if closing authorization refuses.
+Exposure-scoped preparation checks the original mapped path/content and live
+file deadline before fetching or pinning, then attaches native backing protection
+before closing Read. The authenticated pending request can use this bridge and
+still orders final descriptor Send with durable drain on the physical owner.
+The serving owner must retain the preparation future through individual open
+expiry; this API does not implement that owner or production dispatch lifetime.
+
+Strict all-target Clippy passes for both all-feature and Tokio-only profiles.
+The configured guest now exercises the complete missing-manifest bridge and
+warm inline/manifest reuse, while retaining the inline primitive's independent
+pre-close seal and inode checks. Actual runtime and new-source mandatory
+workspace compilation remain pending. No native fixture runs on the host.
+
+The signed selection checkpoint `cc78a166a7` passes its hermetic metadata gate
+in 1,404.532 seconds. Complete independent review binds all 8,191 immutable
+source files and 5,447 inputs and verifies the exact 19 nonignored SDK cases:
+six file preparations, ten root preparations and three signed-policy cases.
+This proves signed metadata behavior only. The same source's owning index gate
+fails in 1,084.273 seconds when the original native owner actor exceeds its
+thirty-second bound during scoped index retirement. That failure remains
+retained; native signed zero-wipe qualification and the owning gate remain open.
+Neither actor nor guest deadlines are increased.
+
 The structural-index requirements audit distinguishes the qualified component
 from the remaining open-path composition:
 

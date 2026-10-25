@@ -74,18 +74,7 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
         mode: ReassemblyMode,
         budget: Duration,
     ) -> Result<NativeSealedObject<'_>, Error> {
-        if budget.is_zero()
-            || budget > Duration::from_secs(300)
-            || !budget.subsec_nanos().is_multiple_of(1_000_000)
-        {
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported).into());
-        }
-        let deadline = Instant::now() + budget;
-        selection.validate_storage_policy(&ColdFilePolicy { mode })?;
-        let native = self.native();
-        if selection.storage_domain() != native.ready.layout().layout().domain() {
-            return Err(Error::Denied);
-        }
+        let deadline = self.validate_cold_selection(selection, mode, budget)?;
 
         let prepared = timeout_at(deadline, self.prepare_cold_selected(selection, mode))
             .await
@@ -98,6 +87,27 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
             );
         }
         prepared
+    }
+
+    /// Checks immutable cold-route constraints before even a warm native pin.
+    pub(super) fn validate_cold_selection<T: Store, C: Clock>(
+        &self,
+        selection: &PreparedFileRead<'_, T, C>,
+        mode: ReassemblyMode,
+        budget: Duration,
+    ) -> Result<Instant, Error> {
+        if budget.is_zero()
+            || budget > Duration::from_secs(300)
+            || !budget.subsec_nanos().is_multiple_of(1_000_000)
+        {
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported).into());
+        }
+        let deadline = Instant::now() + budget;
+        selection.validate_storage_policy(&ColdFilePolicy { mode })?;
+        if selection.storage_domain() != self.native().ready.layout().layout().domain() {
+            return Err(Error::Denied);
+        }
+        Ok(deadline)
     }
 
     async fn prepare_cold_selected<T: Store, C: Clock>(

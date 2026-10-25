@@ -76,6 +76,9 @@ impl NativeExposureLease {
 
 pub(in crate::host_cache::owner) enum Operation {
     Check,
+    CheckFile {
+        expires: u64,
+    },
     Send {
         disclosure: Box<crate::worker_channel::Disclosure>,
     },
@@ -223,6 +226,21 @@ impl NativeMetadataOwner {
         Ok(())
     }
 
+    /// Checks that a file's live deadline fits its original active exposure.
+    ///
+    /// # Errors
+    /// Refuses foreign, expired or draining context, an outliving file deadline
+    /// and native queue or custody failures before accepting file work.
+    pub(in crate::host_cache::owner) async fn check_surface_file_deadline(
+        &self,
+        lease: &NativeExposureLease,
+        expires: u64,
+    ) -> io::Result<()> {
+        self.exposure_request(lease.clone(), Operation::CheckFile { expires })
+            .await?;
+        Ok(())
+    }
+
     /// Copies actual whole-object protection into this exposure's durable pins.
     ///
     /// # Errors
@@ -347,12 +365,21 @@ async fn transition(
                     return Err(invalid("exposure lost its original durable index binding"));
                 }
                 match operation {
-                    Operation::Check | Operation::ProtectObject { .. } | Operation::Send { .. }
+                    Operation::Check
+                    | Operation::CheckFile { .. }
+                    | Operation::ProtectObject { .. }
+                    | Operation::Send { .. }
                         if !row.accepts_work(lease.generation, now) =>
                     {
                         return Err(read_denied(&lease.id));
                     }
                     Operation::Check => return Ok(lease),
+                    Operation::CheckFile { expires } => {
+                        if expires <= now || expires > row.deadline {
+                            return Err(read_denied(&lease.id));
+                        }
+                        return Ok(lease);
+                    }
                     Operation::Send { disclosure } => {
                         let file = disclosure.file()?;
                         let (kind, hash) = disclosure.binding();

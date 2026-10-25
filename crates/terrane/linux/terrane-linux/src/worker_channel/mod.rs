@@ -22,7 +22,7 @@ pub use wire::{BackingRequest, ExposureContext, RequestedBacking};
 
 use crate::host_cache::{
     NativeExposureLease, NativeExposureRootBacking, NativeFileBacking, NativeMetadataOwner,
-    NativeRootIndex,
+    NativeReadDriver, NativeRootIndex,
 };
 use socket::Endpoint;
 use std::{
@@ -33,9 +33,10 @@ use std::{
 };
 use terrane_format::identity::Digest;
 use terrane_sdk::{
-    host::cache::ExposureBackingKind,
+    bucket::BucketBinding,
+    host::cache::{ExposureBackingKind, ReassemblyMode},
     repository::{Error, PreparedFileRead, PreparedRootRead},
-    store::{Clock, Store},
+    store::{Clock, ContentStore, Store},
 };
 use wire::invalid;
 
@@ -210,6 +211,63 @@ impl PendingRequest<'_> {
         selection: PreparedFileRead<'_, S, C>,
         expires: u64,
     ) -> Result<(), Error> {
+        self.check_file_selection(&selection)?;
+        let grant = owner
+            .prepare_exposure_file_backing(&self.channel.exposure, served, selection, expires)
+            .await?;
+        self.disclose(owner, Grant::File(grant)).await?;
+        self.completed = true;
+        Ok(())
+    }
+
+    /// Fetches a missing scoped file and sends only freshly authorized sealed backing.
+    ///
+    /// The original request, signed selection, mapped root and live exposure
+    /// deadline must match before fetching. Warm backing skips content fetches;
+    /// missing backing uses the driver's finite native publication pipeline.
+    /// The serving owner must retain this future after individual open deadlines,
+    /// then orders final live-exposure check and Send with durable drain.
+    ///
+    /// # Errors
+    /// Refuses mismatched requests or scope, unsupported signed storage policy,
+    /// failed original custody, fetching, publication, closing Read, cache
+    /// handoff and transport errors. Failure faults this connection without
+    /// acknowledging release of accepted physical obligations.
+    pub async fn grant_file_with_fetch<D, S, C>(
+        mut self,
+        driver: &NativeReadDriver<D>,
+        served: &NativeRootIndex,
+        selection: PreparedFileRead<'_, S, C>,
+        mode: ReassemblyMode,
+        budget: std::time::Duration,
+        expires: u64,
+    ) -> Result<(), Error>
+    where
+        D: ContentStore + BucketBinding,
+        S: Store,
+        C: Clock,
+    {
+        self.check_file_selection(&selection)?;
+        let grant = driver
+            .prepare_exposure_file_backing(
+                &self.channel.exposure,
+                served,
+                selection,
+                mode,
+                budget,
+                expires,
+            )
+            .await?;
+        self.disclose(driver.native().ready().owner(), Grant::File(grant))
+            .await?;
+        self.completed = true;
+        Ok(())
+    }
+
+    fn check_file_selection<S: Store, C: Clock>(
+        &self,
+        selection: &PreparedFileRead<'_, S, C>,
+    ) -> Result<(), Error> {
         let RequestedBacking::File { path, content } = &self.request.backing else {
             return Err(Error::Denied);
         };
@@ -218,11 +276,6 @@ impl PendingRequest<'_> {
         {
             return Err(Error::Denied);
         }
-        let grant = owner
-            .prepare_exposure_file_backing(&self.channel.exposure, served, selection, expires)
-            .await?;
-        self.disclose(owner, Grant::File(grant)).await?;
-        self.completed = true;
         Ok(())
     }
 

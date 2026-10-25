@@ -39,6 +39,21 @@ enum Origin {
     Recovery(RecoveredOrigin),
 }
 
+/// Marks absence in the original whole-file registry, before selecting a source.
+///
+/// A missing pathname or failed existing publication is not this condition and
+/// must never cause an authorized cold-open path to fetch a replacement.
+#[derive(Debug)]
+pub(in crate::host_cache::owner) struct MissingWholeFile;
+
+impl std::fmt::Display for MissingWholeFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("verified registered whole file absent")
+    }
+}
+
+impl std::error::Error for MissingWholeFile {}
+
 impl SealedObjectSource {
     /// Selects original completed publication custody on the physical worker.
     ///

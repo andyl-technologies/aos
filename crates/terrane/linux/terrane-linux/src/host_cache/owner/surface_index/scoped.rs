@@ -257,6 +257,27 @@ impl NativeMetadataOwner {
             .await
     }
 
+    /// Preserves an original scoped Read while checking for existing exposure backing.
+    ///
+    /// # Errors
+    /// Refuses mismatched roots, paths, content, domain or exposure deadlines
+    /// and every failure involving existing original backing. Only an absent
+    /// registered whole file returns `Missing`, before any file pin effects.
+    pub(crate) async fn try_prepare_exposure_selected_file<'repository, S: Store, C: Clock>(
+        &self,
+        exposure: &NativeExposureLease,
+        served: &NativeRootIndex,
+        selection: PreparedFileRead<'repository, S, C>,
+        expires: u64,
+    ) -> Result<super::super::NativeFilePreparation<'repository, S, C>, Error> {
+        if exposure.commit() != served.commit || exposure.key() != served.key() {
+            return Err(Error::Denied);
+        }
+        check_file_scope(served, &selection)?;
+        self.try_prepare_selected_file(selection, expires, Some(exposure))
+            .await
+    }
+
     async fn admit_prepared_root<S: Store, C: Clock>(
         &self,
         selection: &PreparedRootRead<'_, S, C>,

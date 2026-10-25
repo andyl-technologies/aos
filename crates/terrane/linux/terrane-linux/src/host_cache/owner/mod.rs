@@ -58,6 +58,7 @@ pub use admission::{
     NativeMetadataAdmissionError,
 };
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig, SurfaceIndexPolicy};
+pub(crate) use consumer::NativeFilePreparation;
 pub use consumer::{
     NativeConsumerLease, NativeFileBacking, NativeLeaseAccounting, NativeSealedBacking,
     NativeSealedObjectLease,
