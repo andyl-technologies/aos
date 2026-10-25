@@ -44,6 +44,8 @@ class ExecutionTraceTests(unittest.TestCase):
             complete.replace("execve(", "execveat("),
             complete.replace("0x123 /* 3 vars */", "unrecognized"),
             complete.replace(" = 0", " = ?"),
+            complete.replace(" = 0", " = -1 unknown"),
+            complete.replace('["compiler", "source.rs"]', "[...]").replace(" = 0", " = -1 ENOENT (No such file or directory)"),
             complete.removesuffix(" = 0\n") + " <unfinished ...>\n" + complete,
         ]
         for trace in invalid:
@@ -92,7 +94,7 @@ class CompilerInspectionTests(unittest.TestCase):
                     self.inspect()
 
     def test_missing_compiler_or_linker_is_rejected(self):
-        for missing in [str(self.rustc), str(self.linker)]:
+        for missing in [str(self.rustc), str(self.gcc), str(self.linker)]:
             with self.subTest(missing=missing):
                 self.trace.write_text("\n".join(line for line in self.valid.splitlines() if missing not in line) + "\n")
                 with self.assertRaises(ValueError):

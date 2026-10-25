@@ -45,10 +45,8 @@ def parse_execution_trace(contents):
         call = re.fullmatch(r"execve\((.*)\)\s+= (.*)", message)
         if call is None:
             raise ValueError("unsupported execution trace record")
-        if call[2].startswith("-1 "):
-            failed += 1
-            continue
-        if call[2] != "0":
+        unsuccessful = re.fullmatch(r"-1 [A-Z][A-Z0-9_]+ \([^\n]*\)", call[2]) is not None
+        if call[2] != "0" and not unsuccessful:
             raise ValueError("unknown execution result")
 
         arguments = call[1]
@@ -64,6 +62,9 @@ def parse_execution_trace(contents):
             raise ValueError("missing executable path")
         if not isinstance(vector, list) or not vector or not all(isinstance(arg, str) for arg in vector):
             raise ValueError("incomplete execution argument vector")
+        if unsuccessful:
+            failed += 1
+            continue
         executions.append({"pid": pid, "executable": executable, "arguments": vector})
 
     if pending:
@@ -102,8 +103,9 @@ def inspect(trace, cargo_arguments, rustc, gcc, linker):
 
     native = [record for record in parsed["executions"]
               if record["executable"] in {str(gcc), str(linker)}]
-    if not any(record["executable"] == str(linker) for record in native):
-        raise ValueError("no observed declared native linker")
+    for tool in [gcc, linker]:
+        if not any(record["executable"] == str(tool) for record in native):
+            raise ValueError("no observed declared native compiler or linker: " + str(tool))
 
     return {
         "schema_version": 1,

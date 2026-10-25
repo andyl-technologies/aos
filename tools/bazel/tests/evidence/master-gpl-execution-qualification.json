@@ -1,6 +1,7 @@
 {
   "checkpoint": "5b7a01cb7a8795574f4db4e8d3352d9f4ccd9a96",
   "compiler_execution": {
+    "checkpoint": "d1b0e3db2a18af27edd5046dff5ab23752e37dba",
     "command": "nix-build default.nix -A checks.build.bazel.qemu-gpl.cargo-execution-inspection --no-out-link --max-jobs 4 --cores 4 --option substitute false",
     "execution": {
       "compiler_invocations": 65,
@@ -45,8 +46,8 @@
       },
       "failed_exec_attempts": 194,
       "inputs_sha256": {
-        "execution": "bc58a3a19e7564812e9272d59d0dfaba6c4909ad321570268a46ae420b5ec876",
-        "requested": "2daa480778624d90b5662ee7bd18e16cd8a5c9debffc0a2d21759eb7d16d3b70"
+        "execution": "2cc6a0b39bf70aac96bf0a256febb36d2506d7cb03cf956a8ebf448ab430872e",
+        "requested": "a9594deb5fd337b77f91b9360559624025e52b0fee99a5db8926e75c8b08a804"
       },
       "limits": [
         "This records Cargo compiler and native linker execution, not compiler defaults or Bazel/Cargo semantic equivalence.",
@@ -96,7 +97,7 @@
       }
     ],
     "inputs": {
-      "cargo": "/nix/store/y8f1jj7pikq6hr43cng9pl6qg1p8xxa6-aos-bazel-qemu-gpl-production-cargo-exec-trace-1",
+      "cargo": "/nix/store/c7y7awj8bv0iiryw77anbw0r4hbmdsq6-aos-bazel-qemu-gpl-production-cargo-exec-trace-1",
       "gcc": "/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/bin/gcc",
       "linker": "/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin/ld",
       "rustc": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc.unwrapped",
@@ -104,11 +105,12 @@
       "toolchain_closure": "/nix/store/9dizm1lf8k53vq8h8047smhwwhy7s8p6-aos-bazel-qemu-gpl-compiler-execution-inspection-toolchain-closure-1"
     },
     "native_executions": 36,
-    "output": "/nix/store/y0mfxv45vqw8v540a5c7kg9sxa6m35dg-aos-bazel-qemu-gpl-compiler-execution-inspection",
-    "parser_tests": "test_extra_compilation_or_version_flags_are_rejected (test_compiler_execution.CompilerInspectionTests.test_extra_compilation_or_version_flags_are_rejected) ... ok\ntest_missing_compiler_or_linker_is_rejected (test_compiler_execution.CompilerInspectionTests.test_missing_compiler_or_linker_is_rejected) ... ok\ntest_only_observed_noncompiling_direct_queries_are_admitted (test_compiler_execution.CompilerInspectionTests.test_only_observed_noncompiling_direct_queries_are_admitted) ... ok\ntest_concurrent_resumption_preserves_process_and_arguments (test_compiler_execution.ExecutionTraceTests.test_concurrent_resumption_preserves_process_and_arguments) ... ok\ntest_failed_path_lookup_is_not_successful_execution (test_compiler_execution.ExecutionTraceTests.test_failed_path_lookup_is_not_successful_execution) ... ok\ntest_partial_abbreviated_and_unknown_records_fail_closed (test_compiler_execution.ExecutionTraceTests.test_partial_abbreviated_and_unknown_records_fail_closed) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.005s\n\nOK\n",
+    "output": "/nix/store/rrifhx8hfgrdyzrq82m7nrfnb7b9110n-aos-bazel-qemu-gpl-compiler-execution-inspection",
+    "parser_tests": "test_extra_compilation_or_version_flags_are_rejected (test_compiler_execution.CompilerInspectionTests.test_extra_compilation_or_version_flags_are_rejected) ... ok\ntest_missing_compiler_or_linker_is_rejected (test_compiler_execution.CompilerInspectionTests.test_missing_compiler_or_linker_is_rejected) ... ok\ntest_only_observed_noncompiling_direct_queries_are_admitted (test_compiler_execution.CompilerInspectionTests.test_only_observed_noncompiling_direct_queries_are_admitted) ... ok\ntest_concurrent_resumption_preserves_process_and_arguments (test_compiler_execution.ExecutionTraceTests.test_concurrent_resumption_preserves_process_and_arguments) ... ok\ntest_failed_path_lookup_is_not_successful_execution (test_compiler_execution.ExecutionTraceTests.test_failed_path_lookup_is_not_successful_execution) ... ok\ntest_partial_abbreviated_and_unknown_records_fail_closed (test_compiler_execution.ExecutionTraceTests.test_partial_abbreviated_and_unknown_records_fail_closed) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.007s\n\nOK\n",
+    "previous_output": "/nix/store/y0mfxv45vqw8v540a5c7kg9sxa6m35dg-aos-bazel-qemu-gpl-compiler-execution-inspection",
     "reports_sha256": {
-      "execution.json": "45af737cb9bda16c3abf0e9d1e0539f6d013154c51068163fcc407e81f16eaff",
-      "parser-tests.log": "97520269c0c4fdfc4129db83ed0043bc6b24c027135dae7b9a788a07a24c2856",
+      "execution.json": "97ecf5d948bb8a4e2f09694ab96d294adfdca3e338df28cc1e2d5207679899bc",
+      "parser-tests.log": "8455407686b9242058a930c111eadd45b872cccc1125df2567cb15c1a4718268",
       "toolchain-closure.json": "fd0718f770be91f08f29fc87447a6a8c2cd0375dd7bb4a7900fffa6f96fc5142"
     },
     "toolchain_closure_paths": 17
@@ -228,8 +230,8 @@
     "tests/build/_bazel-qemu-gpl-cargo.nix": "339762c4cdb34ea7b66a3568148bfd9cfbfb0998a0bb811249dcef83da7cb02a",
     "tests/build/_bazel-qemu-gpl.nix": "d99cb6cffdc957a0b48186b3f2f1f7e44948dab474c1e6e0b1cbd6aadcd9f056",
     "tests/crucible/phase7-production-rust-plugin-flight.nix": "bfefce328506823b515915f463e9c81f7ad711e82d3889a4f891efc6e6773dc3",
-    "tools/bazel/tests/inspect_compiler_execution.py": "c60e7bc11db6b388ed15efb406512e0149c74d889210f71c9e2a1044c4aadb48",
-    "tools/bazel/tests/test_compiler_execution.py": "29efcd9af683edd47749cbcc1b0b46638f8a20efca8d9c60fd355718a61710f2"
+    "tools/bazel/tests/inspect_compiler_execution.py": "3059a84fc17bb26183e4ed2beb089d932c59ca064f3d1a1fb0d9fbacba41a43e",
+    "tools/bazel/tests/test_compiler_execution.py": "d90af5636d60614f84c5f4c6b79bced2afa3d645b927eb07924736799d246df4"
   },
   "status": "PASS: observed compiler execution and selected Bazel plugin VM flight"
 }

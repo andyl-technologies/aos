@@ -37,6 +37,23 @@ profiles, native ABI, linker closure, and runtime comparisons remain independent
 gates. `../tests/evidence/cli-compiler-input-reconstruction.json` binds the
 reconstruction checkpoint to its exact source and execution inputs.
 
+The Cargo baseline can retain actual process execution as an independent
+wrapper check. The GPL production oracle opts into source-built `strace`
+inside the Nix sandbox; the inspection gate requires all requested Rust
+compiler calls to reach the declared unwrapped executable and observes the
+declared GCC and linker. Concurrent calls are reassembled by process ID;
+abbreviated, incomplete, or unsupported records fail closed. Environment
+values are omitted. The gate retains tool executable hashes and their Nix
+closure inventory alongside the observed commands:
+
+```text
+nix-build -A checks.build.bazel.qemu-gpl.cargo-execution-inspection --no-out-link
+```
+
+This observes execution, without establishing compiler-default equivalence or
+expanding native linker response files. The GPL component documentation links
+the retained run and its exact limitations.
+
 The conformance check builds the pinned process wrapper from source with AOS
 Rust, then compares its actual child arguments and selected environment values
 with the reconstruction model. Run it with:
