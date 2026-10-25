@@ -28,8 +28,12 @@ impl CompactClientCustody {
     /// Refuses unsupported tree layouts, arithmetic overflow or backing above
     /// the independent supplied restriction.
     pub fn journal_retained_storage_data(&self, maximum: usize) -> Result<usize, ProviderError> {
-        let entries = self.maximum_requests.checked_mul(2).ok_or_else(refused)?;
-        let banks = CompactJson::maximum_storage_bytes(self.maximum_bytes, maximum)?;
+        let entries = self
+            .journal
+            .maximum_requests
+            .checked_mul(2)
+            .ok_or_else(refused)?;
+        let banks = CompactJson::maximum_storage_bytes(self.journal.maximum_bytes, maximum)?;
         let trees = tree_storage_data(
             2,
             entries,

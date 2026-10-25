@@ -83,23 +83,28 @@ fn both_namespaces_preserve_complete_banks_and_independent_identity_capacity() -
     request.request_id.0 = Some(id.clone());
 
     for origin in [RequestOrigin::Controller, RequestOrigin::Provider] {
-        custody.retain_request(origin, &request, 0, 65_536)?;
-        let retained = custody.journal_mut(origin).get_mut(&id).unwrap();
+        custody
+            .journal
+            .retain_request(origin, &request, 0, 65_536)?;
+        let retained = custody.journal.namespace_mut(origin).get_mut(&id).unwrap();
         retained.identity.algorithm.reserve(517);
         retained.identity.domain.reserve(521);
         retained.identity.digest.reserve(523);
         let mut response = request.clone();
         response.sequence = U64::new(19);
         response.message = crate::envelope::MessageKind::Response;
-        custody.hold(origin, response)?;
-        custody.complete_response(&id)?;
-        let retained = custody.journal_mut(origin).remove(&id).unwrap();
+        custody.journal.hold(origin, response)?;
+        custody.journal.complete_response(&id)?;
+        let retained = custody.journal.namespace_mut(origin).remove(&id).unwrap();
         let mut key = String::with_capacity(1021);
         key.push_str(id.as_str());
-        custody.journal_mut(origin).insert(Id::new(key)?, retained);
+        custody
+            .journal
+            .namespace_mut(origin)
+            .insert(Id::new(key)?, retained);
     }
 
-    let charged = custody.retained_bytes;
+    let charged = custody.journal.retained_bytes;
     let historical = roundtrip(&custody)?;
     assert_eq!(historical.journal_limits_data()[2], charged);
     for origin in [RequestOrigin::Controller, RequestOrigin::Provider] {
@@ -125,7 +130,7 @@ fn pending_and_quarantined_populations_preserve_spares_and_float_bits() -> TestR
     envelope.body.insert("array".into(), Value::Array(array));
     envelope.body.insert("text".into(), Value::String(text));
     let mut raw = envelope.clone();
-    custody.hold(RequestOrigin::Provider, envelope)?;
+    custody.journal.hold(RequestOrigin::Provider, envelope)?;
     raw.protocol.reserve(2048);
     let typed = NotificationBody {
         operation_state: OperationState::Unknown,
@@ -136,7 +141,7 @@ fn pending_and_quarantined_populations_preserve_spares_and_float_bits() -> TestR
             .clone(),
         extensions: Default::default(),
     };
-    custody.unexpected = Some(ReceivedFrame {
+    custody.journal.unexpected = Some(ReceivedFrame {
         envelope: raw,
         body: ReceivedBody::Notification(Box::new(typed)),
     });
@@ -172,7 +177,7 @@ fn bootstrap_vocabulary_is_explicit_and_invalid_typed_funding_remains_data() -> 
         },
     };
     assert!(typed.validate_data().is_err());
-    custody.unexpected = Some(ReceivedFrame {
+    custody.journal.unexpected = Some(ReceivedFrame {
         envelope,
         body: ReceivedBody::NativeImport18Bootstrap(Box::new(
             PacketNativeImport18BootstrapReceivedBody::Request(typed),
@@ -216,7 +221,9 @@ fn bootstrap_vocabulary_is_explicit_and_invalid_typed_funding_remains_data() -> 
 #[test]
 fn whole_history_refuses_truncations_editions_rows_and_short_restrictions() -> TestResult {
     let (_lease, _session, mut custody, _peer, request) = fixture(BANK_BYTES);
-    custody.retain_request(RequestOrigin::Controller, &request, 0, 65_536)?;
+    custody
+        .journal
+        .retain_request(RequestOrigin::Controller, &request, 0, 65_536)?;
     let encoded = capture(&custody)?;
     let bound = limits(&encoded);
     for end in 0..encoded.len() {
@@ -304,13 +311,15 @@ fn whole_history_refuses_truncations_editions_rows_and_short_restrictions() -> T
 #[test]
 fn record_capture_refusal_preserves_original_credit_and_partial_caller_bank() -> TestResult {
     let (_lease, _session, mut custody, _peer, request) = fixture(BANK_BYTES);
-    custody.retain_request(RequestOrigin::Controller, &request, 0, 65_536)?;
-    let charge = custody.retained_bytes;
+    custody
+        .journal
+        .retain_request(RequestOrigin::Controller, &request, 0, 65_536)?;
+    let charge = custody.journal.retained_bytes;
     let mut records = MetadataRecordBank::reserve(1)?;
 
     assert!(custody.physical_custody18_data(&mut records).is_err());
     assert_eq!(records.rows().len(), 1);
-    assert_eq!(custody.retained_bytes, charge);
+    assert_eq!(custody.journal.retained_bytes, charge);
     assert_eq!(custody.originals().count(), 1);
     roundtrip(&custody)?;
     Ok(())

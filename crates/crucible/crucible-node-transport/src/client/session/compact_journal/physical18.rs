@@ -16,7 +16,7 @@
 //! no other custody field shares those allocations. Imported history has no
 //! extractor into live custody and creates no Source, receipt or native rights.
 
-use super::{CompactClientCustody, CompactClientOriginal, PendingEnvelope};
+use super::{CompactClientCustody, CompactClientJournal, CompactClientOriginal, PendingEnvelope};
 use crate::ProviderError;
 use crate::connection::{ReceivedBody, ReceivedFrame};
 use crate::retained_metadata::{MetadataObserver, records::*};
@@ -89,10 +89,17 @@ impl CompactClientCustody {
         records: &'a mut MetadataRecordBank,
         edition: Edition,
     ) -> Result<impl Serialize + 'a, ProviderError> {
-        if edition == Edition::Coupled18 && self.maximum_bytes != self.content.byte_ceiling() {
+        if edition == Edition::Coupled18
+            && self.journal.maximum_bytes != self.content.byte_ceiling()
+        {
             return Err(invalid());
         }
-        for original in self.controller.values().chain(self.provider.values()) {
+        for original in self
+            .journal
+            .controller
+            .values()
+            .chain(self.journal.provider.values())
+        {
             original.request.physical18_data()?;
             if let Some(response) = &original.response {
                 response.physical18_data()?;
@@ -131,17 +138,17 @@ struct CustodyFields<'a>(&'a CompactClientCustody);
 
 impl Serialize for CustodyFields<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let CompactClientCustody {
+        let CompactClientCustody { journal, content } = self.0;
+        let CompactClientJournal {
             maximum_requests,
             maximum_bytes,
             retained_bytes,
             maximum_envelope_bank_bytes,
             controller,
             provider,
-            content,
             pending,
             unexpected,
-        } = self.0;
+        } = journal;
         (
             maximum_requests,
             maximum_bytes,
@@ -258,10 +265,10 @@ impl HistoricalCompactCustody18 {
     /// Reports unchanged lifetime ceilings and consumed canonical-byte credit.
     pub fn journal_limits_data(&self) -> [usize; 4] {
         [
-            self.custody.maximum_requests,
-            self.custody.maximum_bytes,
-            self.custody.retained_bytes,
-            self.custody.maximum_envelope_bank_bytes,
+            self.custody.journal.maximum_requests,
+            self.custody.journal.maximum_bytes,
+            self.custody.journal.retained_bytes,
+            self.custody.journal.maximum_envelope_bank_bytes,
         ]
     }
 

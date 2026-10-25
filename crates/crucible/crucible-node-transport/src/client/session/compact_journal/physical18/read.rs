@@ -4,7 +4,9 @@
 //! Capacity records bound the complete String/Vec population; content8 owns and
 //! validates every local shared edge. Tree and Box geometry remain separate.
 
-use super::super::{CompactClientCustody, CompactClientOriginal, PendingEnvelope};
+use super::super::{
+    CompactClientCustody, CompactClientJournal, CompactClientOriginal, PendingEnvelope,
+};
 use super::{CompactCustody18Limits, Edition, invalid, refused};
 use crate::ProviderError;
 use crate::client::{
@@ -151,15 +153,17 @@ fn read(
     }
 
     Ok(Some(CompactClientCustody {
-        maximum_requests,
-        maximum_bytes,
-        retained_bytes,
-        maximum_envelope_bank_bytes,
-        controller,
-        provider,
+        journal: CompactClientJournal {
+            maximum_requests,
+            maximum_bytes,
+            retained_bytes,
+            maximum_envelope_bank_bytes,
+            controller,
+            provider,
+            pending,
+            unexpected,
+        },
         content: ClientContent::decode_compact_metadata8_data(content_bytes, limits.content)?,
-        pending,
-        unexpected,
     }))
 }
 

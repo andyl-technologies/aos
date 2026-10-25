@@ -17,7 +17,7 @@ fn outgoing_frame_preflight_precedes_hash_validation_and_retention() -> TestResu
         .insert("large".into(), json!("x".repeat(frame)));
     let (_, canonical) = CompactJson::envelope_extents(&request, BANK_BYTES, CONTENT_BYTES)?;
     assert!(canonical > frame);
-    assert!(canonical < custody.maximum_bytes);
+    assert!(canonical < custody.journal.maximum_bytes);
     let original = request.clone();
 
     let result = session.exchange_compact(&mut custody, &mut request, Duration::from_secs(2));

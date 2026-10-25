@@ -106,11 +106,13 @@ fn both_ceiling_orders_preserve_originals_and_consumed_journal_credit() -> TestR
         let id = Id::new("independent-original")?;
         request.request_id.0 = Some(id.clone());
         for origin in [RequestOrigin::Controller, RequestOrigin::Provider] {
-            custody.retain_request(origin, &request, 0, 65_536)?;
+            custody
+                .journal
+                .retain_request(origin, &request, 0, 65_536)?;
             let mut response = request.clone();
             response.message = MessageKind::Response;
-            custody.hold(origin, response)?;
-            custody.complete_response(&id)?;
+            custody.journal.hold(origin, response)?;
+            custody.journal.complete_response(&id)?;
         }
         let consumed = custody.retained_journal_bytes();
         assert!(consumed > 0);
@@ -145,6 +147,7 @@ fn neither_unused_budget_can_fund_the_other_population() -> TestResult {
         .insert("payload".into(), json!("x".repeat(2048)));
     assert!(
         custody
+            .journal
             .retain_request(RequestOrigin::Controller, &request, 0, 65_536)
             .is_err()
     );
@@ -161,7 +164,7 @@ fn neither_unused_budget_can_fund_the_other_population() -> TestResult {
     let reference =
         crucible_node_format::canonical::content_ref(bytes, "application/octet-stream")?;
     assert!(custody.content.install(reference, bytes.to_vec()).is_err());
-    assert_eq!(custody.maximum_bytes, 65_536);
+    assert_eq!(custody.journal.maximum_bytes, 65_536);
     assert_eq!(custody.retained_journal_bytes(), 0);
     Ok(())
 }
@@ -360,8 +363,10 @@ fn failed_received_owners_keep_independent_details_and_capacity() -> TestResult 
         9 * 4096,
     )?;
     request.protocol.reserve(1024);
-    custody.hold(RequestOrigin::Controller, request.clone())?;
-    custody.unexpected = Some(ReceivedFrame {
+    custody
+        .journal
+        .hold(RequestOrigin::Controller, request.clone())?;
+    custody.journal.unexpected = Some(ReceivedFrame {
         envelope: request,
         body: ReceivedBody::Notification(Box::new(crate::bodies::NotificationBody {
             operation_state: crate::bodies::OperationState::Unknown,

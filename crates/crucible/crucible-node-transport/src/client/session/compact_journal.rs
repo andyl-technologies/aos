@@ -18,6 +18,9 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 mod identity;
+mod journal;
+mod prefix;
+use prefix::CompactJournalPrefix;
 pub mod physical18;
 pub mod physical19;
 mod storage;
@@ -138,6 +141,21 @@ struct PendingEnvelope {
     envelope: Envelope,
 }
 
+/// Owns compact journals independently of immutable content custody.
+///
+/// This private SDK component preserves unrecycled request and byte credit,
+/// including all pending and unsupported received originals.
+pub(in crate::client) struct CompactClientJournal {
+    maximum_requests: usize,
+    maximum_bytes: usize,
+    retained_bytes: usize,
+    maximum_envelope_bank_bytes: usize,
+    controller: BTreeMap<Id, CompactClientOriginal>,
+    provider: BTreeMap<Id, CompactClientOriginal>,
+    pending: Option<PendingEnvelope>,
+    unexpected: Option<crate::connection::ReceivedFrame>,
+}
+
 /// Owns finite compact journals and complete received-envelope failure custody.
 ///
 /// Request namespaces and canonical-byte credit are independently unrecycled.
@@ -149,15 +167,8 @@ struct PendingEnvelope {
 /// rights. Callers independently fund construction, all received failure
 /// prefixes, serialization and transient materialization before invoking it.
 pub struct CompactClientCustody {
-    maximum_requests: usize,
-    maximum_bytes: usize,
-    retained_bytes: usize,
-    maximum_envelope_bank_bytes: usize,
-    controller: BTreeMap<Id, CompactClientOriginal>,
-    provider: BTreeMap<Id, CompactClientOriginal>,
+    journal: CompactClientJournal,
     content: ClientContent,
-    pending: Option<PendingEnvelope>,
-    unexpected: Option<crate::connection::ReceivedFrame>,
 }
 
 impl CompactClientCustody {
@@ -181,35 +192,10 @@ impl CompactClientCustody {
         &self,
         observer: &mut crate::retained_metadata::MetadataObserver<'_>,
     ) -> Result<(), ProviderError> {
-        let Self {
-            maximum_requests,
-            maximum_bytes,
-            retained_bytes,
-            maximum_envelope_bank_bytes,
-            controller,
-            provider,
-            content,
-            pending,
-            unexpected,
-        } = self;
-        observer.observe(maximum_requests)?;
-        observer.observe(maximum_bytes)?;
-        observer.observe(retained_bytes)?;
-        observer.observe(maximum_envelope_bank_bytes)?;
-        observer.observe(controller)?;
-        observer.observe(provider)?;
+        let Self { journal, content } = self;
+        journal.observe_originals_metadata(observer)?;
         content.observe_owned_metadata(observer)?;
-        if let Some(PendingEnvelope {
-            origin: _,
-            envelope,
-        }) = pending
-        {
-            observer.observe(envelope)?;
-        }
-        if let Some(frame) = unexpected {
-            observe_unexpected_frame(frame, observer)?;
-        }
-        Ok(())
+        journal.observe_pending_metadata(observer)
     }
 
     /// Constructs empty journals under unchanged request and content ceilings.
@@ -257,13 +243,12 @@ impl CompactClientCustody {
         content: ClientContent,
         maximum_envelope_bank_bytes: usize,
     ) -> Result<Self, ProviderError> {
-        validate_journal_limits(maximum_requests, maximum_bytes, maximum_envelope_bank_bytes)?;
-        Ok(Self::empty(
+        let journal = CompactClientJournal::new(
             maximum_requests,
             maximum_bytes,
-            content,
             maximum_envelope_bank_bytes,
-        ))
+        )?;
+        Ok(Self { journal, content })
     }
 
     /// Retains independent-ceiling custody directly from original content slots.
@@ -291,44 +276,27 @@ impl CompactClientCustody {
         if content.is_none() || output.is_some() {
             return Err(changed());
         }
-        validate_journal_limits(maximum_requests, maximum_bytes, maximum_envelope_bank_bytes)?;
+        let journal = CompactClientJournal::new(
+            maximum_requests,
+            maximum_bytes,
+            maximum_envelope_bank_bytes,
+        )?;
         let content = content.take().ok_or_else(changed)?;
-        *output = Some(Self::empty(
-            maximum_requests,
-            maximum_bytes,
-            content,
-            maximum_envelope_bank_bytes,
-        ));
+        *output = Some(Self { journal, content });
         Ok(())
-    }
-
-    fn empty(
-        maximum_requests: usize,
-        maximum_bytes: usize,
-        content: ClientContent,
-        maximum_envelope_bank_bytes: usize,
-    ) -> Self {
-        Self {
-            maximum_requests,
-            maximum_bytes,
-            retained_bytes: 0,
-            maximum_envelope_bank_bytes,
-            controller: BTreeMap::new(),
-            provider: BTreeMap::new(),
-            content,
-            pending: None,
-            unexpected: None,
-        }
     }
 
     /// Borrows an original from its explicit endpoint namespace.
     pub fn original(&self, origin: RequestOrigin, id: &Id) -> Option<&CompactClientOriginal> {
-        self.journal(origin).get(id)
+        self.journal.namespace(origin).get(id)
     }
 
     /// Enumerates both namespaces without materialization or allocation.
     pub fn originals(&self) -> impl Iterator<Item = &CompactClientOriginal> {
-        self.controller.values().chain(self.provider.values())
+        self.journal
+            .controller
+            .values()
+            .chain(self.journal.provider.values())
     }
 
     /// Enumerates one namespace without inferring origin from IDs or methods.
@@ -336,7 +304,7 @@ impl CompactClientCustody {
         &self,
         origin: RequestOrigin,
     ) -> impl Iterator<Item = &CompactClientOriginal> {
-        self.journal(origin).values()
+        self.journal.namespace(origin).values()
     }
 
     /// Borrows a received original retained after a failed accounting or copy step.
@@ -344,7 +312,8 @@ impl CompactClientCustody {
     /// The origin names the original request namespace, including a controller
     /// response. This view grants neither settlement nor permission to retry.
     pub fn pending_envelope(&self) -> Option<(RequestOrigin, &Envelope)> {
-        self.pending
+        self.journal
+            .pending
             .as_ref()
             .map(|pending| (pending.origin, &pending.envelope))
     }
@@ -354,139 +323,17 @@ impl CompactClientCustody {
     /// The typed body can own backing independently of its envelope. This view
     /// grants no bootstrap, Source or native rights; further exchanges refuse.
     pub fn unexpected_frame(&self) -> Option<&crate::connection::ReceivedFrame> {
-        self.unexpected.as_ref()
+        self.journal.unexpected.as_ref()
     }
 
     /// Reports actual unrecycled canonical request and response bytes.
     pub fn retained_journal_bytes(&self) -> usize {
-        self.retained_bytes
+        self.journal.retained_bytes
     }
 
     /// Borrows immutable content custody independently of journal bank storage.
     pub fn content(&self) -> &ClientContent {
         &self.content
-    }
-
-    fn journal(&self, origin: RequestOrigin) -> &BTreeMap<Id, CompactClientOriginal> {
-        match origin {
-            RequestOrigin::Controller => &self.controller,
-            RequestOrigin::Provider => &self.provider,
-        }
-    }
-
-    fn journal_mut(&mut self, origin: RequestOrigin) -> &mut BTreeMap<Id, CompactClientOriginal> {
-        match origin {
-            RequestOrigin::Controller => &mut self.controller,
-            RequestOrigin::Provider => &mut self.provider,
-        }
-    }
-
-    fn ensure_room(&self, additional: usize) -> Result<(), ProviderError> {
-        self.retained_bytes
-            .checked_add(additional)
-            .filter(|&bytes| bytes <= self.maximum_bytes)
-            .map(|_| ())
-            .ok_or_else(credit)
-    }
-
-    fn retain_bytes(&mut self, additional: usize) -> Result<(), ProviderError> {
-        self.ensure_room(additional)?;
-        self.retained_bytes += additional;
-        Ok(())
-    }
-
-    fn retain_request(
-        &mut self,
-        origin: RequestOrigin,
-        request: &Envelope,
-        response_room: usize,
-        maximum_frame_bytes: usize,
-    ) -> Result<(), ProviderError> {
-        let id = request.request_id.0.as_ref().ok_or_else(changed)?;
-        let retry = self.journal(origin).contains_key(id);
-        let bytes = self.preflight_envelope_with_limit(request, retry, maximum_frame_bytes)?;
-        let identity = identity::request_hash(request, origin, bytes)?;
-        if let Some(original) = self.journal(origin).get(id) {
-            if original.identity != identity {
-                return Err(changed());
-            }
-            if !original.has_response() {
-                self.ensure_room(response_room)?;
-            }
-            return Ok(());
-        }
-        if self.journal(origin).len() >= self.maximum_requests {
-            return Err(credit());
-        }
-        self.ensure_room(bytes.checked_add(response_room).ok_or_else(credit)?)?;
-        let bank = CompactJson::from_envelope(request, self.maximum_envelope_bank_bytes)?;
-        self.retain_bytes(bytes)?;
-        self.journal_mut(origin).insert(
-            id.clone(),
-            CompactClientOriginal {
-                request: bank,
-                identity,
-                response: None,
-            },
-        );
-        Ok(())
-    }
-
-    fn hold(&mut self, origin: RequestOrigin, envelope: Envelope) -> Result<(), ProviderError> {
-        if self.pending.is_some() {
-            return Err(changed());
-        }
-        self.pending = Some(PendingEnvelope { origin, envelope });
-        Ok(())
-    }
-
-    fn complete_response(&mut self, id: &Id) -> Result<Envelope, ProviderError> {
-        let pending = self.pending.as_ref().ok_or_else(changed)?;
-        let bytes = self.preflight_envelope(&pending.envelope, false)?;
-        self.ensure_room(bytes)?;
-        let bank = CompactJson::from_envelope(&pending.envelope, self.maximum_envelope_bank_bytes)?;
-        let origin = pending.origin;
-        // The exclusive borrow keeps this checked entry present throughout the
-        // scalar charge and response installation.
-        if !self.journal(origin).contains_key(id) {
-            return Err(changed());
-        }
-        self.retain_bytes(bytes)?;
-        self.journal_mut(origin)
-            .get_mut(id)
-            .ok_or_else(changed)?
-            .response = Some(bank);
-        self.pending
-            .take()
-            .map(|pending| pending.envelope)
-            .ok_or_else(changed)
-    }
-
-    fn preflight_envelope(&self, envelope: &Envelope, retry: bool) -> Result<usize, ProviderError> {
-        self.preflight_envelope_with_limit(envelope, retry, self.maximum_bytes)
-    }
-
-    fn preflight_envelope_with_limit(
-        &self,
-        envelope: &Envelope,
-        retry: bool,
-        maximum_canonical_bytes: usize,
-    ) -> Result<usize, ProviderError> {
-        // Only sequence is mutable on a same-identity retry. Its decimal U64
-        // string can grow to twenty bytes after the original was journaled.
-        // This slack bounds preflight work only: no new bank or byte credit is
-        // granted, and changed retry bodies still fail the defining hash check.
-        let sequence_slack = if retry { 20 } else { 0 };
-        let bank = self
-            .maximum_envelope_bank_bytes
-            .checked_add(sequence_slack)
-            .ok_or_else(credit)?;
-        let canonical = self
-            .maximum_bytes
-            .min(maximum_canonical_bytes)
-            .checked_add(sequence_slack)
-            .ok_or_else(credit)?;
-        CompactJson::envelope_extents(envelope, bank, canonical).map(|(_, bytes)| bytes)
     }
 }
 
@@ -515,7 +362,7 @@ impl ClientSession {
     ) -> Result<[usize; 3], ProviderError> {
         let frame =
             usize::try_from(self.authority.limits().frame_bytes.get()).map_err(|_| credit())?;
-        let mut row = identity::storage_data(frame, custody.maximum_bytes)?;
+        let mut row = identity::storage_data(frame, custody.journal.maximum_bytes)?;
         row[2] = Self::compact_request_identity_counter_scratch_data();
         let peak = row.into_iter().try_fold(0usize, |total, axis| {
             total.checked_add(axis).ok_or_else(credit)
@@ -575,7 +422,24 @@ impl ClientSession {
         request: &mut Envelope,
         budget: std::time::Duration,
     ) -> Result<Envelope, ProviderError> {
-        let result = self.exchange_compact_inner(custody, request, budget);
+        self.exchange_compact_parts(
+            &mut custody.journal,
+            &mut custody.content,
+            None,
+            request,
+            budget,
+        )
+    }
+
+    fn exchange_compact_parts(
+        &mut self,
+        custody: &mut CompactClientJournal,
+        content: &mut ClientContent,
+        prefix: Option<&CompactJournalPrefix<'_>>,
+        request: &mut Envelope,
+        budget: std::time::Duration,
+    ) -> Result<Envelope, ProviderError> {
+        let result = self.exchange_compact_inner(custody, content, prefix, request, budget);
         if result.is_err() {
             self.close();
         }
@@ -584,7 +448,9 @@ impl ClientSession {
 
     fn exchange_compact_inner(
         &mut self,
-        custody: &mut CompactClientCustody,
+        custody: &mut CompactClientJournal,
+        content: &mut ClientContent,
+        prefix: Option<&CompactJournalPrefix<'_>>,
         request: &mut Envelope,
         budget: std::time::Duration,
     ) -> Result<Envelope, ProviderError> {
@@ -595,6 +461,17 @@ impl ClientSession {
             return Err(changed());
         }
         self.connection.authenticate_compact_exchange_idle()?;
+        let frame =
+            usize::try_from(self.authority.limits().frame_bytes.get()).map_err(|_| credit())?;
+        if let Some(prefix) = prefix {
+            prefix.authenticate(custody)?;
+            if let Some(response) =
+                prefix.cached_response(RequestOrigin::Controller, request, frame)?
+            {
+                return Ok(response);
+            }
+            prefix.ensure_new_original(custody, RequestOrigin::Controller, request)?;
+        }
         self.deadline.reset(budget)?;
         request.sequence = self.sequence;
         let response_room =
@@ -647,7 +524,7 @@ impl ClientSession {
                     return custody.complete_response(id);
                 }
                 ReceivedBody::Request(body) => {
-                    self.receive_compact_transfer(custody, frame.envelope, *body)?
+                    self.receive_compact_transfer(custody, content, prefix, frame.envelope, *body)?
                 }
                 body @ (ReceivedBody::NativeImport18Bootstrap(_)
                 | ReceivedBody::Notification(_)) => {
@@ -665,7 +542,9 @@ impl ClientSession {
 
     fn receive_compact_transfer(
         &mut self,
-        custody: &mut CompactClientCustody,
+        custody: &mut CompactClientJournal,
+        content: &mut ClientContent,
+        prefix: Option<&CompactJournalPrefix<'_>>,
         request: Envelope,
         body: crate::bodies::RequestBody,
     ) -> Result<(), ProviderError> {
@@ -683,6 +562,16 @@ impl ClientSession {
             .clone();
         let response_room =
             usize::try_from(self.authority.limits().frame_bytes.get()).map_err(|_| credit())?;
+        if let Some(prefix) = prefix {
+            if let Some(mut response) =
+                prefix.cached_response(RequestOrigin::Provider, &pending.envelope, response_room)?
+            {
+                custody.pending.take();
+                response.sequence = self.sequence;
+                return self.send_compact(&response);
+            }
+            prefix.ensure_new_original(custody, RequestOrigin::Provider, &pending.envelope)?;
+        }
         // The pending slot owns the received envelope throughout the fallible
         // request copy. Temporarily borrowing it cannot remove failure custody.
         let retry = custody.provider.contains_key(&id);
@@ -716,9 +605,9 @@ impl ClientSession {
         }
 
         let result = match body {
-            RequestBody::BlobBegin(body) => super::object(custody.content.begin(&body)?)?,
-            RequestBody::BlobChunk(body) => super::object(custody.content.chunk(&body)?)?,
-            RequestBody::BlobFinish(body) => super::object(custody.content.finish(&body)?)?,
+            RequestBody::BlobBegin(body) => super::object(content.begin(&body)?)?,
+            RequestBody::BlobChunk(body) => super::object(content.chunk(&body)?)?,
+            RequestBody::BlobFinish(body) => super::object(content.finish(&body)?)?,
             _ => {
                 return Err(ProviderError::Correlation(
                     "provider originated non-content compact control",

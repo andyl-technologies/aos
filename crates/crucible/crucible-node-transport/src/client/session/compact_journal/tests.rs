@@ -21,6 +21,7 @@ pub(super) type TestResult = Result<(), Box<dyn std::error::Error>>;
 mod identity;
 mod identity_work;
 mod isolated_exchange;
+mod prefix;
 
 const CONTENT_BYTES: usize = 262_144;
 pub(super) const BANK_BYTES: usize = 9 * CONTENT_BYTES;
@@ -213,9 +214,9 @@ fn cached_response_emits_no_new_frame_and_changed_original_is_refused() -> TestR
 #[test]
 fn response_compaction_failure_preserves_received_envelope_and_pending_fence() -> TestResult {
     let (_lease, mut session, mut custody, mut peer, mut request) = fixture(BANK_BYTES);
-    custody.maximum_envelope_bank_bytes =
+    custody.journal.maximum_envelope_bank_bytes =
         CompactJson::from_envelope(&request, usize::MAX)?.retained_bytes();
-    let limit = custody.maximum_envelope_bank_bytes;
+    let limit = custody.journal.maximum_envelope_bank_bytes;
     let server = std::thread::spawn(move || {
         let mut reader = FrameReader::new(peer.try_clone().unwrap(), 65_536).unwrap();
         let original = read(&mut reader);
@@ -236,7 +237,7 @@ fn response_compaction_failure_preserves_received_envelope_and_pending_fence() -
         Some((RequestOrigin::Controller, &response))
     );
     assert!(!custody.originals().next().unwrap().has_response());
-    assert_eq!(custody.maximum_envelope_bank_bytes, limit);
+    assert_eq!(custody.journal.maximum_envelope_bank_bytes, limit);
     let before = serde_json::to_value(custody.pending_envelope().unwrap().1)?;
     assert!(
         session
@@ -617,12 +618,16 @@ fn retry_preflight_allows_sequence_width_without_renewing_full_credit() -> TestR
     for origin in [RequestOrigin::Controller, RequestOrigin::Provider] {
         let content = ClientContent::new(canonical, 8, 1)?;
         let mut custody = CompactClientCustody::new(8, content, bank)?;
-        custody.retain_request(origin, &request, 0, canonical)?;
+        custody
+            .journal
+            .retain_request(origin, &request, 0, canonical)?;
         assert_eq!(custody.retained_journal_bytes(), canonical);
         let mut retry = request.clone();
         retry.sequence = U64::new(u64::MAX);
 
-        custody.retain_request(origin, &retry, 0, canonical)?;
+        custody
+            .journal
+            .retain_request(origin, &retry, 0, canonical)?;
 
         assert_eq!(custody.retained_journal_bytes(), canonical);
         assert_eq!(custody.originals().count(), 1);
@@ -698,8 +703,8 @@ fn unsupported_notification_keeps_complete_frame_and_fences_stream() -> TestResu
 
 fn journal_backing(custody: &CompactClientCustody) -> Result<usize, ProviderError> {
     let mut observer = crate::retained_metadata::MetadataObserver::new();
-    observer.observe(&custody.controller)?;
-    observer.observe(&custody.provider)?;
+    observer.observe(&custody.journal.controller)?;
+    observer.observe(&custody.journal.provider)?;
     crate::retained_metadata::requested_metadata_backing_storage_data(&observer.finish())
 }
 
@@ -707,7 +712,10 @@ fn journal_backing(custody: &CompactClientCustody) -> Result<usize, ProviderErro
 fn full_journal_projection_keeps_both_namespaces_and_unresolved_prefixes() -> TestResult {
     let (_lease, _session, mut custody, _peer, template) = fixture(BANK_BYTES);
     let quote = custody.journal_retained_storage_data(usize::MAX)?;
-    let ceilings = (custody.maximum_requests, custody.maximum_bytes);
+    let ceilings = (
+        custody.journal.maximum_requests,
+        custody.journal.maximum_bytes,
+    );
 
     // This fills the actual SDK owner as DATA. Existing socket controls cover
     // wire admission; these deliberately generic bodies issue no Source rights.
@@ -715,25 +723,29 @@ fn full_journal_projection_keeps_both_namespaces_and_unresolved_prefixes() -> Te
         (RequestOrigin::Controller, "c"),
         (RequestOrigin::Provider, "p"),
     ] {
-        for index in 0..custody.maximum_requests {
+        for index in 0..custody.journal.maximum_requests {
             let mut request = template.clone();
             request.request_id = Nullable(Some(Id::new(format!(
                 "{prefix}{index}-{}",
                 "x".repeat(120)
             ))?));
             request.body = serde_json::from_value(json!({"nested": [{"": [0, -0.0, true]}]}))?;
-            custody.retain_request(origin, &request, 0, CONTENT_BYTES)?;
+            custody
+                .journal
+                .retain_request(origin, &request, 0, CONTENT_BYTES)?;
             if index % 2 == 0 {
                 let response = response(&request, json!({"complete": [false, {}]}), 2);
-                custody.hold(origin, response)?;
-                custody.complete_response(request.request_id.0.as_ref().unwrap())?;
+                custody.journal.hold(origin, response)?;
+                custody
+                    .journal
+                    .complete_response(request.request_id.0.as_ref().unwrap())?;
             }
             assert!(journal_backing(&custody)? <= quote);
         }
     }
 
-    assert_eq!(custody.controller.len(), ceilings.0);
-    assert_eq!(custody.provider.len(), ceilings.0);
+    assert_eq!(custody.journal.controller.len(), ceilings.0);
+    assert_eq!(custody.journal.provider.len(), ceilings.0);
     assert_eq!(
         custody
             .originals()
@@ -743,7 +755,13 @@ fn full_journal_projection_keeps_both_namespaces_and_unresolved_prefixes() -> Te
     );
     assert_eq!(custody.journal_retained_storage_data(quote)?, quote);
     assert!(custody.journal_retained_storage_data(quote - 1).is_err());
-    assert_eq!((custody.maximum_requests, custody.maximum_bytes), ceilings);
+    assert_eq!(
+        (
+            custody.journal.maximum_requests,
+            custody.journal.maximum_bytes
+        ),
+        ceilings
+    );
     assert_eq!(
         custody.content().original_completed_objects_data().count(),
         0
@@ -831,7 +849,7 @@ fn bootstrap_failed_data_census_counts_typed_banks_without_eligibility() -> Test
     // allocation grant. Ineligibility cannot make their real backing disappear.
     for body in bodies {
         let owns_recipe = !matches!(&body, PacketNativeImport18BootstrapReceivedBody::Response(value) if value.result.is_none());
-        custody.unexpected = Some(ReceivedFrame {
+        custody.journal.unexpected = Some(ReceivedFrame {
             envelope: envelope.clone(),
             body: ReceivedBody::NativeImport18Bootstrap(Box::new(body)),
         });

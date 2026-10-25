@@ -10,6 +10,43 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Compact journals with retained legacy content
+
+The compact exchange now borrows its journal and actual content owner separately.
+The existing standalone custody API retains both, and its physical18/physical19
+field and capacity order remain unchanged. A private shared exchange path can
+borrow settled legacy maps read-only while continuing transfers into their
+original content store. It neither replaces content nor clones its history.
+
+The suffix must retain the original request ceiling and exactly the unconsumed
+legacy canonical-byte credit. Each origin independently counts both old and new
+originals against that unchanged ceiling. Authentic cached controller replies
+return without a new frame, sequence assignment or byte debit. Authentic cached
+provider ACKs use the current sequence without repeating content effects or
+charging new suffix credit. Changed or unsettled originals refuse; received
+requests remain in their owning pending slot on prefix-check failure. Replay
+identity work uses the connection's canonical frame-expansion bound independently
+of remaining suffix byte credit and still needs its own transient admission.
+
+Three socket-based controls cover original content identity, new content in the
+same store, both cached replay directions, equal IDs in opposite namespaces,
+combined namespace exhaustion, changed and unsettled originals, renewed numeric
+credit and failure custody. These use the modeled registrar and establish SDK
+mechanics only. No production Source18 constructor selects this path. Complete
+future SDK R/T/S, the genuine one-use funded Source18 handoff and full native
+lifecycle qualification remain unfinished.
+
+All 41 compact journal/history controls and fourteen JSON-bank controls pass in
+both codec builds. Both complete Transport suites pass 2,228 tests with zero
+failures and twenty ignored, using frozen compiler-selected artifacts. Scoped
+formatting, all-feature/all-target checking and all six architecture checks pass.
+Strict Transport Clippy retains the exact preceding diagnostic multiset: four
+existing errors and 1,725 warnings; it is not a strict lint pass. Application
+test-target compilation passes with 185 artifacts across 58 packages, including
+76 integration targets. Its captured source matches all 693 frozen owned
+Rust/Cargo inputs. Protected user work remains outside this commit; no clean
+published-PR or new native lifecycle qualification is claimed.
+
 ## Source-funded settled Capture capacity
 
 The actual Source Capture17 bridge now applies its independently admitted SDK
