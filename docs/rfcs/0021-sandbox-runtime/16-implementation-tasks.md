@@ -79,6 +79,17 @@ Recent committed startup fixes close narrower prerequisites:
   observed inode-label inventory. Installed offline preparation remains open;
   neither change initializes a method-46 floor or grants public readiness.
 
+- `ba51f97901` funds the selected Source, Ownership, Mount and Network setup
+  recipes inside their existing finite receiver allocations. Credential and
+  private-device tmpfs reservations fit within the unchanged 1 GiB node tmpfs
+  capacity; F/Components retains the remaining logging reservation. The
+  source-built `sandbox-funded-startup-backing` check verifies the selected
+  recipes and compiles the actual parent enclosure. Installed startup is still
+  open. The offline rerun with the regular D-Bus context file reaches the bus,
+  but native activation fails because `org.freedesktop.systemd1` has no owner
+  and the bus service never completes startup. That observation does not yet
+  identify a policy change or qualify offline preparation.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they
