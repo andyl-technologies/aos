@@ -305,10 +305,11 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         // (here empty) block overlay chunk list, a version 2
         // replay-closure root as the checkpoint choice child, the version 8
         // production fault runtime with its referenced-event window, and the
-        // version 5 schedule transport inside its configuration payload.
+        // version 6 schedule transport, whose draws carry their addresses,
+        // inside its configuration payload.
         // Authenticate the pin and closure above before pinning these
         // recanonicalized selection bytes.
-        "d46f2065dc71f4eb2dbea520f3be62ffd7a9a96aca52ccbdf45b4d089fe59811"
+        "0e86bc3cd8323882149b811d091e7af23eb61286c38f27b9507e640269633c61"
     );
     drop(store);
 

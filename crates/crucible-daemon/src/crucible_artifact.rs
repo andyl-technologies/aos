@@ -99,7 +99,7 @@ pub const CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V5: u32 = 5;
 /// This matches the campaign artifact payload ceiling. Import callers should
 /// enforce it while reading, before retaining or decoding the complete body.
 pub const MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES: usize = 32 * 1024 * 1024;
-const CRUCIBLE_SCHEDULE_V5_MAGIC: &[u8] = b"crucible.schedule.v5\0";
+const CRUCIBLE_SCHEDULE_V6_MAGIC: &[u8] = b"crucible.schedule.v6\0";
 type RetainedConfigurationMemoryGuard<'a> =
     dyn FnMut(&Configuration, usize) -> Result<usize, CrucibleArtifactError> + 'a;
 // Policy v4 retains the seed, the candidate-count bound, and the automatic

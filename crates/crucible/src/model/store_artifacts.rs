@@ -133,7 +133,7 @@ pub(super) fn reproduction_artifact_id(
     hasher.update(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V10);
     hasher.update(&(scenario_bytes.len() as u64).to_le_bytes());
     hasher.update(&scenario_bytes);
-    hash_schedule_v5_blob(schedule, &mut hasher);
+    hash_schedule_v6_blob(schedule, &mut hasher);
     ContentHash {
         bytes: *hasher.finalize().as_bytes(),
     }
@@ -374,6 +374,7 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
         Decision::RngDraw(draw) => {
             lines.push(format!("{prefix}.kind=rng-draw"));
             push_rng_stream_lines(&prefix, &draw.stream, lines);
+            lines.push(format!("{prefix}.{}", draw.address.canonical_material()));
             lines.push(format!("{prefix}.value={}", draw.value));
         }
         Decision::Override(override_decision) => {

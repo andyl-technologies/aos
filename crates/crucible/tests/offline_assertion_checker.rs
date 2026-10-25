@@ -525,10 +525,11 @@ fn offline_assertion_checker_defers_unpublished_causal_prefix_inside_quantum() {
         crucible::test_support::condition_payload_entry_for_test(
             2,
             time(5),
-            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("late-quantum"),
-                value: 7,
-            })),
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("late-quantum"),
+                0,
+                7,
+            ))),
         ),
         crucible::test_support::condition_observation_entry_for_test(3, &delivered),
         crucible::test_support::condition_boundary_entry_for_test(

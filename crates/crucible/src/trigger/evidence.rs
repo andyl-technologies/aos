@@ -1081,6 +1081,7 @@ pub(super) fn external_decision_material(decision: &Decision) -> String {
                 "decision.stream",
                 &draw.stream,
             ));
+            lines.push(format!("decision.{}", draw.address.canonical_material()));
             lines.push(format!("decision.value={}", draw.value));
         }
         D::Override(override_decision) => {

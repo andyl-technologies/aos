@@ -66,14 +66,16 @@ pub(super) fn fixed_schedule() -> Schedule {
             at: VirtualTime { ticks: 1 },
             order: vec![event_key(1, 2), event_key(1, 3)],
         }))
-        .appended(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_link("link-a-b/drop"),
-            value: 1,
-        }))
-        .appended(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_node("guest/request"),
-            value: 0xabcd_1234,
-        }))
+        .appended(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_link("link-a-b/drop"),
+            0,
+            1,
+        )))
+        .appended(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_node("guest/request"),
+            0,
+            0xabcd_1234,
+        )))
 }
 
 pub(super) fn generated_schedule(seed: u64, decisions: u64) -> Schedule {
@@ -92,14 +94,16 @@ pub(super) fn generated_decision(seed: u64, index: u64) -> Decision {
             },
             order: vec![event_key(seed + index, index)],
         }),
-        1 => Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name(format!("stream-{seed}-{index}")),
-            value: u64::from(index.is_multiple_of(2)),
-        }),
-        _ => Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name(format!("stream-{seed}")),
-            value: seed ^ index,
-        }),
+        1 => Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name(format!("stream-{seed}-{index}")),
+            0,
+            u64::from(index.is_multiple_of(2)),
+        )),
+        _ => Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name(format!("stream-{seed}")),
+            0,
+            seed ^ index,
+        )),
     }
 }
 

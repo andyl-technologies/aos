@@ -82,10 +82,11 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
         }
         let configuration = accepted_step(
             &request.configuration,
-            Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-                value: 7,
-            }),
+            Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("fresh-runner-non-genesis"),
+                0,
+                7,
+            )),
         );
         let next_frontier = self.completed_quanta.saturating_add(1);
         self.complete_quantum(crucible::QuantumOutcome {

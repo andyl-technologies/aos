@@ -276,10 +276,11 @@ fn model_only_decisions_leave_a_halted_thin_node_in_place() -> Result<(), Box<dy
             irq: IrqVector { vector: 32 },
         },
     });
-    let rng = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("halted-model-only"),
-        value: 3,
-    });
+    let rng = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("halted-model-only"),
+        0,
+        3,
+    ));
 
     let state = replay_one_nonselection_decision_boundary(&mut replay, parked, target, &rng)?;
     let state =

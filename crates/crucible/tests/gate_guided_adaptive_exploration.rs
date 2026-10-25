@@ -671,18 +671,12 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     let discovery = selectable.into_discovery()?;
     let parent = accepted_step!(
         &root,
-        Decision::RngDraw(RngDecision {
-            stream: stream.clone(),
-            value: 42,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(stream.clone(), 0, 42)),
     );
     let observed_frontier = accepted_step!(&parent, Decision::Selection(observed.clone()));
     graph.record_step(
         &root,
-        Decision::RngDraw(RngDecision {
-            stream: stream.clone(),
-            value: 42,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(stream.clone(), 0, 42)),
     )?;
     graph.record_step(&parent, Decision::Selection(observed.clone()))?;
 
@@ -705,10 +699,7 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     ));
     let mismatched_parent = accepted_step!(
         &root,
-        Decision::RngDraw(RngDecision {
-            stream: stream.clone(),
-            value: 41,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(stream.clone(), 0, 41)),
     );
     assert!(matches!(
         app_random_branch_decisions(&mismatched_parent, &observed, &discovery, &base_config),
@@ -799,10 +790,7 @@ fn gate_app_random_branching_is_lazy_typed_and_bounded() -> Result<(), Box<dyn E
     let capped_discovery = capped_selectable.into_discovery()?;
     let capped_parent = accepted_step!(
         &capped,
-        Decision::RngDraw(RngDecision {
-            stream: capped_stream,
-            value: 9,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(capped_stream, 0, 9)),
     );
     let capped_decision = app_random_branch_decisions(
         &capped_parent,

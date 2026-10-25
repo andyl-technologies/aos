@@ -377,7 +377,16 @@ pub(super) static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         kind: "rng_draw",
         class: SchedulerEventLogClass::Causal,
         sources: &["engine"],
-        attributes: &["stream_domain", "stream_name", "value"],
+        attributes: &[
+            "address",
+            "direction",
+            "ordinal",
+            "producer_sequence",
+            "role",
+            "stream_domain",
+            "stream_name",
+            "value",
+        ],
     },
     EventKindCatalogEntry {
         kind: "savepoint",

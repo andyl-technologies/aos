@@ -1128,6 +1128,69 @@ pub(super) fn read_checkpoint_metadata_binary(
     Ok(CheckpointMeta { labels })
 }
 
+/// Retired decision tag of an RNG draw that recorded only its stream and value.
+///
+/// Readers refuse it rather than infer an address, so an artifact written
+/// before draw addresses existed is never silently re-interpreted.
+const UNADDRESSED_RNG_DRAW_DECISION_TAG: u8 = 1;
+
+/// Decision tag of an RNG draw recorded with its stream, address, and value.
+const ADDRESSED_RNG_DRAW_DECISION_TAG: u8 = 6;
+
+/// Draw-address tag of an ordinal on a single-owner stream.
+const RNG_DRAW_ADDRESS_ORDINAL_TAG: u8 = 0;
+
+/// Draw-address tag of a role-indexed draw of one link frame.
+const RNG_DRAW_ADDRESS_LINK_FRAME_TAG: u8 = 1;
+
+/// Encodes a draw address.
+///
+/// ```text
+/// ordinal     u8 0, u64 ordinal
+/// link frame  u8 1, u8 direction, u64 producer-sequence, u64 role
+/// ```
+pub(super) fn write_rng_draw_address_binary(
+    address: RngDrawAddress,
+    writer: &mut ScenarioBinaryWriter,
+) {
+    match address {
+        RngDrawAddress::Ordinal { ordinal } => {
+            writer.write_u8(RNG_DRAW_ADDRESS_ORDINAL_TAG);
+            writer.write_u64(ordinal);
+        }
+        RngDrawAddress::LinkFrame {
+            direction,
+            producer_sequence,
+            role,
+        } => {
+            writer.write_u8(RNG_DRAW_ADDRESS_LINK_FRAME_TAG);
+            writer.write_u8(direction.code());
+            writer.write_u64(producer_sequence);
+            writer.write_u64(role);
+        }
+    }
+}
+
+pub(super) fn read_rng_draw_address_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<RngDrawAddress, EngineError> {
+    match reader.read_u8()? {
+        RNG_DRAW_ADDRESS_ORDINAL_TAG => Ok(RngDrawAddress::Ordinal {
+            ordinal: reader.read_u64()?,
+        }),
+        RNG_DRAW_ADDRESS_LINK_FRAME_TAG => {
+            let direction = crate::NetworkLinkDirection::from_code(reader.read_u8()?)
+                .ok_or_else(|| scenario_serialization_error("invalid rng draw link direction"))?;
+            Ok(RngDrawAddress::LinkFrame {
+                direction,
+                producer_sequence: reader.read_u64()?,
+                role: reader.read_u64()?,
+            })
+        }
+        _ => Err(scenario_serialization_error("invalid rng draw address tag")),
+    }
+}
+
 pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBinaryWriter) {
     match decision {
         Decision::DeliveryOrder(order) => {
@@ -1142,8 +1205,9 @@ pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBi
             }
         }
         Decision::RngDraw(draw) => {
-            writer.write_u8(1);
+            writer.write_u8(ADDRESSED_RNG_DRAW_DECISION_TAG);
             write_rng_stream_binary(&draw.stream, writer);
+            write_rng_draw_address_binary(draw.address, writer);
             writer.write_u64(draw.value);
         }
         Decision::Override(override_decision) => {
@@ -1199,8 +1263,12 @@ pub(super) fn read_decision_binary(
             }
             Ok(Decision::DeliveryOrder(DeliveryOrderDecision { at, order }))
         }
-        1 => Ok(Decision::RngDraw(RngDecision {
+        UNADDRESSED_RNG_DRAW_DECISION_TAG => Err(scenario_serialization_error(
+            "rng draw without a draw address is a retired decision encoding and is refused",
+        )),
+        ADDRESSED_RNG_DRAW_DECISION_TAG => Ok(Decision::RngDraw(RngDecision {
             stream: read_rng_stream_binary(reader)?,
+            address: read_rng_draw_address_binary(reader)?,
             value: reader.read_u64()?,
         })),
         2 => Ok(Decision::Override(OverrideDecision {

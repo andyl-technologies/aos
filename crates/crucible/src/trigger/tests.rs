@@ -167,10 +167,11 @@ fn causal_projection_comparison_ignores_observational_entries() {
     let causal = SchedulerEventLogEntry::with_payload_for_test(
         0,
         VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("causal-projection"),
-            value: 11,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("causal-projection"),
+            0,
+            11,
+        ))),
     );
     let diagnostic = SchedulerEventLogEntry::with_payload_for_test(
         1,
@@ -194,18 +195,20 @@ fn facts_through_point_preserves_resumed_event_log_base_sequence() {
     let first = SchedulerEventLogEntry::with_payload_for_test(
         5,
         VirtualTime { ticks: 5 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("resumed-prefix-a"),
-            value: 17,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("resumed-prefix-a"),
+            0,
+            17,
+        ))),
     );
     let second = SchedulerEventLogEntry::with_payload_for_test(
         6,
         VirtualTime { ticks: 7 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("resumed-prefix-b"),
-            value: 23,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("resumed-prefix-b"),
+            0,
+            23,
+        ))),
     );
     let prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
         vec![first.clone(), second],
@@ -229,10 +232,11 @@ fn evidence_prefix_keeps_a_resumed_base_sequence() {
         SchedulerEventLogEntry::with_payload_for_test(
             sequence,
             VirtualTime { ticks },
-            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("resumed-evidence"),
-                value: sequence,
-            })),
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("resumed-evidence"),
+                0,
+                sequence,
+            ))),
         )
     };
     let prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
@@ -257,10 +261,11 @@ fn deadline_facts_from_an_observed_prefix_match_a_whole_rebuild() {
         SchedulerEventLogEntry::with_payload_for_test(
             sequence,
             VirtualTime { ticks },
-            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("deadline-base"),
-                value: sequence,
-            })),
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("deadline-base"),
+                0,
+                sequence,
+            ))),
         )
     };
     let entries = [draw(3, 2), draw(4, 4), draw(5, 6), draw(6, 6), draw(7, 9)];

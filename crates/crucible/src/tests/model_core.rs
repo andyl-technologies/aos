@@ -61,10 +61,7 @@ fn try_step_appends_decision_without_mutating_parent() {
         "crucible.test.step",
         "scenario=stub",
     ));
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("root"),
-        value: 42,
-    });
+    let decision = Decision::RngDraw(RngDecision::ordinal(RngStreamId::from_name("root"), 0, 42));
 
     let child = accepted_step!(&config, decision.clone());
 
@@ -82,7 +79,7 @@ fn campaign_selection_decision_is_strict_and_changes_schedule_identity()
 
     let schedule = Schedule::empty().appended(Decision::Selection(decision.clone()));
     let encoded = schedule.to_compact_binary();
-    assert!(encoded.starts_with(b"crucible.schedule.v5\0"));
+    assert!(encoded.starts_with(b"crucible.schedule.v6\0"));
     assert_eq!(Schedule::from_compact_binary(&encoded)?, schedule);
     assert_ne!(schedule.content_hash(), Schedule::empty().content_hash());
 
@@ -129,10 +126,11 @@ fn try_step_is_pure_temporal_graph_edge_constructor() {
 
 #[test]
 fn schedule_prefix_bounds_are_checked() {
-    let schedule = Schedule::empty().appended(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("root"),
-        value: 1,
-    }));
+    let schedule = Schedule::empty().appended(Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("root"),
+        0,
+        1,
+    )));
 
     let prefix = schedule.prefix(1);
     assert!(prefix.is_ok());
@@ -430,10 +428,11 @@ fn configuration_id_is_content_addressed_by_def_and_schedule() {
         ScenarioDef::from_canonical_material("crucible.test.configuration", "node=a\nseed=1");
     let same_scenario =
         ScenarioDef::from_canonical_material("crucible.test.configuration", "node=a\nseed=1");
-    let base_schedule = Schedule::empty().appended(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::for_node("node-a/faults"),
-        value: 7,
-    }));
+    let base_schedule = Schedule::empty().appended(Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::for_node("node-a/faults"),
+        0,
+        7,
+    )));
     let same = Configuration {
         def: same_scenario,
         schedule: base_schedule.clone(),
@@ -521,10 +520,11 @@ fn reduce_is_pure_over_scenario_and_schedule() {
     let scenario = ScenarioDef::from_canonical_material("crucible.test.reduce", "node=a\nseed=1");
     let other_scenario =
         ScenarioDef::from_canonical_material("crucible.test.reduce", "node=a\nseed=2");
-    let first_decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::for_node("node-a/faults"),
-        value: 7,
-    });
+    let first_decision = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::for_node("node-a/faults"),
+        0,
+        7,
+    ));
     let second_decision = Decision::Override(OverrideDecision {
         point: SchedulingPoint {
             key: String::from("link-a-b/frame-10"),
@@ -564,10 +564,11 @@ fn reduce_is_prefix_closed_by_schedule_hash() {
     );
     let grandchild = accepted_step!(
         &child,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_node("app/request"),
-            value: 0xace,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_node("app/request"),
+            0,
+            0xace
+        )),
     );
     let child_prefix = match grandchild.schedule.prefix(1) {
         Ok(prefix) => prefix,
@@ -819,7 +820,7 @@ fn compact_checkpoint_round_trips_concrete_execution_closure() {
     );
     let checkpoint = fat_checkpoint_for(&config).with_execution_closure(closure);
     let bytes = checkpoint.to_compact_binary();
-    assert!(bytes.starts_with(b"crucible.checkpoint.v6\0"));
+    assert!(bytes.starts_with(b"crucible.checkpoint.v7\0"));
     let restored = Checkpoint::from_compact_binary(&bytes)
         .unwrap_or_else(|error| panic!("checkpoint closure should decode: {error}"));
     assert_eq!(restored, checkpoint);
@@ -837,7 +838,7 @@ fn compact_checkpoint_versions_campaign_selection_grammar() {
     };
     let checkpoint = fat_checkpoint_for(&config);
     let bytes = checkpoint.to_compact_binary();
-    assert!(bytes.starts_with(b"crucible.checkpoint.v6\0"));
+    assert!(bytes.starts_with(b"crucible.checkpoint.v7\0"));
     assert_eq!(
         Checkpoint::from_compact_binary(&bytes)
             .unwrap_or_else(|error| panic!("V5 selection checkpoint should decode: {error}")),

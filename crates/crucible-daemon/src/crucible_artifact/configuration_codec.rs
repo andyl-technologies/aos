@@ -316,7 +316,7 @@ fn decode_crucible_configuration_artifact_structural(
         artifact.payload_schema(),
         CRUCIBLE_CONFIGURATION_PAYLOAD_SCHEMA_V5,
     )?;
-    if !artifact.payload().starts_with(CRUCIBLE_SCHEDULE_V5_MAGIC) {
+    if !artifact.payload().starts_with(CRUCIBLE_SCHEDULE_V6_MAGIC) {
         return Err(CrucibleArtifactError::UnsupportedScheduleEncoding);
     }
     let schedule = Schedule::from_compact_binary(artifact.payload()).map_err(|source| {

@@ -37,10 +37,11 @@ fn reproduction_scenario(world: &World) -> Result<crucible::ScenarioDefForm, Eng
 }
 
 fn replay_decision(value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("event-log/reproduction-artifact"),
+    Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("event-log/reproduction-artifact"),
+        0,
         value,
-    })
+    ))
 }
 
 fn decision_entry(sequence: u64, ticks: u64, value: u64) -> SchedulerEventLogEntry {

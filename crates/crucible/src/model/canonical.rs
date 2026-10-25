@@ -3,8 +3,8 @@
 use super::{
     Configuration, ContentHash, Decision, DecisionRngState, DeviceOverlayDelta, DeviceRngState,
     EventLogOffset, EventSequenceState, Icount, NodeBlobRef, NodeId, PendingFrame, PreemptionKind,
-    RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId, SchedulerState,
-    SchedulingNodeKind, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef,
+    RngDrawAddress, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId,
+    SchedulerState, SchedulingNodeKind, TimerRegistry, TimerState, VirtualTime, VmSnapshotRef,
 };
 use std::collections::BTreeMap;
 
@@ -266,6 +266,7 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
         Decision::RngDraw(draw) => {
             hasher.write_u64(1);
             write_rng_stream_id(hasher, &draw.stream);
+            write_rng_draw_address(hasher, draw.address);
             hasher.write_u64(draw.value);
         }
         Decision::Override(override_decision) => {
@@ -500,6 +501,25 @@ fn write_decision_rng_state(hasher: &mut MaterialHasher, state: &DecisionRngStat
 fn write_rng_stream_id(hasher: &mut MaterialHasher, stream: &RngStreamId) {
     hasher.write_bytes(stream.domain.as_bytes());
     hasher.write_bytes(stream.name.as_bytes());
+}
+
+fn write_rng_draw_address(hasher: &mut MaterialHasher, address: RngDrawAddress) {
+    match address {
+        RngDrawAddress::Ordinal { ordinal } => {
+            hasher.write_u64(0);
+            hasher.write_u64(ordinal);
+        }
+        RngDrawAddress::LinkFrame {
+            direction,
+            producer_sequence,
+            role,
+        } => {
+            hasher.write_u64(1);
+            hasher.write_u64(u64::from(direction.code()));
+            hasher.write_u64(producer_sequence);
+            hasher.write_u64(role);
+        }
+    }
 }
 
 fn write_rng_stream_position(hasher: &mut MaterialHasher, position: RngStreamPosition) {
@@ -748,10 +768,11 @@ mod tests {
     fn streamed_schedule_hash_matches_schedule_identity_and_checks_count() {
         let decisions = (0..3)
             .map(|value| {
-                Decision::RngDraw(super::super::RngDecision {
-                    stream: RngStreamId::from_name("canonical-stream-test"),
+                Decision::RngDraw(super::super::RngDecision::ordinal(
+                    RngStreamId::from_name("canonical-stream-test"),
+                    0,
                     value,
-                })
+                ))
             })
             .collect::<Vec<_>>();
         let schedule = Schedule::from_decisions(decisions.clone());

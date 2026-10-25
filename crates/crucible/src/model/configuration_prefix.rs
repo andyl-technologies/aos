@@ -229,10 +229,11 @@ mod tests {
     fn configuration(decisions: usize) -> Configuration {
         let def = ScenarioDef::from_canonical_material("configuration-prefix-test", "basis");
         let schedule = Schedule::from_decisions((0..decisions).map(|index| {
-            Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("configuration-prefix-test"),
-                value: index as u64,
-            })
+            Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("configuration-prefix-test"),
+                0,
+                index as u64,
+            ))
         }));
         Configuration { def, schedule }
     }
@@ -288,10 +289,11 @@ mod tests {
                 .enumerate()
                 .map(|(index, decision)| {
                     if index == 10 {
-                        Decision::RngDraw(RngDecision {
-                            stream: RngStreamId::from_name("diverged"),
-                            value: 0,
-                        })
+                        Decision::RngDraw(RngDecision::ordinal(
+                            RngStreamId::from_name("diverged"),
+                            0,
+                            0,
+                        ))
                     } else {
                         decision
                     }

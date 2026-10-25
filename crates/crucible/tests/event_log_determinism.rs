@@ -29,10 +29,11 @@ fn rng_entry(sequence: u64, ticks: u64, stream: &str, value: u64) -> SchedulerEv
     crucible::test_support::condition_payload_entry_for_test(
         sequence,
         time(ticks),
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name(stream),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name(stream),
+            0,
             value,
-        })),
+        ))),
     )
 }
 
@@ -299,10 +300,11 @@ fn replay_oracle_rejects_fat_checkpoint_with_inconsistent_event_log_offset() {
     let genesis = Configuration::genesis(scenario.clone());
     let child = accepted_step!(
         &genesis,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("event-log-offset"),
-            value: 31,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("event-log-offset"),
+            0,
+            31
+        )),
     );
     let mut log = EventLog::new();
     let append = log

@@ -462,10 +462,7 @@ fn stored_reproduction_reads_its_schedule_from_segments() -> Result<(), Box<dyn 
     let (world, plan, properties) = spatial_fixture()?;
     let form = ScenarioDefForm::from_components(&world, &plan, &properties, Seed::from_u64(43))?;
     let schedule = Schedule::from_decisions((0..9_u64).map(|index| {
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_node("a"),
-            value: index,
-        })
+        Decision::RngDraw(RngDecision::ordinal(RngStreamId::for_node("a"), 0, index))
     }));
     let artifact = ReproductionArtifact::from_recorded_parts(form, schedule);
     let store = crate::SharedSegmentStore::new();
@@ -495,10 +492,11 @@ fn reproduction_artifact_is_self_contained_and_replay_checked()
 -> Result<(), Box<dyn std::error::Error>> {
     let (world, plan, properties) = spatial_fixture()?;
     let form = ScenarioDefForm::from_components(&world, &plan, &properties, Seed::from_u64(41))?;
-    let schedule = Schedule::empty().appended(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::for_node("a"),
-        value: 17,
-    }));
+    let schedule = Schedule::empty().appended(Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::for_node("a"),
+        0,
+        17,
+    )));
     let schedule_binary = schedule.to_compact_binary();
     assert_eq!(Schedule::from_compact_binary(&schedule_binary)?, schedule);
     let artifact = ReproductionArtifact::capture(&form, &schedule)?;

@@ -7,10 +7,10 @@
 //! content-addressed segments named by one small manifest.
 //!
 //! ```text
-//! segment   ContentId(trace, schema 1):
-//!   "crucible.schedule-segment.v1\0"
+//! segment   ContentId(trace, schema 2):
+//!   "crucible.schedule-segment.v2\0"
 //!   u64 first-decision, u64 decision-count, decision{decision-count}
-//!                                         // dense, nonempty, v4 decision codec
+//!                                         // dense, nonempty, addressed decision codec
 //!
 //! manifest  at most 1 MiB:
 //!   "crucible.schedule-manifest.v1\0"
@@ -18,8 +18,8 @@
 //!   u64 segment-count,
 //!   { digest segment, u64 first-decision, u64 decision-count, u64 encoded-bytes }*
 //!
-//! schedule v5 (self-contained transport):
-//!   "crucible.schedule.v5\0" blob manifest, blob segment{segment-count}
+//! schedule v6 (self-contained transport):
+//!   "crucible.schedule.v6\0" blob manifest, blob segment{segment-count}
 //!
 //! chain_0 = H("crucible.schedule.segment-chain.v1", "empty")
 //! chain_i = H(domain, chain_(i-1) | segment digest | first decision
@@ -49,7 +49,7 @@ use crate::segment_store::{
 };
 
 /// Trace-object schema of one encoded schedule segment.
-pub const SCHEDULE_SEGMENT_SCHEMA: u32 = 1;
+pub const SCHEDULE_SEGMENT_SCHEMA: u32 = 2;
 
 /// Largest encoded schedule manifest any writer produces or reader accepts.
 ///
@@ -57,8 +57,8 @@ pub const SCHEDULE_SEGMENT_SCHEMA: u32 = 1;
 /// bound, so the bound only refuses hostile input before it is decoded.
 pub const MAX_SCHEDULE_MANIFEST_BYTES: usize = 1024 * 1024;
 
-pub(super) const SCHEDULE_BINARY_MAGIC_V5: &[u8] = b"crucible.schedule.v5\0";
-const SEGMENT_MAGIC: &[u8] = b"crucible.schedule-segment.v1\0";
+pub(super) const SCHEDULE_BINARY_MAGIC_V6: &[u8] = b"crucible.schedule.v6\0";
+const SEGMENT_MAGIC: &[u8] = b"crucible.schedule-segment.v2\0";
 const MANIFEST_MAGIC: &[u8] = b"crucible.schedule-manifest.v1\0";
 const CHAIN_DOMAIN: &str = "crucible.schedule.segment-chain.v1";
 
@@ -436,14 +436,14 @@ impl Schedule {
 }
 
 /// Encodes `schedule` as the self-contained version 5 transport form.
-pub(super) fn schedule_v5_bytes(schedule: &Schedule) -> Vec<u8> {
+pub(super) fn schedule_v6_bytes(schedule: &Schedule) -> Vec<u8> {
     let mut encoded = Vec::new();
     let manifest = schedule.try_for_each_segment(|_, bytes| {
         encoded.push(bytes.to_vec());
         Ok(())
     });
 
-    let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC_V5);
+    let mut writer = ScenarioBinaryWriter::new(SCHEDULE_BINARY_MAGIC_V6);
     match manifest {
         Ok(manifest) => {
             writer.write_binary_blob(&manifest.to_bytes());
@@ -462,26 +462,26 @@ pub(super) fn schedule_v5_bytes(schedule: &Schedule) -> Vec<u8> {
 /// Feeds `schedule`'s version 5 transport, as a length-prefixed blob, into
 /// `hasher` without materializing it.
 ///
-/// The bytes hashed are exactly those [`schedule_v5_bytes`] wraps in a blob.
+/// The bytes hashed are exactly those [`schedule_v6_bytes`] wraps in a blob.
 /// The manifest precedes the segments it names, so the segments are encoded
 /// twice: once to derive the manifest and once to hash their bytes.
-pub(super) fn hash_schedule_v5_blob(schedule: &Schedule, hasher: &mut blake3::Hasher) {
+pub(super) fn hash_schedule_v6_blob(schedule: &Schedule, hasher: &mut blake3::Hasher) {
     let Ok(manifest) = schedule.try_for_each_segment(|_, _| Ok(())) else {
         // The unsegmentable transport is the magic and an empty manifest blob.
-        let len = SCHEDULE_BINARY_MAGIC_V5.len() + 8;
+        let len = SCHEDULE_BINARY_MAGIC_V6.len() + 8;
         hasher.update(&(len as u64).to_le_bytes());
-        hasher.update(SCHEDULE_BINARY_MAGIC_V5);
+        hasher.update(SCHEDULE_BINARY_MAGIC_V6);
         hasher.update(&0_u64.to_le_bytes());
         return;
     };
 
     let manifest_bytes = manifest.to_bytes();
     let len = manifest.segments().iter().fold(
-        SCHEDULE_BINARY_MAGIC_V5.len() as u64 + 8 + manifest_bytes.len() as u64,
+        SCHEDULE_BINARY_MAGIC_V6.len() as u64 + 8 + manifest_bytes.len() as u64,
         |len, segment| len.saturating_add(8).saturating_add(segment.encoded_bytes),
     );
     hasher.update(&len.to_le_bytes());
-    hasher.update(SCHEDULE_BINARY_MAGIC_V5);
+    hasher.update(SCHEDULE_BINARY_MAGIC_V6);
     hasher.update(&(manifest_bytes.len() as u64).to_le_bytes());
     hasher.update(&manifest_bytes);
 
@@ -496,7 +496,7 @@ pub(super) fn hash_schedule_v5_blob(schedule: &Schedule, hasher: &mut blake3::Ha
 
 /// Decodes the self-contained version 5 transport form.
 pub(super) fn schedule_from_v5_bytes(bytes: &[u8]) -> Result<Schedule, EngineError> {
-    let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC_V5)?;
+    let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC_V6)?;
     let manifest = ScheduleManifest::from_bytes(
         reader.read_binary_blob_bounded("schedule manifest", MAX_SCHEDULE_MANIFEST_BYTES)?,
     )?;

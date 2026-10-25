@@ -121,7 +121,7 @@
     ++ failuresFor "crates/crucible/src/event_catalog.rs" catalog [
       {
         label = "catalog version";
-        needle = "pub const EVENT_KIND_CATALOG_VERSION: u32 = 7;";
+        needle = "pub const EVENT_KIND_CATALOG_VERSION: u32 = 9;";
       }
       {
         label = "catalog entry type";

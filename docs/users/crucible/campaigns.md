@@ -215,11 +215,11 @@ bundle. Its report includes the scenario and configuration semantic IDs,
 verifier-derived artifact IDs, and decision count.
 
 When a Schedule V3 is not already recorded, `campaign schedule compile` accepts
-a strict version-two TOML decision list. It supports the four current offline-
+a strict version-three TOML decision list. It supports the four current offline-
 authorable decision shapes and both preemption actions:
 
 ```toml
-schema_version = 2
+schema_version = 3
 
 [[decisions]]
 kind = "delivery-order"
@@ -235,6 +235,7 @@ sequence = 7
 kind = "rng-draw"
 stream_domain = "crucible.network.loss"
 stream_name = "client--server"
+address = { kind = "link-frame", direction = "a-to-b", producer_sequence = 7, role = 2 }
 value = 42
 
 [[decisions]]
@@ -250,6 +251,11 @@ action = "vcpu-switch"
 from_vcpu = 0
 to_vcpu = 1
 ```
+
+An `rng-draw` names the exact draw it records. A draw on a stream one entity
+owns uses `address = { kind = "ordinal", ordinal = N }`; a draw of a link frame
+uses `kind = "link-frame"` with the frame's `direction` (`a-to-b` or `b-to-a`),
+its `producer_sequence`, and the draw's `role` index.
 
 An interrupt preemption instead uses `action = "interrupt-at"` with
 `target_vcpu` and `irq`. `at_tick` is the exact logical picosecond tick;

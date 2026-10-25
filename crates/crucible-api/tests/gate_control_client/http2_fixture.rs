@@ -1866,10 +1866,11 @@ pub(super) fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEven
     let causal = condition_payload_entry_for_test(
         first_sequence,
         frontier,
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name(format!("rpc-{quantum}")),
-            value: quantum,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name(format!("rpc-{quantum}")),
+            0,
+            quantum,
+        ))),
     );
 
     let mut details = BTreeMap::new();

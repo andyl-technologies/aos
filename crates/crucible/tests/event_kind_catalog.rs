@@ -12,13 +12,13 @@ use crucible::{
     event_kind_catalog_class, event_kind_catalog_dependency_map, event_kind_catalog_entry,
 };
 
-// Pins the independently reviewed version-8 catalog material.
+// Pins the independently reviewed version-9 catalog material.
 const EXPECTED_CATALOG_HASH: &str =
-    "88a32fb88c7c8bf3974276b814b8c0513850dd0e90db709a94233bec05781f46";
+    "71af440f794191e6592639c49e4ed6d916bb11b8fbc93daa880491d62913b2dd";
 
 #[test]
 fn event_kind_catalog_is_versioned_sorted_and_single_source_for_classes() {
-    assert_eq!(EVENT_KIND_CATALOG_VERSION, 8);
+    assert_eq!(EVENT_KIND_CATALOG_VERSION, 9);
 
     let mut kinds = BTreeSet::new();
     let mut previous = "";

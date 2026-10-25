@@ -328,12 +328,14 @@ pub(crate) fn materialize_start_from_tracked<F, D>(
                 ),
                 replay_decision_window(next.schedule.decision_history(), index, next_len),
             );
+            let expected = target.schedule.decision_history().get(index);
+            let observed = next.schedule.decision_history().get(index);
             return Err(AttemptWorkerFailure::Terminal(
                 QemuFreshExecutionRunnerError::StartReplay(QemuFreshStartReplayError::DivergedAt {
-                    reason: "decision prefix",
+                    reason: replay_decision_divergence_reason(expected, observed),
                     index,
-                    expected: replay_decision_detail(target.schedule.decision_history().get(index)),
-                    observed: replay_decision_detail(next.schedule.decision_history().get(index)),
+                    expected: replay_decision_detail(expected),
+                    observed: replay_decision_detail(observed),
                 }),
             ));
         }

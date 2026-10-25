@@ -444,6 +444,41 @@ pub(super) fn resolved_happening_event_payload(event: &ScheduledEvent) -> EventP
     }
 }
 
+/// Adds a draw's address to its `rng_draw` event attributes.
+fn insert_rng_draw_address_attributes(
+    attributes: &mut BTreeMap<String, EventAttributeValue>,
+    address: crate::RngDrawAddress,
+) {
+    match address {
+        crate::RngDrawAddress::Ordinal { ordinal } => {
+            attributes.insert(
+                String::from("address"),
+                EventAttributeValue::String(String::from("ordinal")),
+            );
+            attributes.insert(String::from("ordinal"), EventAttributeValue::U64(ordinal));
+        }
+        crate::RngDrawAddress::LinkFrame {
+            direction,
+            producer_sequence,
+            role,
+        } => {
+            attributes.insert(
+                String::from("address"),
+                EventAttributeValue::String(String::from("link-frame")),
+            );
+            attributes.insert(
+                String::from("direction"),
+                EventAttributeValue::String(String::from(direction.label())),
+            );
+            attributes.insert(
+                String::from("producer_sequence"),
+                EventAttributeValue::U64(producer_sequence),
+            );
+            attributes.insert(String::from("role"), EventAttributeValue::U64(role));
+        }
+    }
+}
+
 pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
     let mut attributes = BTreeMap::new();
     match decision {
@@ -467,6 +502,7 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
                 String::from("stream_name"),
                 EventAttributeValue::String(draw.stream.name.clone()),
             );
+            insert_rng_draw_address_attributes(&mut attributes, draw.address);
             attributes.insert(String::from("value"), EventAttributeValue::U64(draw.value));
             EventPayload::new("rng_draw", attributes)
         }
@@ -2460,6 +2496,7 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
             lines.push(format!("stream_domain={}", draw.stream.domain));
             lines.push(format!("stream_name_len={}", draw.stream.name.len()));
             lines.push(format!("stream_name={}", draw.stream.name));
+            lines.push(draw.address.canonical_material());
             lines.push(format!("value={}", draw.value));
         }
         Decision::Override(override_decision) => {

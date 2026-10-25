@@ -47,10 +47,11 @@ fn retained_publication_refuses_gapped_suffix_and_regressed_decision_prefix() {
     let parent = input.start().configuration().clone();
     let selected = accepted_step(
         &parent,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("released-prefix"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("released-prefix"),
+            0,
+            7,
+        )),
     );
     for (current, sequences) in [
         (parent.clone(), vec![1]),
@@ -101,17 +102,19 @@ fn newly_terminal_retained_boundary_refuses_further_replay_without_another_run()
     let parent = input.start().configuration().clone();
     let first = accepted_step(
         &parent,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fresh-runner-non-genesis"),
+            0,
+            7,
+        )),
     );
     let target = accepted_step(
         &first,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("beyond-terminal"),
-            value: 8,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("beyond-terminal"),
+            0,
+            8,
+        )),
     );
     for (after, released) in [(0, parent.clone()), (1, first.clone())] {
         let mut lifecycle = publication_fixture(retained_outcome(released), after, true);

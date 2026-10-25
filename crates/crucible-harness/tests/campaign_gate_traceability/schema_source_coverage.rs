@@ -127,10 +127,10 @@ crucible.execution.scenario-form|crates/crucible/src/model/toml.rs|magic|SCENARI
 crucible.executor.crucible-reproduction-payload|crates/crucible-daemon/src/crucible_artifact.rs|number|CRUCIBLE_REPRODUCTION_PAYLOAD_SCHEMA_V5
 crucible.execution.reproduction-artifact|crates/crucible/src/model/toml.rs|magic|REPRODUCTION_ARTIFACT_BINARY_MAGIC_V10
 crucible.execution.reproduction-artifact-manifest|crates/crucible/src/model/toml.rs|magic|REPRODUCTION_ARTIFACT_STORED_MAGIC_V1
-crucible.execution.schedule|crates/crucible/src/model/schedule_segments.rs|magic|SCHEDULE_BINARY_MAGIC_V5
+crucible.execution.schedule|crates/crucible/src/model/schedule_segments.rs|magic|SCHEDULE_BINARY_MAGIC_V6
 crucible.execution.schedule-manifest|crates/crucible/src/model/schedule_segments.rs|magic|MANIFEST_MAGIC: &[u8]
 crucible.execution.schedule-segment|crates/crucible/src/model/schedule_segments.rs|magic|SEGMENT_MAGIC: &[u8]
-crucible.execution.checkpoint|crates/crucible/src/model/toml.rs|magic|CHECKPOINT_BINARY_MAGIC_V6
+crucible.execution.checkpoint|crates/crucible/src/model/toml.rs|magic|CHECKPOINT_BINARY_MAGIC_V7
 crucible.execution.event-log-segment|crates/crucible/src/scheduler.rs|number|EVENT_LOG_SEGMENT_BINARY_VERSION
 crucible.execution.backend-network-output|crates/crucible/src/backend/io/network_checkpoint.rs|number|BACKEND_NETWORK_OUTPUT_VERSION
 crucible.execution.scheduler-network|crates/crucible/src/scheduler/runtime_state/network_checkpoint.rs|magic|SCHEDULER_NETWORK_CHECKPOINT_MAGIC

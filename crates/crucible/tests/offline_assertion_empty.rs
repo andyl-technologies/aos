@@ -179,10 +179,11 @@ fn causal_payloads() -> [SchedulerEventLogPayload; 2] {
         kind: SchedulingNodeKind::Vm,
     };
     [
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("atomic-empty"),
-            value: 7,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("atomic-empty"),
+            0,
+            7,
+        ))),
         SchedulerEventLogPayload::ResolvedHappening(ScheduledEvent {
             key: ScheduledEventKey::new(
                 SharedTimelineKey {

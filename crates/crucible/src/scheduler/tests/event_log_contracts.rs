@@ -7,10 +7,11 @@ fn event_log_append_rejects_class_catalog_mismatch() {
     let mut entry = scheduler_event_log_entry(
         0,
         VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("class-catalog-mismatch"),
-            value: 17,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("class-catalog-mismatch"),
+            0,
+            17,
+        ))),
     );
     entry.class = SchedulerEventLogClass::Observational;
 
@@ -31,10 +32,11 @@ fn event_log_append_rejects_typed_kind_catalog_drift() {
     let mut entry = scheduler_event_log_entry(
         0,
         VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("typed-kind-catalog-drift"),
-            value: 23,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("typed-kind-catalog-drift"),
+            0,
+            23,
+        ))),
     );
     entry.event_payload = EventPayload::new("diagnostic", entry.event_payload.attributes().clone());
 
@@ -55,10 +57,11 @@ fn event_log_append_rejects_unknown_typed_kind() {
     let mut entry = scheduler_event_log_entry(
         0,
         VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("unknown-typed-kind"),
-            value: 31,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("unknown-typed-kind"),
+            0,
+            31,
+        ))),
     );
     entry.event_payload = EventPayload::new(
         "unregistered_kind",
@@ -82,10 +85,11 @@ fn event_log_segment_binary_round_trips_to_same_bytes() {
     let entry = scheduler_event_log_entry(
         0,
         VirtualTime { ticks: 9 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("segment-round-trip"),
-            value: 41,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("segment-round-trip"),
+            0,
+            41,
+        ))),
     );
     let entries = vec![entry];
     let segment = scheduler_event_log_segment_material(previous_prefix, &entries);
@@ -98,10 +102,15 @@ fn event_log_segment_binary_round_trips_to_same_bytes() {
     assert_eq!(decoded.encode(), bytes);
     assert_eq!(decoded.text_view(), segment.text_view());
     assert!(decoded.text_view().contains("entry.payload.kind=rng_draw"));
+    assert!(
+        decoded.entries[0]
+            .entry_material
+            .contains("rng_address=ordinal:0")
+    );
 }
 
 #[test]
-fn event_log_v6_rejects_prior_versions_and_missing_or_wrong_backend_input_stamp() {
+fn event_log_v7_rejects_prior_versions_and_missing_or_wrong_backend_input_stamp() {
     let consumer = SchedulerNodeId {
         node: NodeId {
             name: String::from("consumer"),
@@ -149,7 +158,8 @@ fn event_log_v6_rejects_prior_versions_and_missing_or_wrong_backend_input_stamp(
     let material =
         scheduler_event_log_segment_material(scheduler_event_log_empty_prefix(), &[entry]);
 
-    for version in [3_u32, 5] {
+    // Version 6 entries recorded RNG draws without their draw address.
+    for version in [3_u32, 5, 6] {
         let mut old_version = material.encode();
         old_version[16..20].copy_from_slice(&version.to_le_bytes());
         assert!(matches!(

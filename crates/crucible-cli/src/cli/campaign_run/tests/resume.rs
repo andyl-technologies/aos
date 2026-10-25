@@ -70,10 +70,11 @@ fn campaign_resume_route_accepts_only_standard_selection_free_workflows() {
             at: VirtualTime { ticks: 5 },
             order: Vec::new(),
         }),
-        crucible::Decision::RngDraw(crucible::RngDecision {
-            stream: crucible::RngStreamId::from_name("guarded-campaign-resume-route"),
-            value: 7,
-        }),
+        crucible::Decision::RngDraw(crucible::RngDecision::ordinal(
+            crucible::RngStreamId::from_name("guarded-campaign-resume-route"),
+            0,
+            7,
+        )),
     ]);
     let evidence = resume_evidence(supported, VirtualTime { ticks: 5 });
     let default = default_resume_plan(&evidence, temporary.path());

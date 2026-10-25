@@ -178,9 +178,11 @@ verifier-derived `ScenarioArtifactId` and `ConfigurationArtifactId`; no
 repository or daemon is opened.
 
 `campaign schedule compile` accepts at most 32 MiB of strict, deny-unknown-
-fields version-two TOML and writes a nonempty canonical Schedule V3 without
+fields version-three TOML and writes a nonempty canonical Schedule V3 without
 replacing an existing path. The closed `[[decisions]]` variants are
-`delivery-order`, `rng-draw`, `override`, and `preemption`; preemption carries
+`delivery-order`, `rng-draw`, `override`, and `preemption`; `rng-draw` carries
+its exact draw address (an ordinal, or a link frame's direction, producer
+sequence, and role index); preemption carries
 an exact `at_tick` and an `action` of `vcpu-switch` or `interrupt-at`. One manifest contains at most
 65,536 decisions, one delivery order contains 1 through 65,536 events, and each
 authored string contains 1 through 4,096 bytes without NUL or line breaks. The

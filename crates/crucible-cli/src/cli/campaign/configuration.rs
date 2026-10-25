@@ -204,10 +204,11 @@ mod tests {
     }
 
     fn nonempty_schedule() -> Schedule {
-        Schedule::from_decisions([Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("campaign-authoring"),
-            value: 7,
-        })])
+        Schedule::from_decisions([Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("campaign-authoring"),
+            0,
+            7,
+        ))])
     }
 
     #[test]

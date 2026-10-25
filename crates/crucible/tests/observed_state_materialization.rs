@@ -43,10 +43,11 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
         payload_entry(
             3,
             time(6),
-            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("ignored-rng"),
-                value: 0xfeed_beef,
-            })),
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("ignored-rng"),
+                0,
+                0xfeed_beef,
+            ))),
         ),
         payload_entry(
             4,
@@ -75,10 +76,11 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
         payload_entry(
             6,
             time(6),
-            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("ignored-app-random"),
-                value: 0x1234_5678,
-            })),
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("ignored-app-random"),
+                0,
+                0x1234_5678,
+            ))),
         ),
         boundary_entry(7, time(6)),
     ])

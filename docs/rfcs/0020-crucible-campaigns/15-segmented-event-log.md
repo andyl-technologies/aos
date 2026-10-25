@@ -506,8 +506,8 @@ a finding. The schedule now uses the segment scheme of
 [§15.2](#152-attempt-segments) with its own schemas:
 
 ```text
-segment   ContentId(trace, schema 1), at most 16 MiB:
-  "crucible.schedule-segment.v1\0" u64 first_decision, u64 decision_count,
+segment   ContentId(trace, schema 2), at most 16 MiB:
+  "crucible.schedule-segment.v2\0" u64 first_decision, u64 decision_count,
   decision_count compact decisions                    // dense, nonempty
 
 manifest  at most 1 MiB:
@@ -519,15 +519,20 @@ chain_0 = H("crucible.schedule.segment-chain.v1", "empty")
 chain_i = H(domain, chain_(i-1) | segment digest | first decision
                     | decision count | encoded bytes)
 
-schedule  "crucible.schedule.v5\0" blob manifest, per segment in manifest
+schedule  "crucible.schedule.v6\0" blob manifest, per segment in manifest
           order: blob segment                          // transport form
 
 stored    "crucible.reproduction-artifact-manifest.v1\0"
           blob scenario-def-form, blob manifest
 
 artifact  "crucible.reproduction-artifact.v10\0"
-          blob scenario-def-form, blob schedule v5     // transport form
+          blob scenario-def-form, blob schedule v6     // transport form
 ```
+
+Each recorded random draw carries its stream and its full draw address
+(RFC-0010 [DET-26]). Schedule version 6 and segment schema 2 introduced that
+address; a reader refuses version 5 schedules, schema 1 segments, and the
+retired address-free draw encoding rather than infer an address.
 
 The schedule's content hash is computed over its decisions, independent of
 segment boundaries. The reproduction identity is the hash of the version 10

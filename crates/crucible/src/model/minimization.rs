@@ -460,10 +460,11 @@ mod tests {
     use super::*;
 
     fn rng(value: u64) -> Decision {
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("minimization-descriptor-test"),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("minimization-descriptor-test"),
+            0,
             value,
-        })
+        ))
     }
 
     /// Order key built the way the previous materializing enumerator did.

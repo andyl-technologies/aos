@@ -198,11 +198,11 @@ crucible.execution.measurement-definitions	1	crucible::model	execution-model-pay
 crucible.execution.measurement-evaluation	1	crucible::model	execution-model-payload	gate:campaign-model,gate:campaign-replay
 crucible.execution.reproduction-artifact	10	crucible::model	execution-model-payload	gate:campaign-replay,gate:content-address
 crucible.execution.reproduction-artifact-manifest	1	crucible::model	execution-model-payload	gate:campaign-replay,gate:content-address
-crucible.execution.schedule	5	crucible::model::schedule_segments	execution-model-payload	gate:typed-choice,gate:campaign-replay
+crucible.execution.schedule	6	crucible::model::schedule_segments	execution-model-payload	gate:typed-choice,gate:campaign-replay
 crucible.execution.schedule-manifest	1	crucible::model::schedule_segments	execution-model-payload	gate:campaign-replay,gate:content-address
-crucible.execution.schedule-segment	1	crucible::model::schedule_segments	trace	gate:campaign-replay,gate:exact-closure-streaming
+crucible.execution.schedule-segment	2	crucible::model::schedule_segments	trace	gate:campaign-replay,gate:exact-closure-streaming
 crucible.execution.selection-decision	1	crucible::model	execution-model-payload	gate:typed-choice,gate:campaign-replay
-crucible.execution.checkpoint	6	crucible::model	checkpoint	gate:typed-choice,gate:campaign-replay
+crucible.execution.checkpoint	7	crucible::model	checkpoint	gate:typed-choice,gate:campaign-replay
 crucible.campaign.expansion-state	2	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
 crucible.campaign.continuation-projection	1	crucible-campaign::exploration	projection	gate:lazy-frontier,gate:content-address
 crucible.campaign.planner-candidate-guidance	2	crucible-campaign::object	projection	gate:campaign-component-contract,gate:lazy-frontier,gate:content-address
@@ -237,7 +237,7 @@ crucible.campaign.query-campaign-request-attempts-request	2	crucible-campaign::c
 crucible.campaign.query-campaign-request-attempts-response	2	crucible-campaign::campaign_service::request_attempts	component-message	gate:campaign-component-contract
 crucible.campaign.state-identity	1	crucible-daemon::campaign_bootstrap	administrative-record	gate:campaign-component-contract
 crucible.execution.dequeued-fault-event	1	crucible-shmem::fault_event::checkpoint	checkpoint	gate:campaign-replay
-crucible.execution.event-log-segment	6	crucible::scheduler::event_codec	trace	gate:campaign-replay,gate:exact-closure-streaming
+crucible.execution.event-log-segment	7	crucible::scheduler::event_codec	trace	gate:campaign-replay,gate:exact-closure-streaming
 crucible.attempt.event-log-segment	1	crucible::attempt_log	trace	gate:campaign-replay,gate:exact-closure-streaming
 crucible.attempt.event-log-manifest	1	crucible::attempt_log	execution-model-payload	gate:campaign-replay,gate:content-address
 crucible.execution.backend-network-output	2	crucible::backend::io::network_checkpoint	device-state	gate:exact-closure-streaming

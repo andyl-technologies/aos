@@ -123,7 +123,7 @@
       }
       {
         label = "recorded raw draw carries stream id";
-        needle = "Decision::RngDraw(RngDecision { stream, value })";
+        needle = "Decision::RngDraw(RngDecision::ordinal(";
       }
       {
         label = "app-random draw is recorded";

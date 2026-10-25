@@ -1003,10 +1003,11 @@ mod tests {
         let configuration = Configuration::genesis(definition);
         let request = QemuVmReplayRequest::new(
             configuration.clone(),
-            Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("replay-authority"),
-                value: 7,
-            }),
+            Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("replay-authority"),
+                0,
+                7,
+            )),
         )
         .unwrap_or_else(|error| panic!("test replay request should be valid: {error}"));
         let runtime = RuntimeState {

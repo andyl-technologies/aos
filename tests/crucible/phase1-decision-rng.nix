@@ -9,6 +9,8 @@
   layer0Gate = builtins.readFile ../../crates/crucible-sim/tests/gate_layer0_determinism.rs;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
+  rngDrawModel = builtins.readFile ../../crates/crucible/src/model/materialized/rng_draw.rs;
+  decisionCodec = builtins.readFile ../../crates/crucible/src/model/binary_state.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -158,7 +160,27 @@
         needle = "DecisionRng::new";
       }
     ]
+    ++ failuresFor "crates/crucible/src/model/materialized/rng_draw.rs" rngDrawModel [
+      {
+        label = "recorded draws carry a typed address";
+        needle = "pub address: RngDrawAddress,";
+      }
+      {
+        label = "link-frame draw address";
+        needle = "LinkFrame {";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/model/binary_state.rs" decisionCodec [
+      {
+        label = "unaddressed draw encoding is refused";
+        needle = "rng draw without a draw address is a retired decision encoding and is refused";
+      }
+    ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
+      {
+        label = "DET-26 requires recorded draw addresses";
+        needle = "recorded draw MUST carry its stream and its full draw address";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
@@ -213,6 +235,7 @@ in
             prng=keyed-blake3-v2
             fork_rule=blake3_keyed_stream_key
             refused_legacy=splitmix64-v1
+            recorded_draw_address=ordinal,link-frame
             node_link_domain_separation=fixed-stream-domains
             pattern_PAT_7=keyed-stream-derivation
             construction_order_perturbs_streams=false

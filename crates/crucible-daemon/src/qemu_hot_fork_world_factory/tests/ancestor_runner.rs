@@ -20,10 +20,11 @@ pub(super) fn step(parent: &Configuration, decision: Decision) -> Configuration 
 pub(super) fn rng_step(parent: &Configuration, stream: &str, value: u64) -> Configuration {
     step(
         parent,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name(stream),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name(stream),
+            0,
             value,
-        }),
+        )),
     )
 }
 

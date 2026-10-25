@@ -485,10 +485,11 @@ fn checkpoint_readiness_limits_cold_catalog_to_initial_execution_boundary() {
 
     let advanced = Configuration {
         def: scenario,
-        schedule: Schedule::from_decisions([Decision::RngDraw(crucible::RngDecision {
-            stream: crucible::RngStreamId::from_name("checkpoint-catalog"),
-            value: 7,
-        })]),
+        schedule: Schedule::from_decisions([Decision::RngDraw(crucible::RngDecision::ordinal(
+            crucible::RngStreamId::from_name("checkpoint-catalog"),
+            0,
+            7,
+        ))]),
     };
     assert!(!selectable_catalogs_checkpoint_ready(
         &advanced,
@@ -1206,18 +1207,20 @@ fn ordered_branch_sequence_rejects_regressing_or_divergent_boundaries() {
     let base = Configuration::genesis(scenario.clone());
     let first = try_step(
         &base,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("branch-sequence"),
-            value: 1,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("branch-sequence"),
+            0,
+            1,
+        )),
     )
     .unwrap_or_else(|error| panic!("first test branch should be valid: {error}"));
     let divergent = try_step(
         &base,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("branch-sequence"),
-            value: 2,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("branch-sequence"),
+            0,
+            2,
+        )),
     )
     .unwrap_or_else(|error| panic!("divergent test branch should be valid: {error}"));
     let branch = |base, ticks| ProductionVmBranchConfig {

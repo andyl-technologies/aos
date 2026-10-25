@@ -100,7 +100,7 @@ fn event_log_segments_are_binary_canonical_with_derived_text_view() {
         .expect("event-log segment should append");
 
     assert!(append.segment_bytes.starts_with(b"CRUCIBLE-ELOGSEG"));
-    assert_eq!(&append.segment_bytes[16..20], &6_u32.to_le_bytes());
+    assert_eq!(&append.segment_bytes[16..20], &7_u32.to_le_bytes());
     assert_ne!(append.segment_bytes, append.segment_text.as_bytes());
     assert_eq!(
         append.segment_hash,
@@ -255,10 +255,11 @@ fn temporal_graph_closure_references_stored_event_log_segment_bytes() {
     let genesis = Configuration::genesis(scenario.clone());
     let child = accepted_step!(
         &genesis,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("event-log-content-address"),
-            value: 99,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("event-log-content-address"),
+            0,
+            99
+        )),
     );
     let shared = Arc::new(MemoryDagStore::new());
     let store: Arc<dyn DagStore> = shared.clone();
@@ -334,17 +335,19 @@ fn thin_replay_rejects_stale_nonzero_event_log_offset() {
     let genesis = Configuration::genesis(scenario.clone());
     let first = accepted_step!(
         &genesis,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("stale-offset-first"),
-            value: 1,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("stale-offset-first"),
+            0,
+            1
+        )),
     );
     let second = accepted_step!(
         &first,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("stale-offset-second"),
-            value: 2,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("stale-offset-second"),
+            0,
+            2
+        )),
     );
     let mut log = EventLog::new();
     let append = log

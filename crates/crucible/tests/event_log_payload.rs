@@ -38,10 +38,11 @@ fn payload_attributes_are_read_by_name_and_type() {
     let draw_entry = crucible::test_support::condition_payload_entry_for_test(
         1,
         VirtualTime { ticks: 21 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::for_link("network.partition"),
-            value: 17,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_link("network.partition"),
+            0,
+            17,
+        ))),
     );
     let draw_payload = draw_entry.event_payload();
 
@@ -102,10 +103,11 @@ fn level_is_orthogonal_to_event_class() {
     let causal_trace = crucible::test_support::condition_payload_entry_for_test(
         0,
         VirtualTime { ticks: 0 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("orthogonal-level"),
-            value: 7,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("orthogonal-level"),
+            0,
+            7,
+        ))),
     );
 
     let diagnostic_error = crucible::test_support::condition_payload_entry_for_test(

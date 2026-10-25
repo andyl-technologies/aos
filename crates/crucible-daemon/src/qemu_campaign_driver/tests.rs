@@ -1852,14 +1852,16 @@ fn restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlie
 fn resumed_driver_starts_from_the_actual_restored_configuration() {
     let input = input(StopCondition::ExecutionQuanta(2));
     let original = input.start().configuration().clone();
-    let prior_decision = crucible::Decision::RngDraw(crucible::RngDecision {
-        stream: crucible::RngStreamId::from_name("prior-resumed-decision"),
-        value: 11,
-    });
-    let next_decision = crucible::Decision::RngDraw(crucible::RngDecision {
-        stream: crucible::RngStreamId::from_name("next-resumed-decision"),
-        value: 12,
-    });
+    let prior_decision = crucible::Decision::RngDraw(crucible::RngDecision::ordinal(
+        crucible::RngStreamId::from_name("prior-resumed-decision"),
+        0,
+        11,
+    ));
+    let next_decision = crucible::Decision::RngDraw(crucible::RngDecision::ordinal(
+        crucible::RngStreamId::from_name("next-resumed-decision"),
+        0,
+        12,
+    ));
     let restored = accepted_step(&original, prior_decision);
     let continued = accepted_step(&restored, next_decision.clone());
     let mut lifecycle = RestoredFrontierLifecycle {

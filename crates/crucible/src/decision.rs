@@ -101,8 +101,10 @@ impl DecisionRecorder {
     /// Returns [`DecisionRecordError`] when the resulting schedule violates the
     /// scenario's app-random draw limit.
     pub fn draw_u64(&mut self, stream: RngStreamId) -> Result<u64, DecisionRecordError> {
-        let value = self.draw_stream_value(&stream).1;
-        self.append_decision(Decision::RngDraw(RngDecision { stream, value }))?;
+        let (ordinal, value) = self.draw_stream_value(&stream);
+        self.append_decision(Decision::RngDraw(RngDecision::ordinal(
+            stream, ordinal, value,
+        )))?;
         Ok(value)
     }
 
@@ -134,6 +136,7 @@ impl DecisionRecorder {
                     self.rng
                         .fork_in_domain(&decision.stream.domain, &decision.stream.name)
                 });
+        let ordinal = advanced_stream.draws();
         let raw_value = advanced_stream.next_u64();
         let selection = selectable.normalize_sample(&decision, raw_value)?;
         let discovery = selectable.into_discovery()?;
@@ -141,10 +144,11 @@ impl DecisionRecorder {
         self.app_random_draws += 1;
         self.streams
             .insert(decision.stream.clone(), advanced_stream);
-        self.append_decision(Decision::RngDraw(RngDecision {
-            stream: decision.stream,
-            value: raw_value,
-        }))?;
+        self.append_decision(Decision::RngDraw(RngDecision::ordinal(
+            decision.stream,
+            ordinal,
+            raw_value,
+        )))?;
         self.append_decision(Decision::Selection(SelectionDecision::new(&selection)))?;
         Ok(discovery)
     }
@@ -178,13 +182,15 @@ impl DecisionRecorder {
                     self.rng
                         .fork_in_domain(&decision.stream.domain, &decision.stream.name)
                 });
+        let ordinal = advanced_stream.draws();
         let raw_value = advanced_stream.next_u64();
         let parent = try_step(
             &self.configuration,
-            Decision::RngDraw(RngDecision {
-                stream: decision.stream.clone(),
-                value: raw_value,
-            }),
+            Decision::RngDraw(RngDecision::ordinal(
+                decision.stream.clone(),
+                ordinal,
+                raw_value,
+            )),
         )?;
         let selected = selectable.apply_selection(selection, &parent)?;
         if selected != decision {
@@ -226,13 +232,15 @@ impl DecisionRecorder {
                     self.rng
                         .fork_in_domain(&decision.stream.domain, &decision.stream.name)
                 });
+        let ordinal = advanced_stream.draws();
         let raw_value = advanced_stream.next_u64();
         Ok(try_step(
             &self.configuration,
-            Decision::RngDraw(RngDecision {
-                stream: decision.stream.clone(),
-                value: raw_value,
-            }),
+            Decision::RngDraw(RngDecision::ordinal(
+                decision.stream.clone(),
+                ordinal,
+                raw_value,
+            )),
         )?
         .id())
     }
@@ -291,14 +299,15 @@ impl DecisionRecorder {
         })
     }
 
+    /// Returns the next draw's ordinal and value, advancing the stream.
     fn draw_stream_value(&mut self, stream: &RngStreamId) -> (u64, u64) {
         let decision_stream = self
             .streams
             .entry(stream.clone())
             .or_insert_with(|| self.rng.fork_in_domain(&stream.domain, &stream.name));
-        let request_id = decision_stream.draws();
+        let ordinal = decision_stream.draws();
         let value = decision_stream.next_u64();
-        (request_id, value)
+        (ordinal, value)
     }
 
     fn append_decision(&mut self, decision: Decision) -> Result<(), DecisionRecordError> {
@@ -477,9 +486,35 @@ mod tests {
         let raw = recorder.draw_u64_accepted(stream.clone());
         assert!(matches!(
             recorder.schedule().decision_history().to_vec().as_slice(),
-            [Decision::RngDraw(RngDecision { stream: recorded, value })]
+            [Decision::RngDraw(RngDecision { stream: recorded, value, .. })]
                 if recorded == &stream && *value == raw
         ));
+    }
+
+    #[test]
+    fn decision_recorder_addresses_each_draw_by_its_stream_ordinal() {
+        let config = Configuration::genesis(scenario_from_seed(Seed::from_u64(0xadd2_e550)));
+        let stream = rng_stream("node-a/ordinals");
+        let other = rng_stream("node-b/ordinals");
+        let mut recorder = DecisionRecorder::new(config);
+
+        let first = recorder.draw_u64_accepted(stream.clone());
+        let other_draw = recorder.draw_u64_accepted(other.clone());
+        let second = recorder.draw_u64_accepted(stream.clone());
+
+        // A resumed recorder continues each stream at its next ordinal.
+        let mut resumed = DecisionRecorder::new(recorder.configuration().clone());
+        let third = resumed.draw_u64_accepted(stream.clone());
+
+        assert_eq!(
+            resumed.schedule().decision_history().to_vec(),
+            vec![
+                Decision::RngDraw(RngDecision::ordinal(stream.clone(), 0, first)),
+                Decision::RngDraw(RngDecision::ordinal(other, 0, other_draw)),
+                Decision::RngDraw(RngDecision::ordinal(stream.clone(), 1, second)),
+                Decision::RngDraw(RngDecision::ordinal(stream, 2, third)),
+            ]
+        );
     }
 
     #[test]
@@ -510,7 +545,7 @@ mod tests {
         assert_eq!(baseline_draw, edited_draw);
         assert!(matches!(
             baseline.schedule().decision_history().first(),
-            Some(Decision::RngDraw(RngDecision { stream, value }))
+            Some(Decision::RngDraw(RngDecision { stream, value, .. }))
                 if stream == &stable_stream && *value == baseline_draw
         ));
         assert!(matches!(
@@ -519,7 +554,7 @@ mod tests {
         ));
         assert!(matches!(
             edited.schedule().decision_history().get(1),
-            Some(Decision::RngDraw(RngDecision { stream, value }))
+            Some(Decision::RngDraw(RngDecision { stream, value, .. }))
                 if stream == &stable_stream && *value == edited_draw
         ));
     }
@@ -541,12 +576,12 @@ mod tests {
         assert_eq!(recorder.schedule().len(), 2);
         assert!(matches!(
             &recorder.schedule().decision_history()[0],
-            Decision::RngDraw(RngDecision { stream, value })
+            Decision::RngDraw(RngDecision { stream, value, .. })
                 if stream == &node_stream && *value == node_draw
         ));
         assert!(matches!(
             &recorder.schedule().decision_history()[1],
-            Decision::RngDraw(RngDecision { stream, value })
+            Decision::RngDraw(RngDecision { stream, value, .. })
                 if stream == &link_stream && *value == link_draw
         ));
     }
@@ -589,7 +624,7 @@ mod tests {
         assert_eq!(recorder.schedule().len(), 2);
         assert!(matches!(
             &recorder.schedule().decision_history()[0],
-            Decision::RngDraw(RngDecision { stream: recorded, value })
+            Decision::RngDraw(RngDecision { stream: recorded, value, .. })
                 if recorded == &stream && *value == raw_draw
         ));
         let Decision::Selection(decision) = &recorder.schedule().decision_history()[1] else {
@@ -640,10 +675,7 @@ mod tests {
         };
         let parent = accepted_step!(
             &config,
-            Decision::RngDraw(RngDecision {
-                stream: stream.clone(),
-                value: raw_draw,
-            }),
+            Decision::RngDraw(RngDecision::ordinal(stream.clone(), 0, raw_draw)),
         );
         let selectable = AppRandomSelectable::from_decision(&config.def, &observed)
             .expect("live request should reconstruct");
@@ -672,10 +704,7 @@ mod tests {
 
         let mut wrong_parent_recorder = DecisionRecorder::new(accepted_step!(
             &config,
-            Decision::RngDraw(RngDecision {
-                stream: rng_stream("unrelated"),
-                value: 9,
-            }),
+            Decision::RngDraw(RngDecision::ordinal(rng_stream("unrelated"), 0, 9)),
         ));
         let before = wrong_parent_recorder.clone();
         assert!(
@@ -823,7 +852,7 @@ mod tests {
         assert_eq!(resumed.schedule().len(), 3);
         assert!(matches!(
             resumed.schedule().decision_history().last(),
-            Some(Decision::RngDraw(RngDecision { stream: recorded, value }))
+            Some(Decision::RngDraw(RngDecision { stream: recorded, value, .. }))
                 if recorded == &stream && *value == expected_resumed
         ));
     }

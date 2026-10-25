@@ -392,11 +392,11 @@ impl WorldNetworkLinkRuntime {
     ) -> Result<crate::LinkEmitDecisionRecord, crucible_device::DeviceError> {
         // A directed link has one producer, so the frame id it stamped is
         // that producer's own sequence and names the frame's draws.
-        let draw_key = self.direction.frame_draw_key(u64::from(frame.frame_id));
         crate::device::emit_link_frame_with_keyed_draws(
             seed,
             &self.rng_stream,
-            draw_key,
+            self.direction,
+            u64::from(frame.frame_id),
             rng_position,
             &mut self.link,
             frame,
@@ -414,6 +414,8 @@ impl WorldNetworkLinkRuntime {
         crate::device::emit_link_frame_with_injected_draws_at_position(
             &self.rng_stream,
             &self.fault_id,
+            self.direction,
+            u64::from(frame.frame_id),
             rng_position,
             &mut self.link,
             frame,

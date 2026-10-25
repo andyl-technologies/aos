@@ -102,10 +102,11 @@ fn assert_event_payload_conversion_reuses_event_log_catalog() {
     let entry = condition_payload_entry_for_test(
         9,
         VirtualTime { ticks: 17 },
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("api-open-set"),
-            value: 41,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("api-open-set"),
+            0,
+            41,
+        ))),
     );
 
     let event = open_set_event_envelope_from_entry(&entry);

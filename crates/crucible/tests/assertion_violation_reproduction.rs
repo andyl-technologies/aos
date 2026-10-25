@@ -74,10 +74,11 @@ fn properties(world: &World) -> Properties {
 }
 
 fn reproduction_schedule(value: u64) -> Schedule {
-    Schedule::empty().appended(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("assertion-violation-reproduction"),
+    Schedule::empty().appended(Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("assertion-violation-reproduction"),
+        0,
         value,
-    }))
+    )))
 }
 
 fn reproduction_artifact(
@@ -100,10 +101,11 @@ fn event_log_with_decision_value(
     marker: MarkerId,
     decision_value: u64,
 ) -> Vec<crucible::SchedulerEventLogEntry> {
-    let decision = SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("assertion-violation-reproduction"),
-        value: decision_value,
-    }));
+    let decision = SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("assertion-violation-reproduction"),
+        0,
+        decision_value,
+    )));
     let decoy = ObservableEvent::guest_marker(icount(7), node("decoy"), marker_id("decoy"));
     let observed = ObservableEvent::guest_marker(icount(7), node("guest"), marker);
     vec![
@@ -135,10 +137,11 @@ fn recorded_log_with_decision_value(marker: MarkerId, decision_value: u64) -> Re
 }
 
 fn event_log_with_diagnostic(marker: MarkerId) -> Vec<crucible::SchedulerEventLogEntry> {
-    let decision = SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("assertion-violation-reproduction"),
-        value: 0xa15e_0015,
-    }));
+    let decision = SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("assertion-violation-reproduction"),
+        0,
+        0xa15e_0015,
+    )));
     let diagnostic = SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
         "replay.poll",
         EventLevel::Debug,

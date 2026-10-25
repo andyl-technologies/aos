@@ -145,7 +145,7 @@ fn selected_start_derives_matching_scheduler_and_plugin_branch_plans() {
     };
     let parent = accepted_step(
         &genesis,
-        Decision::RngDraw(RngDecision { stream, value: raw }),
+        Decision::RngDraw(RngDecision::ordinal(stream, 0, raw)),
     );
     let selection = AppRandomSelectable::from_decision(&scenario, &live)
         .expect("app-random request should reconstruct")
@@ -246,7 +246,7 @@ fn app_random_projection_ignores_a_campaign_selection_outside_its_owned_stream()
     };
     let parent = accepted_step(
         &genesis,
-        Decision::RngDraw(RngDecision { stream, value: raw }),
+        Decision::RngDraw(RngDecision::ordinal(stream, 0, raw)),
     );
     let selection = AppRandomSelectable::from_decision(&scenario, &live)
         .expect("foreign-domain selectable should remain structurally valid")
@@ -1866,10 +1866,11 @@ fn fresh_runner_enables_live_signal_promotion_after_start_materialization() {
         },
     );
     let input = non_genesis_fresh_runner_input_with_decisions_for_stop(
-        vec![Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        })],
+        vec![Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fresh-runner-non-genesis"),
+            0,
+            7,
+        ))],
         StopCondition::NextChoice,
     );
 
@@ -2470,10 +2471,11 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
         scenario.clone(),
         StopCondition::ExecutionQuanta(1),
     );
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("supplemental-collision"),
-        value: 1,
-    });
+    let decision = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("supplemental-collision"),
+        0,
+        1,
+    ));
     let finding_configuration = accepted_step(input.start().configuration(), decision.clone());
     let source = GuardedCampaignFindingOracleSource::new(
         ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes)),
@@ -2751,10 +2753,11 @@ fn finding_candidate_replay_continues_after_reaching_a_nonempty_schedule() {
         BoundaryCaptureLifecycleFactory {
             captured: Arc::new(Mutex::new(Vec::new())),
             final_events: Vec::new(),
-            replay_decisions: VecDeque::from([Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-                value: 7,
-            })]),
+            replay_decisions: VecDeque::from([Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("fresh-runner-non-genesis"),
+                0,
+                7,
+            ))]),
             terminal_failure: false,
             terminal_marker: None,
         },
@@ -2789,10 +2792,11 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
         BoundaryCaptureLifecycleFactory {
             captured: Arc::new(Mutex::new(Vec::new())),
             final_events: Vec::new(),
-            replay_decisions: VecDeque::from([Decision::RngDraw(RngDecision {
-                stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-                value: 7,
-            })]),
+            replay_decisions: VecDeque::from([Decision::RngDraw(RngDecision::ordinal(
+                RngStreamId::from_name("fresh-runner-non-genesis"),
+                0,
+                7,
+            ))]),
             terminal_failure: false,
             terminal_marker: None,
         },
@@ -2840,10 +2844,11 @@ fn finding_candidate_replay_retains_authenticated_execution_quanta_timeout() {
 fn property_failure_precedes_a_coincident_execution_quanta_timeout() {
     let assertion = AssertionId::from_name("coincident-timeout-safety");
     let base = modeled_assertion_candidate_input(assertion.clone(), 2);
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 7,
-    });
+    let decision = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("fresh-runner-non-genesis"),
+        0,
+        7,
+    ));
     let configuration = accepted_step(base.start().configuration(), decision.clone());
     let input = finding_candidate_input_with_configuration_and_stop(
         &base,
@@ -3001,10 +3006,9 @@ fn finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts() {
 #[test]
 fn finding_candidate_replay_reports_prefix_divergence_after_cleanup() {
     let order = Arc::new(Mutex::new(Vec::new()));
-    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 8,
-    }));
+    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(
+        RngDecision::ordinal(RngStreamId::from_name("fresh-runner-non-genesis"), 0, 8),
+    ));
     let candidate = finding_candidate_artifact(&input);
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -3035,10 +3039,11 @@ fn finding_candidate_replay_reports_prefix_divergence_after_cleanup() {
 #[test]
 fn finding_candidate_replay_reports_terminal_prefix_after_cleanup() {
     let order = Arc::new(Mutex::new(Vec::new()));
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 7,
-    });
+    let decision = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("fresh-runner-non-genesis"),
+        0,
+        7,
+    ));
     let input = non_genesis_fresh_runner_input_with_decisions(vec![decision.clone(), decision]);
     let candidate = finding_candidate_artifact(&input);
     let mut runner = QemuFreshExecutionRunner::new(
@@ -3070,10 +3075,9 @@ fn finding_candidate_replay_reports_terminal_prefix_after_cleanup() {
 #[test]
 fn finding_candidate_replay_preserves_cleanup_failure_over_incompatibility() {
     let order = Arc::new(Mutex::new(Vec::new()));
-    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 8,
-    }));
+    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(
+        RngDecision::ordinal(RngStreamId::from_name("fresh-runner-non-genesis"), 0, 8),
+    ));
     let candidate = finding_candidate_artifact(&input);
     let mut runner = QemuFreshExecutionRunner::new(
         FakeFreshLifecycleFactory {
@@ -3383,10 +3387,11 @@ fn selected_after_genesis_input_with_optional_continuation_source_stop(
     let configuration = base.start().configuration().clone();
     let reached = accepted_step(
         &configuration,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fresh-runner-non-genesis"),
+            0,
+            7,
+        )),
     );
     let AttemptStart::Discover {
         configuration: configuration_artifact,
@@ -3476,17 +3481,19 @@ fn selected_after_two_controlled_generations() -> (
     let configuration = base.start().configuration().clone();
     let reached_first = accepted_step(
         &configuration,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fresh-runner-non-genesis"),
+            0,
+            7,
+        )),
     );
     let reached_second = accepted_step(
         &reached_first,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fresh-runner-non-genesis"),
+            0,
+            7,
+        )),
     );
     let AttemptStart::Discover {
         configuration: configuration_artifact,
@@ -3621,10 +3628,11 @@ fn test_continuation_source_observation_for(bytes: &[u8]) -> crucible_campaign::
 }
 
 fn non_genesis_fresh_runner_input() -> CrucibleAttemptExecution {
-    non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 7,
-    }))
+    non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("fresh-runner-non-genesis"),
+        0,
+        7,
+    )))
 }
 
 fn modeled_non_genesis_fresh_runner_input_for_stop(
@@ -3634,10 +3642,11 @@ fn modeled_non_genesis_fresh_runner_input_for_stop(
     let scenario = base.scenario().clone();
     let configuration = accepted_step(
         &Configuration::genesis(scenario.scenario_def()),
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fresh-runner-non-genesis"),
+            0,
+            7,
+        )),
     );
     let scenario_artifact =
         crate::encode_crucible_scenario_artifact(&scenario).expect("modeled scenario artifact");

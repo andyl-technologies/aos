@@ -112,7 +112,7 @@
       }
       {
         label = "raw RNG draw recording";
-        needle = "Decision::RngDraw(RngDecision { stream, value })";
+        needle = "Decision::RngDraw(RngDecision::ordinal(";
       }
       {
         label = "unrelated world edit stream isolation test";

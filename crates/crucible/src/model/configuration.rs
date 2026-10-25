@@ -844,7 +844,7 @@ impl Schedule {
     /// segment store keep only the manifest; see [`Schedule::write_segments`].
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        schedule_v5_bytes(self)
+        schedule_v6_bytes(self)
     }
 
     /// Parses and validates a compact binary schedule.

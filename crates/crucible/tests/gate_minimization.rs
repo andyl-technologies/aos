@@ -542,10 +542,7 @@ fn override_decision(point: &str, choice: &str) -> Decision {
 }
 
 fn rng_decision(name: &str, value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(name),
-        value,
-    })
+    Decision::RngDraw(RngDecision::ordinal(RngStreamId::from_name(name), 0, value))
 }
 
 fn finding_fingerprint(label: &str) -> ContentHash {

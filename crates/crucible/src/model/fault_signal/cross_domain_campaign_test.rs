@@ -60,10 +60,11 @@ fn cross_domain_fleet_search_minimizes_and_locked_replays_without_explorer() {
 
     let original_schedule = Schedule::from_decisions([
         noise_override("fleet-search-guard-left"),
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("fleet-search-noise"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("fleet-search-noise"),
+            0,
+            7,
+        )),
         Decision::Override(failing_decision.clone()),
         noise_override("fleet-search-guard-right"),
     ]);

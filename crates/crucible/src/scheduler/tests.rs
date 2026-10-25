@@ -587,10 +587,11 @@ fn quantum_outcome_carries_step_decisions() {
         "crucible.test.scheduler.quantum-outcome",
         "scenario=stub",
     ));
-    let decision = crate::Decision::RngDraw(crate::RngDecision {
-        stream: crate::RngStreamId::from_name("scheduler"),
-        value: 7,
-    });
+    let decision = crate::Decision::RngDraw(crate::RngDecision::ordinal(
+        crate::RngStreamId::from_name("scheduler"),
+        0,
+        7,
+    ));
     let child = accepted_step!(&config, decision.clone());
     let outcome = QuantumOutcome {
         configuration: child,
@@ -1323,10 +1324,11 @@ fn search_frontier_window_retires_passed_boundaries_and_checkpoints_by_prefix() 
     // Two frontiers at the current boundary: the first names a strict prefix
     // of the configuration the second one records.
     record(&mut scheduler, 0, b"first");
-    let decision = crate::Decision::RngDraw(crate::RngDecision {
-        stream: crate::RngStreamId::from_name("window"),
-        value: 3,
-    });
+    let decision = crate::Decision::RngDraw(crate::RngDecision::ordinal(
+        crate::RngStreamId::from_name("window"),
+        0,
+        3,
+    ));
     scheduler.configuration = accepted_step!(scheduler.configuration(), decision);
     record(&mut scheduler, 0, b"second");
 

@@ -4,10 +4,11 @@ use super::*;
 use crate::segment_store::SharedSegmentStore;
 
 fn draw(value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::for_node("schedule-segments"),
+    Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::for_node("schedule-segments"),
+        0,
         value,
-    })
+    ))
 }
 
 /// Builds a schedule whose decisions each encode to roughly `width` bytes.
@@ -49,7 +50,7 @@ fn streamed_transport_hash_matches_the_written_blob() {
         wide_schedule(1, MAX_SEGMENT_BYTES),
     ] {
         let mut streamed = blake3::Hasher::new();
-        hash_schedule_v5_blob(&schedule, &mut streamed);
+        hash_schedule_v6_blob(&schedule, &mut streamed);
 
         let bytes = schedule.to_compact_binary();
         let mut written = blake3::Hasher::new();
@@ -197,4 +198,117 @@ fn a_decision_beyond_the_segment_bound_is_refused_closed() {
 
     assert!(schedule.write_segments(&SharedSegmentStore::new()).is_err());
     assert!(Schedule::from_compact_binary(&schedule.to_compact_binary()).is_err());
+}
+
+/// Returns one draw of each address kind on distinct streams.
+fn addressed_draws() -> [Decision; 2] {
+    [
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::for_node("schedule-segments"),
+            41,
+            7,
+        )),
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::for_link("schedule-segments"),
+            address: RngDrawAddress::LinkFrame {
+                direction: crate::NetworkLinkDirection::EndpointBToEndpointA,
+                producer_sequence: 9,
+                role: 3,
+            },
+            value: 11,
+        }),
+    ]
+}
+
+#[test]
+fn draw_addresses_round_trip_through_every_schedule_encoding() -> Result<(), EngineError> {
+    let schedule = Schedule::from_decisions(addressed_draws());
+
+    let transport = Schedule::from_compact_binary(&schedule.to_compact_binary())?;
+    assert_eq!(transport, schedule);
+    assert_eq!(transport.decision_history().to_vec(), addressed_draws());
+
+    let store = SharedSegmentStore::new();
+    let manifest = schedule.write_segments(&store)?;
+    assert_eq!(manifest.read_schedule(&store)?, schedule);
+
+    let json = serde_json::to_vec(&addressed_draws())
+        .map_err(|error| scenario_serialization_error(error.to_string()))?;
+    let parsed: Vec<Decision> = serde_json::from_slice(&json)
+        .map_err(|error| scenario_serialization_error(error.to_string()))?;
+    assert_eq!(parsed, addressed_draws());
+    Ok(())
+}
+
+#[test]
+fn draws_at_different_addresses_are_different_decisions() {
+    let recorded = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::for_node("schedule-segments"),
+        1,
+        7,
+    ));
+    let replayed = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::for_node("schedule-segments"),
+        0,
+        7,
+    ));
+
+    assert_ne!(recorded, replayed);
+    assert_ne!(
+        Schedule::from_decisions([recorded]).content_hash(),
+        Schedule::from_decisions([replayed]).content_hash()
+    );
+}
+
+#[test]
+fn a_segment_with_an_unaddressed_draw_is_refused() {
+    // Hand-encode the retired form: decision tag 1 with only a stream and value.
+    let mut writer = ScenarioBinaryWriter::new(SEGMENT_MAGIC);
+    writer.write_u64(0);
+    writer.write_u64(1);
+    writer.write_u8(1);
+    writer.write_string("crucible.decision-rng.node-stream.v1");
+    writer.write_string("schedule-segments");
+    writer.write_u64(7);
+    let bytes = writer.finish();
+    let segment = ScheduleSegmentRef {
+        id: ContentId::for_bytes(ObjectKind::Trace, SCHEDULE_SEGMENT_SCHEMA, &bytes),
+        first_decision: 0,
+        decision_count: 1,
+        encoded_bytes: bytes.len() as u64,
+    };
+
+    let refusal = decode_segment(&segment, &bytes).map(|_| ());
+    assert!(
+        matches!(&refusal, Err(error) if error.to_string().contains("without a draw address")),
+        "{refusal:?}"
+    );
+}
+
+#[test]
+fn schedules_and_segments_from_before_draw_addresses_are_refused() {
+    let bytes = Schedule::from_decisions(addressed_draws()).to_compact_binary();
+
+    let mut v5 = bytes.clone();
+    v5[..SCHEDULE_BINARY_MAGIC_V6.len()].copy_from_slice(b"crucible.schedule.v5\0");
+    assert!(Schedule::from_compact_binary(&v5).is_err());
+
+    let mut writer = ScenarioBinaryWriter::new(b"crucible.schedule-segment.v1\0");
+    writer.write_u64(0);
+    writer.write_u64(1);
+    write_decision_binary(&addressed_draws()[0], &mut writer);
+    let v1_segment = writer.finish();
+    let segment = ScheduleSegmentRef {
+        id: ContentId::for_bytes(ObjectKind::Trace, SCHEDULE_SEGMENT_SCHEMA, &v1_segment),
+        first_decision: 0,
+        decision_count: 1,
+        encoded_bytes: v1_segment.len() as u64,
+    };
+    assert!(decode_segment(&segment, &v1_segment).is_err());
+
+    let schema_1 = ScheduleSegmentRef {
+        id: ContentId::for_bytes(ObjectKind::Trace, 1, &v1_segment),
+        ..segment
+    };
+    assert!(validate_segment_ref(&schema_1).is_err());
 }

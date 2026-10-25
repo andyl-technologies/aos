@@ -1024,10 +1024,11 @@ mod tests {
 
         let between = accepted_step!(
             &first.selected().to_configuration(),
-            Decision::RngDraw(crate::RngDecision {
-                stream: crate::RngStreamId::from_name("between-promoted-frontiers"),
-                value: 7,
-            }),
+            Decision::RngDraw(crate::RngDecision::ordinal(
+                crate::RngStreamId::from_name("between-promoted-frontiers"),
+                0,
+                7
+            )),
         );
         let second_choice = BindingSearchChoice {
             id: SearchChoiceId::from_content_hash(crate::ContentHash::from_bytes(b"second-choice")),

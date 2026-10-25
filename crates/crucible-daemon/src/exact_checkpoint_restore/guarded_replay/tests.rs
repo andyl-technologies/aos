@@ -312,10 +312,11 @@ fn nonselection_instruction_steps_preserve_source_clock_calibration()
     reference.advance_to_ceiling(initial, target)?;
     let mut state = initial;
     for value in 0..5 {
-        let decision = Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("model-only"),
+        let decision = Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("model-only"),
+            0,
             value,
-        });
+        ));
         state =
             replay_one_nonselection_decision_boundary(&mut partitioned, state, target, &decision)?;
     }
@@ -517,10 +518,11 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
     let genesis = Configuration::genesis(source.scenario_def());
     let after_rng = crucible::try_step(
         &genesis,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("before-guest-choice"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("before-guest-choice"),
+            0,
+            7,
+        )),
     )?;
     let first_decision = Decision::Selection(SelectionDecision::new(&first_selection));
     let after_first = crucible::try_step(&after_rng, first_decision)?;
@@ -560,10 +562,11 @@ fn guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift()
         preemption: ScriptedPreemption::default(),
     };
 
-    let rng_decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("before-guest-choice"),
-        value: 7,
-    });
+    let rng_decision = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("before-guest-choice"),
+        0,
+        7,
+    ));
     let after_rng_icount = replay_one_nonselection_decision_boundary(
         &mut replay,
         Icount { retired: 0 },

@@ -422,10 +422,9 @@ fn fresh_runner_replay_divergence_cleans_up_without_calling_driver() {
             failure: None,
         },
     );
-    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 8,
-    }));
+    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(
+        RngDecision::ordinal(RngStreamId::from_name("fresh-runner-non-genesis"), 0, 8),
+    ));
 
     let error = runner
         .execute(&input, &fresh_runner_context())
@@ -446,6 +445,53 @@ fn fresh_runner_replay_divergence_cleans_up_without_calling_driver() {
     assert_eq!(index, 0);
     assert!(expected.contains("value: 8"), "{expected}");
     assert!(observed.contains("value: 7"), "{observed}");
+    assert_eq!(
+        order.lock().expect("fresh lifecycle order").as_slice(),
+        ["begin", "replay", "shutdown"]
+    );
+}
+
+#[test]
+fn fresh_runner_replay_refuses_a_draw_at_another_address_with_the_same_value() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let mut runner = QemuFreshExecutionRunner::new(
+        FakeFreshLifecycleFactory {
+            order: Arc::clone(&order),
+            cleanup_error: false,
+            terminal_after_replay: false,
+            checkpoint_ready: true,
+        },
+        FakeFreshDriver {
+            order: Arc::clone(&order),
+            failure: None,
+        },
+    );
+
+    // The live replay draws ordinal 0 with value 7; the recorded schedule
+    // claims the same stream and value at ordinal 1.
+    let input = non_genesis_fresh_runner_input_with_decision(Decision::RngDraw(
+        RngDecision::ordinal(RngStreamId::from_name("fresh-runner-non-genesis"), 1, 7),
+    ));
+
+    let error = runner
+        .execute(&input, &fresh_runner_context())
+        .expect_err("a draw at another address must fail closed");
+
+    let AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
+        QemuFreshStartReplayError::DivergedAt {
+            reason,
+            index,
+            expected,
+            observed,
+        },
+    )) = error
+    else {
+        panic!("expected typed fresh replay divergence: {error:?}");
+    };
+    assert_eq!(reason, "rng draw address");
+    assert_eq!(index, 0);
+    assert!(expected.contains("Ordinal { ordinal: 1 }"), "{expected}");
+    assert!(observed.contains("Ordinal { ordinal: 0 }"), "{observed}");
     assert_eq!(
         order.lock().expect("fresh lifecycle order").as_slice(),
         ["begin", "replay", "shutdown"]
@@ -504,10 +550,11 @@ fn fresh_runner_replay_is_bounded_by_admitted_quanta() {
             failure: None,
         },
     );
-    let decision = Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name("fresh-runner-non-genesis"),
-        value: 7,
-    });
+    let decision = Decision::RngDraw(RngDecision::ordinal(
+        RngStreamId::from_name("fresh-runner-non-genesis"),
+        0,
+        7,
+    ));
     let input = non_genesis_fresh_runner_input_with_decisions(vec![decision.clone(), decision]);
 
     let error = runner
@@ -832,10 +879,11 @@ fn production_continuation_plan_consumes_the_authenticated_reseed() {
     let input = fresh_runner_input();
     let source = accepted_step(
         input.start().configuration(),
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("continuation-plan-source"),
-            value: 7,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("continuation-plan-source"),
+            0,
+            7,
+        )),
     );
     let frontier = VirtualTime { ticks: 37 };
     let seed = Seed::from_u64(0x51ec_7ed0);

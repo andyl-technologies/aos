@@ -145,7 +145,7 @@ fn live_app_random_consumes_an_exact_parent_campaign_selection() {
     };
     let parent = accepted_step!(
         &configuration,
-        Decision::RngDraw(RngDecision { stream, value: raw }),
+        Decision::RngDraw(RngDecision::ordinal(stream, 0, raw)),
     );
     let selectable = AppRandomSelectable::from_decision(&configuration.def, &live)
         .expect("live app-random request should reconstruct");

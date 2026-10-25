@@ -282,10 +282,11 @@ fn graph_cache_snapshot_stamps_checkpoint_assertion_proximity_from_event_log_pro
     let genesis = Configuration::genesis(scenario);
     let child = accepted_step!(
         &genesis,
-        Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("proximity-graph-cache-stamping"),
-            value: 99,
-        }),
+        Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("proximity-graph-cache-stamping"),
+            0,
+            99
+        )),
     );
     let proximity_log = vec![
         proximity_entry(0, 41, "counter-reaches-ten", 9),
@@ -437,10 +438,11 @@ fn rng_entry(sequence: u64, ticks: u64) -> SchedulerEventLogEntry {
     crucible::test_support::condition_payload_entry_for_test(
         sequence,
         time(ticks),
-        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("assertion-proximity-causal"),
-            value: 41,
-        })),
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("assertion-proximity-causal"),
+            0,
+            41,
+        ))),
     )
 }
 

@@ -472,7 +472,7 @@ impl ReproductionArtifact {
     ///
     /// ```text
     /// "crucible.reproduction-artifact.v10\0"
-    ///   blob scenario-def-form v9, blob schedule v5
+    ///   blob scenario-def-form v9, blob schedule v6
     /// ```
     ///
     /// [`Self::id`] is the BLAKE3 hash of these bytes.

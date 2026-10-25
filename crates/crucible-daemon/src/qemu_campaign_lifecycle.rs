@@ -2147,6 +2147,24 @@ pub enum QemuFreshStartReplayError {
     },
 }
 
+/// Classifies the first differing replay decision.
+///
+/// Two draws from one stream that name different addresses took different
+/// draws, even when their values agree, so they get their own reason.
+fn replay_decision_divergence_reason(
+    expected: Option<&Decision>,
+    observed: Option<&Decision>,
+) -> &'static str {
+    match (expected, observed) {
+        (Some(Decision::RngDraw(expected)), Some(Decision::RngDraw(observed)))
+            if expected.stream == observed.stream && expected.address != observed.address =>
+        {
+            "rng draw address"
+        }
+        _ => "decision prefix",
+    }
+}
+
 fn replay_decision_detail(decision: Option<&Decision>) -> String {
     const MAX_CHARS: usize = 512;
 

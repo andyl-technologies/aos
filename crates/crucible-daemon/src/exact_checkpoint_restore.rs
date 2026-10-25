@@ -706,14 +706,16 @@ mod captured_source_tests {
             .unwrap_or_else(|error| panic!("build production resume scenario: {error}"))
             .scenario
             .scenario_def();
-        let first = Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("resume-prefix"),
-            value: 1,
-        });
-        let second = Decision::RngDraw(RngDecision {
-            stream: RngStreamId::from_name("resume-suffix"),
-            value: 2,
-        });
+        let first = Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("resume-prefix"),
+            0,
+            1,
+        ));
+        let second = Decision::RngDraw(RngDecision::ordinal(
+            RngStreamId::from_name("resume-suffix"),
+            0,
+            2,
+        ));
         let start = Configuration {
             def: scenario.clone(),
             schedule: Schedule::from_decisions([first.clone()]),
