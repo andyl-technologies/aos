@@ -95,6 +95,16 @@ optimized execution default disabled assertions while Cargo's test build
 scripts enabled them. This plumbing checkpoint does not enroll existing
 families or establish full compiler, native ABI, or linker equivalence.
 
+The [Cargo profile probe](../tests/evidence/cargo-execution-profile-baseline.json)
+compiles the same generator, procedural macro and libtest with AOS Cargo and
+Rust, without external dependencies. Nine cases pass across the ordinary test
+profile, release profile, and the explicit `RUSTFLAGS` used by the CLI editor
+oracle. Actual compiler arguments show those editor flags also reach execution
+tools, including size optimization and enabled assertion/overflow checks.
+The report retains all nine compiler commands and the complete sandbox recipe.
+This establishes the minimal Cargo behavior; it does not qualify an actual
+rust-analyzer query or complete application graph.
+
 The conformance check builds the pinned process wrapper from source with AOS
 Rust, then compares its actual child arguments and selected environment values
 with the reconstruction model. Run it with:
