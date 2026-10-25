@@ -40,14 +40,11 @@
     ${pkgs.coreutils}/bin/tail -c 32 test-public.der > test-public.raw
     ${pkgs.diffutils}/bin/cmp "$out/public" test-public.raw
   '';
-  testPublicPem = pkgs.writeTextFile {
-    name = "aos-host-phase0-rfc8032-test-public.pem";
-    text = ''
-      -----BEGIN PUBLIC KEY-----
-      MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=
-      -----END PUBLIC KEY-----
-    '';
-  };
+  testPublicPem = ''
+    -----BEGIN PUBLIC KEY-----
+    MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=
+    -----END PUBLIC KEY-----
+  '';
 
   system = systems.server-secureboot-lockdown.extendModules {
     modules = [
@@ -306,11 +303,14 @@ in {
 
           # Verify the deployed report's actual Ed25519 signature, not merely its
           # presence. The public key is the independently loaded test pin.
+          # Deliver the independent public pin with the verifier inputs. A path
+          # referenced only by the driver is absent from the guest closure.
+          vm.succeed("printf %s " + shlex.quote(${builtins.toJSON testPublicPem}) + " > /run/phase0-public.pem")
           vm.succeed(f"head -c 240 {REPORT} > /run/phase0-message")
           vm.succeed(f"tail -c 64 {REPORT} > /run/phase0-signature")
           vm.succeed(
               "${pkgs.openssl}/bin/openssl pkeyutl -verify -pubin "
-              "-inkey ${testPublicPem} -rawin -in /run/phase0-message "
+              "-inkey /run/phase0-public.pem -rawin -in /run/phase0-message "
               "-sigfile /run/phase0-signature"
           )
           assert signed[8:24] == bytes.fromhex(vm.succeed("cat /proc/sys/kernel/random/boot_id").strip().replace("-", ""))
