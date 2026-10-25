@@ -383,7 +383,7 @@
           // lib.optionalAttrs (builtins.elem file ["surfaces.nix" "host-cache.nix"]) {inherit nativeSdkTestImage;}
           // lib.optionalAttrs (file == "fuse-index.nix") {inherit initialEnrollmentProof;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
-          // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "host-cache.nix" "surfaces.nix" "fuse-index.nix"]) {inherit sourceGateWithInputs;}
+          // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "host-cache.nix" "surfaces.nix" "fuse-index.nix" "observability.nix"]) {inherit sourceGateWithInputs;}
           // lib.optionalAttrs (builtins.elem file ["bucket.nix" "ref_advance.nix"]) {inherit bucketSdkGate;}
           // lib.optionalAttrs (file == "shared-dir.nix") {inherit portableSharedModes initialEnrollmentProof sharedDirectoryProof;}
           // lib.optionalAttrs (file == "store.nix") {inherit hostCacheProof hostCacheAllFeatureProof wasmHostProof sourceGateWithInputs;}

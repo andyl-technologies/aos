@@ -100,6 +100,22 @@ T-TOPO-2 on B-topology. The trunk's HOST-24 periodic lease-expiry obligation
 remains with the original physical worker; it is not replaced by that optional
 collection work.
 
+Mandatory application-target compilation at `0677eb432c` passes in
+1,542.052 seconds. Complete review matches all 8,259 immutable source files
+and 190 test executables across 59 packages. This is compilation only;
+renewed native cache, manager and owning-gate runs remain in progress.
+
+The `obs-blame` gate now builds a retained image for its original two SDK
+selectors and one CLI selector and executes them in a dedicated UID/GID 840
+ext4 guest with empty groups/capabilities and no-new-privileges. The image
+retains the actual CLI as well as both test executables and their independently
+discovered loader closures. Guest setup restores only the CLI's original
+Cargo-compiled absolute pathname; Rust test sources and assertions remain
+unchanged. Source, artifact, complete-image and exact nonignored execution
+checks remain required. Python syntax, Nix evaluation, focused formatting,
+PLAN-2 and the seven-derivation dry run pass; native qualification is pending.
+This preparation does not accept OBS-13 or T-OBS-1.
+
 Existing-lock qualification at `9d89554155` passes its four-case ext4 guest
 in 1,361.242 seconds. Complete review matches all 8,242 immutable source
 files, 5,485 bound crate inputs and the retained Cargo library test executable.
