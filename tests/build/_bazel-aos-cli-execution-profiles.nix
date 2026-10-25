@@ -1,13 +1,20 @@
-##! Authenticates the CLI generators' independent test and release profiles.
+##! Authenticates the CLI generators' independent test, release and editor profiles.
 {pkgs}: let
   profiles = {
     test = {
       workspace = (import ./_bazel-aos-cli.nix {inherit pkgs;}).workspace;
       checks = "yes";
+      opt_level = "0";
     };
     release = {
       workspace = (import ./_bazel-aos-cli-production.nix {inherit pkgs;}).workspace;
       checks = "no";
+      opt_level = "0";
+    };
+    editor = {
+      workspace = (import ./_bazel-aos-cli-editor.nix {inherit pkgs;}).editor-workspace;
+      checks = "yes";
+      opt_level = "s";
     };
   };
   packages = [
@@ -33,6 +40,7 @@
         builtins.mapAttrs (name: build: {
           path = toString build;
           checks = profiles.${name}.checks;
+          opt_level = profiles.${name}.opt_level;
         })
         builds;
     };
@@ -74,7 +82,7 @@ in
                 continue
             assert len(sources) == 1 and sources[0] not in selected, sources
             scalar = compiler_options(action["arguments"])["effective_scalar_codegen"]
-            assert scalar["opt-level"] == "0" and scalar["debuginfo"] == "0", scalar
+            assert scalar["opt-level"] == profile["opt_level"] and scalar["debuginfo"] == "0", scalar
             for option in ["debug-assertions", "overflow-checks"]:
                 assert scalar[option] == profile["checks"], scalar
             matching = [event for event in events if event["mnemonic"] == "Rustc"
@@ -83,8 +91,17 @@ in
             assert matching[0]["runner"] == "linux-sandbox" and not matching[0]["cacheHit"]
             selected[sources[0]] = scalar
         assert set(selected) == expected, set(selected)
+        generator_labels = {"//" + package + ":build_script" for package in selections["packages"]}
+        generators = [event for event in events if event["mnemonic"] == "CargoBuildScriptRun"
+                      and event["targetLabel"] in generator_labels]
+        assert len(generators) == 3 and {event["targetLabel"] for event in generators} == generator_labels
+        assert all(event["runner"] == "linux-sandbox" and not event["cacheHit"]
+                   and event["exitCode"] == 0 for event in generators)
         results[name] = {
             **profile, "compiler_options": selected,
+            "generator_executions": {event["targetLabel"]: {
+                key: event[key] for key in ["runner", "cacheHit", "exitCode"]
+            } for event in generators},
             "inputs_sha256": {filename: hashlib.sha256((evidence / filename).read_bytes()).hexdigest()
                               for filename in ["actions.json", "execution.json", "compiler-inputs.json"]},
         }

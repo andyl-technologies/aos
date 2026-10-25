@@ -110,11 +110,14 @@ authenticates the actual Build API, Hub API and Hub Service compiler arguments
 in both configurations. All six compiler actions and six observed generator
 executions use the Linux sandbox without cache hits. Retained Cargo artifact
 profiles and the independent minimal Cargo probe establish the baseline scope.
-The editor remains on its previous configuration pending separate enrollment:
-its Cargo oracle supplies explicit size-optimization and assertion/overflow
-flags to execution tools too. Fleet execution, full CLI tests, generated-source
-and editor parity, and production installation still need qualification after
-this execution-profile change.
+The editor now explicitly forwards its size-optimization and assertion/overflow
+flags to execution tools too, matching its Cargo oracle. The
+[editor enrollment report](../tests/evidence/cli-editor-execution-profile-enrollment.json)
+retains all three configurations: nine compiler actions and nine actual
+generator executions pass without cache hits in Linux sandboxes. The independent
+rust-analyzer probe records the editor's underlying Cargo behavior. Fleet
+execution, full CLI tests, generated-source and editor parity, and production
+installation still need qualification after this execution-profile change.
 
 The production package exports nine CLI programs, five package-manager helpers,
 and the image metadata helper. Installation verifies its manifest and bytes,

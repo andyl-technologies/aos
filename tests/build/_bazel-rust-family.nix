@@ -32,6 +32,7 @@
   nativeLibraries ? [],
   nativeTools ? [],
   rustcFlags ? [],
+  execRustcFlags ? [],
   cargoSource ? import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;},
   cargoManifest ? "crates/Cargo.toml",
   cargoVendor ? pkgs.aos.passthru.cargoDeps,
@@ -61,7 +62,7 @@
       && !(directoryName == "tests" && builtins.elem (pkgs.lib.removeSuffix ".rs" file) excludedTests)) (builtins.attrNames entries));
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
-    inherit sourceInventory dependencyProfile repositories rustcFlags;
+    inherit sourceInventory dependencyProfile repositories rustcFlags execRustcFlags;
     sourceDirectories = pkgs.lib.optionals (sourceInventory == null) ([
         "tools/bazel/toolchains"
         "tools/bazel/rules"

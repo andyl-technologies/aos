@@ -13,6 +13,9 @@
   rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   family = import ./_bazel-rust-family.nix {
     inherit pkgs rustcFlags;
+    # The Cargo editor oracle explicitly applies these flags to execution tools
+    # too. Its generator profile differs from ordinary Cargo test builds.
+    execRustcFlags = rustcFlags;
     inherit (candidate) packages dependencyPackages repositories;
     inherit (cargo.passthru.editorInputs) cargoSource cargoSetup nativeLibraries nativeTools;
     pname = "aos-bazel-${profile}-editor-checkpoint";
@@ -34,4 +37,5 @@
   };
 in {
   inherit (family) editor editor-cargo-oracle editor-parity;
+  editor-workspace = family.workspace;
 }
