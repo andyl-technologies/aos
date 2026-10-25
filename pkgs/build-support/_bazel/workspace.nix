@@ -21,6 +21,9 @@
   rustcFlags ? [],
   # Generators and procedural macros use the native execution configuration.
   execRustcFlags ? [],
+  # Opted-in editor workspaces query native built-in cfgs independently of
+  # compiler actions. Null preserves the existing exporter during rollout.
+  editorCfgFlags ? null,
 }: let
   rootString = toString root;
   validRustcFlags = flags:
@@ -153,7 +156,14 @@
             mkdir -p "$out"
             printf '{}\n' > "$out/bazel_registry.json"
           '');
-          rust_project_exporter = "${../../../tools/bazel/metadata/export_rust_project.py}";
+          rust_project_exporter =
+            if editorCfgFlags == null
+            then "${../../../tools/bazel/metadata/export_rust_project.py}"
+            else
+              toString (import ./editor-cfg.nix {
+                inherit pkgs toolchains;
+                flags = editorCfgFlags;
+              });
           inherit jobs batch;
           compile_only = compileOnly;
           target_platform = targetPlatform;
@@ -220,6 +230,14 @@ in
   || throw "mkAosBazelWorkspace: rustcFlags must be individual nonempty flags without commas";
   assert validRustcFlags execRustcFlags
   || throw "mkAosBazelWorkspace: execRustcFlags must be individual nonempty flags without commas";
+  assert editorCfgFlags
+  == null
+  || validRustcFlags editorCfgFlags
+  || throw "mkAosBazelWorkspace: editorCfgFlags must be null or individual nonempty flags without commas";
+  assert editorCfgFlags
+  == null
+  || (!pkgs.stdenv.isCross && targetPlatform == null)
+  || throw "mkAosBazelWorkspace: editor cfg queries currently require a native target";
   assert !compileOnly || targetPlatform != null; {
     inherit source toolchains configuration preparedLock batch;
     # The initial fixtures deliberately use conservative directory selections.

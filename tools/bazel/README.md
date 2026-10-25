@@ -612,8 +612,14 @@ optimization level 3; macros use level 0. Both disable assertions and overflow
 checks. Only target actions receive the static runtime flags. Source arguments
 distinguish the library and executable libtests, which share a Cargo crate name.
 The four-root editor comparison preserves three selected diagnostic identities;
-inference remains incomplete. Complete built-in editor cfg parity, VM
-determinism, production migration and performance acceptance remain separate.
+inference remains incomplete. The separate
+[built-in cfg qualification](tests/evidence/guest-editor-builtin-cfg.json)
+matches explicit cfg fields for 75 configured editor crates against the native
+analyzer's captured compiler query. It preserves all three macro artifacts'
+bytes while retaining the target's static cfg. This enrolls the qualification
+editor; ordinary development launchers, complete effective cfg behavior for
+arbitrary flags, VM determinism, production migration and performance acceptance
+remain separate.
 
 `checks.build.bazel.guest.all` builds the guest library and executable, both
 libtest artifacts, both integration tests, doctests, Clippy, formatting,

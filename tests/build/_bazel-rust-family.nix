@@ -35,6 +35,7 @@
   # Native analyzer cfg queries use its own global flags, independently of the
   # ordinary test target's profile or static-linking options.
   editorTargetRustcFlags ? editorRustcFlags,
+  editorCfgFlags ? null,
   # Cargo builds host macros without optimization in both ordinary profiles;
   # release disables assertions even for these unoptimized execution tools.
   execRustcFlags ? let
@@ -78,12 +79,13 @@
       == "regular"
       && pkgs.lib.hasSuffix ".rs" file
       && !(directoryName == "tests" && builtins.elem (pkgs.lib.removeSuffix ".rs" file) excludedTests)) (builtins.attrNames entries));
-  workspaceFor = targetFlags: executionFlags:
+  workspaceFor = targetFlags: executionFlags: cfgFlags:
     pkgs.mkAosBazelWorkspace {
       root = ../..;
       inherit sourceInventory dependencyProfile repositories;
       rustcFlags = targetFlags;
       execRustcFlags = executionFlags;
+      editorCfgFlags = cfgFlags;
       sourceDirectories = pkgs.lib.optionals (sourceInventory == null) ([
           "tools/bazel/toolchains"
           "tools/bazel/rules"
@@ -94,13 +96,13 @@
         ++ builtins.attrValues packages ++ extraSourceDirectories);
       analysisTargets = assert builtins.attrNames packageTargets == names; map (name: "${label name}:${packageTargets.${name}.unit}") names;
     };
-  workspace = workspaceFor rustcFlags execRustcFlags;
+  workspace = workspaceFor rustcFlags execRustcFlags null;
   # Analyzer cfg queries and execution-tool builds have independent profiles.
   # Preserve the same source graph while selecting each role explicitly.
   editorWorkspace =
-    if editorTargetRustcFlags == rustcFlags && editorExecRustcFlags == execRustcFlags
+    if editorCfgFlags == null && editorTargetRustcFlags == rustcFlags && editorExecRustcFlags == execRustcFlags
     then workspace
-    else workspaceFor editorTargetRustcFlags editorExecRustcFlags;
+    else workspaceFor editorTargetRustcFlags editorExecRustcFlags editorCfgFlags;
 in rec {
   inherit workspace editorWorkspace;
   tests = pkgs.mkAosBazelCheck {

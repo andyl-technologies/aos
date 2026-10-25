@@ -47,12 +47,26 @@ preserves the pre-change declaration identities of eight explicit families.
 The format and static-guest aggregates qualify two actual inherited profiles;
 other families still require their own current qualification.
 
-The [open editor cfg discrepancy](../tests/evidence/editor-builtin-cfg-gap.json)
+The [initial editor cfg discrepancy](../tests/evidence/editor-builtin-cfg-gap.json)
 records a separate gap: the pinned aspect inserts `debug_assertions`
 unconditionally, while the current native Cargo model takes it from its
 compiler cfg query. The guest's actual optimized query omits it. Selected
-diagnostic parity does not qualify this built-in cfg behavior, and the retained
-profile checks do not waive its correction before editor acceptance.
+diagnostic parity alone does not qualify this built-in cfg behavior.
+
+The [guest cfg qualification](../tests/evidence/guest-editor-builtin-cfg.json)
+corrects the explicitly enrolled qualification editor. Its adapter queries the
+declared AOS compiler in the native analyzer's flag order, replaces stale
+built-in cfg assumptions and preserves configured features, dependency edges,
+generated inputs and macro artifacts. Local source roots receive the native
+`rust_analyzer` cfg. A required gate compares all 75 configured crates' explicit
+built-in cfg fields with the captured native query, alongside ordinary editor
+diagnostic parity. All three host-macro artifacts retain their previous bytes.
+
+`mkAosBazelWorkspace.editorCfgFlags` selects this adapter; `null` preserves the
+existing exporter during rollout. The adapter currently requires the default
+native target and rejects foreign target configurations. Other families and
+ordinary development launchers still require enrollment. Complete effective
+analyzer cfg behavior for arbitrary flags remains a separate acceptance check.
 
 The selected compiler audit also supports release targets and source-qualified
 Cargo names. The [release audit checks](../tests/evidence/rust-release-profile-auditor.json)

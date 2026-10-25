@@ -16,6 +16,7 @@
     extraPaths = inputPaths;
   };
   triple = pkgs.stdenv.hostPlatform.config;
+  editorFlags = ["-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
   cargoSetup = ''
     export CARGO_BUILD_TARGET=${pkgs.lib.escapeShellArg triple}
     export CARGO_TARGET_${pkgs.lib.toUpper (builtins.replaceStrings ["-"] ["_"] triple)}_RUSTFLAGS="-C target-feature=+crt-static -C relocation-model=static -L ${pkgs.aosBazelGuestLibraries}/static/lib"
@@ -32,6 +33,10 @@
       crucible-store = "crates/crucible/crucible-store";
     };
     editorComparisonScope = "selected-packages";
+    # Native analyzer queries inherit target-specific static flags; these must
+    # not enter the independent host configuration used to compile macros.
+    editorTargetRustcFlags = editorFlags;
+    editorCfgFlags = editorFlags;
     dependencyProfile = "guest";
     rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
     cargoFlags = ["--release"];
@@ -73,10 +78,18 @@
     };
     proceduralMacros = ["curve25519_dalek_derive" "serde_derive" "thiserror_impl"];
   };
+  editor-builtin-cfg = import ./_bazel-editor-builtin-cfg.nix {
+    inherit pkgs;
+    inherit (family) editor;
+    pname = "aos-bazel-guest-editor-builtin-cfg";
+    cargo = family.editor-cargo-oracle;
+    workspace = family.editorWorkspace;
+    flags = editorFlags;
+  };
 in
   family
   // rec {
-    inherit execution-profiles;
+    inherit execution-profiles editor-builtin-cfg;
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-guest-inventory";
       workspace = family.workspace;
@@ -148,13 +161,14 @@ in
       '';
     all =
       pkgs.runCommand "aos-bazel-guest-qualified-checks" {
-        buildDeps = [family.all family.editor-parity runtime execution-profiles];
+        buildDeps = [family.all family.editor-parity runtime execution-profiles editor-builtin-cfg];
       } ''
         mkdir -p "$out"
         cp -r ${family.all}/evidence "$out/evidence"
         cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
         cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
         cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
+        cp ${editor-builtin-cfg}/evidence.json "$out/editor-builtin-cfg.json"
         cp -r ${runtime} "$out/runtime"
       '';
   }
