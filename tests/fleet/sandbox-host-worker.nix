@@ -3,8 +3,12 @@
   lib,
   mkSystem,
   pkgs,
+  systems,
   ...
-}: let
+} @ args: let
+  installedSystem = (import ./sandbox-host-phase0-readiness.nix args).machines.vm.system;
+  installedKernel = installedSystem.config.system.build.kernel;
+
   incarnation = "61616161616161616161616161616161";
   runtimeUnit = "aos-sandbox-${incarnation}.service";
   guardian = "aos-lease-guard-${incarnation}";
@@ -163,10 +167,13 @@
     printf '${incarnation}\n' > "$out/etc/machine-id"
   '';
 
-  system = mkSystem [
+  workerSystem = mkSystem [
     ../../systems/server-test.nix
     {
       environment.systemPackages = [pkgs.systemd pkgs.iproute2 pkgs.nftables pkgs.util-linux];
+      # Exercise compiler and Guardian syscalls against the deployed kernel.
+      # The fixture userspace does not qualify production MAC or admission.
+      aos.kernel._extraConfigFragments = lib.mkForce installedSystem.config.aos.kernel._extraConfigFragments;
       systemd.slices.aos-sandboxes.description = "Sandbox worker qualification runtimes";
 
       # The real guardian is a separate gate. This inert dependency permits the
@@ -299,12 +306,17 @@
       };
     }
   ];
+  system =
+    if toString workerSystem.config.system.build.kernel == toString installedKernel
+    then workerSystem
+    else throw "Host worker qualification must use the installed Host kernel";
 in {
   name = "sandbox-host-worker";
-  timeout = 360;
+  timeout = 600;
+  bootTimeout = 240;
   machines.vm = {inherit system;};
   testScript = ''
-    vm.wait_for_unit("multi-user.target", timeout=120)
+    vm.wait_for_unit("multi-user.target", timeout=180)
     try:
         vm.succeed("systemctl start aos-host-worker-qualification.service", timeout=280)
         vm.fail("systemctl is-active --quiet ${runtimeUnit}")
