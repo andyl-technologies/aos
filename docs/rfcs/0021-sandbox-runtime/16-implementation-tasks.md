@@ -11749,3 +11749,17 @@ Systemd shares this permission between SwitchRoot, reboot, soft-reboot and
 kexec; it is not a SwitchRoot-only permission. These changes remain uncommitted
 pending their specific approvals. This build receipt establishes neither
 installed startup nor permission to publish the candidate policy.
+
+The later enforcing retries identified native activation's missing Chrony and
+SSH start/status access and missing access to inherited PID 1 journal streams.
+The committed fixes retain the fixed preparer, recovery and normal owner roles;
+they permit stream read/write while rejecting new connections to PID 1. The
+preparer checks preserve ordinary same-role sockets and context translation.
+The clean committed source at `902942cfdd` passes all 164 policy unit tests,
+the normal merged-policy scan and the negative fixtures at
+`/nix/store/1b8d1pqmfayxgkmd7shrc3naf60i12y4-aos-selinux-production-policy-1`
+(NAR hash `sha256-sJDNHlK279u3ap9bqOfrlYcwht2ms0MBAP3TxaBzJK0=`).
+This receipt excludes the pending networkd and manager reboot patches. The
+isolated candidate including those patches passes 166 policy unit tests; its
+installed QEMU startup checks remain pending. Neither result supplies the
+funded initial-floor producer or qualifies the public lifecycle.
