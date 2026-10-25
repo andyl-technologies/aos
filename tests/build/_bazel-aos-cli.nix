@@ -2,6 +2,7 @@
 {
   pkgs,
   fleet ? false,
+  sourceInventory ? null,
 }: let
   lib = pkgs.lib;
   root = ../..;
@@ -100,14 +101,15 @@
   # when first-party target tests use the workspace's size optimization.
   execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   workspace = pkgs.mkAosBazelWorkspace {
-    inherit root;
+    inherit root sourceInventory;
     # Integration contracts inspect declared repository inputs. Architecture
     # checks consume the generated all-profile Bazel production graph.
     # Keep qualification scripts and evidence outside compiler inputs. The
     # integration contracts receive their own declared repository snapshot.
-    sourceDirectories =
+    sourceDirectories = lib.optionals (sourceInventory == null) (
       ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "third_party/rust" "api/proto"]
-      ++ builtins.attrValues packages ++ builtins.attrValues dependencyPackages;
+      ++ builtins.attrValues packages ++ builtins.attrValues dependencyPackages
+    );
     dependencyProfile = profile;
     cargoProfile = "debug";
     inherit repositories execRustcFlags;
