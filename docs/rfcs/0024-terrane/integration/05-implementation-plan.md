@@ -100,6 +100,23 @@ previous exact-output comparison including that additional record before the
 new manager scenario ran. Native manager qualification of this verifier
 correction remains pending; no task acceptance changes.
 
+Mandatory application-target compilation at `492c410e29` passes in 730.275
+seconds. Complete review matches all 8,263 immutable source files and 190
+actual test executables across 59 packages. This qualifies compilation of
+the allocation-mount correction, not native execution.
+
+Manager-image prerequisites at that same source pass in 860.920 seconds.
+Review accounts for exactly 49 derivations dispatched to the isolated AOS
+builder, the fresh nonce-bound capability-free ext4 sandbox proof, both
+imported outputs and clean builder shutdown. Twelve unchanged, previously
+guest-qualified package checks remain valid; no fresh execution of those
+checks is claimed. The journal correction at `4d6fa29019` now has its own
+audited 49-derivation prerequisite run in progress. Its complete immutable
+source and original builder controllers match the frozen checkout. The
+actual manager scenario will run only after those prerequisites pass review;
+the known-failing earlier journal comparison is not run for qualification.
+Native-cache, owning-gate and feature-matrix runs remain pending.
+
 Trunk acceptance is **28/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance. Pack compaction
 (GC-18 to GC-21) is explicitly deferred from T-GC-1 to T-GC-2 on B-jobs;
