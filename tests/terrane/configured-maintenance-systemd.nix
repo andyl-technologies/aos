@@ -200,6 +200,19 @@
       set -eu
       # Completed-image verification inspects the actual ELF closure in the guest.
       export PATH=${pkgs.binutils}/bin:$PATH
+
+      # Native host activation reconciles the fixture's accounts after early
+      # boot tmpfiles. Apply only the module's runtime-directory rules now;
+      # enrollment prepares the separate domain layout on the test disk.
+      test "$(id -u terrane)" = 840
+      test "$(id -u terrane-publish)" = 841
+      test "$(id -u terrane-gc)" = 843
+      ${pkgs.systemd}/bin/systemd-tmpfiles --create \
+        --prefix=/run/terrane-publish --prefix=/run/terrane-maintenance \
+        /etc/tmpfiles.d/terrane.conf
+      test "$(stat -c '%u:%g:%a' /run/terrane-publish)" = 841:845:2750
+      test "$(stat -c '%u:%g:%a' /run/terrane-maintenance)" = 840:846:2750
+
       mkdir -p /var/lib/terrane-enrollment-proof /var/lib/terrane-host
       chmod 700 /var/lib/terrane-host
       mkdir /var/lib/terrane-host/project-claims

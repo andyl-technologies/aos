@@ -309,6 +309,20 @@ KVM checks, two compile-only images and fourteen metadata/image assembly
 derivations. After these complete, native matrix execution belongs in the
 isolated builder; prerequisite construction alone is not a matrix result.
 
+The manager prerequisites at `4914e8a0dc` pass in 939.212 seconds. Review
+verifies all 49 missing derivations dispatch to the isolated builder, the
+twelve original runtime checks remain in the imported image closure, and
+the fresh sandbox proof and orderly shutdown pass. The original manager
+scenario reaches its agent and fourteen enrollment controls, then fails in
+230.545 seconds with publisher `226/NAMESPACE`: `/run/terrane-publish` is
+absent. Early boot tmpfiles ran before native activation reconciled the
+retained accounts. The fixture now verifies the actual account IDs and applies
+only the module's original runtime-directory rules after activation, checking
+their exact ownership and setgid modes before enrollment. Role identities,
+confinement, readiness assertions and deadlines remain unchanged. This fixture
+preparation does not qualify production boot ordering; renewed manager runtime
+qualification and complete production role deployment remain required.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement
