@@ -116,8 +116,18 @@ flags to execution tools too, matching its Cargo oracle. The
 retains all three configurations: nine compiler actions and nine actual
 generator executions pass without cache hits in Linux sandboxes. The independent
 rust-analyzer probe records the editor's underlying Cargo behavior. Fleet
-execution, full CLI tests, generated-source and editor parity, and production
-installation still need qualification after this execution-profile change.
+execution and editor analysis, ordinary CLI tests, generated-source parity,
+and production installation still need qualification after this profile change.
+
+The [default editor comparison](../tests/evidence/cli-editor-profile-parity.json)
+passes after enrollment: all 606 distinct diagnostic locations and inferred
+types match across 30 CLI roots. All 1,229 logged editor actions
+execute in Linux sandboxes without cache hits. The report retains 3,579 raw
+Bazel rows, 2,551 selected Cargo rows, and 2,481 unselected Cargo rows; raw
+multiplicity and aggregate inference statistics remain incomparable, and both
+analyses retain incomplete inference. The helper's 543 passing test cases use
+the editor execution profile, so they do not qualify the ordinary test profile.
+Fleet analysis remains a separate check.
 
 The production package exports nine CLI programs, five package-manager helpers,
 and the image metadata helper. Installation verifies its manifest and bytes,
