@@ -610,6 +610,9 @@ in {
           CapabilityBoundingSet = [
             "CAP_CHOWN"
             "CAP_DAC_READ_SEARCH"
+            # Mapping parent UID 0 requires this kernel namespace check;
+            # the confined preparer has no file capability write permission.
+            "CAP_SETFCAP"
             "CAP_SETGID"
             "CAP_SETUID"
             "CAP_SYS_ADMIN"

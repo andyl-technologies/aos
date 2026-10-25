@@ -77,6 +77,13 @@ def matrix(Access, Transition, accesses, roles):
             "chown", "dac_read_search", "setgid", "setuid", "sys_admin",
         )))
         positive.append(Access(preparer, preparer, "cap_userns", "sys_admin"))
+        if role == "cache":
+            positive.append(Access(preparer, preparer, "capability", "setfcap"))
+        else:
+            negative.append(Access(preparer, preparer, "capability", "setfcap"))
+        for actor in actors:
+            if actor != preparer:
+                negative.append(Access(preparer, actor, "capability", "setfcap"))
         for actor in actors:
             if actor != preparer:
                 negative.append(Access(preparer, actor, "cap_userns", "sys_admin"))

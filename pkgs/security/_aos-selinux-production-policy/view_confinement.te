@@ -4,7 +4,7 @@ require {
     type fs_t;
     type tmpfs_t;
     type nsfs_t;
-    class capability { chown dac_override dac_read_search setgid setuid sys_admin };
+    class capability { chown dac_override dac_read_search setfcap setgid setuid sys_admin };
     class cap_userns sys_admin;
     class filesystem { associate getattr remount unmount };
     class dir mounton;
@@ -44,6 +44,9 @@ allow aos_sandbox_view_preparer self:fifo_file { create getattr read write };
 allow aos_sandbox_view_preparer self:capability { chown dac_read_search setgid setuid sys_admin };
 # Writing the fixed idmap requires CAP_SYS_ADMIN in the child user namespace.
 allow aos_sandbox_view_preparer self:cap_userns sys_admin;
+# Root's fixed view maps parent UID 0. The kernel checks CAP_SETFCAP while
+# writing that user namespace map; no file capability/xattr write is granted.
+allow aos_sandbox_cache_view_preparer_t self:capability setfcap;
 allow aos_sandbox_view_preparer self:user_namespace create;
 allow aos_sandbox_view_preparer proc_t:filesystem getattr;
 allow aos_sandbox_view_preparer proc_t:dir { getattr open read search };

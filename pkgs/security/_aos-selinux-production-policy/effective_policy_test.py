@@ -1368,6 +1368,24 @@ class EffectivePolicyTest(unittest.TestCase):
                     effective_policy.Access(preparer, preparer, "cap_userns", "sys_ptrace")
                 )
 
+    def test_root_view_zero_mapping_capability_does_not_allow_file_capabilities(self) -> None:
+        cache = "aos_sandbox_cache_view_preparer_t"
+        source = "aos_sandbox_source_view_preparer_t"
+        self.assert_missing_allow_rejected(
+            effective_policy.Access(cache, cache, "capability", "setfcap")
+        )
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access(source, source, "capability", "setfcap")
+        )
+        for target in (
+            "aos_sandbox_source_journal_t",
+            "aos_sandbox_cache_journal_t",
+            "aos_sandbox_cache_object_t",
+        ):
+            self.assert_forbidden_allow_rejected(
+                effective_policy.Access(cache, target, "file", "setattr")
+            )
+
     def test_view_preparer_cannot_modify_generic_ancestry_or_foreign_target(self) -> None:
         for target, object_class, permission in (
             ("var_lib_t", "dir", "add_name"),
