@@ -305,6 +305,10 @@ async fn run<R: Runtime>(
         }
     }
 
+    // Select one physical wave for the original foreground window. Bounding
+    // in-flight futures alone would queue later waves behind the same signed
+    // permission, including their reservation and provider-capacity waits.
+    let mut remaining_objects = maximum;
     let mut remaining_copies = MAX_FOREGROUND_COPY_PARTS;
     pending.retain(|ready| {
         let cost = ready
@@ -313,7 +317,8 @@ async fn run<R: Runtime>(
             .part_count()
             .map(|parts| parts.clamp(1, MAX_FOREGROUND_COPY_PARTS as u32) as usize);
         match cost {
-            Ok(cost) if cost <= remaining_copies => {
+            Ok(cost) if remaining_objects > 0 && cost <= remaining_copies => {
+                remaining_objects -= 1;
                 remaining_copies -= cost;
                 true
             }
