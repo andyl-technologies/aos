@@ -181,7 +181,8 @@ in {
         assert public_candidate_exports() == expected
         assert_candidate_reads_denied()
 
-    vm.wait_for_unit("multi-user.target", timeout=300)
+    with startup_diagnostics(vm, "dbus.service", "aos-activate.service"):
+        vm.wait_for_unit("multi-user.target", timeout=300)
     vm.succeed("test $(cat /sys/fs/selinux/enforce) = 1")
     audit = dict(line.split(maxsplit=1) for line in vm.succeed("auditctl -s").splitlines())
     assert audit["lost"] == "0", audit
@@ -268,7 +269,8 @@ in {
     # Cold restart cannot authorize replacement of the protected installation.
     # A rejected attempt must not export another public candidate.
     power_cycle_and_require_new_boot(vm)
-    vm.wait_for_unit("multi-user.target", timeout=300)
+    with startup_diagnostics(vm, "dbus.service", "aos-activate.service"):
+        vm.wait_for_unit("multi-user.target", timeout=300)
     vm.wait_for_unit("aos-offline-controller-reference.target")
     assert public_candidate_exports() == []
     assert_candidate_reads_denied()
