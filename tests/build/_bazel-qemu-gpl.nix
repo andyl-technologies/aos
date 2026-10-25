@@ -7,6 +7,9 @@
     gateway = pkgs.crucible.passthru.cargoDebugGateway;
   },
 }: let
+  production = pkgs.callPackage ../../pkgs/emulation/_crucible-qemu-bazel.nix {
+    inherit sourceInventory;
+  };
   packages = {
     crucible-qemu-plugin = "crates/crucible/crucible-qemu-plugin";
     crucible-qemu-debug-gateway = "crates/crucible/crucible-qemu-debug-gateway";
@@ -24,51 +27,8 @@
   };
   plugin = "//crates/crucible/crucible-qemu-plugin:";
   gateway = "//crates/crucible/crucible-qemu-debug-gateway:";
-  productionTargets = [
-    "${plugin}plugin"
-    "${plugin}production_license_closure"
-    "${plugin}compiler_artifact"
-    "${gateway}lib"
-    "${gateway}crucible-debug-gateway"
-    "${gateway}production_license_closure"
-    "${gateway}compiler_artifact"
-  ];
-  workspace = pkgs.mkAosBazelWorkspace {
-    root = ../..;
-    inherit sourceInventory;
-    dependencyProfile = "qemu-gpl-production";
-    repositories =
-      pkgs.aosBazelRepositories
-      // pkgs.aosBazelRustRepositories.qemu-gpl-production
-      // {aos_qemu_plugin_abi = pkgs.aosBazelQemuPluginAbi;};
-    rustcFlags = [
-      "-Copt-level=3"
-      "-Cdebuginfo=0"
-      "-Cdebug-assertions=no"
-      "-Coverflow-checks=no"
-      "-Cstrip=debuginfo"
-      # Match the ordinary AOS driver's libgcc linker script before the
-      # shared C++ runtime search path supplied by the Bazel C toolchain.
-      "-Lnative=${pkgs.gccUnwrapped}/lib/gcc/${pkgs.stdenv.hostPlatform.config}/${pkgs.gccUnwrapped.version}"
-    ];
-    sourceDirectories = pkgs.lib.optionals (sourceInventory == null) [
-      "tools/bazel"
-      "third_party/rust"
-      "crates/crucible/crucible-qemu-plugin"
-      "crates/crucible/crucible-qemu-debug-gateway"
-      "crates/crucible/crucible-qemu-protocol"
-      "crates/crucible/crucible-qemu-shmem"
-    ];
-    analysisTargets = productionTargets;
-  };
 in rec {
-  inherit workspace productionTargets;
-  build = pkgs.mkAosBazelBuild {
-    pname = "aos-bazel-qemu-gpl-production";
-    inherit workspace;
-    targets = productionTargets;
-    retainActionGraph = true;
-  };
+  inherit (production) workspace productionTargets build installed;
   developer-build = pkgs.mkAosBazelBuild {
     pname = "aos-bazel-qemu-gpl-production-developer";
     inherit workspace;
@@ -94,7 +54,6 @@ in rec {
     cargo = cargo-execution-trace;
     pname = "aos-bazel-qemu-gpl-compiler-execution-inspection";
   };
-  installed = import ./_bazel-qemu-gpl-installed.nix {inherit pkgs build;};
   suite = pkgs.callPackage ../../pkgs/tools/crucible/crucible.nix {
     crucible-qemu-plugin = installed.plugin;
     debugGatewayPackage = installed.gateway;

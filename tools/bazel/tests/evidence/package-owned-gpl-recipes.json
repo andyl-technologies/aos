@@ -1,0 +1,39 @@
+{
+  "comparison_checkpoint": "48b782f67aa611ee3b81c6b941c6cd8997f28a56",
+  "identities": {
+    "build": {
+      "drv": "/nix/store/vz6692yjbh6k8hyq8ijlq889v3svgwji-aos-bazel-qemu-gpl-production-1.drv",
+      "out": "/nix/store/ipj3vy6dipf7qb97hw5ymskp8292m278-aos-bazel-qemu-gpl-production-1"
+    },
+    "installed": {
+      "gateway": {
+        "drv": "/nix/store/g5r7mgxl8sskd8bv94l2r151ygp80zvc-crucible-debug-gateway-0.1.0.drv",
+        "out": "/nix/store/ll8dx2al7xiririyl3r6wx3xn099dp5r-crucible-debug-gateway-0.1.0"
+      },
+      "plugin": {
+        "drv": "/nix/store/f5xs2wk2bp4ksn95d3wx5j57vmigwia3-crucible-qemu-plugin-0.1.0.drv",
+        "out": "/nix/store/9kd3wzrs1n3g1k7ichxksp81lajzkcpp-crucible-qemu-plugin-0.1.0"
+      }
+    }
+  },
+  "limits": [
+    "This extraction preserves existing artifacts and does not qualify a production selector, foreign host, compiler semantic equivalence, or performance acceptance.",
+    "The exported-source entry point now uses the package-owned recipes directly. A fresh exported source artifact and its offline rebuild require separate qualification."
+  ],
+  "method": "Evaluate the original committed recipes and the extracted package-owned recipes against the same current package set and source root. Only relative path spelling was adapted when loading the original recipes from a temporary directory.",
+  "original_recipe_sha256": {
+    "tests/build/_bazel-qemu-gpl-installed.nix": "6bb09784cabf51a4df3cabda7f2139a217ad0d1dc63e4c7b430b1748d2c4b9b2",
+    "tests/build/_bazel-qemu-gpl.nix": "d99cb6cffdc957a0b48186b3f2f1f7e44948dab474c1e6e0b1cbd6aadcd9f056"
+  },
+  "qualification": "The build and both installed outputs were already realized; nix-store --check-validity succeeded for all three. Identical derivation paths preserve the entire declared input and builder graph.",
+  "registered_outputs_valid": true,
+  "schema_version": 1,
+  "source_sha256": {
+    "pkgs/emulation/_crucible-qemu-bazel-installed.nix": "abd4089f3263e6d37047dcb484923861a52813db5fe4164911b444b705373101",
+    "pkgs/emulation/_crucible-qemu-bazel.nix": "178b3a32b30a2ca9e71e855e4b7969c8b715bf91b9c4ed8563e3b61b73290876",
+    "tests/build/_bazel-qemu-gpl-installed.nix": "34977670cc78d1eb8042f7e167939f924a2c74fa593f29db40265331975fb578",
+    "tests/build/_bazel-qemu-gpl.nix": "626f3935e05591c6af1983bd63363149c9ef1e321f4238469d51808678fb5cc5",
+    "tools/bazel/tests/corresponding-source.nix": "467835aab68597625b13f393118c1fe3cc7a7afa8f329d22a8f8536dfea268c2"
+  },
+  "status": "PASS: identical compiled and installed derivations"
+}

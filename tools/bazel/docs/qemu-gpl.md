@@ -63,6 +63,17 @@ relative QEMU plugin symlink, checked build identities, and GPL/MIT license
 scope. Its build metadata identifies Bazel and its locked source repositories.
 The gateway preserves its GPL/MIT license files and executable layout.
 
+The reusable build recipe lives in
+[`pkgs/emulation/_crucible-qemu-bazel.nix`](../../../pkgs/emulation/_crucible-qemu-bazel.nix),
+with its installer in the adjacent `_crucible-qemu-bazel-installed.nix`.
+Both take explicit package dependencies. Qualification checks and the exported
+corresponding-source entry point use these recipes; package selection does not
+need to import the comparison oracles.
+The [extraction comparison](../tests/evidence/package-owned-gpl-recipes.json)
+evaluates the old and new recipes against the same package set and source root:
+the compiled build and both installed derivations retain exactly their previous
+identities and realized outputs.
+
 `installed-inspection` checks both artifacts after fixup, compares their ELF
 properties and gateway rejection behavior with Cargo, and resolves their native
 libraries with the AOS loader. It verifies the symlink, license bytes, and build
