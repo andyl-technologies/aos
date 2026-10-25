@@ -23,12 +23,22 @@
   # RFC 8032's first Ed25519 vector is public test data, never a deployable key.
   testKeys = pkgs.runCommand "aos-host-phase0-rfc8032-test-keys" {} ''
     mkdir -p "$out"
-    printf '%s' 'nWGxne/9WmC6hCr0kuwsxERJxWl7MmkZcDusAxyuf2A=' \
+    printf '%s' 'nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A=' \
       | ${pkgs.coreutils}/bin/base64 -d > "$out/seed"
     printf '%s' '11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=' \
       | ${pkgs.coreutils}/bin/base64 -d > "$out/public"
     test "$(${pkgs.coreutils}/bin/stat -c %s "$out/seed")" -eq 32
     test "$(${pkgs.coreutils}/bin/stat -c %s "$out/public")" -eq 32
+
+    # Verify the fixed pair before spending a VM run on the signed report.
+    # The prefix wraps the public test seed in an Ed25519 PKCS#8 key.
+    printf '%s' 'MC4CAQAwBQYDK2VwBCIEIA==' \
+      | ${pkgs.coreutils}/bin/base64 -d > test-key.der
+    ${pkgs.coreutils}/bin/cat "$out/seed" >> test-key.der
+    ${pkgs.openssl}/bin/openssl pkey -inform DER -in test-key.der \
+      -pubout -outform DER -out test-public.der
+    ${pkgs.coreutils}/bin/tail -c 32 test-public.der > test-public.raw
+    ${pkgs.diffutils}/bin/cmp "$out/public" test-public.raw
   '';
   testPublicPem = pkgs.writeTextFile {
     name = "aos-host-phase0-rfc8032-test-public.pem";
