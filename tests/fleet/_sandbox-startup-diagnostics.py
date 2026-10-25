@@ -20,7 +20,11 @@ def startup_diagnostics(machine, *units):
             "systemctl --failed --no-pager",
             # A pending oneshot can hold boot without entering failed state.
             "systemctl list-jobs --no-pager",
-            "ps -eo pid,ppid,stat,wchan:24,comm | head -n 120",
+            # Use the image's existing shell/Coreutils; Procps is optional.
+            "for process in /proc/[0-9]*; do "
+            "printf '\\n%s\\n' \"$process\"; "
+            "head -n 8 \"$process/status\"; "
+            "cat \"$process/wchan\"; done | head -c 16384",
         )
 
         for command in commands:
