@@ -32,7 +32,10 @@ impl RamStore {
         work: &mut Work<'_>,
     ) -> Result<ContentId, RamStoreError> {
         let (body_length, envelope_length) = encoding_lengths(record, regions)?;
-        let original = work.original().child().map_err(admission)?;
+        let original = work.original();
+        let original = original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         let account = RecordAccount::phase(
             &original,
             RecordAllocationPlan::root_input(record.encoded_len(), body_length, regions.len())?,

@@ -93,7 +93,10 @@ impl RamStore {
         retention: &dyn RamRetention,
         work: &mut Work<'_>,
     ) -> Result<ContentId, RamStoreError> {
-        let account = work.original().child().map_err(admission)?;
+        let original = work.original();
+        let account = original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         self.put_envelope_with_account(
             PublicationInput::Borrowed(envelope),
             kind,
@@ -362,7 +365,9 @@ impl RamStore {
         let digest = PageDigest::hash(bytes).map_err(logical)?;
         let original = work.original();
         let body_length = 36 + bytes.len();
-        let original = original.child().map_err(admission)?;
+        let original = original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         let record = RecordAccount::phase(
             &original,
             RecordAllocationPlan::input(body_length, PAGE_SCHEMA, &[])?,
@@ -435,7 +440,9 @@ impl RamStore {
                 8 + "left".len() + "right".len() + left.id.encoded_len() + right.id.encoded_len(),
             ),
         };
-        let original = original.child().map_err(admission)?;
+        let original = original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         let record = RecordAccount::phase(
             &original,
             RecordAllocationPlan::input(133, TREE_SCHEMA, roles)?,
@@ -918,7 +925,10 @@ pub(super) fn prepare_envelope_read(
     {
         work.reject_exhausted_nonempty_visit()?;
     }
-    let account = work.original().child().map_err(admission)?;
+    let original = work.original();
+    let account = original
+        .child()
+        .map_err(|source| RamStoreError::from_admission(original, source))?;
     let scope = account.enter();
     if id.schema_version() != SCHEMA_VERSION {
         return Err(RamStoreError::Invalid("RAM storage schema"));

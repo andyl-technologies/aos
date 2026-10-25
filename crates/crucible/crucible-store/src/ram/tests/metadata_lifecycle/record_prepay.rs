@@ -1,6 +1,7 @@
 //! Closed-record allocation and original-callback provenance regressions.
 #![cfg(test)]
 
+mod admission_custody;
 mod publication_allocation;
 mod publication_width;
 mod record_allocation;
