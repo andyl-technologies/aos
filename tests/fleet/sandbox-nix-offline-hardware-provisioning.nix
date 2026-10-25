@@ -285,13 +285,13 @@ in {
               run_offline(1)
               assert public_histories() == completed
 
-          # Reboot cannot renew the original job. Its public DATA remains
+          # Cold restart cannot renew the original job. Its public DATA remains
           # exportable independently, including after failed hardware admission.
           select_invocation(
               "${initialize.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
               "${initialize.profile}",
           )
-          vm.reboot()
+          power_cycle_and_require_new_boot(vm)
           vm.wait_for_unit("multi-user.target", timeout=300)
           run_offline(1)
           assert public_histories() == []

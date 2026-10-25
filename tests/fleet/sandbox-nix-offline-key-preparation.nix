@@ -119,6 +119,7 @@ in {
 
   testScript = ''
     ${builtins.readFile ./_sandbox-startup-diagnostics.py}
+    ${builtins.readFile ./_sandbox-cold-boot.py}
     import shlex
 
     unit = "aos-sandbox-nix-floor-provision.service"
@@ -257,9 +258,9 @@ in {
     assert_candidate_reads_denied()
     reject_repeated_preparation(original)
 
-    # Reboot does not authorize replacement of the protected installation.
+    # Cold restart cannot authorize replacement of the protected installation.
     # A rejected attempt must not export another public candidate.
-    vm.reboot()
+    power_cycle_and_require_new_boot(vm)
     vm.wait_for_unit("multi-user.target", timeout=300)
     vm.wait_for_unit("aos-offline-controller-reference.target")
     assert public_candidate_exports() == []
