@@ -18810,3 +18810,24 @@ signed snapshots/publication and acknowledged socket-name retirement pass.
 This predates the read-only-lock correction and qualifies neither that change
 nor actual service-manager execution or draining-exposure release. Trunk
 acceptance remains 28/64.
+
+### Consumer-expiry audit and completed retirement qualification
+
+The `4cf7001d46` all-feature cache qualification completes in 1,593.357
+seconds. Complete review matches all 8,240 immutable source files, 5,502 bound
+inputs and four retained Cargo executables across the independent units,
+recovery and eviction guests. All 257 ordinary cases and five creator cases
+pass, including all five explicit maintenance-listener retirement regressions.
+Required application-target compilation separately passes in 1,510.382 seconds;
+review matches all 8,240 immutable source files and 190 compiled test
+executables across 59 packages. Compilation does not imply their execution.
+
+The [HOST-24 component audit](acceptance/host-consumer-expiry.md) checks the
+original periodic worker, effective deadlines, durable removal, independent
+consumer-policy observations and retained producer/inode controls against the
+same reviewed recovery guest. It explicitly leaves physical eviction after
+the final expired consumer and complete host-tier deployment unproven. These
+results predate `9d89554155` and do not qualify its read-only-lock fix. The new
+four-case coordination guest, strengthened configured-maintenance guest and
+mandatory application-target compilation are running on a clean frozen
+`9d895541558b6bb464589213517074e6625d8bcf` checkout. Acceptance remains 28/64.
