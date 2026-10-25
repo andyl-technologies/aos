@@ -4,7 +4,7 @@
 //! owner coverage, native receipts, referenced schemas, or live effect authority.
 
 use crucible_node_format::*;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{
@@ -13,10 +13,13 @@ use crate::{
     handshake::{HelloRequest, HelloResult},
 };
 
+mod object_decode;
 mod operations;
 mod requests;
 mod responses;
 mod results;
+
+use object_decode::object;
 
 pub use operations::*;
 pub use requests::*;
@@ -29,18 +32,6 @@ where
     T: Deserialize<'de>,
 {
     T::deserialize(deserializer).map(Some)
-}
-
-fn object<T: DeserializeOwned + Validate>(value: &Map<String, Value>) -> Result<T, ContractError> {
-    // Programmatic callers receive the same hard nesting/array/frame ceilings
-    // as decoded transport data, without enabling any legacy JSON features.
-    let bytes = canonical::canonical_json(&Value::Object(value.clone()))?;
-    if bytes.len() > 16_777_216 {
-        return Err(invalid("body", "body exceeds hard frame ceiling"));
-    }
-    let decoded: T = serde_json::from_value(Value::Object(value.clone()))?;
-    decoded.validate()?;
-    Ok(decoded)
 }
 
 /// Selects a closed baseline begin-operation argument schema.

@@ -120,7 +120,8 @@ pub fn canonical_json_to_writer(
 #[path = "canonical/borrowed_object.rs"]
 mod borrowed_object;
 pub use borrowed_object::{
-    canonical_json_btree_object_to_writer_at_depth, canonical_json_object_to_writer_at_depth,
+    canonical_json_btree_object_to_writer_at_depth, canonical_json_object_length_with_limit,
+    canonical_json_object_to_writer_at_depth,
 };
 
 fn write_canonical(

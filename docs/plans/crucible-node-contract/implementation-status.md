@@ -10,6 +10,39 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Borrowed canonical body validation
+
+Shared typed body decoding now validates the borrowed object through the defining
+canonical writer and a bounded counting sink. It no longer clones the complete
+object or retains an unused canonical byte bank for this validation pass. The
+independent clone for typed deserialization, canonical ordering and escaping,
+diagnostics and recursive controls remain real work and owners.
+
+The sink reports the exact canonical extent when it fits the existing hard body
+ceiling. The first exhausted restriction stops traversal; later malformed fields
+need not be inspected after a byte refusal. Accepted bodies retain the defining
+number, depth, array and ordering rules. The defining counter includes the sink
+and its actual control loans once. This supplies no Source grant or quota credit
+and does not widen ordinary or Native18 dispatch.
+
+Five Format and five typed-body controls pass in both codec builds, including
+exact/short limits, numeric and escaping edges, depth/array ceilings, preserved
+caller capacity and comparison with the preceding typed decoder's private marker
+behavior. Both complete Format suites pass 39 tests with zero failures and one
+ignored. Both SourceBirth suites pass all 62 tests. Both complete Transport suites
+pass 2,201 tests with zero failures and twenty ignored, using frozen
+compiler-selected artifacts. All-feature/all-target checking, scoped formatting
+and six architecture checks pass. Strict Format and SourceBirth Clippy pass.
+Strict Transport Clippy retains the exact preceding code/message multiset: four
+existing errors and 1,725 warnings, with no added diagnostics. It is not a strict
+Transport lint pass.
+
+Application test-target compilation passes. Actual metadata records 185 test
+artifacts across 58 packages, including 76 integration targets; its captured
+source matches all 676 frozen owned Rust/Cargo inputs. Complete future SDK R/T/S,
+Source18 funding and runtime handoff, the five-phase recipe producer and full RFC
+qualification remain unfinished.
+
 ## Borrowed compact SDK publication
 
 Actual compact ClientSession exchanges now borrow each outgoing envelope through

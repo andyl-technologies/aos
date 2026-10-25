@@ -2,6 +2,11 @@
 
 use super::*;
 
+#[path = "borrowed_object/extent.rs"]
+mod extent;
+pub use extent::canonical_json_object_length_with_limit;
+pub(super) use extent::counter_scratch_data as extent_counter_scratch_data;
+
 type BorrowedEntry<'a> = fn((&'a String, &'a Value)) -> (&'a str, &'a Value);
 type JsonFields<'a> = std::iter::Map<serde_json::map::Iter<'a>, BorrowedEntry<'a>>;
 type TreeFields<'a> =

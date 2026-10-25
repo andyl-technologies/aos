@@ -202,6 +202,7 @@ pub fn canonical_json_counter_scratch_bytes_data() -> usize {
     // Borrowed adapters share the original ordering states; their separate
     // call operands coexist with enclosing Value writer activations.
     65 * (frame + super::borrowed_object::counter_scratch_data())
+        + super::borrowed_object::extent_counter_scratch_data()
         + ordering_counter_scratch_data()
         + canonical_number_counter_scratch_bytes_data()
         + size_of::<std::str::EncodeUtf16<'static>>()
