@@ -279,6 +279,22 @@ the completed guest's original ordered case witnesses and clean termination.
 Source inventory, Python/shell syntax and Nix formatting checks pass; renewed
 committed-source guest qualification remains pending. No task is accepted.
 
+The mandatory application-target check at `a9a08d2696` passes in 762.016
+seconds. Independent review matches all 8,258 immutable source files and
+compilation of 190 test executables from 59 packages. This is compilation
+evidence; it executes no native application tests on the host.
+
+The renewed manager prerequisites at that source pass in 1,038.303 seconds:
+all 51 missing derivations dispatch to the isolated native builder, retaining
+twelve previously qualified runtime checks. The original systemd scenario
+then reaches the guest agent and passes fourteen enrollment controls,
+but fails because native host activation has no retained Terrane identity
+policy: systemd refuses the publisher with `217/USER`. Its raw guest logs,
+manifest and original deadlines are preserved. The fixture now retains the
+module's exact account and group declarations for the ordinary native
+identity provider. This changes no service privileges or readiness assertion;
+renewed manager qualification remains required. Trunk acceptance stays 28/64.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement

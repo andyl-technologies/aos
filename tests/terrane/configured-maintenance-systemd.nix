@@ -68,11 +68,27 @@
       chunkSeed = lib.concatStrings (builtins.genList (_: "07") 32);
     };
   };
+  # Host activation reconciles identities from retained policy rather than the
+  # image's seed passwd database. Keep the module's exact Terrane declarations
+  # in that policy, including supplementary groups, without rewriting passwd.
+  roleIdentity = name: _: name == "terrane" || lib.hasPrefix "terrane-" name;
+  identitySource = accounts: let
+    policy = {
+      users = lib.filterAttrs roleIdentity accounts.users;
+      groups = lib.filterAttrs roleIdentity accounts.groups;
+    };
+  in
+    builtins.toFile "terrane-managed-identities.nix" ''
+      { ... }: {
+        aos.users = builtins.fromJSON ${builtins.toJSON (builtins.toJSON policy)};
+      }
+    '';
   baseSystem = mkSystem {
     systemName = "terrane-managed-maintenance";
     modules = [
       ../../systems/server-test.nix
-      {
+      ({config, ...}: {
+        aos.activation.stages.host.configuration = [(identitySource config.aos.users)];
         aos.terrane = {
           enable = true;
           package = launcher;
@@ -156,7 +172,7 @@
           maxRootMiB = lib.mkForce 3072;
           maxDownloadMiB = lib.mkForce 4096;
         };
-      }
+      })
     ];
   };
   # The direct-kernel harness boots an ext4 test disk without a UKI root hash.
