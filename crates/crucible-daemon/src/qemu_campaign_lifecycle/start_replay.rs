@@ -159,6 +159,19 @@ pub(crate) fn materialize_start_from_tracked<F, D>(
             }),
         ));
     }
+    {
+        // Names the exact recording each replay verifies, so two runs that
+        // diverge differently can be told apart from two different recordings.
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "CRUCIBLE-START-REPLAY-V1 source={} source_decisions={} target={} target_decisions={}",
+            current.id().to_hex(),
+            current.schedule.len(),
+            target.id().to_hex(),
+            target.schedule.len(),
+        );
+    }
     if current == *target {
         if publish_replayed_host_outcomes(lifecycle, target, &mut current, &mut replay)? {
             replay.restored_configuration = Some(current);
