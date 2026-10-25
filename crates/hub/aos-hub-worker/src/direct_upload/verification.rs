@@ -303,24 +303,43 @@ pub(crate) async fn close_checked_with_signal<F: Fn() -> Result<()>>(
                 before_dispatch()?;
                 crate::external_object::execute_stage(env, &work).await?;
             }
-            let work = crate::external_object::prepare_stage_request_with_cutoff(
-                env,
-                admission,
-                placement_id,
-                operation_id,
-                ExternalStageOperation::CompleteStage {
-                    upload_id: upload_id.clone(),
-                    manifest: manifest.clone(),
+            // Closing a multipart stage opens a durable mutation turn. Own
+            // provider capacity before preparing its short-lived authority so
+            // a scheduling wait cannot strand that turn before Fetch starts.
+            let policy = super::provider_capacity::policy::installed(env)?;
+            let current = || {
+                ensure!(
+                    !signal.as_ref().is_some_and(|signal| signal.aborted()),
+                    "direct stage closure canceled"
+                );
+                before_dispatch()
+            };
+            let (capacity, work) = super::provider_capacity::policy::request::prepare(
+                policy.as_ref(),
+                super::provider_capacity::Class::Foreground,
+                &current,
+                || {
+                    crate::external_object::prepare_stage_request_with_cutoff(
+                        env,
+                        admission,
+                        placement_id,
+                        operation_id,
+                        ExternalStageOperation::CompleteStage {
+                            upload_id: upload_id.clone(),
+                            manifest: manifest.clone(),
+                        },
+                        expires_at,
+                    )
                 },
-                expires_at,
             )
             .await?;
             before_dispatch()?;
             Ok(ClosedStage::External {
-                result: crate::external_object::execute_stage_with_signal(
+                result: crate::external_object::execute_stage_with_capacity(
                     env,
                     &work,
                     signal.clone(),
+                    capacity.as_ref(),
                 )
                 .await?,
             })
@@ -626,38 +645,40 @@ async fn verify_with_attempt(
                 _ => anyhow::bail!("direct external stage positive close absent"),
             };
             let operation = external_verification_operation(result)?;
-            qualification_attempt::enter(attempt, Phase::ImmutableStagePreparation);
-            let work = crate::external_object::prepare_stage_read_recovery(
-                env,
-                &job.admission,
-                job.placement_id,
-                operation_id.into(),
-                operation,
-                None,
-            )
-            .await?;
-            #[cfg(feature = "do-e2e")]
-            let fault_observation = super::verification_observation::configured(env, &work)
-                .and_then(|selection| {
-                    let projection = super::verification_observation::Projection {
-                        version: 1,
-                        attempt_id: uuid::Uuid::new_v4().simple().to_string(),
-                        selection,
-                        job: super::verification_observation::JobProjection {
-                            canonical_job_sha256: super::verification_observation::bytes_digest(
-                                &serde_json::to_vec(job).ok()?,
-                            ),
-                            admission: job.admission.clone(),
-                            complete: job.complete.clone(),
-                            placement_id: job.placement_id,
-                            closed_result: result.clone(),
-                        },
-                        work: work.clone(),
-                    };
-                    crate::external_object::VerificationFaultAttempt::new(projection).ok()
-                });
             let verified = {
+                // Queue backpressure precedes read authentication. The same
+                // owner then covers dispatch and the complete integrity read.
                 let _capacity = super::provider_capacity::acquire_class(1, class).await?;
+                qualification_attempt::enter(attempt, Phase::ImmutableStagePreparation);
+                let work = crate::external_object::prepare_stage_read_recovery(
+                    env,
+                    &job.admission,
+                    job.placement_id,
+                    operation_id.into(),
+                    operation,
+                    None,
+                )
+                .await?;
+                #[cfg(feature = "do-e2e")]
+                let fault_observation = super::verification_observation::configured(env, &work)
+                    .and_then(|selection| {
+                        let projection = super::verification_observation::Projection {
+                            version: 1,
+                            attempt_id: uuid::Uuid::new_v4().simple().to_string(),
+                            selection,
+                            job: super::verification_observation::JobProjection {
+                                canonical_job_sha256: super::verification_observation::bytes_digest(
+                                    &serde_json::to_vec(job).ok()?,
+                                ),
+                                admission: job.admission.clone(),
+                                complete: job.complete.clone(),
+                                placement_id: job.placement_id,
+                                closed_result: result.clone(),
+                            },
+                            work: work.clone(),
+                        };
+                        crate::external_object::VerificationFaultAttempt::new(projection).ok()
+                    });
                 qualification_attempt::enter(attempt, Phase::ImmutableStageDispatch);
                 #[cfg(feature = "do-e2e")]
                 let result = crate::external_object::execute_stage_observed_with_fault(
