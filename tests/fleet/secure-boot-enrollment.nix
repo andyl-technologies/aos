@@ -13,6 +13,7 @@
         modules = [
           ../../systems/_server-test-packages.nix
           {
+            aos.image.rawCompressionLevel = 3;
             # Keep early PID1 errors without flooding the serial transport on
             # each authenticated deployment manager reload.
             aos.boot.kernelParams = [

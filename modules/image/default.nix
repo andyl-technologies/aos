@@ -217,6 +217,17 @@ in {
       description = "Whether to build disk images for this system variant.";
     };
 
+    rawCompressionLevel = lib.mkOption {
+      type = lib.types.addCheck lib.types.int (level: level >= 1 && level <= 22);
+      default = 22;
+      description = ''
+        Zstandard compression level used for raw disk delivery. Production
+        keeps level 22 for distribution size; VM-test variants may select a
+        faster level. Decompression preserves the disk contents, signatures
+        and verity data, and the existing download budget remains enforced.
+      '';
+    };
+
     erofsCompressionLevel = lib.mkOption {
       type = lib.types.int;
       default = 19;

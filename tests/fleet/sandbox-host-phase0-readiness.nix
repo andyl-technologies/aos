@@ -104,6 +104,7 @@
           Environment=SYSTEMD_LOG_LEVEL=debug
         '';
         environment.systemPackages = [credentialFixture pkgs.attr pkgs.coreutils pkgs.diffutils pkgs.grep pkgs.openssl pkgs.systemd];
+        aos.image.rawCompressionLevel = 3;
         aos.image.erofsCompressionLevel = 1;
         # The nested Guest template copies fixed store bytes under independent
         # names and inodes. Reuse only their compressed data, never their labels.

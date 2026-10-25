@@ -54,6 +54,7 @@ systems.server-secureboot-lockdown.extendModules {
     in {
       aos.image = {
         allowTestArtifacts = true;
+        rawCompressionLevel = 3;
         # Match the full-service test image's A/B slots and fast compression.
         # These fixtures include every online Controller and broker closure.
         erofsCompressionLevel = 1;
