@@ -14,7 +14,7 @@ def select_workspace(source, members, dependencies):
         raise ValueError("selected Cargo editor members overlap excluded packages")
 
     updated, count = re.subn(
-        r"(?m)^members = \[[\s\S]*?^\]", "members = " + json.dumps(members), source,
+        r"(?m)^members\s*=\s*\[[^\]]*\]", "members = " + json.dumps(members), source,
     )
     if count != 1:
         raise ValueError("Cargo editor oracle workspace selection no longer applies")

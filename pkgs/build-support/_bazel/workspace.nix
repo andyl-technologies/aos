@@ -76,6 +76,7 @@
       # Label settings are launcher policy, rather than attributes of every
       # compiled target. Keep their files in even a precise source selection.
       "tools/bazel/rules/clippy.toml"
+      "tools/bazel/rules/accache/clippy.toml"
       "tools/bazel/rules/rustfmt.toml"
     ]
     ++ lib.optionals (inventory == null) ["third_party/rust"]

@@ -69,6 +69,7 @@ case " $* " in
   *' -A pkgs.aosBazelPackageManagerLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelHubConsoleLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelHubConsoleWasmLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelAccacheLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelRegistryWebLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelRegistryWebWasmLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelHubWorkerLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
@@ -204,7 +205,7 @@ bash "$root/tools/dev/aos-dev" bazel update-deps daemon
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/daemon/Cargo.lock><--output><$root/third_party/rust/daemon>"
 bash "$root/tools/dev/aos-dev" bazel update-deps crucible-cli
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/crucible-cli/Cargo.lock><--output><$root/third_party/rust/crucible-cli>"
-for family in formats native-foundation native-foundation-tests native-foundation-minimal activation-core activation-core-tests activation-storage activation-systemd activation-crucible activation-crucible-tests cli-support build-services deployment hub-portable hub-model hub-model-tests hub-client release-preparation registry-native registry-native-tests release-coordination boot-preparation boot-preparation-minimal package-manager package-manager-tests hub-db hub-db-tests hub-db-all-features hub-db-all-features-tests registry-web registry-web-wasm hub-console hub-console-wasm hub-service hub-service-tests hub-service-all-features hub-service-all-features-tests hub-native-postgres hub-native-tests hub-worker-tests hub-worker-all-features-tests hub-worker-wasm hub-worker-wasm-do-e2e hub-worker-wasm-all-features; do
+for family in formats native-foundation native-foundation-tests native-foundation-minimal activation-core activation-core-tests activation-storage activation-systemd activation-crucible activation-crucible-tests cli-support build-services deployment hub-portable hub-model hub-model-tests hub-client release-preparation registry-native registry-native-tests release-coordination boot-preparation boot-preparation-minimal package-manager package-manager-tests hub-db hub-db-tests hub-db-all-features hub-db-all-features-tests accache registry-web registry-web-wasm hub-console hub-console-wasm hub-service hub-service-tests hub-service-all-features hub-service-all-features-tests hub-native-postgres hub-native-tests hub-worker-tests hub-worker-all-features-tests hub-worker-wasm hub-worker-wasm-do-e2e hub-worker-wasm-all-features; do
   bash "$root/tools/dev/aos-dev" bazel update-deps "$family"
   test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/$family/Cargo.lock><--output><$root/third_party/rust/$family>"
 done
@@ -328,6 +329,12 @@ test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:hub-consol
 grep -Fq -- '-A pkgs.aosBazelHubConsoleWasmLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-console-wasm rust-project //example:hub-console-wasm
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/hub/aos-hub-console><--><build><//example:hub-console-wasm>"
+
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family accache build //crates/accache/accache:accache
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//crates/accache/accache:accache>"
+grep -Fq -- '-A pkgs.aosBazelAccacheLauncher ' "$AOS_DEV_TEST_LOG"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family accache rust-project //crates/accache/accache:accache
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/accache/accache><--rust-project-package><crates/accache/accache-frontend><--><build><//crates/accache/accache:accache>"
 
 for family in registry-web registry-web-wasm; do
   bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family "$family" build "//example:$family"

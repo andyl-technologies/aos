@@ -1,0 +1,2 @@
+# The standalone accache workspace has no Clippy configuration overrides.
+# Its package lint declarations remain attached to the compiled targets.

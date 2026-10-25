@@ -195,7 +195,7 @@ def main():
         policy.extend([
             "--incompatible_strict_action_env", "--stamp=false", "--spawn_strategy=sandboxed",
             "--sandbox_block_path=/bin/sh",
-            "--@rules_rust//rust/settings:clippy.toml=//tools/bazel/rules:clippy.toml",
+            "--@rules_rust//rust/settings:clippy.toml=//tools/bazel/rules:clippy_config",
             "--@rules_rust//rust/settings:rustfmt.toml=//tools/bazel/rules:rustfmt.toml",
             # Nix already isolates the network. Reusing that namespace also
             # avoids Bazel trying to mount sysfs at /sys, absent inside Nix.

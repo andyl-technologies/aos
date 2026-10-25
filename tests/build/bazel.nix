@@ -24,6 +24,9 @@
       relative = pkgs.lib.removePrefix "${toString ../..}/" (toString path);
       manifests = [
         "crates/Cargo.toml"
+        "crates/accache/Cargo.toml"
+        "crates/accache/accache/Cargo.toml"
+        "crates/accache/accache-frontend/Cargo.toml"
         "crates/bindings/libssh2-sys/Cargo.toml"
         "crates/artifacts/aos-nar/Cargo.toml"
         "crates/nix/aos-nix/Cargo.toml"
@@ -161,6 +164,7 @@ in
     boot-preparation = import ./_bazel-boot-preparation.nix {inherit pkgs;};
     release-coordination = import ./_bazel-release-coordination.nix {inherit pkgs;};
     registry-native = import ./_bazel-registry-native.nix {inherit pkgs;};
+    accache = import ./_bazel-accache.nix {inherit pkgs;};
     registry-web = import ./_bazel-registry-web.nix {inherit pkgs;};
     registry-web-wasm = import ./_bazel-registry-web-wasm.nix {inherit pkgs;};
     release-preparation = import ./_bazel-release-preparation.nix {inherit pkgs;};
@@ -394,6 +398,7 @@ in
         boot-preparation.standalone
         release-coordination.tests
         registry-native.tests
+        accache.tests
         registry-web.tests
         registry-web-wasm.build
         release-preparation.tests
@@ -526,6 +531,7 @@ in
             boot-preparation.all
             release-coordination.all
             registry-native.all
+            accache.all
             registry-web.all
             registry-web-wasm.all
             release-preparation.all

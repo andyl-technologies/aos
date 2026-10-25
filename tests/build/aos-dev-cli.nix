@@ -20,6 +20,7 @@
     "aosBazelPackageManagerLauncher"
     "aosBazelBootPreparationLauncher"
     "aosBazelReleaseCoordinationLauncher"
+    "aosBazelAccacheLauncher"
     "aosBazelRegistryNativeLauncher"
     "aosBazelReleasePreparationLauncher"
     "aosBazelHubNativeLauncher"

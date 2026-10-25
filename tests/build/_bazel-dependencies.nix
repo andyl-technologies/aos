@@ -15,6 +15,7 @@
     "hub-service-tests"
     "hub-service-all-features"
     "hub-service-all-features-tests"
+    "accache"
     "registry-web"
     "registry-web-wasm"
     "hub-console"

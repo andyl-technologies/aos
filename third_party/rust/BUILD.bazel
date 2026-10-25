@@ -12,6 +12,8 @@ load(":hub-db/aliases.bzl", HUB_DB_CRATES = "CRATES")
 load(":hub-db-tests/aliases.bzl", HUB_DB_TESTS_CRATES = "CRATES")
 load(":hub-db-all-features/aliases.bzl", HUB_DB_ALL_FEATURES_CRATES = "CRATES")
 load(":hub-db-all-features-tests/aliases.bzl", HUB_DB_ALL_FEATURES_TESTS_CRATES = "CRATES")
+load(":accache.bzl", "ACCACHE_PACKAGES")
+load(":accache/aliases.bzl", ACCACHE_CRATES = "CRATES")
 load(":registry-web.bzl", "REGISTRY_WEB_PACKAGES", "REGISTRY_WEB_FEATURE_VARIANTS", "REGISTRY_WEB_WASM_FEATURE_VARIANTS")
 load(":registry-web/aliases.bzl", REGISTRY_WEB_CRATES = "CRATES")
 load(":registry-web-wasm/aliases.bzl", REGISTRY_WEB_WASM_CRATES = "CRATES")
@@ -105,6 +107,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
             "//tools/bazel/rules:hub_service_tests_dependencies": HUB_SERVICE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_service_all_features_dependencies": HUB_SERVICE_ALL_FEATURES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_service_all_features_tests_dependencies": HUB_SERVICE_ALL_FEATURES_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:accache_dependencies": ACCACHE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:registry_web_dependencies": REGISTRY_WEB_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:registry_web_wasm_dependencies": REGISTRY_WEB_WASM_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_console_dependencies": HUB_CONSOLE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -169,6 +172,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         + AOS_CLI_TESTS_CRATES.items()
         + AOS_CLI_FLEET_TESTS_CRATES.items()
         + AOS_CLI_PRODUCTION_CRATES.items()
+        + ACCACHE_CRATES.items()
         + REGISTRY_WEB_CRATES.items()
         + REGISTRY_WEB_WASM_CRATES.items()
         + HUB_CONSOLE_CRATES.items()
@@ -1865,6 +1869,7 @@ APPROVED_LICENSES = [
             "hub-service-tests": ["hub-service.bzl"],
             "hub-service-all-features": ["hub-service.bzl"],
             "hub-service-all-features-tests": ["hub-service.bzl"],
+            "accache": ["accache.bzl"],
             "registry-web": ["registry-web.bzl"],
             "registry-web-wasm": ["registry-web.bzl"],
             "hub-console": ["hub-console.bzl"],
@@ -1911,6 +1916,7 @@ APPROVED_LICENSES = [
         ("hub-db-tests", HUB_DB_TESTS_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
         ("hub-db-all-features", HUB_DB_ALL_FEATURES_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
         ("hub-db-all-features-tests", HUB_DB_ALL_FEATURES_TESTS_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
+        ("accache", ACCACHE_PACKAGES, {}, "apache-host"),
         ("registry-web", REGISTRY_WEB_PACKAGES, {}, "apache-host"),
         ("registry-web-wasm", REGISTRY_WEB_PACKAGES, {}, "apache-host"),
         ("hub-console", HUB_CONSOLE_PACKAGES, {}, "apache-host"),
@@ -1994,6 +2000,7 @@ APPROVED_LICENSES = [
         "hub-service-tests",
         "hub-service-all-features",
         "hub-service-all-features-tests",
+        "accache",
         "registry-web",
         "registry-web-wasm",
         "hub-console",

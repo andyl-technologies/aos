@@ -69,7 +69,7 @@ class ProtocolParityTests(unittest.TestCase):
         )
 
     def test_resolved_profiles_retain_exact_external_features(self):
-        for family in ["aos_cli_tests", "aos_cli_fleet_tests", "aos_cli_production", "qemu_gpl_production", "registry_web", "registry_web_wasm"]:
+        for family in ["accache", "aos_cli_tests", "aos_cli_fleet_tests", "aos_cli_production", "qemu_gpl_production", "registry_web", "registry_web_wasm"]:
             with self.subTest(family=family):
                 self.reports[0]["label"] = f"@@+aos_tools_repository+aos_{family}_crates__serde-1.0.228//:serde"
                 result = self.production_features()

@@ -81,6 +81,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ["source", "packages", "output"]:
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--manifest", type=Path, default=Path("crates/Cargo.toml"))
     parser.add_argument("--exclude", action="append", default=[])
     parser.add_argument("--exclude-bin", action="append", default=[])
     parser.add_argument("--no-default-features", action="store_true")
@@ -94,7 +95,7 @@ def main():
     def metadata():
         value = json.loads(subprocess.check_output([
             str(options.cargo), "metadata", "--offline", "--no-deps", "--format-version=1",
-            "--manifest-path", str(source / "crates/Cargo.toml"),
+            "--manifest-path", str(source / options.manifest),
             *(["--no-default-features"] if options.no_default_features else []),
         ], cwd=source, env=dict(os.environ, RUSTC=str(options.rustc)), text=True))
         return {Path(package["manifest_path"]): package for package in value["packages"]}

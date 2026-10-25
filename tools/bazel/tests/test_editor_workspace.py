@@ -36,6 +36,21 @@ unwrap_used = "deny"
 
         self.assertEqual(tomllib.loads(selected)["workspace"]["exclude"], ["core/aos-core"])
 
+    def test_standalone_inline_members_preserve_resolver_and_release_profile(self):
+        manifest = '''[workspace]
+resolver = "3"
+members = ["accache", "accache-frontend"]
+
+[profile.release]
+strip = true
+'''
+
+        selected = select_workspace(manifest, ["accache-frontend"], [])
+        value = tomllib.loads(selected)
+
+        self.assertEqual(value["workspace"], {"resolver": "3", "members": ["accache-frontend"]})
+        self.assertEqual(value["profile"], {"release": {"strip": True}})
+
     def test_explicit_exclusions_cannot_become_editor_members(self):
         with self.assertRaisesRegex(ValueError, "overlap excluded"):
             select_workspace(self.manifest, ["accache"], [])

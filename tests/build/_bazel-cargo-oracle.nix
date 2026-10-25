@@ -8,6 +8,9 @@
   nativeTools ? [],
   cargoFlags ? [],
   cargoSource ? import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;},
+  cargoManifest ? "crates/Cargo.toml",
+  cargoVendor ? pkgs.aos.passthru.cargoDeps,
+  cargoVendorConfig ? "${cargoVendor}/.cargo/config.toml",
   cargoSetup ? "",
   captureCompilerArguments ? false,
 }: let
@@ -35,15 +38,15 @@ in
           cd source
           export CARGO_HOME="$TMPDIR/cargo" CARGO_TARGET_DIR="$TMPDIR/target"
           mkdir -p "$CARGO_HOME" .cargo "$out"
-          sed 's|@vendor@|${pkgs.aos.passthru.cargoDeps}|g' \
-            ${pkgs.aos.passthru.cargoDeps}/.cargo/config.toml > .cargo/config.toml
+          sed 's|@vendor@|${cargoVendor}|g' \
+            ${cargoVendorConfig} > .cargo/config.toml
           ${pkgs.lib.optionalString captureCompilerArguments ''
             printf '#!${pkgs.python3}/bin/python3\n' > "$TMPDIR/rustc-wrapper"
             cat ${../../tools/bazel/tests/trace_cargo_rustc.py} >> "$TMPDIR/rustc-wrapper"
             chmod +x "$TMPDIR/rustc-wrapper"
             export RUSTC_WRAPPER="$TMPDIR/rustc-wrapper"
             export AOS_CARGO_RUSTC_TRACE="$out/compiler-arguments.jsonl"
-          ''}${cargoSetup}cargo test --frozen --offline --manifest-path crates/Cargo.toml \
+          ''}${cargoSetup}cargo test --frozen --offline --manifest-path ${pkgs.lib.escapeShellArg cargoManifest} \
             ${packageFlags} \
             --jobs "$NIX_BUILD_CORES" --no-run --message-format=json > "$out/cargo-messages.jsonl" || {
             ${pkgs.python3}/bin/python3 - "$out/cargo-messages.jsonl" <<'PY'
@@ -58,7 +61,7 @@ in
           PY
             exit 1
           }
-          cargo test --frozen --offline --manifest-path crates/Cargo.toml \
+          cargo test --frozen --offline --manifest-path ${pkgs.lib.escapeShellArg cargoManifest} \
             ${packageFlags} \
             --jobs "$NIX_BUILD_CORES" > "$out/cargo-tests.log" 2>&1 || {
             tail -n 100 "$out/cargo-tests.log"

@@ -469,3 +469,20 @@ config_setting(
     name = "qemu_gpl_plugin_test_dependencies",
     flag_values = {":dependency_profile": "qemu-gpl-plugin-tests"},
 )
+
+# The compiler cache resolves its standalone lockfile independently of applications.
+config_setting(
+    name = "accache_dependencies",
+    flag_values = {":dependency_profile": "accache"},
+    visibility = ["//visibility:public"],
+)
+
+# Keep the standalone parser's Cargo lint policy separate from application policy.
+filegroup(
+    name = "clippy_config",
+    srcs = select({
+        ":accache_dependencies": ["accache/clippy.toml"],
+        "//conditions:default": ["clippy.toml"],
+    }),
+    visibility = ["//visibility:public"],
+)

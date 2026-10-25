@@ -2884,8 +2884,8 @@ the registry closure indexes switched to deterministic containers. Its source
 audit matches all 3,857 captured Rust/Cargo inputs and all 58 selected packages.
 
 The [merged source inventory evidence](tests/evidence/master-source-inventory-refresh.json)
-records 76 configured analysis outputs merged into 47 inventory families. Each
-family passes the current contracts and retains its previous source-file set.
+records 76 configured analysis outputs merged into 47 inventory families. At that
+checkpoint each family passed its contracts and retained its previous source-file set.
 The metadata-only source catalog covers 80 packages and 3,773 Rust files.
 Analysis used batched source views, with a byte-for-byte and configured-inventory
 pilot against ordinary preparation; production source preparation is unchanged.
@@ -2893,3 +2893,55 @@ pilot against ordinary preparation; production source preparation is unchanged.
 The [standalone accache baseline](tests/evidence/accache-master-cargo-baseline.json)
 retains its 114 existing Cargo unit cases and the existing Bazel tool's bootstrap
 dependency audit before that workspace's compilation targets migrate.
+
+## Standalone accache build graph
+
+Accache and its borrowed GCC/Clang/Rust parser library now have ordinary Bazel
+binary, library, libtest, documentation, Clippy, formatting, license, source
+ownership, and installed-package targets. This family has a standalone lockfile;
+its separate `accache` dependency profile pins the 12 direct registry roots
+without changing the existing 64 profiles' generated payloads.
+
+```sh
+aos-dev bazel --family accache test //crates/accache/accache:bin_accache //crates/accache/accache-frontend:unit
+aos-dev bazel --family accache build //crates/accache/accache:package
+aos-dev bazel --family accache rust-project //crates/accache/accache:accache //crates/accache/accache-frontend:unit_binary
+nix-build tools/bazel/tests/accache.nix -A all --no-out-link
+```
+
+The temporary Cargo comparison and editor helpers accept a workspace manifest
+and its vendor configuration. Accache uses `crates/accache/Cargo.toml` and its
+own vendored dependencies. Neither compilation nor the editor may resolve its
+dependencies from the main applications' lockfile. The Bazel package declarations
+preserve the standalone lint policy: the binary denies `unwrap` and `expect`,
+while the borrowed frontend retains its existing warning levels. Other families
+continue to use the main workspace's Clippy configuration and declarations.
+
+The [native graph qualification](tests/evidence/accache-native-graph.json)
+compares all 114 unit cases, ignored cases, the empty frontend
+doctest inventory, first-party features, and all 44 compiled upstream feature
+identities. It also retains both analyzers' inference counts. The source
+locations, types, and multiplicities of all 253 diagnostic records match; total
+expression and pattern counts differ, so this does not establish whole-model
+inference equivalence.
+
+The installed Bazel binary is exercised by the existing Python frontend-table,
+compiler invalidation/concurrency, CMake launcher, frontend integration,
+independent sccache oracle, and runtime-coverage checks. The comparison remains
+daemonless and uses local disk storage. Its qualification recipe disables shared
+compiler caches so the binary cannot wrap its own build.
+
+The installed binary declares the same static GCC archive used by Cargo. Its
+ELF dependencies, interpreter, resolved libraries, help output, and complete
+runtime dependency closure match the ordinary package. Conservative and precise
+source selections produce identical installed binaries. The
+[source inventory refresh](tests/evidence/accache-master-source-inventory-refresh.json)
+validates 77 configured-analysis outputs and all 48 published inventory families.
+The ordinary [application target compilation gate](tests/evidence/accache-rust-test-target-compilation.json)
+also passes for 58 application packages; its captured Rust and Cargo inputs
+match the current checkout. That gate compiles test targets without running them.
+
+The current default source-built Bazel bootstrap closure contains no accache
+package. Accache's production builder still uses Cargo during the migration;
+production cutover, foreign-host execution, complete compiler/linker option
+parity, and performance acceptance remain separate gates.

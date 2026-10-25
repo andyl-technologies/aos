@@ -33,10 +33,14 @@
   nativeTools ? [],
   rustcFlags ? [],
   cargoSource ? import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;},
+  cargoManifest ? "crates/Cargo.toml",
+  cargoVendor ? pkgs.aos.passthru.cargoDeps,
+  cargoVendorConfig ? "${cargoVendor}/.cargo/config.toml",
   cargoSetup ? "",
   cargoFlags ? [],
 }: let
   names = builtins.attrNames packages;
+  cargoWorkspace = builtins.dirOf cargoManifest;
   editorOutput =
     if editorDiagnosticContext
     then "analyzer-output.txt"
@@ -144,7 +148,7 @@ in rec {
       export CARGO_HOME="$TMPDIR/cargo" CARGO_TARGET_DIR="$TMPDIR/target" CARGO_NET_OFFLINE=true
       mkdir -p "$CARGO_HOME" source/.cargo "$out"
       cp ${../../tools/bazel/tests/select_cargo_workspace.py} select_cargo_workspace.py
-      ${pkgs.python3}/bin/python3 - source ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} ${pkgs.aos.passthru.cargoDeps} ${builtins.toFile "${pname}-editor-dependencies.json" (builtins.toJSON editorDependencyPackages)} <<'PYTHON'
+      ${pkgs.python3}/bin/python3 - source ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} ${cargoVendor} ${builtins.toFile "${pname}-editor-dependencies.json" (builtins.toJSON editorDependencyPackages)} ${pkgs.lib.escapeShellArg cargoManifest} ${cargoVendorConfig} <<'PYTHON'
       import json
       import os
       from pathlib import Path
@@ -154,45 +158,49 @@ in rec {
 
       from select_cargo_workspace import select_workspace
 
-      root, packages, vendor, dependencies = map(Path, sys.argv[1:])
+      root, packages, vendor, dependencies, manifest_path, vendor_config = map(Path, sys.argv[1:])
       # Select the same connected family, rather than analyzing unrelated workspace
       # members. Retain package metadata, dependency versions and all lint settings.
-      manifest = root / "crates/Cargo.toml"
-      members = [path.removeprefix("crates/") for path in json.loads(packages.read_text()).values()]
-      excluded = [path.removeprefix("crates/") for path in json.loads(dependencies.read_text()).values()]
+      manifest = root / manifest_path
+      workspace_path = manifest_path.parent
+      workspace = root / workspace_path
+      members = [Path(path).relative_to(workspace_path).as_posix()
+                 for path in json.loads(packages.read_text()).values()]
+      excluded = [Path(path).relative_to(workspace_path).as_posix()
+                  for path in json.loads(dependencies.read_text()).values()]
       source = select_workspace(manifest.read_text(), members, excluded)
       if excluded:
           # Cargo otherwise automatically adds path dependencies as members,
           # enabling their unselected integration and library test targets.
           for directory in excluded:
-              dependency = root / "crates" / directory / "Cargo.toml"
+              dependency = workspace / directory / "Cargo.toml"
               original = tomllib.loads(dependency.read_text())
               if "workspace" in original["package"]:
                   raise ValueError("Cargo dependency already declares explicit workspace membership")
-              inherited_root = os.path.relpath(root / "crates", dependency.parent)
+              inherited_root = os.path.relpath(workspace, dependency.parent)
               updated = dependency.read_text().replace("[package]\n", "[package]\nworkspace = " + json.dumps(inherited_root) + "\n", 1)
               expected = {**original, "package": {**original["package"], "workspace": inherited_root}}
               if tomllib.loads(updated) != expected:
                   raise ValueError("Cargo dependency workspace selection changed package metadata")
               dependency.write_text(updated)
       manifest.write_text(source)
-      configuration = (vendor / ".cargo/config.toml").read_text().replace("@vendor@", str(vendor))
+      configuration = vendor_config.read_text().replace("@vendor@", str(vendor))
       (root / ".cargo/config.toml").write_text(configuration)
       if excluded:
           metadata = json.loads(subprocess.check_output([
               "${pkgs.rust}/bin/cargo", "metadata", "--offline", "--format-version=1",
-              "--manifest-path", str((root / "crates/Cargo.toml").resolve()),
+              "--manifest-path", str(manifest.resolve()),
               *json.loads(${builtins.toJSON (builtins.toJSON editorCargoFlags)}),
           ], cwd=root, text=True))
           selected = {package["id"] for package in metadata["packages"]
                       if Path(package["manifest_path"]).parent.resolve() in
-                      {(root / "crates" / member).resolve() for member in members}}
+                      {(workspace / member).resolve() for member in members}}
           if set(metadata["workspace_members"]) != selected or len(selected) != len(members):
               raise ValueError("Cargo editor workspace membership differs from selected family")
       PYTHON
       ${pkgs.lib.optionalString (excludedTests != [] || excludedEditorBins != []) ''
         ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/select_cargo_editor.py} \
-          --source source --packages ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} \
+          --source source --manifest ${pkgs.lib.escapeShellArg cargoManifest} --packages ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} \
           --cargo ${pkgs.rust}/bin/cargo --rustc ${workspace.toolchains}/bin/rustc \
           ${pkgs.lib.escapeShellArgs (pkgs.lib.concatMap (name: ["--exclude" name]) excludedTests)} \
           ${pkgs.lib.escapeShellArgs (pkgs.lib.concatMap (name: ["--exclude-bin" name]) excludedEditorBins)} \
@@ -204,7 +212,7 @@ in rec {
         # analysis-stats has no Cargo feature flags. Forward the selected
         # profile only to application metadata and build-script checks. The
         # analyzer also queries the standard library, which has its own features.
-        export AOS_EDITOR_CARGO_WORKSPACE="$PWD/source/crates"
+        export AOS_EDITOR_CARGO_WORKSPACE="$PWD/source/${cargoWorkspace}"
         cat > "$TMPDIR/editor-cargo" <<'CARGO_WRAPPER'
         #!${pkgs.bash}/bin/bash
         exec ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/editor_cargo.py} \
@@ -223,7 +231,7 @@ in rec {
         else ''"$TMPDIR/editor-cargo"''
       } RUSTC=${workspace.toolchains}/bin/rustc \
         RUST_SRC_PATH=${workspace.toolchains}/developer/rust-src/library RAYON_NUM_THREADS=4 \
-        ${workspace.toolchains}/developer/bin/rust-analyzer${pkgs.lib.optionalString editorDiagnosticContext " -v -v"} analysis-stats "$PWD/source/crates" --output csv \
+        ${workspace.toolchains}/developer/bin/rust-analyzer${pkgs.lib.optionalString editorDiagnosticContext " -v -v"} analysis-stats "$PWD/source/${cargoWorkspace}" --output csv \
           --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \
           > "$out/${editorOutput}" 2> "$out/analysis.log" || {
         tail -n 80 "$out/analysis.log"
@@ -267,7 +275,7 @@ in rec {
     PYTHON
   '';
   cargo = import ./_bazel-cargo-oracle.nix {
-    inherit pkgs nativeLibraries nativeTools cargoSource cargoSetup cargoFlags;
+    inherit pkgs nativeLibraries nativeTools cargoSource cargoManifest cargoVendor cargoVendorConfig cargoSetup cargoFlags;
     pname = "${pname}-cargo-oracle";
     packages = names;
   };

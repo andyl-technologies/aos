@@ -2,6 +2,8 @@
 {
   pkgs,
   lib,
+  accache ? pkgs.accache,
+  pname ? "accache-integration-check",
   sccacheOracle ? import ./accache/sccache-oracle.nix {inherit pkgs;},
 }: let
   environmentProbeCompiler = pkgs.mkDerivation {
@@ -49,13 +51,13 @@
   };
 in
   pkgs.mkDerivation {
-    pname = "accache-integration-check";
+    inherit pname;
     version = "1";
     src = null;
     sharedBuildCache = false;
     # GCC's HTML diagram oracle cases require an AOS-built dot executable.
     buildDeps = [
-      pkgs.accache
+      accache
       pkgs.cc
       pkgs.gccUnwrapped
       pkgs.llvm
@@ -68,8 +70,8 @@ in
       sccacheOracle
     ];
     ACCACHE_MANIFEST = cacheEnvironment.ACCACHE_MANIFEST;
-    CMAKE_C_COMPILER_LAUNCHER = cacheEnvironment.CMAKE_C_COMPILER_LAUNCHER;
-    CMAKE_CXX_COMPILER_LAUNCHER = cacheEnvironment.CMAKE_CXX_COMPILER_LAUNCHER;
+    CMAKE_C_COMPILER_LAUNCHER = "${accache}/bin/accache";
+    CMAKE_CXX_COMPILER_LAUNCHER = "${accache}/bin/accache";
     phases = [
       {
         name = "check";
@@ -77,19 +79,19 @@ in
           ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/frontend_tables.py} \
             ${sccacheOracle.passthru.upstreamSource} ${../../crates/accache/accache-frontend}
           ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/integration.py} \
-            ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
+            ${accache}/bin/accache ${pkgs.cc}/bin/gcc \
             ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc \
             ${environmentProbeCompiler}/bin/cc
           ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/cmake_integration.py} \
-            ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
+            ${accache}/bin/accache ${pkgs.cc}/bin/gcc \
             ${pkgs.cc}/bin/g++ ${pkgs.cmake}/bin/cmake ${pkgs.ninja}/bin/ninja
           ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/frontend_integration.py} \
-            ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
+            ${accache}/bin/accache ${pkgs.cc}/bin/gcc \
             ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc
           mkdir -p "$out"
           ACCACHE_ORACLE_REPORT="$out/oracle.json" \
           ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/oracle.py} \
-            ${pkgs.accache}/bin/accache ${sccacheOracle}/bin/sccache \
+            ${accache}/bin/accache ${sccacheOracle}/bin/sccache \
             ${pkgs.cc}/bin/gcc ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc \
             ${pkgs.gccUnwrapped}/bin/gcc
           ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/frontend_runtime_coverage.py} \

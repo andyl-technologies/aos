@@ -52,6 +52,7 @@ aos_dev_bazel() (
       $1 == hub-db-tests ||
       $1 == hub-db-all-features ||
       $1 == hub-db-all-features-tests ||
+      $1 == accache ||
       $1 == registry-web ||
       $1 == registry-web-wasm ||
       $1 == hub-console ||
@@ -67,7 +68,7 @@ aos_dev_bazel() (
       $1 == hub-client ||
       $1 == hub-model ||
       $1 == hub-model-tests
-    ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|qemu-gpl-production|qemu-gpl-tests|qemu-gpl-plugin-tests|qemu-test-oracle-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-bindings|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client|release-preparation|registry-native|registry-native-tests|release-coordination|boot-preparation|boot-preparation-minimal|package-manager|package-manager-tests|hub-db|hub-db-tests|hub-db-all-features|hub-db-all-features-tests|registry-web|registry-web-wasm|hub-console|hub-console-wasm|hub-service|hub-service-tests|hub-service-all-features|hub-service-all-features-tests|hub-native-postgres|hub-native-tests|hub-worker-tests|hub-worker-all-features-tests|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features>'
+    ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|qemu-gpl-production|qemu-gpl-tests|qemu-gpl-plugin-tests|qemu-test-oracle-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-bindings|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client|release-preparation|registry-native|registry-native-tests|release-coordination|boot-preparation|boot-preparation-minimal|package-manager|package-manager-tests|hub-db|hub-db-tests|hub-db-all-features|hub-db-all-features-tests|accache|registry-web|registry-web-wasm|hub-console|hub-console-wasm|hub-service|hub-service-tests|hub-service-all-features|hub-service-all-features-tests|hub-native-postgres|hub-native-tests|hub-worker-tests|hub-worker-all-features-tests|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features>'
     local updater specifications family=$1
     updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
     specifications=$(aos_dev_nix_build_ordinary -A "checks.build.bazel.dependencies.specification-packages.$family" --no-out-link)
@@ -80,7 +81,7 @@ aos_dev_bazel() (
 
   local launcher_attribute=pkgs.aosBazelLauncher
   if [[ $1 == --family ]]; then
-    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|qemu-gpl-production|qemu-gpl-tests|qemu-gpl-plugin-tests|qemu-test-oracle-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|registry-web|registry-web-wasm|hub-console|hub-console-wasm|hub-service|hub-service-all-features|hub-native|hub-worker|hub-worker-all-features|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features> <command> [labels]'
+    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|qemu-gpl-production|qemu-gpl-tests|qemu-gpl-plugin-tests|qemu-test-oracle-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|accache|registry-web|registry-web-wasm|hub-console|hub-console-wasm|hub-service|hub-service-all-features|hub-native|hub-worker|hub-worker-all-features|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features> <command> [labels]'
     case $2 in
       guest) launcher_attribute=pkgs.aosBazelGuestLauncher ;;
       engine) launcher_attribute=pkgs.aosBazelEngineLauncher ;;
@@ -106,6 +107,7 @@ aos_dev_bazel() (
       hub-db-all-features) launcher_attribute=pkgs.aosBazelHubDbAllFeaturesLauncher ;;
       hub-console) launcher_attribute=pkgs.aosBazelHubConsoleLauncher ;;
       hub-console-wasm) launcher_attribute=pkgs.aosBazelHubConsoleWasmLauncher ;;
+      accache) launcher_attribute=pkgs.aosBazelAccacheLauncher ;;
       registry-web) launcher_attribute=pkgs.aosBazelRegistryWebLauncher ;;
       registry-web-wasm) launcher_attribute=pkgs.aosBazelRegistryWebWasmLauncher ;;
       package-manager) launcher_attribute=pkgs.aosBazelPackageManagerLauncher ;;
@@ -123,7 +125,7 @@ aos_dev_bazel() (
       activation-systemd) launcher_attribute=pkgs.aosBazelActivationSystemdLauncher ;;
       formats) launcher_attribute=pkgs.aosBazelFormatsLauncher ;;
       crucible-cli) launcher_attribute=pkgs.aosBazelCrucibleCliLauncher ;;
-      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|qemu-gpl-production|qemu-gpl-tests|qemu-gpl-plugin-tests|qemu-test-oracle-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|registry-web|registry-web-wasm|hub-console|hub-console-wasm|hub-service|hub-service-all-features|hub-native|hub-worker|hub-worker-all-features|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features> <command> [labels]' ;;
+      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|qemu-gpl-production|qemu-gpl-tests|qemu-gpl-plugin-tests|qemu-test-oracle-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|accache|registry-web|registry-web-wasm|hub-console|hub-console-wasm|hub-service|hub-service-all-features|hub-native|hub-worker|hub-worker-all-features|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features> <command> [labels]' ;;
     esac
     shift 2
   fi
@@ -148,6 +150,9 @@ aos_dev_bazel() (
       project_options+=(--rust-project-package crates/hub/aos-hub-db)
     elif [[ $launcher_attribute == pkgs.aosBazelHubConsoleLauncher || $launcher_attribute == pkgs.aosBazelHubConsoleWasmLauncher ]]; then
       project_options+=(--rust-project-package crates/hub/aos-hub-console)
+    elif [[ $launcher_attribute == pkgs.aosBazelAccacheLauncher ]]; then
+      project_options+=(--rust-project-package crates/accache/accache)
+      project_options+=(--rust-project-package crates/accache/accache-frontend)
     elif [[ $launcher_attribute == pkgs.aosBazelRegistryWebLauncher || $launcher_attribute == pkgs.aosBazelRegistryWebWasmLauncher ]]; then
       project_options+=(--rust-project-package crates/registry/aos-registry-web)
     elif [[ $launcher_attribute == pkgs.aosBazelPackageManagerLauncher ]]; then

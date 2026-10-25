@@ -164,6 +164,11 @@
       root = ../../..;
       family = "hub-service-all-features-tests";
     };
+    accache = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "accache";
+    };
     registry-web = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -508,6 +513,11 @@
       inherit pkgs;
       sourceInventory = null;
       allFeatures = true;
+    }).workspace;
+  aosBazelAccacheWorkspace =
+    (import ../../../tests/build/_bazel-accache.nix {
+      inherit pkgs;
+      sourceInventory = null;
     }).workspace;
   aosBazelRegistryWebWorkspace =
     (import ../../../tests/build/_bazel-registry-web.nix {
@@ -1083,6 +1093,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelHubServiceAllFeaturesWorkspace;
+    }).launcher;
+  aosBazelAccacheLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelAccacheWorkspace;
     }).launcher;
   aosBazelRegistryWebLauncher =
     (import ./development.nix {
