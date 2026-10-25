@@ -54,17 +54,20 @@ pub(super) fn attempt_log_trace_directory(fixture: &FlightFixture) -> PathBuf {
 
 /// Prints every traced attempt log's entries around a replay divergence.
 ///
-/// The first delivery time in the divergence row centers the window, so the
-/// original and replayed logs show which publication moved.
+/// The latest delivery time in the divergence row centers the window. The
+/// decision window ends past the divergence, so its latest ordered delivery
+/// sits in the quantum that moved, and the original and replayed logs show
+/// which publication moved. An earlier common delivery can lie milliseconds
+/// before the divergence and leave the window empty.
 pub(super) fn attempt_log_trace_window(fixture: &FlightFixture, rows: &str) -> String {
     const HALF_WINDOW_PS: u64 = 40_000_000;
     const LINES_PER_LOG: usize = 160;
 
     let Some(center) = rows
         .split("order@")
-        .nth(1)
-        .and_then(|tail| tail.split(':').next())
-        .and_then(|ticks| ticks.parse::<u64>().ok())
+        .skip(1)
+        .filter_map(|tail| tail.split(':').next()?.parse::<u64>().ok())
+        .max()
     else {
         return String::new();
     };
