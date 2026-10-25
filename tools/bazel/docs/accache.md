@@ -25,6 +25,17 @@ probe exercises default overflow behavior when Cargo omits the compiler flag.
 These observations do not establish complete compiler, executable-chain,
 native ABI, or linker equivalence.
 
+The [full profile qualification](../tests/evidence/accache-profile-qualification.json)
+passes with these settings. It retains 114 passing unit cases, 44 upstream
+feature identities, the empty frontend doctest inventory, lint/format checks,
+and installed runtime parity. Both editor models report the same 253 raw
+diagnostic rows at 161 distinct locations/types; their aggregate inference
+statistics still differ. The cache integration covers 524 fixture families,
+924 revisions, and 534 compiler commands. The five recorded Bazel test,
+developer, format, production, and editor executions contain 543 sandboxed
+actions without cache hits. This run qualifies precise source selection on
+the native host; conservative selection and foreign execution remain separate.
+
 The shared family helper accepts `editorExecRustcFlags` separately from
 `execRustcFlags`. Equal settings reuse the ordinary workspace. Different
 settings preserve the target graph while compiling the editor's native macros
