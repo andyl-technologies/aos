@@ -150,9 +150,9 @@ pub use checkpoint::{
 };
 pub use coverage::{QemuBasicBlockCoverageBridge, QemuCoverageError};
 pub use crash_detection::{
-    QemuBoundedAwaitTimeout, QemuChannelFailure, QemuChildExitProbe, QemuChildStatusProbeError,
-    QemuCrashCause, QemuCrashDetector, QemuCrashHandling, QemuCrashedNodeStatus,
-    QemuIntendedCrashFaultStatus, QemuNodeRunStatus, QemuProcessExit,
+    QemuBoundedAwaitTimeout, QemuChannelCrashDisposition, QemuChannelFailure, QemuChildExitProbe,
+    QemuChildStatusProbeError, QemuCrashCause, QemuCrashDetector, QemuCrashHandling,
+    QemuCrashedNodeStatus, QemuIntendedCrashFaultStatus, QemuNodeRunStatus, QemuProcessExit,
 };
 pub use crucible_qemu_shmem::AdvanceStopCondition as QemuQuantumStopCondition;
 pub use crucible_qemu_shmem::FaultRegisterCapabilityManifestV1 as QemuRegisterCapabilityManifest;

@@ -226,6 +226,30 @@ impl QemuCrashHandling {
     }
 }
 
+/// Retains node identity and handling beside an initiating channel failure.
+///
+/// The channel error already retains the original operation and timeout. This
+/// disposition keeps the independent crash classification without duplicating
+/// those details in a second owned cause. It grants no retry or cleanup authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuChannelCrashDisposition {
+    /// Stable identifier of the node whose bounded channel wait expired.
+    pub node_id: String,
+    /// Original crash handling policy, retained before independent cleanup.
+    pub handling: QemuCrashHandling,
+}
+
+impl QemuChannelCrashDisposition {
+    /// Moves the same classification and independently retained cause into a status.
+    pub(crate) fn into_status(self, cause: QemuCrashCause) -> QemuNodeRunStatus {
+        QemuNodeRunStatus::Crashed(QemuCrashedNodeStatus {
+            node_id: self.node_id,
+            cause,
+            handling: self.handling,
+        })
+    }
+}
+
 /// Crash detector for one QEMU-backed node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuCrashDetector {
@@ -303,6 +327,14 @@ impl QemuCrashDetector {
         self.crashed(QemuCrashCause::QmpDisconnected(QemuChannelFailure::new(
             operation, detail,
         )))
+    }
+
+    /// Captures the same node classification before independent channel cleanup.
+    pub(crate) fn channel_crash_disposition(&self) -> QemuChannelCrashDisposition {
+        QemuChannelCrashDisposition {
+            node_id: self.node_id.clone(),
+            handling: QemuCrashHandling::ReportAndLocalize,
+        }
     }
 
     /// Reports a bounded child-infrastructure await timeout as an infrastructure crash.

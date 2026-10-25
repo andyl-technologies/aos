@@ -503,18 +503,31 @@ fn channel_timeout_preserves_actual_initiator_and_independent_shutdown_report()
         "actual first failure",
         Duration::from_millis(1),
     );
+    let expected = node
+        .crash_detector
+        .bounded_await_timeout(first.operation, first.bounded_timeout().unwrap());
+    let crate::QemuNodeRunStatus::Crashed(expected) = expected else {
+        panic!("a bounded channel timeout must retain infrastructure classification")
+    };
     let failure = node
         .handle_qmp_channel_error::<()>(first.clone())
         .unwrap_err();
     let QemuNodeError::ShutdownAfterChannelFailure {
         first: retained,
+        status,
         shutdown,
-        ..
     } = failure
     else {
         panic!("the actual channel first must not be replaced by cleanup")
     };
     assert_eq!(retained, first);
+    assert_eq!(status.node_id, expected.node_id);
+    assert_eq!(status.handling, expected.handling);
+    let crate::QemuCrashCause::BoundedAwaitTimeout(cause) = expected.cause else {
+        panic!("the first channel timeout must remain the crash cause")
+    };
+    assert_eq!(retained.operation, cause.operation);
+    assert_eq!(retained.bounded_timeout(), Some(cause.timeout));
     assert!(matches!(
         *shutdown,
         QemuNodeError::Shutdown {
@@ -522,6 +535,17 @@ fn channel_timeout_preserves_actual_initiator_and_independent_shutdown_report()
         }
     ));
     assert!(node.shutdown_health().is_err());
+
+    let ShutdownFixture { mut node, .. } = fixture(false)?;
+    let expected = node
+        .crash_detector
+        .bounded_await_timeout(first.operation, first.bounded_timeout().unwrap());
+    let failure = node.handle_qmp_channel_error::<()>(first).unwrap_err();
+    let QemuNodeError::Crashed { status, shutdown } = failure else {
+        panic!("a returned child must retain the complete original crash status")
+    };
+    assert_eq!(*status, expected);
+    assert!(shutdown.reaped);
     Ok(())
 }
 

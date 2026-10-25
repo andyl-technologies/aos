@@ -342,7 +342,6 @@ const SLOT_CAUSE: &str = r#"pub(crate) fn quantum_node_slot(
     ) -> Self {
         Self {
             operation: "qemu_quantum_shmem_hot_path",
-            timeout: None,
             retryable: matches!(
                 source,
                 crucible_qemu_shmem::NodeSlotError::NodeReportChanged { .. }
@@ -355,7 +354,6 @@ const SLOT_CAUSE: &str = r#"pub(crate) fn quantum_node_slot(
 const REPORT_CAUSE: &str = r#"pub(crate) fn quantum_report_pending(current_icount: u64, ceiling: u64) -> Self {
         Self {
             operation: "qemu_quantum_shmem_hot_path",
-            timeout: None,
             retryable: true,
             detail: ChannelFailureDetail::QuantumReportPending(QemuPendingQuantumReport {
                 current_icount,

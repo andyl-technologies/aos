@@ -18,6 +18,7 @@ fn channel_diagnostics_borrow_static_text_and_move_owned_allocations() {
             alias,
             QemuNodeChannelError::retryable("channel", "fixed pending"),
             QemuNodeChannelError::bounded_await_timeout("channel", "fixed timeout", timeout),
+            QemuNodeChannelError::bounded_await_timeout("channel", "full timeout", Duration::MAX),
         ]
     });
 
@@ -26,12 +27,21 @@ fn channel_diagnostics_borrow_static_text_and_move_owned_allocations() {
     assert!(!counts.overflow);
     assert!(errors.iter().all(|error| matches!(
         error.detail,
-        ChannelFailureDetail::Message(Cow::Borrowed(_))
+        ChannelFailureDetail::Message {
+            message: Cow::Borrowed(_),
+            ..
+        }
     )));
     assert_eq!(errors[0], errors[1]);
     assert!(!errors[0].is_retryable());
     assert!(errors[2].is_retryable());
+    assert!(
+        errors[..3]
+            .iter()
+            .all(|error| error.bounded_timeout().is_none())
+    );
     assert_eq!(errors[3].bounded_timeout(), Some(timeout));
+    assert_eq!(errors[4].bounded_timeout(), Some(Duration::MAX));
 
     let constructors: [fn(String) -> QemuNodeChannelError; 3] = [
         |message| QemuNodeChannelError::new("owned channel", message),
@@ -54,7 +64,10 @@ fn channel_diagnostics_borrow_static_text_and_move_owned_allocations() {
         assert!(!counts.overflow);
         assert!(matches!(
             error.detail,
-            ChannelFailureDetail::Message(Cow::Owned(_))
+            ChannelFailureDetail::Message {
+                message: Cow::Owned(_),
+                ..
+            }
         ));
         assert_eq!(error.message().as_ptr(), allocation);
         assert_eq!(error.message(), "original owned channel diagnostic");

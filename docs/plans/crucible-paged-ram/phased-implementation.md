@@ -67,9 +67,9 @@ failed attempts appear in the dated entries below.
 | Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Earlier legacy configuration and thirteen read-only Ninja queries pass; later target attempts retain generator, interpreter and unavailable-process refusals. The latest original invocation refuses during configure because a disappeared wrapper lacks original exit-observation custody; its complete signed result and diagnosis pass independent review. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Native compiler correction | Signed atomic `cb9a5e825a` and conventional `0d49fac971` preserve the complete integration while correcting declarations, const projections and shadowed locals. Fresh configure, the POSIX thread object and source extraction pass. | The startup Source object still fails on its unchanged uncalled RR birth routine with all warnings retained. No whole QEMU build, Windows compilation, native execution or lifecycle qualification is established. |
-| Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 624 errors: 604 large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 476 errors: 456 large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 663 bindings: 644 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 664 bindings: 645 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Integration with origin/master
 
@@ -261,12 +261,46 @@ unfunded receipts, replacement allocation and erased observations. Inventory
 uncovered and qualifies none. Current hermetic supervision and application
 compilation results remain pending.
 
-Strict host-library Clippy still fails with 624 errors. The former inline
+The journal checkpoint's strict host-library Clippy run still fails with 624
+errors. The former inline
 supervision history is no longer its largest node error; the independent
 channel-failure/shutdown combination still carries at least 184 bytes. Other
 large errors, three large enum variants and unused unfinished integration remain
 release blockers. No lint allowance, error-path allocation or Native authority
 is added by this checkpoint.
+
+#### Compact timeout failure custody
+
+A channel timeout followed by independent shutdown refusal now retains the
+original channel cause beside the node identity and original crash handling.
+It no longer duplicates the operation and duration in a second full crash
+status. Both the timeout cause and classification are created before cleanup.
+When cleanup returns, the same retained values form the complete crashed-node
+status without another cause allocation. The shutdown refusal still uses its existing owned carrier, and its typed
+cause is preserved.
+
+Channel timeout storage now belongs to the authored-diagnostic alternative;
+typed observation refusals no longer carry a dormant optional duration.
+`bounded_timeout()` remains the accessor and preserves the complete `Duration`,
+including `Duration::MAX`. No narrowing, diagnostic copying or new allocation
+is introduced. Nine error-custody controls, nine shutdown-continuation controls
+and twelve crash-detection integration tests pass. The shutdown control checks
+identity, handling and exact initiating operation/duration through both refused
+and returned child cleanup.
+
+All five hygiene and ninety testing-standard controls pass, including the
+existing quantum observation mutations after their constructor contracts were
+updated. The content-bound engineering-hygiene check and core evaluation pass.
+Inventory `ly2mv1rhxnsjna8wg5sz39vgrgkcvz70` binds 664 cases, leaves 142
+requirements uncovered and qualifies none. Application compilation for this
+checkpoint remains required; earlier running snapshots do not establish it.
+
+Strict host-library Clippy now reports 476 errors, down from 624. All 145 node
+error-return diagnostics and three stopped-transfer diagnostics are removed.
+The remaining 456 large-error returns, seventeen unused-code diagnostics and
+three large enum variants still block release. This is host error-custody and
+layout work, with no claim of paid Native admission, complete dynamic diagnostic
+funding, physical guest resource return or full RFC completion.
 
 #### Owning QEMU source compiler correction
 

@@ -2504,12 +2504,16 @@ impl QemuNode {
                 source,
             ));
         };
-        let status = self
-            .crash_detector
-            .bounded_await_timeout(source.operation, timeout);
+        // Keep classification before cleanup. Its refusal retains the original
+        // channel cause, so a second full crash status need not remain inline.
+        let cause = crate::QemuCrashCause::BoundedAwaitTimeout(
+            crate::QemuBoundedAwaitTimeout::new(source.operation, timeout),
+        );
+        let status = self.crash_detector.channel_crash_disposition();
+
         match self.shutdown_child() {
             Ok(shutdown) => Err(QemuNodeError::Crashed {
-                status: Box::new(status),
+                status: Box::new(status.into_status(cause)),
                 shutdown: Box::new(shutdown),
             }),
             Err(shutdown) => Err(QemuNodeError::ShutdownAfterChannelFailure {
