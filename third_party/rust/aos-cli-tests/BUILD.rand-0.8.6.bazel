@@ -39,15 +39,7 @@ rust_library(
             "WORKSPACE.bazel",
         ],
     ),
-    crate_features = [
-        "alloc",
-        "getrandom",
-        "libc",
-        "rand_chacha",
-        "small_rng",
-        "std",
-        "std_rng",
-    ],
+    crate_features = ["alloc", "getrandom", "libc", "rand_chacha", "std", "std_rng"],
     crate_root = "src/lib.rs",
     edition = "2018",
     rustc_env_files = [

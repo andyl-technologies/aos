@@ -694,6 +694,74 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
             "std"
         ]
     }),
+    # Preserve the versioned target and execution units in the native CLI oracle.
+    "getrandom": json.encode({
+        "version": "0.4.2",
+        "resolved_features": [
+            "sys_rng"
+        ],
+        "features": [
+            "sys_rng"
+        ],
+        "exec_features": []
+    }),
+    "hashbrown@0.17.1": json.encode({
+        "version": "0.17.1",
+        "resolved_features": [
+            "allocator-api2",
+            "default",
+            "default-hasher",
+            "equivalent",
+            "inline-more",
+            "raw-entry"
+        ],
+        "features": [
+            "allocator-api2",
+            "default",
+            "default-hasher",
+            "equivalent",
+            "inline-more",
+            "raw-entry"
+        ],
+        "exec_features": []
+    }),
+    "itertools": json.encode({
+        "version": "0.14.0",
+        "resolved_features": [
+            "default",
+            "use_alloc",
+            "use_std"
+        ],
+        "features": [
+            "use_alloc",
+            "use_std"
+        ],
+        "exec_features": [
+            "default",
+            "use_alloc",
+            "use_std"
+        ]
+    }),
+    "rand": json.encode({
+        "version": "0.8.6",
+        "resolved_features": [
+            "alloc",
+            "getrandom",
+            "libc",
+            "rand_chacha",
+            "small_rng",
+            "std",
+            "std_rng"
+        ],
+        "features": [
+            "alloc",
+            "getrandom",
+            "libc",
+            "rand_chacha",
+            "std",
+            "std_rng"
+        ]
+    }),
 }
 
 AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
@@ -1114,6 +1182,74 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ],
         "exec_features": [
             "std"
+        ]
+    }),
+    # Preserve the versioned target and execution units in the native CLI oracle.
+    "getrandom": json.encode({
+        "version": "0.4.2",
+        "resolved_features": [
+            "sys_rng"
+        ],
+        "features": [
+            "sys_rng"
+        ],
+        "exec_features": []
+    }),
+    "hashbrown@0.17.1": json.encode({
+        "version": "0.17.1",
+        "resolved_features": [
+            "allocator-api2",
+            "default",
+            "default-hasher",
+            "equivalent",
+            "inline-more",
+            "raw-entry"
+        ],
+        "features": [
+            "allocator-api2",
+            "default",
+            "default-hasher",
+            "equivalent",
+            "inline-more",
+            "raw-entry"
+        ],
+        "exec_features": []
+    }),
+    "itertools": json.encode({
+        "version": "0.14.0",
+        "resolved_features": [
+            "default",
+            "use_alloc",
+            "use_std"
+        ],
+        "features": [
+            "use_alloc",
+            "use_std"
+        ],
+        "exec_features": [
+            "default",
+            "use_alloc",
+            "use_std"
+        ]
+    }),
+    "rand": json.encode({
+        "version": "0.8.6",
+        "resolved_features": [
+            "alloc",
+            "getrandom",
+            "libc",
+            "rand_chacha",
+            "small_rng",
+            "std",
+            "std_rng"
+        ],
+        "features": [
+            "alloc",
+            "getrandom",
+            "libc",
+            "rand_chacha",
+            "std",
+            "std_rng"
         ]
     }),
 }

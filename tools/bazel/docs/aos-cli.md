@@ -37,6 +37,14 @@ The independent Cargo comparison temporarily retains its manifest oracle. Other
 repository-aware integration tests still use a conservative source snapshot;
 strict source qualification and Cargo removal remain separate work.
 
+The explicit dependency updater accepts `aos-cli-tests`, `aos-cli-fleet-tests`,
+and `aos-cli-production`. Their feature policies in `third_party/rust/aos-cli.bzl`
+retain distinct target and execution units. Use a `name@version` policy key when
+different versions of one dependency need separate policies; its version must
+match the policy's `version` field. Duplicate identities fail before rewriting
+the graph. Ordinary builds consume the checked-in sources and BUILD rules
+without running the resolver.
+
 Profile lifecycle and cache installation tests use real immutable AOS packages,
 native deployment envelopes, private Nix databases, and signed registry
 releases. Cache installation uses distinct producer and consumer stores, signed
@@ -76,11 +84,36 @@ editor/release/foreign profiles, cache behavior, and performance require their
 own qualification. `test-parity` exposes the case comparison separately;
 `oracle` retains both `parity.json` and `execution-profiles.json`.
 
+The [retained native test-profile run](../tests/evidence/cli-native-test-profiles.json)
+passes all 543 ordinary and 551 fleet cases. It pairs 79 and 85 first-party
+compiler units respectively, plus 28 procedural macros in each configuration.
+All 1,269 ordinary and 1,278 fleet actions execute successfully in Linux
+sandboxes without cache hits. The four repaired dependency policies preserve
+native target/execution feature units without changing production BUILD files
+or the source URLs, checksums, and generator identities of any of the 65 SDKs.
+
+That retained run predates the [build-script profile repair](build-script-profiles.md)
+and records libm receiving `OPT_LEVEL=0` while its library compiles at `s`.
+The new focused qualification checks corrected target/execution metadata and
+libm's generated `optimizations_enabled` cfg in four configurations. Complete
+external compiler and native C/linker profiles still require broader parity.
+
+The [rerun with corrected build-script metadata](../tests/evidence/cli-native-test-profiles-with-build-metadata.json)
+also passes all 543 ordinary and 551 fleet cases and the selected first-party
+and procedural-macro profile checks. Its external-unit diagnostic matches cfgs
+and editions for all 552 paired dependency units in each configuration. Four
+additional Bazel execution libraries remain unmatched. Source-manifest auditing
+identifies disabled optional dependency edges; removing them from the explicit
+SDK updater and qualifying the resulting graph remain pending. The diagnostic
+does not qualify complete external compiler or native C/linker profiles.
+
 Qualification scripts and retained reports are excluded from both the test
 workspace's compiler snapshot and the architecture fixture's query snapshot.
 Repository-aware tests still receive their separately declared inputs. A
 verifier edit changes the required qualification gate without invalidating
 compiler or test derivations.
+Configured inventory JSON still enters the conservative test snapshot and can
+change its Nix identity. Precise test-source selection remains a separate step.
 
 The architecture-consumer checkpoint passes all 543 ordinary and 551 fleet
 cases under both Cargo and Bazel, including all six architecture guards.
@@ -216,3 +249,16 @@ earlier failing developer report remains as baseline evidence.
 
 Full compiler argument parity, strict uncached qualification, live service and
 VM checks, performance acceptance, and production migration remain separate work.
+
+The [configured-inventory refresh](../tests/evidence/cli-feature-inventory-refresh.json)
+retains 84 registered analysis outputs covering all 45 existing families,
+including the boot configuration without boot tools. It checks every prior
+source, target, label, and feature/platform unit before publication. The only
+replaced units are the ordinary and fleet `rand` profiles dropping the unused
+`small_rng` feature, qualified by the retained native CLI comparisons. The three
+newly split package roles retain their prior canonical label coverage. All 65
+SDKs preserve their source declarations and resolver identities; only the four
+reviewed CLI package BUILD files change in each test SDK. These inventory
+checks do not establish compilation or runtime parity for every family.
+The refresh also passes the full native evaluation aggregate, the 339-test Bazel
+policy suite, and the registered source-selection check.

@@ -294,6 +294,32 @@ alias(name = "build_script_build", actual = ":_bs")
         self.assertNotIn("crate_features = select", rendered)
         self.assertEqual(result["jobserver", "0.1.34"], builds["jobserver", "0.1.34"])
 
+    def test_versioned_policies_preserve_two_versions_of_one_package(self):
+        policy, context, builds = self.feature_graph()
+        context["crates"]["other-libc"] = {
+            "name": "libc", "version": "0.2.187",
+            "common_attrs": {"crate_features": {"common": ["default", "std"], "selects": {}}},
+        }
+        builds["libc", "0.2.187"] = 'rust_library(name = "libc", crate_features = ["default", "std"])\n'
+        policy["feature_variants"]["libc@0.2.187"] = {
+            "version": "0.2.187", "resolved_features": ["default", "std"], "features": ["std"],
+        }
+
+        result = updater.specialize_feature_graph(policy, context, builds, "example")
+
+        self.assertIn("crate_features = []", result["libc", "0.2.186"])
+        self.assertIn('crate_features = ["std"]', result["libc", "0.2.187"])
+        self.assertIn('//:libc__aos_build"', result["jobserver", "0.1.34"])
+
+    def test_versioned_policies_reject_conflicting_or_duplicate_identities(self):
+        for key in ["libc@0.2.187", "libc@0.2.186"]:
+            with self.subTest(key=key):
+                policy, context, builds = self.feature_graph()
+                policy["feature_variants"][key] = dict(policy["feature_variants"]["libc"])
+
+                with self.assertRaisesRegex(ValueError, "version|duplicate"):
+                    updater.specialize_feature_graph(policy, context, builds, "example")
+
     def test_execution_units_reject_ambiguous_consumer_redirection(self):
         policy, context, builds = self.feature_graph()
         policy["feature_variants"]["libc"]["exec_features"] = ["default", "std"]

@@ -247,8 +247,19 @@ def execution_feature_graph(rendered, expected, target_features, exec_features, 
 
 def specialize_feature_graph(specification, context, builds, repository):
     """Applies version-checked feature units and redirects explicit consumer edges."""
-    for name, policy in specification.get("feature_variants", {}).items():
-        identifier = (name, policy["version"])
+    policies = []
+    identities = set()
+    for key, policy in specification.get("feature_variants", {}).items():
+        name, separator, version = key.partition("@")
+        if separator and version != policy["version"]:
+            raise ValueError("reviewed feature policy key disagrees with its version: " + key)
+        identifier = name, policy["version"]
+        if identifier in identities:
+            raise ValueError("duplicate reviewed feature policy identity: " + key)
+        identities.add(identifier)
+        policies.append((identifier, policy))
+
+    for identifier, policy in policies:
         crates = [crate for crate in context["crates"].values()
                   if (crate["name"], crate["version"]) == identifier]
         if len(crates) != 1 or identifier not in builds:

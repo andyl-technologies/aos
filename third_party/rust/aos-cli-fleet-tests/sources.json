@@ -1,9 +1,9 @@
 {
   "contracts": {
     "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
-    "third_party/rust/aos-cli.bzl": "339faa0e0c182fdc415df439c91d9bfb7df7de5eb44f094bd811c28addbbe2dc",
+    "third_party/rust/aos-cli.bzl": "1da4747a107507b873fd9ad946a2151f29bf0e482dccff02cfd60b0f9e1ac746",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-    "tools/bazel/metadata/update_rust.py": "6dba4f1b82faf10f246c5cefa1ea2c92a7d075c4cc58b8da9183b9a34080f28c",
+    "tools/bazel/metadata/update_rust.py": "69b8bd4161c4d79ccaa22bbc68132a71bdd30991679a1608ed1002214c541a76",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
   },
   "family": "aos-cli-fleet-tests",
@@ -201,7 +201,7 @@
     "BUILD.generic-array-0.14.7.bazel": "046651154376f591fc33829a3430f25ec27efc71c0bacf5ea6cf5a303af987a3",
     "BUILD.getrandom-0.2.17.bazel": "eee29d98da2bebd4688ed9e8832978723cc583e7ddfc308c016e321b8964cae1",
     "BUILD.getrandom-0.3.4.bazel": "cad218afc3c7d9dac240918280fcb0d8a4c897125675c2a524225661abb65698",
-    "BUILD.getrandom-0.4.2.bazel": "ba730297900e10c513388d60d54de6762cef62f8ca80a6e369804c48e8fe91cd",
+    "BUILD.getrandom-0.4.2.bazel": "bbbfbf6c94e80a286f75d8cd3bef41eda2aebd95e4ce740c292ec53e1b4ce231",
     "BUILD.ghash-0.5.1.bazel": "e2654566dd7b58bb590fdd48d23f37fa70c8e94b4f083fb9a86d297273c921c0",
     "BUILD.git2-0.21.0.bazel": "5e8089593050225e25f6e7c38f07beec38e487b79529a969abcf010175a0c68b",
     "BUILD.glob-0.3.3.bazel": "626b46b52fb1df880b8b890c4dcb7d7737edfdf5ed184813475885c05631edc3",
@@ -212,7 +212,7 @@
     "BUILD.half-2.7.1.bazel": "337325a3dfb549287d25da94785c0cb740824c3679ecd87ed6b1c8a7c1a7139e",
     "BUILD.hashbrown-0.14.5.bazel": "bf3284164da257432243c080ca98e9714ae0c894f3ae001dec0b0517cfa41031",
     "BUILD.hashbrown-0.15.5.bazel": "1a1eb74168799d791a40809303b579921e648f138e24bd33435197b8e1a5a0d3",
-    "BUILD.hashbrown-0.17.1.bazel": "1c9146194e3558f661eb88bb8911675e8f824b07dccca3cc877e55db3409b40a",
+    "BUILD.hashbrown-0.17.1.bazel": "c079448cdc89f65cc617ee965a2f4cf90ff1bce97a3bbaa9a53794568b2d0bfe",
     "BUILD.hashbrown-0.9.1.bazel": "618112410c483915fcc2d261b39adde91ef21387af018180c9187069ffaa7a4a",
     "BUILD.hashlink-0.10.0.bazel": "5eda3b740b5170940cab71bc6e1ed385447114324fac4bef595e1864f40828d8",
     "BUILD.hashlink-0.9.1.bazel": "aa4095005c825522a5aa93d503eadb9ef58ba63bd395a21b3eec7f34906a6e9b",
@@ -252,7 +252,7 @@
     "BUILD.ipnet-2.12.0.bazel": "7c877e3d6f7d4fda702e3e9a21fa318ae4059ad9b90ead6f0acccefd0e6e5951",
     "BUILD.is_terminal_polyfill-1.70.2.bazel": "d9fbb3ce6f50add45d969de51bab3fc94351065f1b0243d757604b6fb48e2fb1",
     "BUILD.itertools-0.13.0.bazel": "8cdca49c3e2ba19190e578e16a50fb3e46f90293ce1de5fcd595c3602615cd72",
-    "BUILD.itertools-0.14.0.bazel": "ffa63cc4e0b9d9351be42bea3af0000ce98cb579a77e6e9067594f2eb8779d8d",
+    "BUILD.itertools-0.14.0.bazel": "63319b10dea7137791e1f6ea9c1830d59d3d9f21b72c60cacdc9084461eda0fa",
     "BUILD.itoa-1.0.18.bazel": "bae19c4c9449a81f8bd326f12f3faf0968978b34f62bc2b8b3e3efc3ee8b7e66",
     "BUILD.jobserver-0.1.34.bazel": "fa6dd95ce5aa53ddc7b11d1f352f3478c0566ea63962858f867bf5ed731d49e0",
     "BUILD.js-sys-0.3.103.bazel": "43ed67f89259d5ec47ad7b5d8ca984028605a38eeb6847edfaefcc8ea6bd63cd",
@@ -369,7 +369,7 @@
     "BUILD.quote-1.0.46.bazel": "b3b82c79a78b23dfbcbe559bce544e9df3b6cf2314f85b37026567ed0676ec90",
     "BUILD.r-efi-5.3.0.bazel": "7545a31bcfbb449d278030a0faf80421466e5c1429f9e2b427ce6c7f1d60805c",
     "BUILD.r-efi-6.0.0.bazel": "f7d6cfb3bc5791a02ee10147ad1078ba426fce88b2180b31423b2c4b209bd5e5",
-    "BUILD.rand-0.8.6.bazel": "e7db16b036f6507da97abb4bc1ae3785665ebc6a678cd6ea05d6adbe30356f85",
+    "BUILD.rand-0.8.6.bazel": "29df124198b12957d33d2caab323d4d0a83c6148139d9bcf6cef601f35209c4c",
     "BUILD.rand-0.9.4.bazel": "c6c0d7a7f364e7a293ae3dd7e14b3d7255b3a21527ca0cad06446d77ed1443c1",
     "BUILD.rand_chacha-0.3.1.bazel": "a57eacd86280c2280671a35d50da6264b96ea3699ab8f352ac75f6de7b29b238",
     "BUILD.rand_chacha-0.9.0.bazel": "8ee376414104fb30175421296572a4a805b121b02e35884833afb7ae08e19c2a",
@@ -6792,7 +6792,7 @@
     ],
     "contracts": {
       "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
-      "third_party/rust/aos-cli.bzl": "339faa0e0c182fdc415df439c91d9bfb7df7de5eb44f094bd811c28addbbe2dc",
+      "third_party/rust/aos-cli.bzl": "1da4747a107507b873fd9ad946a2151f29bf0e482dccff02cfd60b0f9e1ac746",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
     },
@@ -6849,6 +6849,16 @@
         ],
         "version": "1.16.0"
       },
+      "getrandom": {
+        "exec_features": [],
+        "features": [
+          "sys_rng"
+        ],
+        "resolved_features": [
+          "sys_rng"
+        ],
+        "version": "0.4.2"
+      },
       "hashbrown": {
         "exec_features": [
           "default-hasher",
@@ -6874,6 +6884,26 @@
         ],
         "version": "0.15.5"
       },
+      "hashbrown@0.17.1": {
+        "exec_features": [],
+        "features": [
+          "allocator-api2",
+          "default",
+          "default-hasher",
+          "equivalent",
+          "inline-more",
+          "raw-entry"
+        ],
+        "resolved_features": [
+          "allocator-api2",
+          "default",
+          "default-hasher",
+          "equivalent",
+          "inline-more",
+          "raw-entry"
+        ],
+        "version": "0.17.1"
+      },
       "indexmap": {
         "features": [
           "default",
@@ -6885,6 +6915,23 @@
           "std"
         ],
         "version": "2.14.0"
+      },
+      "itertools": {
+        "exec_features": [
+          "default",
+          "use_alloc",
+          "use_std"
+        ],
+        "features": [
+          "use_alloc",
+          "use_std"
+        ],
+        "resolved_features": [
+          "default",
+          "use_alloc",
+          "use_std"
+        ],
+        "version": "0.14.0"
       },
       "linux-raw-sys": {
         "exec_features": [
@@ -6939,6 +6986,26 @@
           "std"
         ],
         "version": "2.8.2"
+      },
+      "rand": {
+        "features": [
+          "alloc",
+          "getrandom",
+          "libc",
+          "rand_chacha",
+          "std",
+          "std_rng"
+        ],
+        "resolved_features": [
+          "alloc",
+          "getrandom",
+          "libc",
+          "rand_chacha",
+          "small_rng",
+          "std",
+          "std_rng"
+        ],
+        "version": "0.8.6"
       },
       "regex": {
         "exec_features": [
