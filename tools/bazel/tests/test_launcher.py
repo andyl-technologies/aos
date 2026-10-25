@@ -172,6 +172,37 @@ class LauncherTests(unittest.TestCase):
                 self.assertIn("--@rules_rust//rust/settings:extra_rustc_flags=-Copt-level=s,-Cpanic=abort", arguments)
                 self.assertIn("--@rules_rust//rust/settings:extra_exec_rustc_flags=-Copt-level=0,-Cdebug-assertions=yes", arguments)
 
+    def test_root_cargo_profile_applies_to_every_analysis_command(self):
+        for profile in ["debug", "release"]:
+            configuration = json.loads(self.config.read_text())
+            configuration["cargo_profile"] = profile
+            self.config.write_text(json.dumps(configuration))
+
+            for command in ["build", "test", "run", "cquery", "aquery"]:
+                with self.subTest(profile=profile, command=command):
+                    result = self.invoke([command, "//:example", "--define=AOS_CARGO_PROFILE=ambient"])
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    arguments = json.loads(self.capture.read_text())["args"]
+                    self.assertGreater(arguments.index("--define=AOS_CARGO_PROFILE=" + profile),
+                                       arguments.index("--define=AOS_CARGO_PROFILE=ambient"))
+
+            result = self.invoke(["query", "//:example"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            arguments = json.loads(self.capture.read_text())["args"]
+            self.assertFalse(any(argument.startswith("--define=AOS_CARGO_PROFILE=") for argument in arguments))
+
+    def test_invalid_cargo_profile_rejects_analysis(self):
+        for profile in ["", "custom", "release,debug"]:
+            with self.subTest(profile=profile):
+                configuration = json.loads(self.config.read_text())
+                configuration["cargo_profile"] = profile
+                self.config.write_text(json.dumps(configuration))
+
+                result = self.invoke(["build", "//:example"])
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("cargo_profile must be debug or release", result.stderr)
+
     def test_private_server_is_opt_in_and_has_bounded_idle_and_heap(self):
         configuration = json.loads(self.config.read_text())
         configuration["batch"] = False

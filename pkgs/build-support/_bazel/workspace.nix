@@ -21,6 +21,9 @@
   rustcFlags ? [],
   # Generators and procedural macros use the native execution configuration.
   execRustcFlags ? [],
+  # Cargo exposes the root profile to execution tools even when their own
+  # optimization override differs. Null retains the Bazel-mode fallback.
+  cargoProfile ? null,
   # Opted-in editor workspaces query native built-in cfgs independently of
   # compiler actions. Null preserves the existing exporter during rollout.
   editorCfgFlags ? null,
@@ -185,6 +188,9 @@
         }
         // lib.optionalAttrs (execRustcFlags != []) {
           exec_rustc_flags = execRustcFlags;
+        }
+        // lib.optionalAttrs (cargoProfile != null) {
+          cargo_profile = cargoProfile;
         });
     };
   configuration = configurationFor batch;
@@ -226,6 +232,10 @@
   };
 in
   assert validInventory;
+  assert cargoProfile
+  == null
+  || builtins.elem cargoProfile ["debug" "release"]
+  || throw "mkAosBazelWorkspace: cargoProfile must be null, debug, or release";
   assert validRustcFlags rustcFlags
   || throw "mkAosBazelWorkspace: rustcFlags must be individual nonempty flags without commas";
   assert validRustcFlags execRustcFlags

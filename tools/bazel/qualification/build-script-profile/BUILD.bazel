@@ -1,0 +1,34 @@
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_proc_macro")
+
+config_setting(
+    name = "wasm_target",
+    constraint_values = ["@platforms//cpu:wasm32"],
+)
+
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+    crate_root = "build.rs",
+    edition = "2024",
+)
+
+rust_library(
+    name = "library",
+    srcs = ["lib.rs"],
+    crate_root = "lib.rs",
+    edition = "2024",
+    deps = [":build_script"] + select({
+        ":wasm_target": [],
+        "//conditions:default": ["@aos_aos_cli_tests_crates__libm-0.2.16//:libm"],
+    }),
+    proc_macro_deps = [":profile_macro"],
+)
+
+rust_proc_macro(
+    name = "profile_macro",
+    srcs = ["macro.rs"],
+    crate_root = "macro.rs",
+    edition = "2024",
+    deps = [":build_script", "@aos_aos_cli_tests_crates__libm-0.2.16//:libm"],
+)

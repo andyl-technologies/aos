@@ -194,6 +194,10 @@ def main():
             policy.append("--@rules_rust//rust/settings:extra_exec_rustc_flags=" + ",".join(config["exec_rustc_flags"]))
         if config.get("dependency_profile"):
             policy.append(f"--//tools/bazel/rules:dependency_profile={config['dependency_profile']}")
+        if config.get("cargo_profile") is not None:
+            if config["cargo_profile"] not in {"debug", "release"}:
+                parser.error("cargo_profile must be debug or release")
+            policy.append("--define=AOS_CARGO_PROFILE=" + config["cargo_profile"])
         policy.extend([
             "--incompatible_strict_action_env", "--stamp=false", "--spawn_strategy=sandboxed",
             "--sandbox_block_path=/bin/sh",

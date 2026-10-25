@@ -109,6 +109,7 @@
       ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "third_party/rust" "api/proto"]
       ++ builtins.attrValues packages ++ builtins.attrValues dependencyPackages;
     dependencyProfile = profile;
+    cargoProfile = "debug";
     inherit repositories execRustcFlags;
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["${prefix}lib"];

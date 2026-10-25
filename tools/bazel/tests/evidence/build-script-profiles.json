@@ -1,0 +1,438 @@
+{
+  "configurations": {
+    "default": {
+      "build": "/nix/store/kfb1g1325y93h93b3rg8ac713cj79nmw-aos-bazel-build-script-profile-default-1",
+      "build_scripts": [
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "0",
+          "PROFILE": "debug",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "//tools/bazel/qualification/build-script-profile:build_script",
+          "role": "execution"
+        },
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "s",
+          "PROFILE": "debug",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "//tools/bazel/qualification/build-script-profile:build_script",
+          "role": "target"
+        },
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "0",
+          "PROFILE": "debug",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:_bs",
+          "role": "execution"
+        },
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "s",
+          "PROFILE": "debug",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:_bs",
+          "role": "target"
+        }
+      ],
+      "compilers": [
+        {
+          "cfg": [],
+          "label": "//tools/bazel/qualification/build-script-profile:library",
+          "role": "target",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-3813517553",
+            "opt-level": "s",
+            "strip": "none"
+          }
+        },
+        {
+          "cfg": [],
+          "label": "//tools/bazel/qualification/build-script-profile:profile_macro",
+          "role": "execution",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1028233315",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "0",
+            "strip": "debuginfo"
+          }
+        },
+        {
+          "cfg": [
+            "arch_enabled",
+            "feature=\"arch\"",
+            "feature=\"default\""
+          ],
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:libm",
+          "role": "execution",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1153761065",
+            "opt-level": "0",
+            "strip": "debuginfo"
+          }
+        },
+        {
+          "cfg": [
+            "arch_enabled",
+            "feature=\"arch\"",
+            "feature=\"default\"",
+            "optimizations_enabled"
+          ],
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:libm",
+          "role": "target",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1153761065",
+            "opt-level": "s",
+            "strip": "none"
+          }
+        }
+      ],
+      "executed_actions": 16,
+      "inputs_sha256": {
+        "actions.json": "d950dc0b1c105f55aa0ac6111494e67e3fe95ad1308886c829abc79b99d61a00",
+        "compiler-inputs.json": "635e95ae14dffd3bc7df855e33e91418b80a24500621a628d9aa9146ca4c3324",
+        "execution.json": "49441b12a07de0fef0e0f3e5a1b9bc3fa65f0fe03a8fc26040bd6e593c0e5027"
+      }
+    },
+    "editor": {
+      "build": "/nix/store/s1g238ci9zpr3ldrjfvm9ff5wyqn49ng-aos-bazel-build-script-profile-editor-1",
+      "build_scripts": [
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "0",
+          "PROFILE": "debug",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "//tools/bazel/qualification/build-script-profile:build_script",
+          "role": "execution"
+        },
+        {
+          "DEBUG": "true",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "0",
+          "PROFILE": "debug",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "//tools/bazel/qualification/build-script-profile:build_script",
+          "role": "target"
+        },
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "0",
+          "PROFILE": "debug",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:_bs",
+          "role": "execution"
+        },
+        {
+          "DEBUG": "true",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "0",
+          "PROFILE": "debug",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:_bs",
+          "role": "target"
+        }
+      ],
+      "compilers": [
+        {
+          "cfg": [],
+          "label": "//tools/bazel/qualification/build-script-profile:library",
+          "role": "target",
+          "scalar_codegen": {
+            "debuginfo": "2",
+            "embed-bitcode": "no",
+            "extra-filename": "-3813517553",
+            "opt-level": "0",
+            "strip": "none"
+          }
+        },
+        {
+          "cfg": [],
+          "label": "//tools/bazel/qualification/build-script-profile:profile_macro",
+          "role": "execution",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1028233315",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "0",
+            "strip": "debuginfo"
+          }
+        },
+        {
+          "cfg": [
+            "arch_enabled",
+            "feature=\"arch\"",
+            "feature=\"default\""
+          ],
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:libm",
+          "role": "execution",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1153761065",
+            "opt-level": "0",
+            "strip": "debuginfo"
+          }
+        },
+        {
+          "cfg": [
+            "arch_enabled",
+            "feature=\"arch\"",
+            "feature=\"default\""
+          ],
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:libm",
+          "role": "target",
+          "scalar_codegen": {
+            "debuginfo": "2",
+            "embed-bitcode": "no",
+            "extra-filename": "-1153761065",
+            "opt-level": "0",
+            "strip": "none"
+          }
+        }
+      ],
+      "executed_actions": 16,
+      "inputs_sha256": {
+        "actions.json": "e86cc803e580cfed77283201b9766655791076f286db2488754d69bfaa4c167d",
+        "compiler-inputs.json": "16daf336ba54f0ea5ea75a904eda639bc7eeed2a4a9430db595867712c836d7d",
+        "execution.json": "1b7cf3b61d1ea9de6ddd63bb9303c9ad854509a01fbf1f1483b21d5622eb3ee4"
+      }
+    },
+    "release": {
+      "build": "/nix/store/n6i9nvn7vyy07qff8v04a0c5872alyq5-aos-bazel-build-script-profile-release-1",
+      "build_scripts": [
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "0",
+          "PROFILE": "release",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "//tools/bazel/qualification/build-script-profile:build_script",
+          "role": "execution"
+        },
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "s",
+          "PROFILE": "release",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "//tools/bazel/qualification/build-script-profile:build_script",
+          "role": "target"
+        },
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "0",
+          "PROFILE": "release",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:_bs",
+          "role": "execution"
+        },
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "s",
+          "PROFILE": "release",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:_bs",
+          "role": "target"
+        }
+      ],
+      "compilers": [
+        {
+          "cfg": [],
+          "label": "//tools/bazel/qualification/build-script-profile:library",
+          "role": "target",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-3813517553",
+            "opt-level": "s",
+            "strip": "none"
+          }
+        },
+        {
+          "cfg": [],
+          "label": "//tools/bazel/qualification/build-script-profile:profile_macro",
+          "role": "execution",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1028233315",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "0",
+            "strip": "debuginfo"
+          }
+        },
+        {
+          "cfg": [
+            "arch_enabled",
+            "feature=\"arch\"",
+            "feature=\"default\""
+          ],
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:libm",
+          "role": "execution",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1153761065",
+            "opt-level": "0",
+            "strip": "debuginfo"
+          }
+        },
+        {
+          "cfg": [
+            "arch_enabled",
+            "feature=\"arch\"",
+            "feature=\"default\"",
+            "optimizations_enabled"
+          ],
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:libm",
+          "role": "target",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1153761065",
+            "opt-level": "s",
+            "strip": "none"
+          }
+        }
+      ],
+      "executed_actions": 16,
+      "inputs_sha256": {
+        "actions.json": "6cd27ce168ee4adabc52448aa818e311a67a55ae40cbdbda67c7a9e014423640",
+        "compiler-inputs.json": "c06cc7013f1a4ef552600bd70f1a4840dda87adaa8a01fd8eba016303b6ced2a",
+        "execution.json": "85b68b355b4b418cc9f6cb7c9e31fa61e5535ca3a36e6f94c94780a03ef369fb"
+      }
+    },
+    "wasm": {
+      "build": "/nix/store/kg9ml97894qzri0z7hqqk99sdf9rwqsj-aos-bazel-build-script-profile-wasm-1",
+      "build_scripts": [
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "0",
+          "PROFILE": "debug",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "//tools/bazel/qualification/build-script-profile:build_script",
+          "role": "execution"
+        },
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "s",
+          "PROFILE": "debug",
+          "TARGET": "wasm32-unknown-unknown",
+          "label": "//tools/bazel/qualification/build-script-profile:build_script",
+          "role": "target"
+        },
+        {
+          "DEBUG": "false",
+          "HOST": "x86_64-unknown-linux-gnu",
+          "OPT_LEVEL": "0",
+          "PROFILE": "debug",
+          "TARGET": "x86_64-unknown-linux-gnu",
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:_bs",
+          "role": "execution"
+        }
+      ],
+      "compilers": [
+        {
+          "cfg": [],
+          "label": "//tools/bazel/qualification/build-script-profile:library",
+          "role": "target",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-3813517553",
+            "opt-level": "s",
+            "strip": "none"
+          }
+        },
+        {
+          "cfg": [],
+          "label": "//tools/bazel/qualification/build-script-profile:profile_macro",
+          "role": "execution",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1028233315",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "0",
+            "strip": "debuginfo"
+          }
+        },
+        {
+          "cfg": [
+            "arch_enabled",
+            "feature=\"arch\"",
+            "feature=\"default\""
+          ],
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__libm-0.2.16//:libm",
+          "role": "execution",
+          "scalar_codegen": {
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1153761065",
+            "opt-level": "0",
+            "strip": "debuginfo"
+          }
+        }
+      ],
+      "executed_actions": 17,
+      "inputs_sha256": {
+        "actions.json": "38dcc77a506436a6c191c2d948802c2f5d15ecb577c092dc632c30e59b40fad1",
+        "compiler-inputs.json": "a99e34df2a42220fc0dee5c4204e55bfbd4227be60988a0636e3d35397db1d68",
+        "execution.json": "353fca49c87f814803b65e195825a47d0aa87b008c38f8d36985445e247165b3"
+      }
+    }
+  },
+  "limits": [
+    "This does not qualify complete native/C/linker profiles or other build families."
+  ],
+  "policy_tests": {
+    "status": "PASS",
+    "tests": 330
+  },
+  "pre_fix_control": {
+    "derivation": "/nix/store/b4cbh4c4i04y62gz7vcmf4n7m2qgbwqm-aos-bazel-build-script-profile-default-baseline-1.drv",
+    "observed_error": "profile mismatch: OPT_LEVEL: expected 0, got 3",
+    "scope": "Isolated fixture against the unmodified pinned rules, before integration; not the current qualification fixture.",
+    "status": "EXPECTED_FAILURE"
+  },
+  "qualification_output": "/nix/store/44inx96lg3wck7xpchj8ksdd8879qwq2-aos-bazel-qualified-build-script-profiles",
+  "schema_version": 1,
+  "scope": "Declared global target/execution profiles, generated fixture environment, and libm optimization cfgs.",
+  "source_contracts_sha256": {
+    "pkgs/build-support/_bazel/modules.nix": "82dd1fc73a413d1f74834fb02df49fb3071e4933b8eb2ebbdcba8523c50434b6",
+    "pkgs/build-support/_bazel/workspace.nix": "6e35a5f5d76ede33d9cd93b66b34d0005457980cbdf9f76593a8f078c2902ff9",
+    "tests/build/_bazel-aos-cli-production.nix": "7fd5a4ef993f350eb931ad9feff4e10c13623d5bd2b1fcc2a84a8b2ef3c7d14c",
+    "tests/build/_bazel-aos-cli.nix": "6c4aa3986d9ec62a6d776ec4fe41b88668b74692d612744c16b74a90bc4eb5f8",
+    "tests/build/bazel.nix": "ffad7ff7eb73fdbf04fabcc6498291e171d7dfce8547b11495ff98a50fc3b7ee",
+    "third_party/bazel/patches/rules-rust-effective-build-profile.patch": "dd0e0c13622665c4fc384dff1c837051a720b53cda64c343bd9c791484caa399",
+    "tools/bazel/launcher.py": "d87d5a6ed46bfbbe36923fa193956516390f0da02daf772e89bb9fb2a6204216",
+    "tools/bazel/qualification/build-script-profile/BUILD.bazel": "7dfc85ec6351fdf2e37d31c0d44a859e555a15939198b93aa52cc466ec0a9ff5",
+    "tools/bazel/qualification/build-script-profile/build.rs": "1862afa5b86e1ab925ae3fbb3a8086193de8461d8c706dfcab53e5439420feb9",
+    "tools/bazel/qualification/build-script-profile/lib.rs": "5f9eb7b3ad5a94251f3c81b67163fef8c86d94b6dbf5d14dcbd1081347352582",
+    "tools/bazel/qualification/build-script-profile/macro.rs": "8a54ffffdb5c28d00db2e4428153166b0fddb23378384fb75c99cd3b37644470",
+    "tools/bazel/qualification/build-script-profiles.nix": "e63e9590a4e3c5fb364e705328e0e430a0d8580ecc502213b96e35f52d91ea8f",
+    "tools/bazel/qualification/build_script_profiles.py": "92f5dd1b7ad32b1d957fbf392468ba85a40cc46eb744ecf0e070d2516a3e7f8e",
+    "tools/bazel/tests/test_launcher.py": "f18be21cd381c3a917f35d86c632cfc4c1c8b5fcc6b98d1e41a290f91edeb07f"
+  },
+  "status": "PASS"
+}

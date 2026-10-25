@@ -11,6 +11,7 @@
     root = ../..;
     inherit sourceInventory toolchains;
     dependencyProfile = "aos-cli-production";
+    cargoProfile = "release";
     sourceDirectories = pkgs.lib.optionals (sourceInventory == null) (
       ["tools/bazel" "third_party/rust" "api/proto"]
       ++ builtins.attrValues declarations.packages

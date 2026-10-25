@@ -456,6 +456,10 @@ in
       cp -r ${unit}/evidence/tests "$out/tests"
     '';
     build-script-metadata = import ./_bazel-build-script-metadata.nix {inherit pkgs;};
+    build-script-profiles =
+      (import ../../tools/bazel/qualification/build-script-profiles.nix {
+        system = pkgs.stdenv.hostPlatform.system;
+      }).check;
     compiler-wrapper = import ../../tools/bazel/tests/compiler-wrapper.nix {inherit pkgs;};
     compiler-option-semantics = import ./_bazel-compiler-option-semantics.nix {inherit pkgs;};
     execution-profile = import ./_bazel-execution-profile.nix {inherit pkgs;};
@@ -498,6 +502,7 @@ in
             rustdoc-runner
             runner-owner-guards
             build-script-metadata
+            build-script-profiles
             compiler-wrapper
             compiler-option-semantics
             execution-profile

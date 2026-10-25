@@ -67,6 +67,9 @@
               # DEP_* metadata crosses build-script actions. Its generated paths
               # must retain the producer directory when consumers expand them.
               patch -p1 < ${../../../third_party/bazel/patches/rules-rust-build-script-metadata.patch}
+              # Build scripts describe the consuming crate's target/execution
+              # profile, independently of their own executable's build mode.
+              patch -p1 < ${../../../third_party/bazel/patches/rules-rust-effective-build-profile.patch}
               # Cargo metadata can contain apostrophes. Preserve it literally
               # when the pinned rules generate executable doctest runners.
               patch -p1 < ${../../../third_party/bazel/patches/rules-rust-rustdoc-shell-quoting.patch}
