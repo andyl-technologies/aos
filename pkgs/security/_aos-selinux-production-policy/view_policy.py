@@ -78,7 +78,7 @@ def matrix(Access, Transition, accesses, roles):
         )))
         positive.append(Access(preparer, preparer, "user_namespace", "create"))
         positive.extend(accesses(preparer, "init_t", "unix_stream_socket", ("read", "write")))
-        negative.extend(accesses(preparer, "*", "unix_stream_socket", ("connect", "connectto")))
+        negative.extend(accesses(preparer, "init_t", "unix_stream_socket", ("connect", "connectto")))
         for actor in actors:
             if actor != "init_t":
                 negative.extend(accesses(preparer, actor, "unix_stream_socket", ("read", "write")))
