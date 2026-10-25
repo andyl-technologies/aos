@@ -10,6 +10,36 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Borrowed compact SDK request identity
+
+The actual compact outgoing and provider-original paths now hash a borrowed
+request projection without either whole-envelope Value copy. Fixed root fields
+follow JCS order; body and extension maps use the defining borrowed canonical
+writers at their actual depth. Complete envelope borrowing forces review when
+fields are added. Canonical text receives an exact preflight-derived capacity,
+checked before every append, and uses the original CNP identity framing.
+
+The defining Envelope request hash remains the comparison oracle. Eighteen
+focused controls include all valid request methods, notification-only refusals,
+nullable fields, independent namespaces, sequence widening, immutable scope
+changes, UTF-16 ordering, marker-key DATA, numeric edge cases and maximum depth.
+All eighteen pass in both codec builds. Both complete Transport suites pass
+2,175 tests with zero failures and twenty ignored, using frozen compiler-selected
+artifacts. All-feature/all-target checking, scoped formatting and six architecture
+checks pass. Strict Transport Clippy retains the exact preceding code/message
+multiset: four existing errors and 1,726 warnings, with no diagnostics in changed
+modules. It is not a strict lint pass.
+
+Application test-target compilation passes. Actual metadata records 185 test
+artifacts across 58 packages, including 76 integration targets; its captured
+source matches all 654 frozen owned Rust/Cargo inputs.
+
+Canonical text, ordering trees, escaped strings, diagnostics and recursive
+controls still require independent transient funding. This mechanism changes
+neither production Source selection nor quotas. Complete SDK R/T/S, Source
+funding and handoff, live Native18 and paired physical histories remain
+unfinished; no new native or VM qualification is claimed.
+
 ## Bounded compact SDK preflight before identity work
 
 Compact originals now receive a bounded, allocation-free geometry and canonical

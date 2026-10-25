@@ -18,6 +18,8 @@ use std::{io::Read, os::unix::net::UnixStream, rc::Rc, time::Duration};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+mod identity;
+
 const CONTENT_BYTES: usize = 262_144;
 const BANK_BYTES: usize = 9 * CONTENT_BYTES;
 

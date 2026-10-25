@@ -17,6 +17,7 @@ use crucible_node_format::{HashRef, Id};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+mod identity;
 mod storage;
 
 /// Retains one complete compact original and its last authentic response.
@@ -295,7 +296,7 @@ impl CompactClientCustody {
         let id = request.request_id.0.as_ref().ok_or_else(changed)?;
         let retry = self.journal(origin).contains_key(id);
         let bytes = self.preflight_envelope(request, retry)?;
-        let identity = request.request_hash(origin)?;
+        let identity = identity::request_hash(request, origin, bytes)?;
         if let Some(original) = self.journal(origin).get(id) {
             if original.identity != identity {
                 return Err(changed());
@@ -498,7 +499,7 @@ impl ClientSession {
         // request copy. Temporarily borrowing it cannot remove failure custody.
         let retry = custody.provider.contains_key(&id);
         let bytes = custody.preflight_envelope(&pending.envelope, retry)?;
-        let identity = pending.envelope.request_hash(RequestOrigin::Provider)?;
+        let identity = identity::request_hash(&pending.envelope, RequestOrigin::Provider, bytes)?;
         if let Some(original) = custody.provider.get(&id) {
             if original.identity != identity {
                 return Err(changed());
