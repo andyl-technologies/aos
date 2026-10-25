@@ -1,6 +1,7 @@
 //! Qualifies restoration and fresh marking under the same original lease session.
 
 use super::*;
+use crate::gc::runner::maintenance::restoration::RestorationCursor;
 use crate::gc::runner::maintenance::{MaintenanceCursor, MaintenanceHint};
 use crate::store::Clock;
 
@@ -31,6 +32,30 @@ async fn gc_restoration_native_hands_original_session_to_fresh_marking() {
         hints,
         vec![MaintenanceHint::ExcludedPack(selector(&old_trash))]
     );
+    let mut startup = RestorationCursor::default();
+    let lease_before_invalid_bound = restoration.lease().clone();
+    assert!(
+        restoration
+            .restoration_hints(&mut startup, 0)
+            .await
+            .is_err()
+    );
+    assert_eq!(startup, RestorationCursor::default());
+    assert_eq!(restoration.lease(), &lease_before_invalid_bound);
+    assert_eq!(
+        restoration
+            .restoration_hints(&mut startup, 1)
+            .await
+            .unwrap(),
+        vec![selector(&old_trash)]
+    );
+    assert!(
+        restoration
+            .local_deletion_hint(&selector(&old_trash))
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(
         restoration
             .restore_pack(selector(&old_trash))
@@ -38,6 +63,13 @@ async fn gc_restoration_native_hands_original_session_to_fresh_marking() {
             .unwrap()
     );
     assert_restored(&fixture, &before, id).await;
+    assert!(
+        restoration
+            .restoration_hints(&mut startup, 1)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let restored = image(&fixture).await;
     assert!(
         restored
@@ -130,4 +162,9 @@ async fn gc_restoration_native_expired_handoff_creates_no_checkpoint() {
             .and_then(Option::as_ref)
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn gc_restoration_native_startup_restores_required_meta_before_marking() {
+    super::support::restore_meta_at_startup().await;
 }

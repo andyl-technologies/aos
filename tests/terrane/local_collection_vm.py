@@ -64,6 +64,12 @@ RESTORATION_SESSION_CASES = [
     "gc::runner::tests::restore::gc_restore_native_reopen_and_fresh_cycle_make_old_trash_stale",
 ]
 
+STARTUP_RESTORATION_CASES = [
+    "gc::runner::tests::restore::session::gc_restoration_native_hands_original_session_to_fresh_marking",
+    "gc::runner::tests::restore::session::gc_restoration_native_startup_restores_required_meta_before_marking",
+    "gc::runner::tests::local_deletion::success::protected_done_status_is_available_before_marking_without_resurrection",
+]
+
 
 def verify_image(source, image):
     """Binds the actual retained Cargo test image to every immutable crate input."""
@@ -127,6 +133,8 @@ def main():
         cases = PREOWNERSHIP_CASES
     elif suite == "restoration-session":
         cases = RESTORATION_SESSION_CASES
+    elif suite == "startup-restoration":
+        cases = STARTUP_RESTORATION_CASES
     else:
         raise ValueError("unknown native collection qualification suite")
 
@@ -171,6 +179,9 @@ def main():
     elif suite == "preownership-restore":
         print("PASS all eleven pre-ownership restoration and fresh-cycle recovery cases in ext4 guest",
               flush=True)
+    elif suite == "startup-restoration":
+        print("PASS bounded startup restores required Meta before marking; protected Done "
+              "remains observable without resurrection", flush=True)
     elif suite == "restoration-session":
         print("PASS restoration and fresh marking retain original session poison and lease; "
               "expired handoff has no effects and original Meta restoration still passes", flush=True)

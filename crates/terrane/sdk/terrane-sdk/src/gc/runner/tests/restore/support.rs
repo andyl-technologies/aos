@@ -392,6 +392,18 @@ pub(super) async fn orphan_meta(
 /// # Panics
 /// Panics if the genuine retired node, replacement root, loss or restore oracle fails.
 pub(super) async fn restore_meta_after_reopen() {
+    restore_meta_reopened(false).await;
+}
+
+/// Exercises bounded startup selection and marking after required Meta restoration.
+///
+/// # Panics
+/// Panics if native selection, restoration or original-session marking fails.
+pub(super) async fn restore_meta_at_startup() {
+    restore_meta_reopened(true).await;
+}
+
+async fn restore_meta_reopened(startup: bool) {
     let fixture = Fixture::new().await;
     let (id, upper, node) = orphan_meta(&fixture).await;
     let mut collection = completed(&fixture, upper + windows().grace() + 1, windows()).await;
@@ -451,16 +463,44 @@ pub(super) async fn restore_meta_after_reopen() {
     drop(collection);
     fixture.clock.set(expiry + 1, expiry - 99);
     let reopened = fixture.reopen_repository().await;
-    let mut maintenance = Restoration::start(
-        reopened.coordinator().guard(),
-        &fixture.authority,
-        "meta-maintenance".into(),
-        1_000,
-        52,
-        windows(),
-    )
-    .await
-    .unwrap();
+    let mut maintenance = if startup {
+        Restoration::start_next(
+            reopened.coordinator().guard(),
+            &fixture.authority,
+            "meta-startup-maintenance".into(),
+            1_000,
+            windows(),
+        )
+        .await
+        .unwrap()
+    } else {
+        Restoration::start(
+            reopened.coordinator().guard(),
+            &fixture.authority,
+            "meta-maintenance".into(),
+            1_000,
+            52,
+            windows(),
+        )
+        .await
+        .unwrap()
+    };
+    let mut startup_cursor =
+        crate::gc::runner::maintenance::restoration::RestorationCursor::default();
+    if startup {
+        let candidates = maintenance
+            .restoration_hints(&mut startup_cursor, 1)
+            .await
+            .unwrap();
+        assert_eq!(candidates, vec![super::selector(&trash)]);
+        assert!(
+            maintenance
+                .local_deletion_hint(&candidates[0])
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
     let restore_before = image(&fixture).await;
     assert!(
         maintenance
@@ -479,5 +519,28 @@ pub(super) async fn restore_meta_after_reopen() {
             .unwrap();
     assert_eq!(rows.iter().find(|row| row.record.hash == hash), Some(&row));
     assert!(!fixture.config.root.join(fresh.pack_key()).exists());
+    if startup {
+        assert!(
+            maintenance
+                .restoration_hints(&mut startup_cursor, 1)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let lease = maintenance.lease().clone();
+        let mut collection = maintenance.begin_next_collection().await.unwrap();
+        assert_eq!(collection.lease().holder, lease.holder);
+        assert_eq!(collection.lease().epoch, lease.epoch);
+        assert!(
+            collection
+                .roots()
+                .roots
+                .iter()
+                .any(|root| root.commit == replacement.commit)
+        );
+        collection.mark_batch(32).await.unwrap();
+        collection.finish_mark().await.unwrap();
+        assert_eq!(collection.state().phase, Phase::Sweep);
+    }
     assert_eq!(fixture.fs.data_body_read_attempts(), 0);
 }

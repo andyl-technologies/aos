@@ -20,6 +20,10 @@ use terrane_format::gc::retirement::{PermanentBurnOwner, PermanentOwnerSelection
 #[path = "maintenance/local_deletion.rs"]
 pub mod local_deletion;
 
+/// Owns a finite startup scan that does not depend on ordinary root traversal.
+#[path = "maintenance/restoration.rs"]
+pub mod restoration;
+
 /// Limits the number of returned lookup hints, independently of native work bounds.
 pub const MAX_HINTS: usize = 256;
 

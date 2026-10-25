@@ -6,9 +6,10 @@ use terrane_format::gc::{DeletePhase, Phase};
 use terrane_sdk::{
     gc::runner::maintenance::{
         MaintenanceCursor, MaintenanceHint, local_deletion::LocalDeletionCursor,
+        restoration::RestorationCursor,
     },
     pack::PackId,
-    repository::LocalCollection,
+    repository::{LocalCollection, LocalRestoration},
     role::Role,
     store::{TokioClock, TokioLocalFs},
 };
@@ -64,9 +65,10 @@ async fn collect(
         .await
         .map_err(Error::Io)?
         .to_string();
-    let restoration = repository
+    let mut restoration = repository
         .start_next_local_restoration(holder, plan.settings.lease_seconds, plan.windows)
         .await?;
+    restore_startup_candidates(&mut restoration, plan).await?;
     let mut collector = restoration.begin_next_collection().await?;
     let mut cursors = Cursors::default();
     let mut next_cycle = deadline(plan)?;
@@ -86,6 +88,33 @@ async fn collect(
                 collector.begin_next_cycle().await?;
                 next_cycle = deadline(plan)?;
             }
+        }
+        sleep(Duration::from_millis(plan.settings.poll_ms)).await;
+    }
+}
+
+async fn restore_startup_candidates(
+    restoration: &mut LocalRestoration<'_, TokioLocalFs, TokioClock>,
+    plan: &ValidatedCollector<'_>,
+) -> Result<(), Error> {
+    let mut cursor = RestorationCursor::default();
+    loop {
+        let candidates = restoration
+            .restoration_hints(&mut cursor, plan.settings.maintenance_batch)
+            .await?;
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        for exclusion in candidates {
+            let status = restoration.local_deletion_hint(&exclusion).await?;
+            if status.as_ref().is_some_and(|hint| {
+                !matches!(hint.phase, DeletePhase::Authorized | DeletePhase::Cancelled)
+            }) {
+                // Irreversible and Done local ownership must keep its original
+                // recovery protocol. Status never authorizes restoring a pair.
+                continue;
+            }
+            restoration.restore_pack(exclusion).await?;
         }
         sleep(Duration::from_millis(plan.settings.poll_ms)).await;
     }

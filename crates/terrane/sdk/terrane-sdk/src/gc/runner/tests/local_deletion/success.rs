@@ -202,3 +202,67 @@ async fn fresh_readmission_survives_old_container_deletion_and_reopen() {
     drop(reopened);
     fixture.cleanup();
 }
+
+#[tokio::test]
+async fn protected_done_status_is_available_before_marking_without_resurrection() {
+    use crate::gc::runner::Restoration;
+    use crate::store::Clock;
+
+    let fixture = Fixture::new().await;
+    let (mut collection, requested) = retired(&fixture).await;
+    let original = before(&fixture, &requested).await;
+    fixture.clock.enable_timer();
+    let done = collection
+        .delete_local_pack(fixture.repository.coordinator(), requested.clone())
+        .await
+        .require();
+    assert_done(&fixture, &original, &done, &done).await;
+    let expiry = collection.lease().expiry;
+    let ticks = fixture.clock.monotonic().as_secs();
+    drop(collection);
+    fixture.clock.set(expiry + 1, ticks + 1);
+
+    let mut restoration = Restoration::start_next(
+        fixture.guard(),
+        &fixture.authority,
+        "startup-Done-observation".into(),
+        1_000,
+        windows(),
+    )
+    .await
+    .require();
+    let selected_before = image(&fixture).await;
+    let hint = restoration
+        .local_deletion_hint(&requested)
+        .await
+        .require()
+        .require();
+    assert_eq!(hint.phase, terrane_format::gc::DeletePhase::Done);
+    assert_eq!(hint.operation_key, done.authorization.operation_key());
+    assert_eq!(hint.exclusion, requested);
+    let mut wrong_epoch = requested.clone();
+    wrong_epoch.epoch = wrong_epoch.epoch.checked_add(1).require();
+    assert!(
+        restoration
+            .local_deletion_hint(&wrong_epoch)
+            .await
+            .require()
+            .is_none()
+    );
+    let selected_after = image(&fixture).await;
+    let mut before_logical = selected_before.logical;
+    let mut after_logical = selected_after.logical;
+    before_logical.remove("gc/lease");
+    after_logical.remove("gc/lease");
+    assert_eq!(after_logical, before_logical);
+    assert_eq!(
+        selected_after.state.loss_generation,
+        selected_before.state.loss_generation
+    );
+    assert_eq!(selected_after.state.sources, selected_before.state.sources);
+    for version in &done.authorization.artifacts {
+        assert!(!fixture.config.root.join(&version.key).exists());
+    }
+    drop(restoration);
+    fixture.cleanup();
+}

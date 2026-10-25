@@ -147,6 +147,66 @@ pub(crate) async fn lookup<F: LocalFs + BucketBinding>(
     Ok(matching)
 }
 
+/// Observes exact protected status before ordinary root traversal is available.
+///
+/// # Errors
+/// Refuses unsafe directories, malformed or ambiguous matching intent and changed
+/// selected inputs. The actual held observation supplies namespace retention,
+/// never a current marking proof or permission to resume deletion.
+pub(crate) async fn lookup_before_marking<F: LocalFs + BucketBinding>(
+    fs: &F,
+    selected: &crate::bucket::publication::SelectedObservation<'_>,
+    requested: &terrane_format::bucket::PackExclusion,
+) -> Result<Option<crate::gc::runner::maintenance::local_deletion::LocalDeletionHint>, StoreFailure>
+{
+    use crate::gc::runner::maintenance::local_deletion::decode_hint;
+
+    let (mut frame, control) = super::raw::backend_with_control(fs, selected).await?;
+    let cycle = control.join(format!("gc/{}", requested.cycle));
+    let delete = cycle.join("delete");
+    let directory = delete.join(hex(&requested.pack_id));
+    for ancestor in [control.join("gc"), cycle, delete, directory.clone()] {
+        if intent_directory(fs, &ancestor, frame.owner)
+            .await?
+            .is_none()
+        {
+            selected.revalidate().await?;
+            return Ok(None);
+        }
+    }
+
+    let mut matching = None;
+    for path in intent_children(fs, &directory, frame.owner).await? {
+        if !hex_leaf(&path, 64) {
+            continue;
+        }
+        let key = path
+            .strip_prefix(&control)
+            .ok()
+            .and_then(|path| path.to_str())
+            .ok_or_else(corrupt)?;
+        terrane_format::bucket::BucketKey::parse(key).map_err(|_| corrupt())?;
+        let metadata = fs.symlink_metadata(&path).await.map_err(io_failure)?;
+        if metadata.len() > MAX_INTENT_BYTES {
+            return Err(corrupt());
+        }
+        let bytes = frame
+            .actual_read(
+                fs,
+                &path,
+                FencePolicy::ProtectedRecord { owner: frame.owner },
+            )
+            .await?
+            .ok_or_else(corrupt)?;
+        let hint = decode_hint(key.to_owned(), &bytes).map_err(|_| corrupt())?;
+        if &hint.exclusion == requested && matching.replace(hint).is_some() {
+            return Err(corrupt());
+        }
+    }
+    selected.revalidate().await?;
+    Ok(matching)
+}
+
 fn hex_leaf(path: &std::path::Path, length: usize) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())

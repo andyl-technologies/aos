@@ -192,6 +192,34 @@ where
         self.restoration.maintenance_hints(cursor, maximum).await
     }
 
+    /// Pages a finite startup pass without ordinary root traversal.
+    ///
+    /// # Errors
+    /// Preserves bounds, ownership, catalog and cancellation failures from
+    /// [`Restoration::restoration_hints`]. Selectors grant no effect permission.
+    pub async fn restoration_hints(
+        &mut self,
+        cursor: &mut crate::gc::runner::maintenance::restoration::RestorationCursor,
+        maximum: usize,
+    ) -> Result<Vec<terrane_format::bucket::PackExclusion>, CollectionError> {
+        self.restoration.restoration_hints(cursor, maximum).await
+    }
+
+    /// Observes an exact local deletion incarnation before ordinary marking.
+    ///
+    /// # Errors
+    /// Preserves ownership, unsafe or malformed intent and cancellation failures
+    /// from [`Restoration::local_deletion_hint`]. Status grants no effect permission.
+    pub async fn local_deletion_hint(
+        &mut self,
+        requested: &terrane_format::bucket::PackExclusion,
+    ) -> Result<
+        Option<crate::gc::runner::maintenance::local_deletion::LocalDeletionHint>,
+        CollectionError,
+    > {
+        self.restoration.local_deletion_hint(requested).await
+    }
+
     /// Restores an exact candidate through fresh native qualification.
     ///
     /// # Errors

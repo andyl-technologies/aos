@@ -5,7 +5,7 @@
 //! an already completed incarnation from new work.
 //! Permanent-v2 owners and copied preparations stay in their separate protocol.
 
-use super::{Collection, CollectionError, MAX_HINTS, denied};
+use super::{Collection, CollectionError, MAX_HINTS, Restoration, denied};
 use crate::bucket::BucketBinding;
 use crate::bucket::held::SingleHeld;
 use crate::gc::lease::Collector;
@@ -33,6 +33,54 @@ pub struct LocalDeletionHint {
     pub exclusion: PackExclusion,
     /// Current protected phase, including Done and Cancelled terminal records.
     pub phase: DeletePhase,
+}
+
+impl<F, B, V, C> Restoration<'_, F, B, V, C>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+    C: Clock,
+{
+    /// Observes exact protected deletion status before ordinary marking begins.
+    ///
+    /// Renews the original whole lease and searches the requested incarnation's
+    /// protected directory, including terminal records. No root bodies are
+    /// traversed or checkpoints created. Status grants no restoration, deletion
+    /// or recovery permission; each effect still requires its native producer.
+    ///
+    /// # Errors
+    /// Refuses lost ownership, unsafe or malformed protected intent, duplicate
+    /// matching records and changed observations. Failure or cancellation stops
+    /// the original session.
+    pub async fn local_deletion_hint(
+        &mut self,
+        requested: &PackExclusion,
+    ) -> Result<Option<LocalDeletionHint>, CollectionError> {
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let holder = SingleHeld::acquire(self.guard.store()).await?;
+        let held = holder.destination();
+        let observed = held.observe_publication_unrepaired().await?;
+        let selected = observed
+            .logical()
+            .get("gc/lease")
+            .and_then(Option::as_deref)
+            .map(terrane_format::gc::GcLease::decode)
+            .transpose()?;
+        self.session
+            .lease()
+            .check(selected.as_ref(), self.session.recheck()?)?;
+        let hint = crate::store::native_publication_effects::collection_local_deletion::lookup_before_marking(
+            held.fs(), &observed, requested,
+        ).await?;
+        observed.revalidate().await?;
+        self.session.recheck()?;
+        operation.complete();
+        Ok(hint)
+    }
 }
 
 impl<F, B, V, C> Collection<'_, F, B, V, C>

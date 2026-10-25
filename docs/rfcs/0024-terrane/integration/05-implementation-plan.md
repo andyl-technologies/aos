@@ -92,7 +92,33 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 ## Implementation checkpoint (2026-10-25)
 
 Trunk acceptance remains **27/64**. Completed component checks do not establish
-production worker, mount-broker or full RFC conformance.
+production worker, mount-broker or full RFC conformance. Pack compaction
+(GC-18 to GC-21) is explicitly deferred from T-GC-1 to T-GC-2 on B-jobs;
+that optional workline is outside this agreed trunk completion scope.
+
+Configured startup now scans nonburned exclusions in bounded ascending pages
+before ordinary marking, using the same restoration session. Its nonwrapping
+cursor advances only after current held catalog revalidation and completes even
+when restoration removes earlier candidates. Exact protected local-v1 status
+is observed under the original whole lease without requiring root traversal or
+creating checkpoints. Irreversible and Done intents remain in their original
+recovery protocol; absent, Authorized and Cancelled status only selects a call
+to the existing independently qualified restoration producer. Burned families
+remain in permanent recovery. The service performs this startup pass before
+transferring the original session into fresh ordinary marking.
+
+The new startup guest pairs bounded cursor/session checks, restoration of
+required candidate-only Meta followed by actual marking under the same lease,
+and protected Done observation after genuine full-D physical deletion. The
+Done case requires exact incarnation matching, wrong-epoch absence, no
+resurrection, unchanged nonlease logical values and preserved source/loss
+semantics. Existing guest cases and their bounds remain; the new three-case
+suite has a 600-second whole-guest bound and 180 seconds per actor. All three
+supported SDK strict profiles and both Linux strict profiles pass. The final
+SDK test-target checks also pass after requiring equality of the complete
+nonlease logical map in the Done oracle. Touched Nix formatting, original
+selector preservation, Python AST, PLAN-2 and diff checks pass. Native and
+mandatory compilation qualification remain pending. No acceptance changes.
 
 Exact-incarnation local deletion lookup at `83cd177fbc` passes its original
 full-D guest in 1,534.927 seconds. Complete review verifies all 8,218 immutable
@@ -113,8 +139,8 @@ actual held registered cycle inventory without creating or reserving a marking
 checkpoint. Its hint discovery uses the existing current native observation.
 `LocalRestoration` retains the repository's genuine Original and original
 coordinator through the same transfer. Configured local collector startup now
-uses this assembly; selection and dispatch of startup restoration candidates
-remain outstanding.
+uses this assembly; bounded startup candidate selection and dispatch are
+implemented as recorded above and remain under qualification.
 
 The focused guest adds genuine restore-to-marking and expired-transfer cases,
 paired with the original Meta restoration/reopen regression. The new positive
@@ -150,6 +176,12 @@ corrections still require fresh native qualification. Corrected eleven-case
 restoration and mandatory application qualification continue from the original
 frozen `ea10cabb8d` source.
 
+Mandatory workspace compilation at `ea10cabb8d` passes in 1,426.986 seconds.
+Complete independent review verifies all 8,227 immutable source files, 190 test
+executables and 59 packages against that frozen checkout. This compilation-only
+result does not change its retained native collector failure or qualify later
+restoration-session and startup changes.
+
 Mandatory workspace compilation at `c8e84fe13e` and `83cd177fbc` passes in
 1,567.318 and 1,289.360 seconds respectively. Complete independent reviews
 verify all 8,218 immutable source files, 190 test executables and 59 packages
@@ -178,9 +210,11 @@ under the original lease, and an unchanged live head with an authenticated
 payload read. The source-bound image retains a fourth actual Cargo artifact
 for this fixture. Its guest harness is registered with a 420-second bound;
 the first native qualification fails as recorded above; fresh native and
-mandatory compilation qualification remain pending. The CLI remains unchanged. Compaction, startup restoration of excluded required metadata,
-complete role filesystem isolation and other GC backends remain outstanding;
-this component does not establish full GC-role or task acceptance.
+mandatory compilation qualification remain pending. The CLI remains unchanged.
+Startup restoration of excluded required metadata remains unqualified. Complete
+role filesystem isolation and other GC backends remain outstanding; compaction
+belongs to the deferred B-jobs workline. This component does not establish full
+GC-role or task acceptance.
 
 The fresh-cycle missing-Trash guest at `3075f98717` fails in 1,552.164
 seconds: the new test expected unchanged source-lineage digests across a new
