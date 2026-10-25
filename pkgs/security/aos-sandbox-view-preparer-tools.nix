@@ -3,6 +3,8 @@
   mkDerivation,
   bash,
   coreutils,
+  libselinux,
+  ncurses,
   util-linux,
 }:
 mkDerivation {
@@ -28,7 +30,10 @@ mkDerivation {
   src = null;
 
   buildDeps = [coreutils];
-  runtimeDeps = [bash coreutils util-linux];
+  # Copied ELF images retain direct references to these libraries. Listing
+  # only their original executable packages lets reference scrubbing erase
+  # Bash's Ncurses and Util-linux's SELinux runpaths.
+  runtimeDeps = [bash coreutils libselinux ncurses util-linux];
   propagatedDeps = [];
 
   phases = [

@@ -1937,6 +1937,10 @@ in rec {
         if hostPlatform.isLinux && hostPlatform.is64bit
         then import ./tests/build/sandbox-standalone-resource-bank.nix {inherit pkgs lib systems;}
         else null;
+      sandbox-view-preparer-tools =
+        if hostPlatform.isLinux && hostPlatform.is64bit
+        then import ./tests/build/sandbox-view-preparer-tools.nix {inherit pkgs;}
+        else null;
       sandbox-nix-method46-profile =
         if hostPlatform.isLinux && hostPlatform.is64bit
         then import ./tests/build/sandbox-nix-method46-profile.nix {inherit pkgs lib systems;}
@@ -2111,7 +2115,7 @@ in rec {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) imageBudgetSystems;
     in
       {
-        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell esp-population hardening-probe host-native-inputs initrd-native-inputs initrd-module-hardlinks initrd-udev-rules initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets native-acquire-v3-protocol erofs-deduplication linux-cross-llvm linux-cross-runtime sandbox-guest-root-template sandbox-controller-service sandbox-selected-manager-stage0 sandbox-nix-method46-profile sandbox-nix-offline-hardware-profile sandbox-nix-offline-approval-delivery-profile sandbox-resource-unit-names sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub vm-rootfs-adapter;
+        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell esp-population hardening-probe host-native-inputs initrd-native-inputs initrd-module-hardlinks initrd-udev-rules initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets native-acquire-v3-protocol erofs-deduplication linux-cross-llvm linux-cross-runtime sandbox-guest-root-template sandbox-controller-service sandbox-selected-manager-stage0 sandbox-view-preparer-tools sandbox-nix-method46-profile sandbox-nix-offline-hardware-profile sandbox-nix-offline-approval-delivery-profile sandbox-resource-unit-names sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub vm-rootfs-adapter;
         inherit sandbox-standalone-resource-bank;
         inherit systemd-backend-policy-artifact;
         inherit initrd-configuration-store-files selinux-initrd-pure-evaluation;
@@ -2136,6 +2140,7 @@ in rec {
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
             ++ lib.optional (sandbox-standalone-resource-bank != null) sandbox-standalone-resource-bank
+            ++ lib.optional (sandbox-view-preparer-tools != null) sandbox-view-preparer-tools
             ++ lib.optional (sandbox-nix-method46-profile != null) sandbox-nix-method46-profile
             ++ lib.optional (sandbox-nix-offline-hardware-profile != null) sandbox-nix-offline-hardware-profile
             ++ lib.optional (sandbox-nix-offline-approval-delivery-profile != null) sandbox-nix-offline-approval-delivery-profile
