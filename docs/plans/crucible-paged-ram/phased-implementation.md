@@ -99,9 +99,8 @@ independently verified. The initial merged inventory
 requirements and zero qualifications. Engineering hygiene passes at
 `zcvijji792yblcv5r97p578pnwrl3izi`, with content-bound reviews of the merged
 sources.
-Current-toolchain Store and ABI component results are recorded below. Mandatory
-application compilation remains pending; pre-merge passing checks do not qualify
-this merge.
+Current-toolchain Store, ABI and mandatory application target results are
+recorded below, with their source-snapshot limits.
 No native fixture execution or activation authority follows from these source
 and inventory checks.
 
@@ -135,8 +134,8 @@ controls, and all 95 policy
 controls, along with strict Store/RAM Clippy across all targets. Three large
 stress cases are excluded from this ordinary run. This is supplemental component
 feedback, not current-toolchain hermetic qualification.
-The current-toolchain hermetic Store component result is recorded below.
-Mandatory application compilation remains pending.
+The current-toolchain hermetic Store and mandatory application compilation
+results are recorded below.
 
 Inventory `w7rs8whryrz04653xc8dy7xd7szclyj0` validates 653 bindings across
 243 requirements, with 142 uncovered and none qualified. No whole-world
@@ -197,8 +196,20 @@ the receiver correction. This ABI result qualifies Rust/C layout and codec
 components; it does not qualify all dependency changes or Native activation.
 
 The complete Nix evaluation aggregate and all 23 leaf suites pass independent
-registration and result checks. Mandatory application compilation remains
-pending. Full RFC qualification remains open.
+registration and result checks.
+
+Mandatory application target compilation passes at
+`wixpab4cl22ll2n1zdv8mb77jdjrdwyr-aos-test-targets-0.1.0`. Its retained Cargo
+JSON records 185 test artifacts across all 58 selected application packages,
+covering unit and integration targets. Independent verification checks the
+registered output, successful Cargo completion, package coverage, all 5,462
+frozen Rust/TOML inputs, the complete lockfile and six protocol fixtures against
+revision `2630bfadd1cb214db97c8e2df41cf655625b5185`. The command uses
+`--no-run --frozen --offline`: these targets compile without executing tests.
+
+Full RFC qualification remains open. The inventory still records 142 uncovered
+requirements and zero qualifications; Native activation, physical return,
+paging, license-boundary and performance qualification remain unfinished.
 
 #### Isolated patched-libc build support
 
