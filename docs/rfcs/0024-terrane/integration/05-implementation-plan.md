@@ -91,6 +91,17 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-25)
 
+The renewed native-cache aggregate at `492c410e29` fails in 1,236.907 seconds.
+Its all-feature recovery guest stops during immutable image verification:
+`host_cache_mount_views_vm.py` is installed, checksummed and byte-identical
+to source, but absent from `input_sha256`. No mount factory case runs. The
+original failed receipt, raw serial log, image identity, guest configuration
+and derivation are retained; neither profile gains qualification from this
+request. The installer now includes the missing source hash and rejects any
+installed supervisor helper lacking its exact original binding at build time.
+The guest verifier and all native assertions remain unchanged. Corrected
+native qualification is required; no task acceptance changes.
+
 The managed journal verifier now requires exactly one complete set of Serve
 mount observations against the generated domain policy before checking the
 original two CLI snapshot completion lines. The diagnostic record introduced
