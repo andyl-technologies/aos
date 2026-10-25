@@ -33,7 +33,7 @@ fn cpu_subset_checks_keep_original_work_and_paired_accounting_unchanged() {
     for request in [0, 2, u32::MAX] {
         assert!(matches!(
             credit.require_vcpu_ceiling(request),
-            Err(OriginalActorAccountError::Unavailable)
+            Err(OriginalAccountCheckError::Unavailable)
         ));
     }
 
@@ -52,12 +52,12 @@ fn original_cancellation_precedes_cpu_request_validation() {
 
     assert!(matches!(
         credit.cpu_ceiling(),
-        Err(OriginalActorAccountError::Supervision(_))
+        Err(OriginalAccountCheckError::Supervision(_))
     ));
     for request in [0, 1, 2] {
         assert!(matches!(
             credit.require_vcpu_ceiling(request),
-            Err(OriginalActorAccountError::Supervision(_))
+            Err(OriginalAccountCheckError::Supervision(_))
         ));
     }
 
@@ -72,11 +72,11 @@ fn copied_cpu_ceiling_without_original_custody_cannot_authorize_a_subset() {
 
     assert!(matches!(
         credit.cpu_ceiling(),
-        Err(OriginalActorAccountError::Unavailable)
+        Err(OriginalAccountCheckError::Unavailable)
     ));
     assert!(matches!(
         credit.require_vcpu_ceiling(1),
-        Err(OriginalActorAccountError::Unavailable)
+        Err(OriginalAccountCheckError::Unavailable)
     ));
     assert!(resident.reserve_resources(0, 0, 1).is_err());
     assert!(metadata.reserve_resources(0, 0, 1).is_err());
@@ -85,6 +85,71 @@ fn copied_cpu_ceiling_without_original_custody_cannot_authorize_a_subset() {
     // another credit. No native retirement was asserted by this component test.
     credit.original = retained;
     credit.require_vcpu_ceiling(1).unwrap();
+}
+
+#[test]
+fn check_adapter_preserves_owned_kernel_payload_without_allocating() {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let source = std::io::Error::new(
+        std::io::ErrorKind::Other,
+        std::io::Error::from_raw_os_error(libc::EIO),
+    );
+    let payload = source.get_ref().unwrap() as *const _;
+    let observation = OriginalAccountCheckError::NativePurpose(ServiceBirthError::Kernel {
+        operation: "observe retained account",
+        source,
+    });
+
+    let (report, counts) =
+        TestAllocationObserver::count(|| OriginalActorAccountError::from(observation));
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    let OriginalActorAccountError::NativePurpose(ServiceBirthError::Kernel { operation, source }) =
+        report
+    else {
+        panic!("the adapter must preserve the concrete kernel error");
+    };
+    assert_eq!(operation, "observe retained account");
+    assert!(std::ptr::eq(source.get_ref().unwrap(), payload));
+    assert_eq!(
+        source
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap()
+            .raw_os_error(),
+        Some(libc::EIO),
+    );
+}
+
+#[test]
+fn checked_cancellation_keeps_its_actual_operation_when_adapted() {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let (credit, supervisor, resident, metadata) = credit();
+    supervisor.cancel().unwrap();
+    let observation = credit.require_original().unwrap_err();
+    let OriginalAccountCheckError::Supervision(HostSupervisionError::Terminal { state }) =
+        &observation
+    else {
+        panic!("the retained preparation must report its actual terminal state");
+    };
+    let expected = *state;
+
+    let (report, counts) =
+        TestAllocationObserver::count(|| OriginalActorAccountError::from(observation));
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert!(matches!(report, OriginalActorAccountError::Supervision(
+        HostSupervisionError::Terminal { state }
+    ) if state == expected));
+    assert!(resident.reserve_resources(0, 0, 1).is_err());
+    assert!(metadata.reserve_resources(0, 0, 1).is_err());
 }
 
 mod node_custody;

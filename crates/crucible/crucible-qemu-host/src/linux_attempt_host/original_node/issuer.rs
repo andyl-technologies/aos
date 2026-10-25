@@ -208,7 +208,7 @@ impl InstalledNodeLaunchIssuer {
                     )
                 })
                 .transpose()
-                .map_err(FreshLaunchCause::Binding)?;
+                .map_err(|source| FreshLaunchCause::Binding(source.into()))?;
             // The real node keeper owns this borrower before workspace or
             // Setup effects. Failed launch cannot reissue its assigned share.
             let record = purpose

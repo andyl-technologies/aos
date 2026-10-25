@@ -21,7 +21,9 @@ use crucible_host_resources::host_supervision::{
     HostOperationGuard, HostOperationSupervisor, HostSupervisionError,
 };
 #[cfg(feature = "private-measurement-domain")]
-use crucible_host_resources::measurement_origin::{AuthenticatedActorFamily, MeasurementOriginError};
+use crucible_host_resources::measurement_origin::{
+    AuthenticatedActorFamily, MeasurementOriginError,
+};
 
 /// Refuses certified account publication without substituting an original.
 #[derive(Debug, thiserror::Error)]
@@ -108,6 +110,36 @@ pub enum OriginalActorAccountError {
     /// Required retained custody has already been consumed.
     #[error("original actor custody is unavailable")]
     Unavailable,
+}
+
+/// Reports observation of existing credit without carrying birth or return custody.
+///
+/// These checks borrow retained authority or update its fixed ledger. Native pool
+/// issuance, physical return and cleanup retain their full custody payloads in
+/// [`OriginalActorAccountError`].
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum OriginalAccountCheckError {
+    /// The same authenticated normal purpose refused its checked observation.
+    #[error("normal native purpose refused: {0}")]
+    NativePurpose(#[from] ServiceBirthError),
+    /// The same retained preparation refused its original operation check.
+    #[error("original actor supervision refused: {0}")]
+    Supervision(#[from] HostSupervisionError),
+    /// Required retained custody is absent or its fixed ceiling is inconsistent.
+    #[error("original actor custody is unavailable")]
+    Unavailable,
+}
+
+impl From<OriginalAccountCheckError> for OriginalActorAccountError {
+    fn from(source: OriginalAccountCheckError) -> Self {
+        // Preserve the existing outer classification and move each actual cause;
+        // adapting an observation never allocates a diagnostic or custody owner.
+        match source {
+            OriginalAccountCheckError::NativePurpose(source) => Self::NativePurpose(source),
+            OriginalAccountCheckError::Supervision(source) => Self::Supervision(source),
+            OriginalAccountCheckError::Unavailable => Self::Unavailable,
+        }
+    }
 }
 
 /// Retains the actual original native pair outside its future native allocation.
@@ -214,7 +246,9 @@ impl OriginalNativeAccountCredit {
 
     pub(super) fn verify_quiescent_custody(&self) -> Result<(), OriginalActorAccountError> {
         match self.original.as_ref() {
-            Some(retained) if retained.normal.is_none() => self.require_original(),
+            Some(retained) if retained.normal.is_none() => {
+                self.require_original().map_err(Into::into)
+            }
             // Normal custody was authentically moved into this credit before
             // birth; closed-slot observation neither returns it nor admits work.
             _ => Ok(()),
@@ -229,7 +263,7 @@ impl OriginalNativeAccountCredit {
                     normal.verify_world_cleanup(&cleanup)?;
                     Ok(())
                 }
-                None => self.require_original(),
+                None => self.require_original().map_err(Into::into),
             },
             None => Ok(()),
         }
@@ -242,13 +276,13 @@ impl OriginalNativeAccountCredit {
     pub(super) fn verify_preparation(
         &self,
         preparation: &Arc<HostOperationGuard>,
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountCheckError> {
         let retained = self
             .original
             .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         if !Arc::ptr_eq(&retained.preparation, preparation) {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         preparation.wait_slice()?;
         self.require_original()
@@ -257,13 +291,13 @@ impl OriginalNativeAccountCredit {
     pub(super) fn verify_capture_supervisor(
         &self,
         supervisor: &HostOperationSupervisor,
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountCheckError> {
         let retained = self
             .original
             .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         if !retained.preparation.shares_outer_cap(supervisor) {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         self.require_original()
     }
@@ -367,7 +401,7 @@ impl OriginalNativeAccountCredit {
             // preparation and this new finite native preparation operation.
             retained.preparation = Arc::new(normal.begin_native_preparation()?);
         }
-        self.require_original()
+        self.require_original().map_err(Into::into)
     }
 
     pub(super) fn normal_preparation_extent(&self) -> Result<u64, OriginalActorAccountError> {
@@ -405,7 +439,7 @@ impl OriginalNativeAccountCredit {
         self.require_original()?;
         if let Some(normal) = self.original.as_ref().and_then(|held| held.normal.as_ref()) {
             process.verify_normal_family(normal.family())?;
-            return self.require_original();
+            return self.require_original().map_err(Into::into);
         }
         #[cfg(feature = "private-measurement-domain")]
         {
@@ -414,20 +448,20 @@ impl OriginalNativeAccountCredit {
                 .as_ref()
                 .ok_or(OriginalActorAccountError::Unavailable)?;
             process.verify_original_actor_family(family)?;
-            self.require_original()
+            self.require_original().map_err(Into::into)
         }
         #[cfg(not(feature = "private-measurement-domain"))]
         Err(OriginalActorAccountError::Unavailable)
     }
 
     /// Corroborates the actual installed normal parent without issuing authority.
-    pub(super) fn native_parent_readback(&self) -> Result<[u64; 5], OriginalActorAccountError> {
+    pub(super) fn native_parent_readback(&self) -> Result<[u64; 5], OriginalAccountCheckError> {
         self.require_original()?;
         let normal = self
             .original
             .as_ref()
             .and_then(|held| held.normal.as_ref())
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let fields = normal.family().native_containment_readback()?;
         self.require_original()?;
         Ok(fields)
@@ -438,11 +472,11 @@ impl OriginalNativeAccountCredit {
     /// # Errors
     /// Refuses missing consumed custody or the original operation's sticky
     /// cancellation, expiration, terminal state or unavailable synchronization.
-    pub fn require_original(&self) -> Result<(), OriginalActorAccountError> {
+    pub fn require_original(&self) -> Result<(), OriginalAccountCheckError> {
         let retained = self
             .original
             .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         if let Some(normal) = &retained.normal {
             normal.check()?;
         } else {
@@ -480,10 +514,10 @@ impl OriginalNativeAccountCredit {
     ///
     /// # Errors
     /// Refuses missing or failed original custody and a zero retained ceiling.
-    pub(super) fn cpu_ceiling(&self) -> Result<u64, OriginalActorAccountError> {
+    pub(super) fn cpu_ceiling(&self) -> Result<u64, OriginalAccountCheckError> {
         self.require_original()?;
         if self.cpu_ceiling == 0 {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         Ok(self.cpu_ceiling)
     }
@@ -498,21 +532,21 @@ impl OriginalNativeAccountCredit {
     pub(super) fn require_vcpu_ceiling(
         &self,
         requested: u32,
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountCheckError> {
         let ceiling = self.cpu_ceiling()?;
         if requested == 0 || u64::from(requested) > ceiling {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         Ok(())
     }
 
-    pub(super) fn local_descriptor_ceiling(&self) -> Result<u64, OriginalActorAccountError> {
+    pub(super) fn local_descriptor_ceiling(&self) -> Result<u64, OriginalAccountCheckError> {
         self.require_original()?;
         self.original
             .as_ref()
             .and_then(|retained| retained.normal.as_ref())
             .map(AuthenticatedNativeSubdivision::local_file_descriptors)
-            .ok_or(OriginalActorAccountError::Unavailable)
+            .ok_or(OriginalAccountCheckError::Unavailable)
     }
 
     pub(super) const fn descriptor_ceiling(&self) -> u64 {

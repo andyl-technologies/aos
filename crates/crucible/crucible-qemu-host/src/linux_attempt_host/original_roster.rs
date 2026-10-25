@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use crucible_host_resources::host_supervision::HostOperationGuard;
 
-use super::native_account::{OriginalActorAccountError, OriginalNativeAccountCredit};
+use super::native_account::{
+    OriginalAccountCheckError, OriginalActorAccountError, OriginalNativeAccountCredit,
+};
 use super::native_resources::NativeResourceState;
 use super::native_resources::OriginalNativeControlRetirement;
 use crate::QemuVmRealizationError;
@@ -275,7 +277,7 @@ mod tests {
         assert!(matches!(
             attempt.bind_configured_process_family(&contract),
             Err(InstalledProcessPurposeError::Original(
-                OriginalActorAccountError::Supervision(_)
+                OriginalAccountCheckError::Supervision(_)
             ))
         ));
 
@@ -346,7 +348,7 @@ mod tests {
         supervisor.cancel().unwrap();
         assert!(matches!(
             attempt.require_original(),
-            Err(OriginalActorAccountError::Supervision(_))
+            Err(OriginalAccountCheckError::Supervision(_))
         ));
         assert!(binding.claim(1, 512 << 20, 1 << 30).is_err());
     }
@@ -612,7 +614,7 @@ mod tests {
 
         assert!(matches!(
             attempt.prepare_device_digest_workspace(&original, 1),
-            Err(OriginalActorAccountError::Unavailable)
+            Err(OriginalAccountCheckError::Unavailable)
         ));
 
         let state = held.lock().unwrap();
@@ -638,7 +640,7 @@ mod tests {
 
         assert!(matches!(
             attempt.prepare_device_digest_workspace(&original, 1),
-            Err(OriginalActorAccountError::Supervision(_))
+            Err(OriginalAccountCheckError::Supervision(_))
         ));
 
         let held = factory.roster.upgrade().unwrap();
@@ -903,7 +905,7 @@ pub(super) fn setup_refusal(
         source: Box::new(NativeSetupRefusal {
             primary,
             cleanup: cleanup.err(),
-            original_after: attempt.require_original().err(),
+            original_after: attempt.require_original().err().map(Into::into),
         }),
     }
 }
@@ -964,29 +966,29 @@ struct NativeSlot {
 }
 
 impl NativeSlot {
-    fn assigned_metadata_bytes(&self) -> Result<u64, OriginalActorAccountError> {
+    fn assigned_metadata_bytes(&self) -> Result<u64, OriginalAccountCheckError> {
         self.digest_purposes.iter().try_fold(
             self.launch_controls_bytes
                 .checked_add(self.cleanup_controls_bytes)
                 .and_then(|bytes| bytes.checked_add(self.process_binding_bytes))
                 .and_then(|bytes| bytes.checked_add(self.issuer_controls_bytes))
                 .and_then(|bytes| bytes.checked_add(self.family_constructor_bytes))
-                .ok_or(OriginalActorAccountError::Unavailable)?,
+                .ok_or(OriginalAccountCheckError::Unavailable)?,
             |used, purpose| {
                 used.checked_add(purpose.metadata_bytes())
-                    .ok_or(OriginalActorAccountError::Unavailable)
+                    .ok_or(OriginalAccountCheckError::Unavailable)
             },
         )
     }
 
     /// Prices fixed helper copies before entering their constructor frame.
-    fn reserve_family_constructor(&mut self) -> Result<(), OriginalActorAccountError> {
+    fn reserve_family_constructor(&mut self) -> Result<(), OriginalAccountCheckError> {
         let extent = process_purpose::family_constructor_extent()?;
         if self.family_constructor_bytes == extent {
             return Ok(());
         }
         if self.family_constructor_bytes != 0 {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         self.require_metadata_assignment(extent)?;
         // This peak is reused under this slot's exclusive lock. Keeping it
@@ -995,7 +997,7 @@ impl NativeSlot {
         Ok(())
     }
 
-    fn require_metadata_assignment(&self, bytes: u64) -> Result<(), OriginalActorAccountError> {
+    fn require_metadata_assignment(&self, bytes: u64) -> Result<(), OriginalAccountCheckError> {
         self.require_metadata_assignment_replacing_pending(bytes, 0)
     }
 
@@ -1003,27 +1005,27 @@ impl NativeSlot {
         &self,
         bytes: u64,
         pending: u64,
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountCheckError> {
         let credit = self
             .credit
             .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let total = self
             .assigned_metadata_bytes()?
             .checked_add(bytes)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let process_bytes = self.installed_process.as_ref().map_or(
             0,
             process_purpose::InstalledProcessState::reserved_metadata_bytes,
         );
         let process_bytes = process_bytes
             .checked_sub(pending)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         if total
             .checked_add(process_bytes)
             .is_none_or(|total| total > credit.total_metadata_bytes())
         {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         Ok(())
     }
@@ -1435,7 +1437,7 @@ impl OriginalNativeAccountFactoryBinding {
             .require_original()
         {
             state.slots[index].launch_abandoned = true;
-            return Err(error);
+            return Err(error.into());
         }
         Ok(NativeAccountAttempt {
             roster: RosterWeak::clone(&self.roster),
@@ -1473,6 +1475,7 @@ impl NativeAccountAttempt {
             .as_ref()
             .ok_or(OriginalActorAccountError::Unavailable)?
             .require_original()
+            .map_err(Into::into)
     }
 
     /// Lends the same generation without creating a replacement account or loan.
@@ -1593,7 +1596,7 @@ impl NativeAccountAttempt {
         &self,
         result: Result<T, QemuVmRealizationError>,
     ) -> Result<T, QemuVmRealizationError> {
-        after_boundary(result, self.require_original())
+        after_boundary(result, self.require_original().map_err(Into::into))
     }
 
     pub(crate) fn after_refusal(&self, primary: QemuVmRealizationError) -> QemuVmRealizationError {
@@ -1602,7 +1605,7 @@ impl NativeAccountAttempt {
             Err(original) => QemuVmRealizationError::ModelCopy {
                 source: Box::new(NativeAccountBoundaryError {
                     primary: Some(primary),
-                    original,
+                    original: original.into(),
                 }),
             },
         }
@@ -1756,27 +1759,27 @@ impl NativeAccountAttempt {
         drop(state);
         if let Err(error) = self.require_original() {
             drop(binding);
-            return Err(error);
+            return Err(error.into());
         }
         Ok(binding)
     }
 
-    pub(crate) fn require_original(&self) -> Result<(), OriginalActorAccountError> {
+    pub(crate) fn require_original(&self) -> Result<(), OriginalAccountCheckError> {
         let roster = self
             .roster
             .upgrade()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let state = roster
             .lock()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountCheckError::Unavailable)?;
         let slot = state
             .slots
             .get(self.index)
             .filter(|slot| slot.active == Some(self.generation))
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         slot.credit
             .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?
+            .ok_or(OriginalAccountCheckError::Unavailable)?
             .require_original()
     }
 
@@ -2056,6 +2059,7 @@ impl OriginalNativeNodeBinding {
             .as_ref()
             .ok_or(OriginalActorAccountError::Unavailable)?
             .verify_preparation(original)
+            .map_err(Into::into)
     }
 }
 

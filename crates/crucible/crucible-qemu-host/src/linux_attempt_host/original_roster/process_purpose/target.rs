@@ -13,30 +13,30 @@ pub(in crate::linux_attempt_host::original_roster) fn verify_subdivision_prepara
     slot: &super::super::NativeSlot,
     original: &Arc<HostOperationGuard>,
     subdivision: u8,
-) -> Result<(), OriginalActorAccountError> {
+) -> Result<(), OriginalAccountCheckError> {
     let credit = slot
         .credit
         .as_ref()
-        .ok_or(OriginalActorAccountError::Unavailable)?;
+        .ok_or(OriginalAccountCheckError::Unavailable)?;
     match subdivision {
         0 => credit.verify_preparation(original),
         1 => {
             let (_, target) = slot
                 .fork_target
                 .watcher_preparation()
-                .ok_or(OriginalActorAccountError::Unavailable)?;
+                .ok_or(OriginalAccountCheckError::Unavailable)?;
             if !Arc::ptr_eq(target, original) {
-                return Err(OriginalActorAccountError::Unavailable);
+                return Err(OriginalAccountCheckError::Unavailable);
             }
             credit
                 .original
                 .as_ref()
                 .and_then(|held| held.normal.as_ref())
-                .ok_or(OriginalActorAccountError::Unavailable)?
+                .ok_or(OriginalAccountCheckError::Unavailable)?
                 .verify_native_preparation(original)?;
             credit.require_original()
         }
-        _ => Err(OriginalActorAccountError::Unavailable),
+        _ => Err(OriginalAccountCheckError::Unavailable),
     }
 }
 

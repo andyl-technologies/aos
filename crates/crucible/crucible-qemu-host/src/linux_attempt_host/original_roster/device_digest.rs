@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crucible_host_resources::host_supervision::HostOperationGuard;
 
-use super::{NativeAccountAttempt, OriginalActorAccountError, RosterWeak};
+use super::{NativeAccountAttempt, OriginalAccountCheckError, RosterWeak};
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct DigestPurposeState {
@@ -124,14 +124,14 @@ impl NativeAccountAttempt {
         &self,
         original: &Arc<HostOperationGuard>,
         process_generation: u64,
-    ) -> Result<OriginalDeviceDigestWorkspacePurpose, OriginalActorAccountError> {
+    ) -> Result<OriginalDeviceDigestWorkspacePurpose, OriginalAccountCheckError> {
         let roster = self
             .roster
             .upgrade()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let mut state = roster
             .lock()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountCheckError::Unavailable)?;
         let slot = state
             .slots
             .get(self.index)
@@ -141,25 +141,25 @@ impl NativeAccountAttempt {
                     && slot.launch_refusal.is_none()
                     && !slot.launch_abandoned
             })
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let credit = slot
             .credit
             .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         credit.require_original()?;
         let host_bytes = crate::spawn::OriginalDeviceDigestWorkspace::host_allocation_extent()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountCheckError::Unavailable)?;
         let installed = slot
             .installed_process
             .as_ref()
             .filter(|purpose| purpose.contains_incarnation(process_generation))
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let subdivision_index = installed
             .incarnation_subdivision(process_generation)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         super::process_purpose::verify_subdivision_preparation(slot, original, subdivision_index)?;
         if installed.pending_workspace_bytes() < host_bytes {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         let basis = original.serialize_original_preparation_basis()?;
         let mut containing_cap = [0; 32];
@@ -174,13 +174,13 @@ impl NativeAccountAttempt {
                 purpose.is_live() && purpose.process_generation == process_generation
             })
         {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         let index = slot
             .digest_purposes
             .iter()
             .position(|purpose| !purpose.is_live())
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         // This body was reserved outside W before family refinement. Move that
         // exact reservation into the digest row, rather than debit it again.
 
@@ -191,19 +191,19 @@ impl NativeAccountAttempt {
                 used.checked_add(purpose.resident_bytes)
             })
             .and_then(|used| used.checked_add(footprint.resident_bytes))
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         if resident > credit.full_resident_bytes() {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         let original_total_metadata_bytes = credit.total_metadata_bytes();
         let generation = state.next_workspace_generation;
         state.next_workspace_generation = generation
             .checked_add(1)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         state.slots[self.index]
             .installed_process
             .as_mut()
-            .ok_or(OriginalActorAccountError::Unavailable)?
+            .ok_or(OriginalAccountCheckError::Unavailable)?
             .consume_workspace(footprint.metadata_bytes)?;
         state.slots[self.index].digest_purposes[index] = DigestPurposeState {
             generation: Some(generation),
@@ -231,21 +231,21 @@ impl NativeAccountAttempt {
 }
 
 impl OriginalDeviceDigestWorkspacePurpose {
-    pub(crate) fn check_original(&self) -> Result<(), OriginalActorAccountError> {
+    pub(crate) fn check_original(&self) -> Result<(), OriginalAccountCheckError> {
         self.account.require_original()?;
         let roster = self
             .account
             .roster
             .upgrade()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let state = roster
             .lock()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountCheckError::Unavailable)?;
         let slot = state
             .slots
             .get(self.account.index)
             .filter(|slot| slot.active == Some(self.account.generation))
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         slot.digest_purposes
             .get(self.index)
             .filter(|purpose| {
@@ -253,23 +253,23 @@ impl OriginalDeviceDigestWorkspacePurpose {
                     && purpose.process_generation == self.process_generation
                     && !self.retired
             })
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let credit = slot
             .credit
             .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let retained = credit
             .original
             .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let original = match self.subdivision_index {
             0 => Some(&retained.preparation),
             1 => slot.fork_target.retained_preparation(),
             _ => None,
         }
-        .ok_or(OriginalActorAccountError::Unavailable)?;
+        .ok_or(OriginalAccountCheckError::Unavailable)?;
         if !Arc::ptr_eq(original, &self.original) {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         if let Some(normal) = retained.normal.as_ref() {
             normal.verify_retained_native_preparation(original)?;
@@ -279,23 +279,23 @@ impl OriginalDeviceDigestWorkspacePurpose {
         Ok(())
     }
 
-    pub(crate) fn enter_workspace_birth(&mut self) -> Result<(), OriginalActorAccountError> {
+    pub(crate) fn enter_workspace_birth(&mut self) -> Result<(), OriginalAccountCheckError> {
         self.check_original()?;
         let roster = self
             .account
             .roster
             .upgrade()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let mut state = roster
             .lock()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountCheckError::Unavailable)?;
         let purpose = state
             .slots
             .get_mut(self.account.index)
             .filter(|slot| slot.active == Some(self.account.generation))
             .and_then(|slot| slot.digest_purposes.get_mut(self.index))
             .filter(|purpose| purpose.generation == Some(self.generation) && !purpose.entered)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         purpose.entered = true;
         Ok(())
     }
@@ -306,26 +306,26 @@ impl OriginalDeviceDigestWorkspacePurpose {
         &self,
         device: u64,
         inode: u64,
-    ) -> Result<AllocationWorkspaceRecord, OriginalActorAccountError> {
+    ) -> Result<AllocationWorkspaceRecord, OriginalAccountCheckError> {
         self.check_original()?;
         let roster = self
             .account
             .roster
             .upgrade()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let state = roster
             .lock()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountCheckError::Unavailable)?;
         state
             .slots
             .get(self.account.index)
             .filter(|slot| slot.active == Some(self.account.generation))
             .and_then(|slot| slot.digest_purposes.get(self.index))
             .filter(|purpose| purpose.generation == Some(self.generation) && purpose.entered)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         drop(state);
         if device == 0 || inode == 0 {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         Ok(AllocationWorkspaceRecord {
             fields: AllocationWorkspaceFields {
@@ -344,59 +344,59 @@ impl OriginalDeviceDigestWorkspacePurpose {
 
     // The fixed external holder calls this only after real unique-body free.
     // A refusal keeps the same keeper; it does not manufacture a replacement.
-    pub(crate) fn retire_after_body_free(&mut self) -> Result<(), OriginalActorAccountError> {
+    pub(crate) fn retire_after_body_free(&mut self) -> Result<(), OriginalAccountCheckError> {
         self.check_original()?;
         let roster = self
             .account
             .roster
             .upgrade()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let mut state = roster
             .lock()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountCheckError::Unavailable)?;
         let purpose = state
             .slots
             .get_mut(self.account.index)
             .filter(|slot| slot.active == Some(self.account.generation))
             .and_then(|slot| slot.digest_purposes.get_mut(self.index))
             .filter(|purpose| purpose.generation == Some(self.generation))
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let bytes = purpose.metadata_bytes;
         // A failed restoration keeps the original assigned row. Clear it only
         // after the complete inverse transition has accepted the same extent.
         state.slots[self.account.index]
             .installed_process
             .as_mut()
-            .ok_or(OriginalActorAccountError::Unavailable)?
+            .ok_or(OriginalAccountCheckError::Unavailable)?
             .restore_workspace(bytes)?;
         state.slots[self.account.index].digest_purposes[self.index] = DigestPurposeState::default();
         self.retired = true;
         Ok(())
     }
 
-    fn release_before_entry(&self) -> Result<(), OriginalActorAccountError> {
+    fn release_before_entry(&self) -> Result<(), OriginalAccountCheckError> {
         let roster = self
             .account
             .roster
             .upgrade()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let mut state = roster
             .lock()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountCheckError::Unavailable)?;
         let purpose = state
             .slots
             .get_mut(self.account.index)
             .filter(|slot| slot.active == Some(self.account.generation))
             .and_then(|slot| slot.digest_purposes.get_mut(self.index))
             .filter(|purpose| purpose.generation == Some(self.generation) && !purpose.entered)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let bytes = purpose.metadata_bytes;
         // A failed restoration keeps the original assigned row. Clear it only
         // after the complete inverse transition has accepted the same extent.
         state.slots[self.account.index]
             .installed_process
             .as_mut()
-            .ok_or(OriginalActorAccountError::Unavailable)?
+            .ok_or(OriginalAccountCheckError::Unavailable)?
             .restore_workspace(bytes)?;
         state.slots[self.account.index].digest_purposes[self.index] = DigestPurposeState::default();
         Ok(())

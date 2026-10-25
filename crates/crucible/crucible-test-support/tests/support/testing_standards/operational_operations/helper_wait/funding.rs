@@ -210,12 +210,12 @@ pub(super) const ORIGINAL: Companion = Companion {
         &self,
     ) -> Result<
         &crucible_host_resources::host_services::process_birth::AuthenticatedSourceHostPurpose,
-        OriginalActorAccountError,
+        OriginalAccountCheckError,
     > {
         self.source_host
             .as_ref()
             .map(|funding| &funding.host)
-            .ok_or(OriginalActorAccountError::Unavailable)
+            .ok_or(OriginalAccountCheckError::Unavailable)
     }"#,
             1,
         ),
@@ -359,7 +359,7 @@ pub(super) const CLAIM: Companion = Companion {
             .require_original()
         {
             state.slots[index].launch_abandoned = true;
-            return Err(error);
+            return Err(error.into());
         }"#,
         1,
     )],

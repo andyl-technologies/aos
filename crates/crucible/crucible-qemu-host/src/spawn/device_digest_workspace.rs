@@ -12,7 +12,7 @@ use crate::linux_attempt_host::AllocationWorkspaceRecord;
 use crucible_qemu_protocol::{DEVICE_DIGEST_WORKSPACE_BYTES, SetupDeviceDigestWorkspaceFd};
 use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, fstat, ftruncate, memfd_create};
 
-use crate::OriginalActorAccountError;
+use crate::linux_attempt_host::OriginalAccountCheckError;
 use crate::linux_attempt_host::OriginalDeviceDigestWorkspacePurpose;
 
 /// Fixed workspace effects preserve their actual account or kernel cause.
@@ -27,7 +27,7 @@ pub(crate) enum DeviceDigestWorkspaceIssueError {
         source: rustix::io::Errno,
     },
     #[error("device workspace account refused: {0}")]
-    Account(#[source] OriginalActorAccountError),
+    Account(#[source] OriginalAccountCheckError),
     #[error("device workspace geometry or backing identity differs")]
     Geometry,
     #[error("a setup view still retains the device workspace")]

@@ -159,7 +159,7 @@ impl LinuxQemuAttemptHostOwner {
             .ok_or_else(|| missing_authority("retain QEMU fork Source storage account"))?;
         original
             .verify_fork_target_contract(target_contract)
-            .map_err(original_roster::original_error)?;
+            .map_err(|source| original_roster::original_error(source.into()))?;
         let result = self
             .storage
             .as_mut()
@@ -246,7 +246,7 @@ impl LinuxQemuAttemptHostOwner {
             .as_ref()
             .ok_or_else(|| missing_authority("retain QEMU fork target prefix original"))?
             .require_original()
-            .map_err(original_roster::original_error)
+            .map_err(|source| original_roster::original_error(source.into()))
     }
 
     pub(super) fn fork_target_native_controller(

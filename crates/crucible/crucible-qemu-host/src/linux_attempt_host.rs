@@ -37,6 +37,7 @@ pub use normal_pool::{
 };
 mod original_node;
 mod original_roster;
+pub(crate) use native_account::OriginalAccountCheckError;
 pub use native_account::OriginalActorAccountError;
 use native_resources::NativeResourceState;
 pub use native_resources::OriginalNativeControlRetirement;
@@ -563,7 +564,7 @@ impl LinuxQemuAttemptHostOwner {
         if let Some(original) = self.original_account.as_ref() {
             original
                 .require_original()
-                .map_err(original_roster::original_error)?;
+                .map_err(|source| original_roster::original_error(source.into()))?;
         }
         if self.terminal
             || (self.storage.is_none() && self.fork_target.is_none())

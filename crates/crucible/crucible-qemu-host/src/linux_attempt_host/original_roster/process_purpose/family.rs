@@ -49,7 +49,7 @@ pub(crate) struct InstalledProcessFamily {
 ///
 /// # Errors
 /// Refuses an unrepresentable fixed constructor peak.
-pub(super) fn constructor_extent() -> Result<u64, super::OriginalActorAccountError> {
+pub(super) fn constructor_extent() -> Result<u64, super::OriginalAccountCheckError> {
     std::mem::size_of::<blake3::Hasher>()
         .checked_mul(2)
         .and_then(|bytes| {
@@ -57,7 +57,7 @@ pub(super) fn constructor_extent() -> Result<u64, super::OriginalActorAccountErr
         })
         .and_then(|bytes| bytes.checked_add(2 * 80 + 64 * std::mem::size_of::<u32>()))
         .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or(super::OriginalActorAccountError::Unavailable)
+        .ok_or(super::OriginalAccountCheckError::Unavailable)
 }
 
 impl InstalledProcessFamily {
@@ -84,7 +84,7 @@ impl InstalledProcessFamily {
             .ok_or(InstalledProcessPurposeError::Identity)?;
         normal
             .verify_native_preparation(&retained.preparation)
-            .map_err(super::OriginalActorAccountError::from)?;
+            .map_err(super::OriginalAccountCheckError::from)?;
         let basis = retained
             .preparation
             .serialize_original_preparation_basis()

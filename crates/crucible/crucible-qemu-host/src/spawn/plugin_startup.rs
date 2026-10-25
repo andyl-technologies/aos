@@ -412,7 +412,7 @@ impl OriginalPluginStartup {
             {
                 state.source.check().map_err(|source| {
                     PluginStartupCause::Purpose(
-                        crate::linux_attempt_host::OriginalActorAccountError::from(source).into(),
+                        crate::linux_attempt_host::OriginalAccountCheckError::from(source).into(),
                     )
                 })?;
                 state

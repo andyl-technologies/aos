@@ -20,6 +20,7 @@ use crucible_host_resources::host_supervision::{HostOperationGuard, HostSupervis
 
 #[cfg(feature = "private-measurement-domain")]
 use super::OriginalActorDecodeOwner;
+use super::native_account::OriginalAccountCheckError;
 use super::{LinuxQemuAttemptHostOwner, OriginalActorAccountError, OriginalNativeNodeBinding};
 #[cfg(feature = "private-measurement-domain")]
 use crate::qmp::readonly_backing_stream::{BackingEvent, QmpReadOnlyBackingReceipt};
@@ -141,12 +142,12 @@ impl OriginalNativeFreshLaunchError {
         &self,
     ) -> Result<
         &crucible_host_resources::host_services::process_birth::AuthenticatedSourceHostPurpose,
-        OriginalActorAccountError,
+        OriginalAccountCheckError,
     > {
         self.source_host
             .as_ref()
             .map(|funding| &funding.host)
-            .ok_or(OriginalActorAccountError::Unavailable)
+            .ok_or(OriginalAccountCheckError::Unavailable)
     }
 
     pub(crate) fn reserve_child_owner(

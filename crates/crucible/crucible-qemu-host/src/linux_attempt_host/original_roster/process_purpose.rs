@@ -15,6 +15,7 @@ use crate::QemuChildProcessContract;
 use crate::artifact_identity::InstallerControlIdentity;
 use crate::spawn::{ConfiguredProcessEnvelope, ProcessEnvelopeRefinementError};
 
+use super::super::native_account::OriginalAccountCheckError;
 use super::{NativeAccountAttempt, OriginalActorAccountError, OriginalNativeNodeBinding, RosterWeak};
 
 mod family;
@@ -42,7 +43,7 @@ pub(super) use target::verify_subdivision_preparation;
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum InstalledProcessPurposeError {
     #[error("original process purpose refused: {0}")]
-    Original(#[from] OriginalActorAccountError),
+    Original(#[from] OriginalAccountCheckError),
     #[error("configured process envelope refused: {0}")]
     Refinement(#[source] ProcessEnvelopeRefinementError),
     #[error("issued RAM endpoint kernel observation refused: {0}")]
@@ -212,22 +213,22 @@ impl InstalledProcessState {
     pub(super) fn consume_workspace(
         &mut self,
         bytes: u64,
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountCheckError> {
         self.pending_workspace_bytes = self
             .pending_workspace_bytes
             .checked_sub(bytes)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         Ok(())
     }
 
     pub(super) fn restore_workspace(
         &mut self,
         bytes: u64,
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountCheckError> {
         self.pending_workspace_bytes = self
             .pending_workspace_bytes
             .checked_add(bytes)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         Ok(())
     }
 
@@ -453,7 +454,7 @@ pub(crate) struct IssuedInstalledProcessMaterial<'a> {
 ///
 /// # Errors
 /// Refuses an unrepresentable fixed constructor overlap.
-pub(super) fn family_constructor_extent() -> Result<u64, OriginalActorAccountError> {
+pub(super) fn family_constructor_extent() -> Result<u64, OriginalAccountCheckError> {
     family::constructor_extent()
 }
 
@@ -1268,15 +1269,15 @@ pub(super) fn fresh_launch_control_extent() -> Result<u64, OriginalActorAccountE
     Ok(bytes)
 }
 
-pub(super) fn cleanup_control_extent() -> Result<u64, OriginalActorAccountError> {
+pub(super) fn cleanup_control_extent() -> Result<u64, OriginalAccountCheckError> {
     let (layout, _) = std::alloc::Layout::new::<(
         std::sync::atomic::AtomicUsize,
         std::sync::atomic::AtomicUsize,
     )>()
     .extend(std::alloc::Layout::new::<HostOperationGuard>())
-    .map_err(|_| OriginalActorAccountError::Unavailable)?;
+    .map_err(|_| OriginalAccountCheckError::Unavailable)?;
     let extent = u64::try_from(layout.pad_to_align().size())
-        .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        .map_err(|_| OriginalAccountCheckError::Unavailable)?;
     Ok(extent)
 }
 

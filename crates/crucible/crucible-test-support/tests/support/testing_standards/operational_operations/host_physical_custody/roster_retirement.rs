@@ -463,7 +463,7 @@ slot.source_cleanup_assigned = false;"#,
                 normal.verify_world_cleanup(&cleanup)?;
                 Ok(())
             }
-            None => self.require_original(),
+            None => self.require_original().map_err(Into::into),
         },
         None => Ok(()),
     }

@@ -123,7 +123,7 @@ impl LinuxQemuAttemptHostFactory {
                 .map_err(original_roster::original_error);
             return Err(original_roster::setup_refusal(
                 &original,
-                original_roster::original_error(source),
+                original_roster::original_error(source.into()),
                 cleanup,
             ));
         }
@@ -201,7 +201,7 @@ impl LinuxQemuAttemptHostFactory {
         if let Some(original) = owner.original_account.as_ref() {
             original
                 .require_original()
-                .map_err(original_roster::original_error)?;
+                .map_err(|source| original_roster::original_error(source.into()))?;
         }
         Ok(owner)
     }

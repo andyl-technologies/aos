@@ -316,13 +316,13 @@ impl ForkTargetSlot {
     pub(super) fn retain_process_generation(
         &mut self,
         generation: u64,
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountCheckError> {
         if !self.born
             || !self.is_owned()
             || self.process_generation.is_some()
             || self.reserved_process_generation != Some(generation)
         {
-            return Err(OriginalActorAccountError::Unavailable);
+            return Err(OriginalAccountCheckError::Unavailable);
         }
         self.process_generation = Some(generation);
         Ok(())
@@ -623,15 +623,15 @@ impl NativeAccountAttempt {
     pub(in crate::linux_attempt_host) fn verify_fork_target_contract(
         &self,
         contract: &crate::QemuChildProcessContract,
-    ) -> Result<(), OriginalActorAccountError> {
+    ) -> Result<(), OriginalAccountCheckError> {
         self.require_original()?;
         let roster = self
             .roster
             .upgrade()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         let state = roster
             .lock()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            .map_err(|_| OriginalAccountCheckError::Unavailable)?;
         state
             .slots
             .get(self.index)
@@ -647,7 +647,7 @@ impl NativeAccountAttempt {
                         .as_ref()
                         .is_some_and(|envelope| envelope.matches_contract(contract))
             })
-            .ok_or(OriginalActorAccountError::Unavailable)?;
+            .ok_or(OriginalAccountCheckError::Unavailable)?;
         Ok(())
     }
 }
@@ -838,7 +838,7 @@ impl ForkTargetReservation {
             target.envelope = Some(envelope);
             Ok(())
         })?;
-        self.attempt.require_original()
+        self.attempt.require_original().map_err(Into::into)
     }
 
     pub(in crate::linux_attempt_host) fn retain_control(
