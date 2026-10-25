@@ -1,4 +1,4 @@
-"""Executes original-session reconciliation and recovery regressions in a guest."""
+"""Executes source-bound local repository and recovery regressions in a guest."""
 
 import hashlib
 import json
@@ -71,6 +71,16 @@ STARTUP_RESTORATION_CASES = [
 ]
 
 
+COORDINATION_LOCK_CASES = [
+    "store::bindings::tests::" + name for name in [
+        "native_existing_locks_need_no_file_write_permission",
+        "native_existing_lock_never_creates_missing_coordination",
+        "native_existing_try_locks_preserve_readers_writers_and_retained_duplicates",
+        "native_try_locks_reject_replaced_open_names_in_both_modes",
+    ]
+]
+
+
 def verify_image(source, image):
     """Binds the actual retained Cargo test image to every immutable crate input."""
     identity = json.loads((image / "share/identity.json").read_text())
@@ -135,6 +145,8 @@ def main():
         cases = RESTORATION_SESSION_CASES
     elif suite == "startup-restoration":
         cases = STARTUP_RESTORATION_CASES
+    elif suite == "coordination-locks":
+        cases = COORDINATION_LOCK_CASES
     else:
         raise ValueError("unknown native collection qualification suite")
 
@@ -182,6 +194,9 @@ def main():
     elif suite == "startup-restoration":
         print("PASS bounded startup restores required Meta before marking; protected Done "
               "remains observable without resurrection", flush=True)
+    elif suite == "coordination-locks":
+        print("PASS existing read-only coordination preserves shared/exclusive exclusion, retained "
+              "descriptors, missing-state refusal and original inode checks", flush=True)
     elif suite == "restoration-session":
         print("PASS restoration and fresh marking retain original session poison and lease; "
               "expired handoff has no effects and original Meta restoration still passes", flush=True)

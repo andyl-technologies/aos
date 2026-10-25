@@ -18780,3 +18780,33 @@ The declarative module check passes all 117 cases, including seven new SDK
 write-policy cases. This establishes deployment rendering and refusal behavior,
 not actual systemd runtime or restart recovery. Full-manager execution and the
 remaining role qualification are still pending; acceptance remains 28/64.
+
+
+Existing native repository coordination now opens its original lock inode
+read-only; only explicit new-lock creation requests write access. Kernel shared
+and exclusive exclusion, retained descriptor custody, nofollow checks and named
+inode validation remain unchanged. This removes an unnecessary write-open from
+repository inspection under `ProtectSystem=strict` without granting Serve write
+access to authority or bucket data. A new native regression first proves actual
+file-write denial, then checks shared readers, exclusive contention, retained
+exclusion, existing blocking acquisition and unchanged original bytes/mode/inode.
+The focused four-case `integration.native-coordination-locks` guest retains
+missing-state, shared/exclusive and replaced-name controls.
+
+The original configured-maintenance guest additionally binds both original
+repository and authority roots read-only. The capability-free UID 840 launcher
+checks original directory identities, read-only mount flags and actual EROFS
+write refusal before exec of the original CLI. Its eight original publisher
+namespace controls, exact CLI stream/snapshot verification, all enrollment and
+GC/readiness/retirement controls, and 30-second actor/240-second guest bounds
+remain. Qualification of these new checks is pending.
+
+The preceding `4cf7001d46` configured-maintenance guest passes in 708.156
+seconds. Complete review verifies all 8,240 immutable source files, both proof
+images, 5,491/5,485 bound inputs, five actual retained Cargo executables and
+all 15 original enrollment controls. Actual main-PID UID/GID 840 readiness,
+four bounded exchanges, original owner/listener custody, private-state denial,
+signed snapshots/publication and acknowledged socket-name retirement pass.
+This predates the read-only-lock correction and qualifies neither that change
+nor actual service-manager execution or draining-exposure release. Trunk
+acceptance remains 28/64.

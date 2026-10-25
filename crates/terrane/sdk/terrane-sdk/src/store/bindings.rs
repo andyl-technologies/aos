@@ -156,9 +156,12 @@ async fn native_file_lock(
         {
             use std::os::unix::fs::OpenOptionsExt;
 
+            // Linux flock exclusion needs no writable descriptor. Existing
+            // coordination also serves read-only repository mounts; only new
+            // namespace setup requests write access for creation.
             let file = std::fs::OpenOptions::new()
                 .read(true)
-                .write(true)
+                .write(matches!(mode, LockOpenMode::Create))
                 .create(matches!(mode, LockOpenMode::Create))
                 .truncate(false)
                 // Creation must keep namespace exclusion private regardless
@@ -897,6 +900,86 @@ mod tests {
             );
             assert!(!path.exists());
             fs.remove_file(&link).await.unwrap();
+            fs.remove_dir(&root).await.unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_existing_locks_need_no_file_write_permission() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let fs = TokioLocalFs;
+            let entropy = fs.random_bytes(16).await.unwrap();
+            let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+            let root = std::env::temp_dir().join(format!("terrane-readonly-lock-{suffix}"));
+            fs.create_dir_new(&root).await.unwrap();
+            let path = root.join("coordination");
+            fs.write_new(&path, b"registered coordination")
+                .await
+                .unwrap();
+            fs.set_permissions(&path, std::fs::Permissions::from_mode(0o400))
+                .await
+                .unwrap();
+            let original = fs.symlink_metadata(&path).await.unwrap();
+
+            // This denial also proves that the actor cannot bypass the file
+            // mode. Shared and exclusive flock still work on read-only opens.
+            assert_eq!(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            let first = fs.try_lock_existing_shared(&path).await.unwrap();
+            let retained = fs.retain_native_exclusion(&first).unwrap();
+            let second = fs.try_lock_existing_shared(&path).await.unwrap();
+            assert_eq!(
+                fs.try_lock_existing_exclusive(&path)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            drop(first);
+            drop(second);
+            assert_eq!(
+                fs.try_lock_existing_exclusive(&path)
+                    .await
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            drop(retained);
+
+            let exclusive = fs.try_lock_existing_exclusive(&path).await.unwrap();
+            assert_eq!(
+                fs.try_lock_existing_shared(&path).await.unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            drop(exclusive);
+            drop(fs.lock_existing_exclusive(&path).await.unwrap());
+            assert_eq!(
+                fs.lock_exclusive(&path).await.unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+
+            let current = fs.symlink_metadata(&path).await.unwrap();
+            assert_eq!(
+                (current.dev(), current.ino()),
+                (original.dev(), original.ino())
+            );
+            assert_eq!(current.mode(), original.mode());
+            assert_eq!(current.nlink(), 1);
+            assert_eq!(fs.read(&path).await.unwrap(), b"registered coordination");
+            fs.remove_file(&path).await.unwrap();
             fs.remove_dir(&root).await.unwrap();
         });
     }

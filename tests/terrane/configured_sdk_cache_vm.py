@@ -23,10 +23,11 @@ import tomllib
 
 PAYLOAD = b"independent configured SDK snapshot payload\n"
 NAMESPACE_OBSERVATION = b"NATIVE_SDK_NAMESPACE "
+REPOSITORY_OBSERVATION = b"NATIVE_SDK_READONLY_REPOSITORY "
 PUBLISHER_PRIVATE_ROOTS = ["sealed", "staging", "pending-delete", "state/publication"]
 
 
-def namespace_actor(driver, image, arguments, policy, stack, launcher=False):
+def namespace_actor(driver, image, arguments, policy, stack, launcher=False, repository_paths=()):
     """Keeps the publisher outside a fresh client's private mount namespace."""
     credentials = ["setpriv", "--reuid", "840", "--regid", "840", "--groups", "844,845",
                    "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
@@ -47,6 +48,15 @@ def namespace_actor(driver, image, arguments, policy, stack, launcher=False):
             driver.require(metadata.st_uid == 841 and metadata.st_mode & 0o7777 == 0o700,
                            "namespace input lacks publisher-private custody")
             bindings.append([str(path), metadata.st_dev, metadata.st_ino])
+    if repository_paths:
+        driver.require(policy == "readonly" and not launcher and len(repository_paths) == 2,
+                       "repository read-only fixture requires the original confined CLI actor")
+        for path in repository_paths:
+            metadata = path.lstat()
+            driver.require(stat.S_ISDIR(metadata.st_mode) and metadata.st_uid == 840
+                           and stat.S_IMODE(metadata.st_mode) == 0o700,
+                           "repository read-only input lacks original owner custody")
+            bindings.append([str(path), metadata.st_dev, metadata.st_ino])
     encoded = json.dumps(bindings, separators=(",", ":"))
     scratch = stack.enter_context(tempfile.TemporaryDirectory(
         prefix="sdk-namespace-", dir=driver.ROOT / "scratch"))
@@ -62,7 +72,8 @@ def namespace_actor(driver, image, arguments, policy, stack, launcher=False):
 
 def mount_namespace(policy, scratch, bindings, command):
     """Applies the unit's inode-preserving policy or its old masking control."""
-    if os.geteuid() != 0 or policy not in {"readonly", "masked"}:
+    if (os.geteuid() != 0 or policy not in {"readonly", "masked"}
+            or len(bindings) not in {8, 10} or len(bindings) == 10 and policy != "readonly"):
         raise RuntimeError("invalid privileged namespace fixture")
     mask = pathlib.Path(scratch) / "inaccessible"
     mask.mkdir(mode=0)
@@ -75,9 +86,10 @@ def mount_namespace(policy, scratch, bindings, command):
 
 def verify_namespace(policy, bindings, command):
     """Checks real mount identities and read denial after dropping all capabilities."""
-    if os.geteuid() != 840 or policy not in {"readonly", "masked"}:
+    if (os.geteuid() != 840 or policy not in {"readonly", "masked"}
+            or len(bindings) not in {8, 10} or len(bindings) == 10 and policy != "readonly"):
         raise RuntimeError("invalid unprivileged namespace fixture")
-    for path, device, inode in bindings:
+    for index, (path, device, inode) in enumerate(bindings):
         descriptor = os.open(path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             metadata = os.fstat(descriptor)
@@ -85,9 +97,22 @@ def verify_namespace(policy, bindings, command):
             if same != (policy == "readonly"):
                 raise RuntimeError("namespace inode policy differs from original roots")
             if not os.fstatvfs(descriptor).f_flag & os.ST_RDONLY:
-                raise RuntimeError("publisher-private root is writable in client namespace")
+                raise RuntimeError("bound root is writable in client namespace")
         finally:
             os.close(descriptor)
+        if index >= 8:
+            # The actor owns this existing directory. EROFS, rather than DAC
+            # denial, proves its repository and authority mounts are read-only.
+            probe = pathlib.Path(path) / ".terrane-readonly-probe"
+            try:
+                writable = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except OSError as error:
+                if error.errno != errno.EROFS:
+                    raise
+            else:
+                os.close(writable)
+                raise RuntimeError("original repository root is writable in client namespace")
+            continue
         try:
             readable = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as error:
@@ -97,9 +122,14 @@ def verify_namespace(policy, bindings, command):
             os.close(readable)
             raise RuntimeError("unprivileged client can read a publisher-private directory")
     print(NAMESPACE_OBSERVATION.decode() + json.dumps({
-        "policy": policy, "roots": len(bindings), "read_denied": True,
+        "policy": policy, "roots": 8, "read_denied": True,
         "readonly": True, "original_inodes": policy == "readonly",
     }, sort_keys=True), flush=True)
+    if len(bindings) == 10:
+        print(REPOSITORY_OBSERVATION.decode() + json.dumps({
+            "roots": bindings[8:], "readonly": True, "write_errno": errno.EROFS,
+            "uid": os.geteuid(),
+        }, sort_keys=True), flush=True)
     os.execv(command[0], command)
 
 
@@ -137,14 +167,15 @@ def manifest_payload():
 
 
 def actor(driver, image, label, arguments, success=True, mount_policy=None, maintained=False,
-          launcher=False, on_ready=None, environment=None):
+          launcher=False, on_ready=None, environment=None, repository_paths=()):
     """Runs one fresh source-bound actor under the original supervisor's bounds."""
     with contextlib.ExitStack() as stack:
-        command = namespace_actor(driver, image, arguments, mount_policy, stack, launcher)
-        return run_actor(driver, label, command, success, mount_policy, maintained, on_ready, environment)
+        command = namespace_actor(driver, image, arguments, mount_policy, stack, launcher, repository_paths)
+        return run_actor(driver, label, command, success, mount_policy, maintained, on_ready, environment, repository_paths)
 
 
-def run_actor(driver, label, command, success, mount_policy, maintained, on_ready=None, environment=None):
+def run_actor(driver, label, command, success, mount_policy, maintained, on_ready=None, environment=None,
+              repository_paths=()):
     """Collects bounded actor output and retains every namespace observation."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=True, env=environment)
@@ -223,6 +254,15 @@ def run_actor(driver, label, command, success, mount_policy, maintained, on_read
                        "missing actual unprivileged namespace observation: " + label)
         output[0] = b"".join(line for line in output[0].splitlines(keepends=True)
                              if not line.startswith(NAMESPACE_OBSERVATION))
+    if repository_paths:
+        rows = [json.loads(line[len(REPOSITORY_OBSERVATION):])
+                for line in output[0].splitlines() if line.startswith(REPOSITORY_OBSERVATION)]
+        expected = [[str(path), path.stat().st_dev, path.stat().st_ino] for path in repository_paths]
+        driver.require(rows == [{"roots": expected, "readonly": True,
+                                 "write_errno": errno.EROFS, "uid": 840}],
+                       "missing original read-only repository mount observation: " + label)
+        output[0] = b"".join(line for line in output[0].splitlines(keepends=True)
+                             if not line.startswith(REPOSITORY_OBSERVATION))
     return tuple(map(bytes, output))
 
 
@@ -444,7 +484,8 @@ def run_maintenance(driver, image):
         stdout, stderr = actor(driver, image, "maintenance-serve",
               ["configured-sdk-cache-cli", "--config", config, "--role", "serve"],
               mount_policy="readonly", maintained=True, on_ready=ready,
-              environment=dict(os.environ, NOTIFY_SOCKET=str(notify_path)))
+              environment=dict(os.environ, NOTIFY_SOCKET=str(notify_path)),
+              repository_paths=(root / "bucket", root / "authority"))
         notifier.setblocking(False)
         try:
             notifier.recv(256)
@@ -466,6 +507,7 @@ def run_maintenance(driver, image):
         actor(driver, image, "maintenance-snapshots",
               ["configured-sdk-cache-example", "verify-cli", root, 840])
         print("PASS configured GC refuses stopped serving owners without rebinding listeners; original owner locks release after acknowledged SIGTERM and signed publication remains intact", flush=True)
+        print("PASS configured Serve opens its original repository and authority through read-only mounts while preserving signed snapshots and maintenance", flush=True)
         print("PASS acknowledged Serve shutdown retires only its original maintenance socket names after all borrowed request futures stop", flush=True)
     finally:
         notifier.close()

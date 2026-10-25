@@ -519,6 +519,11 @@ in {
   integration.algebra-format-vectors = algebraFormatVectors;
   integration.legacy-format-vectors = import ./legacy-vectors.nix {inherit sourceGate;};
   integration.local-factory-construction = import ./local-factory-construction.nix {inherit sourceGate;};
+  integration.native-coordination-locks = import ./local-collection-reconciliation.nix {
+    inherit pkgs lib;
+    image = nativeSdkTestImage;
+    suite = "coordination-locks";
+  };
   integration.native-preownership-restore = import ./native-preownership-restore.nix {
     inherit pkgs lib;
     image = nativeSdkTestImage;

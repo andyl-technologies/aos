@@ -4,7 +4,7 @@
   image,
   suite ? "collection-reconciliation",
 }:
-assert builtins.elem suite ["collection-reconciliation" "maintenance-owner-hints" "local-deletion-hints" "copied-shared-session" "missing-trash-refresh" "preownership-restore" "restoration-session" "startup-restoration"]; let
+assert builtins.elem suite ["collection-reconciliation" "maintenance-owner-hints" "local-deletion-hints" "copied-shared-session" "missing-trash-refresh" "preownership-restore" "restoration-session" "startup-restoration" "coordination-locks"]; let
   testing = import ../../lib/testing {inherit pkgs lib;};
 in
   testing.mkVMTest {
@@ -23,6 +23,8 @@ in
       then "terrane-preownership-restore"
       else if suite == "restoration-session"
       then "terrane-restoration-session"
+      else if suite == "coordination-locks"
+      then "terrane-coordination-locks"
       else "terrane-startup-restoration";
     memory = 1024;
     timeout =
