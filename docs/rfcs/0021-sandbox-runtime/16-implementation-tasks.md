@@ -11714,16 +11714,17 @@ the backend artifact check at
 `/nix/store/9al90zq4nxxwixk81fj21am1rq07wccy-aos-systemd-backend-policy-artifact-check`,
 and the verity check at
 `/nix/store/5axgdkhdn578idh98q8kp4lif1svkqnx-systemd-verity-check-0`.
-These are compilation and package receipts. The isolated retry at `0cea2acf84`
-with the uncommitted networkd unit-control policy patch now passes enrollment:
-`/nix/store/spsb7r4qa61s7yqjy90xgwz42q11pl5g-aos-fleet-test-secure-boot-enrolled-vars-0`
+These are compilation and package receipts. Enrollment also passes from the
+clean committed source at `81df859f81`:
+`/nix/store/7z0b6npp7hs7fax9dprrgd8knjarnqc9-aos-fleet-test-secure-boot-enrolled-vars-0`
 (`PASS`, NAR hash
-`sha256:16ivw6xa3cqi4ps9llmh8qllhsdrdifrz253b8z5b2r2k66n20s5`).
-It reaches normal startup before enrollment and after reboot, confirms Secure
-Boot enforcement, and refuses the unfunded sandbox unit on both boots. The
-pending production policy change remains uncommitted. Host, Root, offline
-provisioning and lifecycle-enclosure results remain separate; this receipt does
-not qualify their startup, a physical floor producer or public lifecycle.
+`sha256-WnWMrhDyxMfo+p8W055914zViuMRkcaU95fRu8HHz/w=`).
+It exercises level-3 raw delivery compression, reaches normal startup before
+enrollment and after reboot, confirms Secure Boot enforcement, and refuses the
+unfunded sandbox unit on both boots. This clean result uses neither pending
+production policy patch. Host, Root, offline provisioning and lifecycle-enclosure
+results remain separate; this receipt does not qualify their enforcing startup,
+a physical floor producer or public lifecycle.
 
 The subsequent enforcing images stopped in the initrd because D-Bus could not
 open the selected policy's canonical `contexts/dbus_contexts`. Commit
