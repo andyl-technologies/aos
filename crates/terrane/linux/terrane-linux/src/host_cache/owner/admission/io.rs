@@ -326,7 +326,9 @@ pub(super) fn parent(
         let member = progress
             .last_mut()
             .ok_or_else(|| io::Error::other("directory progress slot absent"))?;
-        let created = match fs::mkdirat(&directory, *part, Mode::from_raw_mode(0o2770)) {
+        // The checked parent supplies setgid inheritance. Requesting that bit
+        // explicitly is refused by the managed service's RestrictSUIDSGID policy.
+        let created = match fs::mkdirat(&directory, *part, Mode::from_raw_mode(0o770)) {
             Ok(()) => true,
             Err(error) if error == rustix::io::Errno::EXIST => false,
             Err(error) => return Err(error.into()),
@@ -342,9 +344,9 @@ pub(super) fn parent(
             .retained
             .as_ref()
             .ok_or_else(|| io::Error::other("directory descriptor absent"))?;
-        if created {
-            // Ordinary setgid creation inherits the provisioned group/project.
-            // Reapply only the fixed shared directory mode removed by umask.
+        if created && child.metadata()?.mode() & 0o7777 != 0o2770 {
+            // Repair permissions removed by the caller's umask. The managed
+            // service preserves the inherited mode and needs no setgid change.
             fs::fchmod(child, Mode::from_raw_mode(0o2770))?;
         }
         check(owner, child, InodePhase::Directory)?;

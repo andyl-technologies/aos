@@ -91,6 +91,15 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-25)
 
+The managed presentation diagnostic identifies an actual Serve worker's
+`mkdirat(..., 02770)` failing with `EPERM` under the original
+`RestrictSUIDSGID` policy. Native admission now requests ordinary `0770`
+permissions from an already checked `02770` parent and relies on kernel
+setgid inheritance. It repairs umask-reduced permissions only when the actual
+created mode differs. Exact owner, group, mode, project, inheritance and
+retained-inode checks remain; service hardening is unchanged. This correction
+requires fresh native and manager qualification before acceptance.
+
 The corrected manager image at `4d6fa29019` passes its original isolated
 prerequisite build in 878.486 seconds. Complete review accounts for all 49
 remote derivations, the two imported outputs, the fresh capability-free ext4
