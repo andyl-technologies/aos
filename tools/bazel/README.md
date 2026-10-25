@@ -377,6 +377,19 @@ works after removing Cargo manifests and lockfiles from its source tree.
 The [formatting receipt](tests/evidence/rust-format-workflow.json) retains the
 complete root inventory, output hashes, and observed CLI behavior.
 
+`checks.build.bazel.test-support.all` compiles and runs the harness unit tests
+and six executable integration fixtures: ABI vectors, adversarial determinism,
+divergence bisect, mock end-to-end determinism, layer-0 assertion contracts, and
+reproduction artifacts. An independent native rustc build compares all 76
+libtest cases, and native rustdoc checks the same doctest. The checked inventory
+selects 42 configured targets and a workspace without Cargo manifests or locks.
+The [fixture receipt](tests/evidence/test-support-native-fixtures.json) retains
+compiler-input and execution evidence for both source selections.
+
+Repository audits and the feature-powerset driver still require migration of
+their source and tool inputs. These executable harness fixtures do not replace
+the named production determinism, ABI, license, or performance gate chains.
+
 ## Isolated Rust tests
 
 `rules/test.bzl` compiles ordinary `rules_rust` libtest artifacts and runs each

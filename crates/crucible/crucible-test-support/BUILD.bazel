@@ -2,6 +2,7 @@ load("//tools/bazel/rules:compile.bzl", "rust_library")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test")
 
 RUST_PACKAGE = aos_rust_package(
     name = "crucible-test-support",
@@ -32,12 +33,36 @@ exports_files(
 )
 
 aos_rust_test(
-    name = "gate_abi_conformance",
+    name = "unit",
     package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
-    crate_root = "tests/gate_abi_conformance.rs",
-    srcs = ["tests/gate_abi_conformance.rs"],
-    deps = [":lib"],
+    crate = ":lib",
+)
+
+# Repository audits and the feature-powerset driver need their own declared
+# source/tool inputs. These fixtures execute the harness directly without them.
+[
+    aos_rust_test(
+        name = target,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = "tests/" + target + ".rs",
+        srcs = ["tests/" + target + ".rs"],
+        deps = [":lib"],
+    )
+    for target in [
+        "gate_abi_conformance",
+        "gate_adversarial_determinism",
+        "gate_divergence_bisect",
+        "gate_e2e_determinism",
+        "gate_layer0_determinism",
+        "reproduction_artifact",
+    ]
+]
+
+rust_doc_test(
+    name = "doc",
+    crate = ":lib",
 )
 
 aos_source_package(
