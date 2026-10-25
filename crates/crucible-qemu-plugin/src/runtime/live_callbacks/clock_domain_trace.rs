@@ -11,11 +11,16 @@
 //! current coordinate:
 //!
 //! ```text
-//! CRUCIBLE-CLOCK-DOMAIN-V1 pid=4242 reason=qemu-not-due cause=timer count=1 plugin_ps=587001000000 deadline_ps=587001000000 raw=1213 virtual_ps=587000999950 qemu_deadline_ps=587001000000 qemu_raw=1213 sim_tick_bias=586940350000 icount_bias_ps=0 warp_start=-1
+//! CRUCIBLE-CLOCK-DOMAIN-V1 pid=4242 reason=qemu-not-due cause=timer count=1 run=1 plugin_ps=587001000000 deadline_ps=587001000000 raw=1213 virtual_ps=587000999950 qemu_deadline_ps=587001000000 qemu_raw=1213 sim_tick_bias=586940350000 icount_bias_ps=0 warp_start=-1
 //! ```
 //!
-//! Each reason prints on its 1st, 2nd, 4th, 8th, ... occurrence. The rows are
-//! diagnostic only and never feed a guest-visible value or a scheduling choice.
+//! Each reason prints on its 1st, 2nd, 4th, 8th, ... occurrence over the whole
+//! run. A long flight passes those counts early, so each reason also counts
+//! its consecutive occurrences at one coordinate and prints the 2nd, 4th,
+//! 8th, ... of that run: a node that keeps returning to the same point, the
+//! shape of a stall, prints there however late it happens, while isolated
+//! occurrences at new coordinates stay quiet. The rows are diagnostic only
+//! and never feed a guest-visible value or a scheduling choice.
 
 use std::ffi::c_void;
 use std::io::Write as _;
@@ -73,6 +78,11 @@ impl Reason {
 }
 
 static COUNTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+/// Coordinate of each reason's latest occurrence and the length of its run
+/// of consecutive occurrences there.
+static LAST_COORDINATES: [AtomicU64; 3] = [const { AtomicU64::new(u64::MAX) }; 3];
+static RUNS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
 /// Last already-due `(coordinate, deadline)` pair. Only the all-halted idle
 /// callback writes it, so the two words never interleave with another writer.
@@ -136,16 +146,25 @@ fn print_row(
     raw: u64,
     read: QemuClockDiagnostic,
 ) {
-    let count = COUNTS[reason.index()]
+    let index = reason.index();
+    let count = COUNTS[index]
         .fetch_add(1, Ordering::Relaxed)
         .saturating_add(1);
-    if !count.is_power_of_two() {
+    let run = if LAST_COORDINATES[index].swap(plugin_ps, Ordering::Relaxed) == plugin_ps {
+        RUNS[index]
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1)
+    } else {
+        RUNS[index].store(1, Ordering::Relaxed);
+        1
+    };
+    if !should_print(count, run) {
         return;
     }
     let deadline = deadline_ps.map_or_else(|| String::from("none"), |value| value.to_string());
     let _ = writeln!(
         std::io::stderr().lock(),
-        "CRUCIBLE-CLOCK-DOMAIN-V1 pid={} reason={} cause={cause} count={count} plugin_ps={plugin_ps} deadline_ps={deadline} raw={raw} virtual_ps={} qemu_deadline_ps={} qemu_raw={} sim_tick_bias={} icount_bias_ps={} warp_start={}",
+        "CRUCIBLE-CLOCK-DOMAIN-V1 pid={} reason={} cause={cause} count={count} run={run} plugin_ps={plugin_ps} deadline_ps={deadline} raw={raw} virtual_ps={} qemu_deadline_ps={} qemu_raw={} sim_tick_bias={} icount_bias_ps={} warp_start={}",
         std::process::id(),
         reason.name(),
         read.virtual_ps,
@@ -155,6 +174,11 @@ fn print_row(
         read.icount_bias_ps,
         read.warp_start,
     );
+}
+
+/// Selects power-of-two totals and power-of-two repeat runs at one coordinate.
+const fn should_print(count: u64, run: u64) -> bool {
+    count.is_power_of_two() || (run >= 2 && run.is_power_of_two())
 }
 
 fn read_qemu_clock() -> Option<QemuClockDiagnostic> {
@@ -190,4 +214,23 @@ fn resolve_clock_diagnostic() -> Option<QemuClockDiagnosticFn> {
 #[cfg(not(unix))]
 fn resolve_clock_diagnostic() -> Option<QemuClockDiagnosticFn> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_print;
+
+    #[test]
+    fn a_late_repeat_at_one_coordinate_still_prints() {
+        // Isolated occurrences past the early totals stay quiet.
+        assert!(should_print(1, 1));
+        assert!(should_print(64, 1));
+        assert!(!should_print(65, 1));
+
+        // The same coordinate returning prints on its 2nd, 4th, 8th visit.
+        assert!(should_print(65, 2));
+        assert!(!should_print(66, 3));
+        assert!(should_print(67, 4));
+        assert!(should_print(71, 8));
+    }
 }
