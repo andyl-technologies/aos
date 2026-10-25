@@ -118,6 +118,7 @@ in
     test-support = import ./_bazel-test-support.nix {inherit pkgs;};
     feature-powerset = import ./_bazel-feature-powerset.nix {inherit pkgs;};
     crucible-feature-policy = import ./_bazel-crucible-feature-policy.nix {inherit pkgs;};
+    rust-source-patches = import ./_bazel-rust-source-patches.nix {inherit pkgs;};
     sysroot-metadata = import ./_bazel-sysroot-metadata.nix {inherit pkgs;};
     manifest-extractor = import ./_bazel-manifest-extractor.nix {inherit pkgs;};
     static-runtime = import ./_bazel-static-runtime.nix {inherit pkgs;};
@@ -523,6 +524,7 @@ in
             test-support.all
             feature-powerset.all
             crucible-feature-policy.all
+            rust-source-patches.all
             sysroot-metadata
             manifest-extractor
             native-libraries

@@ -397,9 +397,24 @@ feature selections with separate offline Cargo checks. It does not establish
 compiler-default, artifact, runtime, or performance parity.
 The [feature-case receipt](tests/evidence/crucible-no-default-feature-cases.json)
 retains both builds' execution evidence. All 16 first-party compiled artifacts
-match between source selections. A rustix compiler-probe metadata file has a
-different digest in the inputs of 11 compilations; complete input
-reproducibility remains unresolved.
+match between source selections. The subsequent
+[Rustix cleanup receipt](tests/evidence/rustix-probe-input-reproducibility.json)
+closes the recorded input mismatch: all 16 first-party compilation inputs now
+match too, and their output bytes still match the pre-patch builds.
+
+`third_party/rust/source-patches.json` declares reviewed source patches by
+package version and archive hash. Rustix 1.1.4 receives the compiler-probe
+cleanup already present in the pinned 1.1.5 source; its feature decisions,
+library sources, and licenses remain unchanged. Unreviewed Rustix versions,
+changed patch bytes, and invalid patch paths fail evaluation. Patches apply
+without fuzz during source preparation. The separate `patches` derivation
+output retains the applied patch and archive identity, keeping provenance
+files outside upstream compiler-input globs. Rustix 1.1.5 needs no patch, so
+accache's dependency source identities remain unchanged.
+`checks.build.bazel.rust-source-patches.all` checks the source differences,
+retained provenance, seven rejected policy mutations, and probe cleanup for
+native, libc, no-std, and unsupported-compiler cases. The retained execution
+evidence covers x86_64 Linux; other platforms still need qualification.
 
 `checks.crucible.phase1.crateFeaturePowerset` now requires the nine compiled
 cases and `checks.build.bazel.crucible-feature-policy.all`. The latter queries
