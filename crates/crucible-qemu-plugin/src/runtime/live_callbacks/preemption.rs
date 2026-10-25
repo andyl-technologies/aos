@@ -120,6 +120,11 @@ impl LiveVcpuTimeCallbackState {
                 current_icount,
                 raw_icount,
             );
+            self.note_unconsumed_due_inbound(
+                "answer-already-answered",
+                "zero-length-advance",
+                raw_icount,
+            );
             return Ok(());
         }
         // Claim the advance before publishing: injecting a due frame can
@@ -142,6 +147,15 @@ impl LiveVcpuTimeCallbackState {
             advance.sequence(),
             advance.ceiling(),
             current_icount,
+            raw_icount,
+        );
+        self.note_unconsumed_due_inbound(
+            if matches!(published, Ok(true)) {
+                "answer-published"
+            } else {
+                "answer-declined"
+            },
+            "zero-length-advance",
             raw_icount,
         );
         if !matches!(published, Ok(true)) {
@@ -170,6 +184,11 @@ impl LiveVcpuTimeCallbackState {
             advance.sequence(),
             advance.ceiling(),
             self.last_icount.load(Ordering::Acquire),
+            raw_icount,
+        );
+        self.note_unconsumed_due_inbound(
+            &format!("query-{}", reason.name()),
+            "budget-query",
             raw_icount,
         );
     }

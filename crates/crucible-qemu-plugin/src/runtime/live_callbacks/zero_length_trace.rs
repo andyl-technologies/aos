@@ -51,7 +51,7 @@ impl ZeroLengthQuery {
         }
     }
 
-    const fn name(self) -> &'static str {
+    pub(super) const fn name(self) -> &'static str {
         match self {
             Self::Paused => "paused",
             Self::IdlePending => "idle-pending",
@@ -111,6 +111,16 @@ pub(super) enum ZeroLengthBoundary {
     Unpublished(&'static str),
     /// The all-halted idle callback returned on this path.
     Idle(&'static str),
+}
+
+impl ZeroLengthBoundary {
+    /// Names the path as its trace rows do, such as `idle-already-due`.
+    pub(super) fn label(self) -> String {
+        match self {
+            Self::Unpublished(name) => format!("unpublished-{name}"),
+            Self::Idle(name) => format!("idle-{name}"),
+        }
+    }
 }
 
 /// Unpublished-boundary reasons and idle paths, in counter order.

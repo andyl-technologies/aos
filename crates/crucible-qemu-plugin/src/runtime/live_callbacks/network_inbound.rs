@@ -145,6 +145,59 @@ impl LiveVcpuTimeCallbackState {
             .map_or(Ok(None), LiveNetworkCallbackState::inbound_head_observe)
     }
 
+    /// Traces a zero-length advance that leaves a due frame at the ring head.
+    ///
+    /// Diagnostic only: it reads the slot and ring without consuming, and
+    /// prints nothing unless the zero-length trace opt-in reached QEMU.
+    pub(super) fn note_unconsumed_due_inbound(
+        &self,
+        path: &str,
+        boundary: &'static str,
+        raw_icount: u64,
+    ) {
+        if !zero_length_trace::enabled() {
+            return;
+        }
+        let Some(network) = self.network.as_ref() else {
+            return;
+        };
+        let Ok(advance) = self.slot.get().load_scheduler_advance_publication() else {
+            return;
+        };
+        let Ok(Some(head)) = self.network_inbound_head_observe() else {
+            return;
+        };
+        let current = self.last_icount.load(Ordering::Acquire);
+        if !inbound_stall_trace::is_due_at_zero_length(
+            current,
+            advance.ceiling(),
+            head.frame.delivery_icount,
+        ) {
+            return;
+        }
+
+        let stop = advance.stop();
+        let confirmed = inbound_stall_trace::note(&inbound_stall_trace::InboundStallSample {
+            path,
+            boundary,
+            raw: raw_icount,
+            sequence: advance.sequence(),
+            current,
+            ceiling: advance.ceiling(),
+            stop: &stop,
+            head: &head.frame,
+            idle_pending: self.idle_advance_is_pending(),
+            idle_edge: self.all_halted_idle_handled.load(Ordering::Acquire),
+            rx_active: network.rx_delivery_active.load(Ordering::Acquire),
+            answered: self.answered_zero_length_advance.load(Ordering::Acquire)
+                == advance.sequence().wrapping_add(1),
+        });
+        if confirmed {
+            // The idle plans that led here are the stall's missing context.
+            self.idle_plan_witness.flush_recent();
+        }
+    }
+
     /// Checks the original owner generation, read frontier, and full head.
     pub(crate) fn network_inbound_head_current(
         &self,

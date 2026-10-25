@@ -8,6 +8,11 @@
 //! it does not authorize time or consume allowance for earlier boot plans.
 //! No control request, native grant or callback completion is minted here.
 //! Existing capture policy preserves descriptor flags and signal disposition.
+//!
+//! The runtime opt-in alone also keeps the newest plans and returns in a small
+//! ring, regardless of floor or allowance. A stall trace flushes that ring as
+//! `CRUCIBLE-IDLE-PLAN-RECENT-V1` rows, so the plans nearest an unforeseeable
+//! stall survive even after the admitted allowance was spent earlier.
 
 use std::ffi::OsStr;
 use std::io::{self, Write};
@@ -21,11 +26,15 @@ use super::device_wait_witness::capture::destination;
 
 const MAX_ROWS: usize = 256;
 
+/// Newest plan and return records the rolling ring keeps.
+const RECENT_ROWS: usize = 32;
+
 pub(super) struct IdlePlanWitness {
     budget: usize,
     minimum_ps: u64,
     owner_pid: u32,
     inventory: Mutex<Inventory>,
+    recent: Option<Mutex<RecentPlans>>,
     #[cfg(test)]
     pub(super) destination: Option<Mutex<std::fs::File>>,
 }
@@ -59,6 +68,9 @@ impl IdlePlanWitness {
         };
         let mut witness = Self::from_setting(setting);
         witness.minimum_ps = minimum_ps.unwrap_or(0);
+        if runtime_trace == Some(OsStr::new("1")) {
+            witness.recent = Some(Mutex::new(RecentPlans::default()));
+        }
         witness
     }
 
@@ -76,6 +88,7 @@ impl IdlePlanWitness {
             minimum_ps: 0,
             owner_pid: if budget == 0 { 0 } else { std::process::id() },
             inventory: Mutex::new(Inventory::default()),
+            recent: None,
             #[cfg(test)]
             destination: None,
         }
@@ -93,6 +106,50 @@ impl IdlePlanWitness {
         self.inventory = Mutex::new(Inventory::default());
     }
 
+    /// Writes the rolling ring, oldest first, without consuming it.
+    ///
+    /// Each record is copied at most once per flush; contention skips the
+    /// flush rather than block the caller.
+    pub(super) fn flush_recent(&self) {
+        let Some(recent) = &self.recent else {
+            return;
+        };
+        let records = {
+            let Ok(recent) = recent.try_lock() else {
+                return;
+            };
+            recent.oldest_first()
+        };
+        for record in records {
+            self.emit_with_prefix(record, RECENT_PREFIX);
+        }
+    }
+
+    /// Pairs an unadmitted return with the newest unanswered plan in the ring.
+    ///
+    /// Each idle callback ends the plan it began on the same vCPU thread, so
+    /// the newest open plan is normally its own; interleaved vCPUs can only
+    /// mispair advisory rows.
+    fn remember_unadmitted_return(&self, outcome: Outcome) {
+        if let Some(recent) = &self.recent
+            && let Ok(mut recent) = recent.try_lock()
+            && let Some(plan) = recent.newest_open_plan()
+        {
+            recent.push(Record {
+                plan,
+                outcome: Some(outcome),
+            });
+        }
+    }
+
+    fn remember(&self, record: Record) {
+        if let Some(recent) = &self.recent
+            && let Ok(mut recent) = recent.try_lock()
+        {
+            recent.push(record);
+        }
+    }
+
     /// Reserves both rows without altering the plan or the admitted wait.
     pub(super) fn begin(
         &self,
@@ -102,24 +159,26 @@ impl IdlePlanWitness {
         exact_deadline: ExactDeadlineReport,
         stop: AdvanceStopCondition,
     ) -> Option<PlanObservation> {
+        let record = Record {
+            plan: PlanRecord {
+                pid: std::process::id(),
+                vcpu,
+                raw,
+                plan,
+                exact_deadline,
+                stop,
+            },
+            outcome: None,
+        };
+        // Every plan enters the rolling ring; only an admitted plan reserves
+        // allowance and emits rows.
+        self.remember(record);
         if plan.current_icount() < self.minimum_ps
             || self.budget == 0
             || self.owner_pid != std::process::id()
         {
             return None;
         }
-        let plan = PlanRecord {
-            pid: self.owner_pid,
-            vcpu,
-            raw,
-            plan,
-            exact_deadline,
-            stop,
-        };
-        let record = Record {
-            plan,
-            outcome: None,
-        };
         let emit = {
             let Ok(mut inventory) = self.inventory.try_lock() else {
                 return None;
@@ -138,21 +197,23 @@ impl IdlePlanWitness {
         if emit {
             self.emit(record);
         }
-        Some(PlanObservation(plan))
+        Some(PlanObservation(record.plan))
     }
 
     /// Copies the exact original return choice, not native RR execution.
     pub(super) fn end(&self, observation: Option<PlanObservation>, outcome: Outcome) {
         let Some(PlanObservation(plan)) = observation else {
+            self.remember_unadmitted_return(outcome);
             return;
         };
-        if plan.pid != self.owner_pid || self.owner_pid != std::process::id() {
-            return;
-        }
         let record = Record {
             plan,
             outcome: Some(outcome),
         };
+        self.remember(record);
+        if plan.pid != self.owner_pid || self.owner_pid != std::process::id() {
+            return;
+        }
         {
             let Ok(mut inventory) = self.inventory.try_lock() else {
                 return;
@@ -168,9 +229,13 @@ impl IdlePlanWitness {
     }
 
     fn emit(&self, record: Record) {
+        self.emit_with_prefix(record, ADMITTED_PREFIX);
+    }
+
+    fn emit_with_prefix(&self, record: Record, prefix: &str) {
         let mut bytes = [0_u8; 512];
         let mut writer = io::Cursor::new(bytes.as_mut_slice());
-        if record.write_to(&mut writer).is_err() {
+        if record.write_to(&mut writer, prefix).is_err() {
             return;
         }
         let length = writer.position() as usize;
@@ -217,6 +282,40 @@ impl Default for Inventory {
     }
 }
 
+/// Fixed-capacity ring of the newest plan and return records.
+#[derive(Default)]
+struct RecentPlans {
+    rows: [Option<Record>; RECENT_ROWS],
+    next: usize,
+}
+
+impl RecentPlans {
+    fn push(&mut self, record: Record) {
+        self.rows[self.next] = Some(record);
+        self.next = (self.next + 1) % RECENT_ROWS;
+    }
+
+    fn newest_open_plan(&self) -> Option<PlanRecord> {
+        self.oldest_first()
+            .into_iter()
+            .rev()
+            .find(|record| record.outcome.is_none())
+            .map(|record| record.plan)
+    }
+
+    fn oldest_first(&self) -> Vec<Record> {
+        self.rows[self.next..]
+            .iter()
+            .chain(&self.rows[..self.next])
+            .flatten()
+            .copied()
+            .collect()
+    }
+}
+
+const ADMITTED_PREFIX: &str = "CRUCIBLE-IDLE-PLAN-V1";
+const RECENT_PREFIX: &str = "CRUCIBLE-IDLE-PLAN-RECENT-V1";
+
 // The token is deliberately not Copy or Clone: one admitted wait has one return.
 pub(super) struct PlanObservation(PlanRecord);
 
@@ -246,11 +345,11 @@ struct Record {
 }
 
 impl Record {
-    fn write_to(self, writer: &mut impl Write) -> io::Result<()> {
+    fn write_to(self, writer: &mut impl Write, prefix: &str) -> io::Result<()> {
         let plan = self.plan;
         writeln!(
             writer,
-            "CRUCIBLE-IDLE-PLAN-V1 phase={} pid={} vcpu={} raw={} current_ps={} ceiling_ps={} stop={:?} wake_ps={} cause={:?} exact_deadline={:?} timer_ps={:?} inbound_ps={:?} device_ps={:?} device_active={} outcome={:?}",
+            "{prefix} phase={} pid={} vcpu={} raw={} current_ps={} ceiling_ps={} stop={:?} wake_ps={} cause={:?} exact_deadline={:?} timer_ps={:?} inbound_ps={:?} device_ps={:?} device_active={} outcome={:?}",
             if self.outcome.is_some() {
                 "return"
             } else {

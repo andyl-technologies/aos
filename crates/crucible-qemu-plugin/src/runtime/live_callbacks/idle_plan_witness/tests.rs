@@ -223,7 +223,7 @@ fn maximum_scalar_rows_fit_the_fixed_capture_or_drop_without_partial_output() {
     };
     let mut bytes = Vec::new();
     record
-        .write_to(&mut bytes)
+        .write_to(&mut bytes, ADMITTED_PREFIX)
         .unwrap_or_else(|error| panic!("row: {error}"));
     assert!(bytes.len() <= 512, "maximum row bytes={}", bytes.len());
     assert_eq!(bytes.iter().filter(|byte| **byte == b'\n').count(), 1);
@@ -372,4 +372,79 @@ fn forked_child_rebind_restores_rows_with_a_fresh_allowance() {
 
     assert_eq!(witness.owner_pid, std::process::id());
     assert!(begin(&witness).is_some());
+}
+
+#[test]
+fn the_runtime_opt_in_keeps_the_newest_plans_past_the_floor_and_allowance() {
+    // A floor above every plan admits nothing, as before; the ring still sees
+    // each plan and pairs its return.
+    let witness = IdlePlanWitness::from_settings(
+        Some(OsStr::new("1")),
+        Some(OsStr::new("2")),
+        Some(OsStr::new("1000000")),
+    );
+    for current in 0..(RECENT_ROWS as u64 + 4) {
+        let observation = witness.begin(
+            0,
+            current,
+            plan(current),
+            ExactDeadlineReport::NoArmedTimer,
+            AdvanceStopCondition::Ceiling,
+        );
+        assert!(observation.is_none());
+        witness.end(observation, Outcome::ReturnToQemu);
+    }
+
+    let recent = witness
+        .recent
+        .as_ref()
+        .unwrap_or_else(|| panic!("the runtime opt-in should keep a rolling ring"))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .oldest_first();
+
+    assert_eq!(recent.len(), RECENT_ROWS);
+    let newest = recent[RECENT_ROWS - 1];
+    assert_eq!(newest.plan.plan.current_icount(), RECENT_ROWS as u64 + 3);
+    assert_eq!(newest.outcome, Some(Outcome::ReturnToQemu));
+    let before = recent[RECENT_ROWS - 2];
+    assert_eq!(before.plan, newest.plan);
+    assert_eq!(before.outcome, None);
+}
+
+#[test]
+fn only_the_runtime_opt_in_keeps_a_rolling_ring() {
+    assert!(
+        IdlePlanWitness::from_setting(Some(OsStr::new("64")))
+            .recent
+            .is_none()
+    );
+    assert!(
+        IdlePlanWitness::from_settings(None, Some(OsStr::new("64")), None)
+            .recent
+            .is_none()
+    );
+}
+
+#[test]
+fn a_recent_row_carries_its_own_prefix() {
+    let record = Record {
+        plan: PlanRecord {
+            pid: 7,
+            vcpu: 0,
+            raw: 1,
+            plan: plan(5),
+            exact_deadline: ExactDeadlineReport::NoArmedTimer,
+            stop: AdvanceStopCondition::Ceiling,
+        },
+        outcome: None,
+    };
+    let mut bytes = Vec::new();
+
+    record
+        .write_to(&mut bytes, RECENT_PREFIX)
+        .unwrap_or_else(|error| panic!("row should render: {error}"));
+
+    let row = String::from_utf8(bytes).unwrap_or_else(|error| panic!("utf-8 row: {error}"));
+    assert!(row.starts_with("CRUCIBLE-IDLE-PLAN-RECENT-V1 phase=plan pid=7"));
 }

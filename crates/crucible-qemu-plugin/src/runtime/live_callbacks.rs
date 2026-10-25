@@ -70,6 +70,7 @@ mod error;
 mod fault_command_control;
 mod fingerprint_worker;
 mod idle_plan_witness;
+mod inbound_stall_trace;
 mod logical_restore;
 mod network_inbound;
 mod network_output_stop;
@@ -1815,6 +1816,7 @@ impl LiveVcpuTimeCallbackState {
             self.last_icount.load(Ordering::Acquire),
             raw,
         );
+        self.note_unconsumed_due_inbound(&path.label(), boundary, raw);
     }
 
     /// Publishes and admits a doorbell-deferred stop from this exact callback.
