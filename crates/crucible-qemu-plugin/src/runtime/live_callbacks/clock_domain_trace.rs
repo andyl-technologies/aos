@@ -7,8 +7,9 @@
 //! the timer, the vCPU halts again at the same point, and the host sees the
 //! same pause twice. This trace reads QEMU's clock terms through a read-only
 //! export and prints them when QEMU disagrees, when the same already-due
-//! point repeats, or when an inbound frame or device completion is due at the
-//! current coordinate:
+//! point repeats, or when any idle wake is due at the current coordinate:
+//! an inbound frame, a device completion, a device I/O freeze, or the
+//! scheduler ceiling:
 //!
 //! ```text
 //! CRUCIBLE-CLOCK-DOMAIN-V1 pid=4242 reason=qemu-not-due cause=timer count=1 run=1 plugin_ps=587001000000 deadline_ps=587001000000 raw=1213 virtual_ps=587000999950 qemu_deadline_ps=587001000000 qemu_raw=1213 sim_tick_bias=586940350000 icount_bias_ps=0 warp_start=-1
@@ -56,8 +57,8 @@ enum Reason {
     QemuNotDue,
     /// The same already-due coordinate and deadline returned again.
     Repeated,
-    /// An inbound frame or device completion woke the node at its current
-    /// coordinate, so the idle pass asks QEMU for a zero-length advance.
+    /// A non-timer wake is due at the node's current coordinate, so the idle
+    /// pass publishes the quiesced-boundary encoding.
     DueNowOther,
 }
 
@@ -113,28 +114,36 @@ pub(super) fn note_already_due(plugin_ps: u64, deadline_ps: Option<u64>, raw: u6
     }
 }
 
-/// Records an idle pass whose non-timer wake is the current coordinate.
+/// Records an idle pass whose wake is the current coordinate.
+///
+/// Every cause prints. A device I/O freeze or a scheduler ceiling at the
+/// current coordinate publishes the same quiesced encoding as an inbound
+/// frame, so a stall at that coordinate must name which one it was.
 pub(super) fn note_due_now(
     cause: IdleWakeCause,
     plugin_ps: u64,
     deadline_ps: Option<u64>,
     raw: u64,
 ) {
-    let cause = match cause {
-        IdleWakeCause::InboundFrame => "inbound",
-        IdleWakeCause::DeviceIoCompletion => "device",
-        IdleWakeCause::TimerDeadline
-        | IdleWakeCause::DeviceIoFreeze
-        | IdleWakeCause::SchedulerCeiling => return,
-    };
     print_row(
         Reason::DueNowOther,
-        cause,
+        due_now_cause_name(cause),
         plugin_ps,
         deadline_ps,
         raw,
         read_qemu_clock(),
     );
+}
+
+/// Names the wake that made an idle pass due at its own coordinate.
+const fn due_now_cause_name(cause: IdleWakeCause) -> &'static str {
+    match cause {
+        IdleWakeCause::InboundFrame => "inbound",
+        IdleWakeCause::DeviceIoCompletion => "device",
+        IdleWakeCause::DeviceIoFreeze => "device-freeze",
+        IdleWakeCause::SchedulerCeiling => "ceiling",
+        IdleWakeCause::TimerDeadline => "timer",
+    }
 }
 
 fn print_row(
@@ -227,7 +236,28 @@ fn resolve_clock_diagnostic() -> Option<QemuClockDiagnosticFn> {
 
 #[cfg(test)]
 mod tests {
-    use super::should_print;
+    use super::{due_now_cause_name, should_print};
+    use crate::IdleWakeCause;
+
+    #[test]
+    fn every_due_now_cause_has_a_row_name() {
+        // A freeze or ceiling wake at the current coordinate is as much a
+        // quiesced boundary as an inbound frame, so none is skipped.
+        assert_eq!(due_now_cause_name(IdleWakeCause::InboundFrame), "inbound");
+        assert_eq!(
+            due_now_cause_name(IdleWakeCause::DeviceIoCompletion),
+            "device"
+        );
+        assert_eq!(
+            due_now_cause_name(IdleWakeCause::DeviceIoFreeze),
+            "device-freeze"
+        );
+        assert_eq!(
+            due_now_cause_name(IdleWakeCause::SchedulerCeiling),
+            "ceiling"
+        );
+        assert_eq!(due_now_cause_name(IdleWakeCause::TimerDeadline), "timer");
+    }
 
     #[test]
     fn a_late_repeat_at_one_coordinate_still_prints() {
