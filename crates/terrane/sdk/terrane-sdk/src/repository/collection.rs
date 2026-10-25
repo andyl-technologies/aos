@@ -291,6 +291,25 @@ where
         self.collection.restore_pack(requested).await
     }
 
+    /// Restores an older exclusion and repeats retirement checks in this cycle.
+    ///
+    /// Uses the original coordinator and session. The separately durable restore
+    /// remains available if the pack is no longer eligible for retirement. Missing
+    /// old Trash is never backfilled or reused as deletion-age evidence.
+    ///
+    /// # Errors
+    /// Rejects incomplete marking or a non-older cycle before effects. Preserves
+    /// native restoration, retirement, ownership and durability failures;
+    /// cancellation or failure after preflight stops the original session.
+    pub async fn refresh_exclusion(
+        &mut self,
+        requested: terrane_format::bucket::PackExclusion,
+    ) -> Result<Option<Tombstone>, CollectionError> {
+        self.collection
+            .refresh_exclusion(self.coordinator, requested)
+            .await
+    }
+
     /// Deletes one exact retired triple after native ownership and deletion wait.
     ///
     /// # Errors

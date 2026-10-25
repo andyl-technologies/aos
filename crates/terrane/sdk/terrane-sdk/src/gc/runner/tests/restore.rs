@@ -11,6 +11,8 @@ use terrane_format::bucket::PackExclusion;
 mod support;
 use support::*;
 
+mod missing_trash;
+
 mod copy;
 use copy::copied;
 

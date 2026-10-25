@@ -94,6 +94,28 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+Fresh-cycle exclusion recovery is now exposed on `Collection` and the
+repository-retained `LocalCollection`. After completed marking, it restores an
+exact older binding through the existing native restoration producer, then
+repeats ordinary retirement qualification for that pack in the current cycle.
+Coordinator identity and timing are checked before effects. The original
+session retains one outer cancellation guard across both durable steps; an
+interruption after restoration leaves restored placements available. A stale
+binding or a now-ineligible restored pack returns no new tombstone. This never
+backfills an older Trash incarnation or supplies deletion-age authority.
+
+A new focused guest pairs the unchanged missing-Trash restoration case with
+fresh-cycle recovery from both an interrupted initial Trash creation and a
+subsequently missing Trash file. Its assertions require a newer cycle/epoch,
+fresh durable Trash and committed creation journal, unchanged old journal,
+preserved physical pack/index inodes, current completed checkpoints and zero
+extra data-body reads. Early marking and same-cycle requests are refused.
+Both supported Tokio all-target strict lint profiles and the std-only library
+profile pass, as do touched formatting, Python syntax, PLAN-2 and diff checks.
+Native qualification and mandatory application-target compilation remain
+pending. This is a GC-29 recovery prerequisite; configured GC service and task
+acceptance remain unchanged.
+
 Protected local-v1 intent discovery at `5eb7dd1b09` passes its focused native
 guest in 1,506.333 seconds. Full review verifies all 8,214 immutable source files,
 5,466 crate inputs, the actual retained Cargo library-test executable and its

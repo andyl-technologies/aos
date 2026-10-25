@@ -508,6 +508,28 @@ where
         coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
         requested: Option<crate::pack::PackId>,
     ) -> Result<Option<terrane_format::gc::Tombstone>, CollectionError> {
+        self.check_retirement_inputs(coordinator)?;
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let result = crate::selected_bridge::native_collection_retirement::retire_one(
+            self.guard,
+            self.authority,
+            &self.session,
+            (&self.roots, &self.state),
+            self.windows,
+            requested,
+        )
+        .await?;
+        operation.complete();
+        Ok(result)
+    }
+
+    fn check_retirement_inputs(
+        &self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+    ) -> Result<(), CollectionError> {
         if !std::ptr::eq(self.guard, coordinator.guard()) {
             return Err(denied().into());
         }
@@ -522,19 +544,47 @@ where
         {
             return Err(GcError::Window.into());
         }
+        Ok(())
+    }
+
+    /// Restores an older exclusion and qualifies a fresh retirement in this cycle.
+    ///
+    /// Requires completed marking and a strictly older exclusion. Current native
+    /// restoration checks run before the ordinary retirement checks repeat in
+    /// this session. Missing old Trash is never backfilled, and its age grants
+    /// no permission to the new incarnation.
+    ///
+    /// Restoration and retirement publish separate durable generations. An
+    /// interruption between them leaves the restored placements available. Returns
+    /// `None` if the binding is stale, or if the restored pack is now ineligible;
+    /// in the latter case the restoration remains durable.
+    ///
+    /// # Errors
+    /// Rejects unfinished marking, a non-older cycle or incompatible coordinator
+    /// before effects. Preserves all current-root, ownership, incarnation, timing
+    /// and durability failures of restoration and retirement. Cancellation or a
+    /// failure after preflight permanently stops the original session.
+    pub async fn refresh_exclusion(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+        requested: terrane_format::bucket::PackExclusion,
+    ) -> Result<Option<terrane_format::gc::Tombstone>, CollectionError> {
+        if self.state.phase != terrane_format::gc::Phase::Sweep
+            || requested.cycle >= self.state.cycle
+        {
+            return Err(denied().into());
+        }
+        self.check_retirement_inputs(coordinator)?;
+
+        // Retain the outer operation across both durable steps so interruption
+        // cannot leave this session reusable after only restoration completed.
         let operation = self.session.operation()?;
-        self.session
-            .renew(&Collector::new(self.guard, self.authority))
-            .await?;
-        let result = crate::selected_bridge::native_collection_retirement::retire_one(
-            self.guard,
-            self.authority,
-            &self.session,
-            (&self.roots, &self.state),
-            self.windows,
-            requested,
-        )
-        .await?;
+        let pack = crate::pack::PackId::from_random_bytes(requested.pack_id);
+        let result = if self.restore_pack(requested).await? {
+            self.retire_pack(coordinator, pack).await?
+        } else {
+            None
+        };
         operation.complete();
         Ok(result)
     }

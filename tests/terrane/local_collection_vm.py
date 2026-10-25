@@ -34,6 +34,13 @@ COPIED_SHARED_CASES = [
 ]
 
 
+MISSING_TRASH_CASES = [
+    "gc::runner::tests::restore::missing_trash::"
+    "gc_refresh_native_missing_trash_uses_fresh_cycle_and_preserves_old_journal",
+    "gc::runner::tests::restore::gc_restore_native_unknown_trash_age_restores_exact_generation",
+]
+
+
 def verify_image(source, image):
     """Binds the actual retained Cargo test image to every immutable crate input."""
     identity = json.loads((image / "share/identity.json").read_text())
@@ -90,6 +97,8 @@ def main():
         cases = LOCAL_DELETE_CASES
     elif suite == "copied-shared-session":
         cases = COPIED_SHARED_CASES
+    elif suite == "missing-trash-refresh":
+        cases = MISSING_TRASH_CASES
     else:
         raise ValueError("unknown native collection qualification suite")
 
@@ -128,6 +137,9 @@ def main():
     elif suite == "copied-shared-session":
         print("PASS copied first ownership and permanent recovery retain one live session; "
               "original standalone ownership still passes", flush=True)
+    elif suite == "missing-trash-refresh":
+        print("PASS missing Trash recovery creates a fresh exclusion and preserves old journals; "
+              "original restoration still passes", flush=True)
     else:
         print("PASS actual local-v1 intent discovery survives exact full-D deletion and durable Done",
               flush=True)

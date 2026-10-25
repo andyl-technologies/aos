@@ -534,6 +534,11 @@ in {
     image = nativeSdkTestImage;
     suite = "copied-shared-session";
   };
+  integration.native-missing-trash-refresh = import ./local-collection-reconciliation.nix {
+    inherit pkgs lib;
+    image = nativeSdkTestImage;
+    suite = "missing-trash-refresh";
+  };
   integration.native-local-gc-conformance = localGcConformance;
   integration.native-collector-clock = import ./native-collector-clock.nix {sourceGate = nativeSdkGate;};
   integration.native-cold-fork-source = nativeForkPrerequisites.coldSource;
