@@ -251,16 +251,38 @@ in {
         vm.execute(f"systemctl reset-failed {unit}")
 
     with startup_diagnostics(vm, unit, "dbus.service"):
-        vm.succeed(f"systemctl start {unit}")
-        vm.wait_until_succeeds(
-            f"test $(systemctl show {unit} --property=ActiveState --value) = inactive || "
-            f"test $(systemctl show {unit} --property=ActiveState --value) = failed",
-            timeout=120,
-        )
-        vm.succeed(
-            f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 0 && "
-            f"test $(systemctl show {unit} --property=ActiveState --value) = inactive"
-        )
+        try:
+            vm.succeed(f"systemctl start {unit}")
+            vm.wait_until_succeeds(
+                f"test $(systemctl show {unit} --property=ActiveState --value) = inactive || "
+                f"test $(systemctl show {unit} --property=ActiveState --value) = failed",
+                timeout=120,
+            )
+            vm.succeed(
+                f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 0 && "
+                f"test $(systemctl show {unit} --property=ActiveState --value) = inactive"
+            )
+        except Exception:
+            # Observe public unit configuration without exposing the preparer's
+            # retained private cause or any credential contents.
+            properties = (
+                "ActiveState,SubState,MainPID,ExecMainPID,ExecMainStatus,"
+                "ControlGroup,FragmentPath,DropInPaths,Transient,InvocationID,"
+                "OpenFile,ExtraFileDescriptorNames,FileDescriptorStoreMax,"
+                "NFileDescriptorStore,SELinuxContext,CapabilityBoundingSet,"
+                "AmbientCapabilities,NoNewPrivileges,SecureBits,ExecStart,"
+                "ExecStartPre,ExecStartPost,ExitType,KillMode,TimeoutStopUSec"
+            )
+            try:
+                status, stdout, stderr = vm.execute(
+                    f"systemctl show {unit} aos-sandboxd.service --property={properties}",
+                    timeout=15,
+                )
+                print(f"Offline startup properties (exit {status}):", flush=True)
+                print((stdout + stderr).decode("utf-8", errors="replace"), flush=True)
+            except Exception as diagnostic_error:
+                print(f"Offline startup properties unavailable: {diagnostic_error}", flush=True)
+            raise
     original = public_candidate_exports()
     assert len(original) == 1, original
     assert_candidate_reads_denied()
