@@ -29,10 +29,27 @@
   };
   legacyEtcDump = legacySystem.config.system.build.etcDump;
   legacyEtcImage = legacySystem.config.system.build.etcMetadataImage;
+  immutableSystem = system.extendModules {
+    modules = [
+      {
+        aos.security.selinux = {
+          enable = true;
+          bootMode = "immutable-stage0";
+        };
+      }
+    ];
+  };
+  dbusContext = immutableSystem.config.environment.etc."selinux/aos/contexts/dbus_contexts";
   labeledSystem = system.extendModules {
     modules = [
       {
         system.build.immutableSelinuxPolicy = lib.mkForce policy;
+        # Exercise the production parent tree as well as its regular-file
+        # override: recursive source publication must not retain the symlink.
+        environment.etc."selinux/aos".source = immutableSystem.config.environment.etc."selinux/aos".source;
+        environment.etc."selinux/aos/contexts/dbus_contexts" = {
+          inherit (dbusContext) source mode;
+        };
         environment.etc."selinux/runtime-prefix-fixture".text = ''
           runtime-prefix fixture
         '';
@@ -119,6 +136,9 @@ in
           assert fixture["kind"] == "symlink", fixture
           assert fixture["context"].split(":", 3)[2] == "selinux_config_t", fixture
           assert "/etc/selinux/runtime-prefix-fixture" not in entries, entries
+          dbus = entries["/selinux/aos/contexts/dbus_contexts"]
+          assert dbus["kind"] == "regular", dbus
+          assert dbus["context"].split(":", 3)[2] == "default_context_t", dbus
           ' ${labeledEtcPlan}/context-map.json
 
           # The shared rootfs builder retains its complete plan only on the
