@@ -41,11 +41,17 @@ fn prepaid_codec_refusal_is_local_and_preserves_original_poisoning() {
     let refusal = RecordAccount::new(&parent, RecordAllocationPlan::read(4179, 0).unwrap())
         .err()
         .unwrap();
-    let RamStoreError::Store(StoreError::DecodeAdmission { source, .. }) = refusal else {
+    let RamStoreError::Store(StoreError::DecodeAdmission { source, custody }) = refusal else {
         panic!("expected original admission")
     };
     assert_eq!(source, poisoned);
+    let custody = custody.expect("the refused constructor retains its original account");
     drop(parent);
+
+    // The complete refusal retains the account; independently cloned causes
+    // retain only their existing diagnostic storage after account custody closes.
+    assert_eq!(quota.used(), baseline);
+    drop(custody);
 
     // The original cause keeps its prepaid diagnostic storage after the account
     // closes, until the last error alias releases that same storage.
