@@ -1,0 +1,198 @@
+{
+  "checkout_parent": "c3de95b35b26f08a5c355000d2f4fbc1ea42bf90",
+  "command": "nix-build default.nix -A checks.build.bazel.qemu-gpl.suite-publication --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "controller": "/nix/store/lwwxw3pz8g981bsvkshf789ihi0w8d67-crucible-controller-0.1.0",
+  "controller_source": "/nix/store/gv1d5ax7c9b7f2pa24m3j8j647pdj0dc-crucible-workspace-src",
+  "corresponding_source": "/nix/store/m9s888qfbx4hs2ikpxw9lyy8m29s9k54-qemu-crucible-source-11.1.1",
+  "declarations_sha256": {
+    "crates/registry/aos-registry-authoring/src/registry_ops/inventory_publish.rs": "a75a6dc799c6c28d0d16679132402120fc51f3fc5b42c8b8f0323e36dae261ff",
+    "tests/build/_bazel-qemu-gpl-publication.nix": "81c1952de210b6707db7e84aba0016f3ed5ce46dcab76d12e47bcd5a27a3f651"
+  },
+  "evidence_sha256": "e080313d72b4b5b0cb4b1f38557c5add96e75369e3f23904eda6f906e0bed705",
+  "limits": [
+    "These eight cases qualify evaluated publication preview only. No signed publication, native companion build, artifact upload or service was performed.",
+    "The private disk-backed store contains actual closure payloads and Nix registrations; selected root NAR hashes are verified before invoking the installed Bazel-built APR.",
+    "The frozen native controller source predates the separate control-server lint repair. Its full pipeline and the earlier Rust compile check do not qualify that later repair.",
+    "Canonical ABI VM determinism, complete compiler parity, cache and performance acceptance, and production cutover remain separate gates."
+  ],
+  "native_controller_tests": {
+    "passed": 5576,
+    "skipped": 75
+  },
+  "preview_source_matches_controller_snapshot": true,
+  "proof": {
+    "authoring_package": "/nix/store/f6cm3q8m1byvqac5dli47fa4dh62pmv5-aos-cli-0.1.0",
+    "cases": {
+      "raw-plugin": {
+        "command": [
+          "/nix/store/f6cm3q8m1byvqac5dli47fa4dh62pmv5-aos-cli-0.1.0/bin/apr",
+          "--dry-run",
+          "publish",
+          "/nix/store/c29kpk09lwzz48872hcbgrxpv69jna6z-crucible-qemu-plugin-0.1.0",
+          "--registry",
+          "bazel-publication"
+        ],
+        "exit_code": 1,
+        "stderr": "error: publication root /nix/store/c29kpk09lwzz48872hcbgrxpv69jna6z-crucible-qemu-plugin-0.1.0 contains restricted internal component(s) but has no aggregate release policy\n",
+        "stdout": ""
+      },
+      "raw-qemu": {
+        "command": [
+          "/nix/store/f6cm3q8m1byvqac5dli47fa4dh62pmv5-aos-cli-0.1.0/bin/apr",
+          "--dry-run",
+          "publish",
+          "/nix/store/9gpdxfijrhgcnklm0a4dcjs8yc0n6qpq-qemu-crucible-11.1.1",
+          "--registry",
+          "bazel-publication"
+        ],
+        "exit_code": 1,
+        "stderr": "error: publication root /nix/store/9gpdxfijrhgcnklm0a4dcjs8yc0n6qpq-qemu-crucible-11.1.1 contains restricted internal component(s) but is not an aggregate release root\n",
+        "stdout": ""
+      },
+      "suite": {
+        "command": [
+          "/nix/store/f6cm3q8m1byvqac5dli47fa4dh62pmv5-aos-cli-0.1.0/bin/apr",
+          "--dry-run",
+          "publish",
+          "/nix/store/x0iqcrdwrf1zrz4xva760df02rkq39kg-crucible-0.1.0",
+          "--registry",
+          "bazel-publication"
+        ],
+        "exit_code": 0,
+        "stderr": "Would publish crucible 0.1.0 (x86_64-linux) to registry 'bazel-publication'\n  Output out: /nix/store/x0iqcrdwrf1zrz4xva760df02rkq39kg-crucible-0.1.0\nDry run: nothing was written, signed, or committed.\n",
+        "stdout": ""
+      },
+      "suite-json": {
+        "command": [
+          "/nix/store/f6cm3q8m1byvqac5dli47fa4dh62pmv5-aos-cli-0.1.0/bin/apr",
+          "--json",
+          "--dry-run",
+          "publish",
+          "/nix/store/x0iqcrdwrf1zrz4xva760df02rkq39kg-crucible-0.1.0",
+          "--registry",
+          "bazel-publication"
+        ],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\"action\":\"publish\",\"authority\":\"evaluated-derivation-inventory\",\"committed\":false,\"dry_run\":true,\"package\":\"crucible\",\"packages\":[{\"deployment\":{\"derivation\":\"/nix/store/mfdagw6m419jrkvrfmk5k2ingy83pws2-crucible-out-deployment.drv\",\"output\":\"out\",\"store_path\":\"/nix/store/1w6yhmsp5985r3g51scyvab2i9bw575i-crucible-out-deployment\"},\"derivation\":\"/nix/store/cgjr512my4g7cb15yzndn12c5w4s6qgb-crucible-0.1.0.drv\",\"module_documentation\":{\"derivation\":\"/nix/store/ra1dx4x90kml2c1sc55kq8lx1n4yv8ka-crucible-documentation.drv\",\"output\":\"out\",\"store_path\":\"/nix/store/dwsd996ks3hfkasw5q121qp6mzakcasp-crucible-documentation\"},\"name\":\"crucible\",\"outputs\":[{\"deployment\":{\"derivation\":\"/nix/store/mfdagw6m419jrkvrfmk5k2ingy83pws2-crucible-out-deployment.drv\",\"output\":\"out\",\"store_path\":\"/nix/store/1w6yhmsp5985r3g51scyvab2i9bw575i-crucible-out-deployment\"},\"derivation\":\"/nix/store/cgjr512my4g7cb15yzndn12c5w4s6qgb-crucible-0.1.0.drv\",\"name\":\"out\",\"output\":\"out\",\"store_path\":\"/nix/store/x0iqcrdwrf1zrz4xva760df02rkq39kg-crucible-0.1.0\"}],\"publication\":{\"description\":\"Crucible controller with the GPL QEMU backend\",\"homepage\":\"https://github.com/andyl/andyl-os\",\"license_expression\":\"Apache-2.0 AND MIT AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND BSD-2-Clause AND BSD-3-Clause\",\"maintainers\":[\"Andyl, Inc.\"],\"version\":\"0.1.0\"},\"qualification\":{\"derivation\":\"/nix/store/8hirnywpndrl75hc1ngsh7738rbjw3b2-crucible-qualification.drv\",\"output\":\"out\",\"store_path\":\"/nix/store/9qs07x16qxdb38vshglncdb30wlwc3dr-crucible-qualification\"},\"source_store_paths\":[\"/nix/store/nxcqlgaprkf341wczi95qwz8qkrchkic-live-debugger-matrix.sh\",\"/nix/store/rjrqini6nq3x2d4996lmp8qp44mv0hjk-crucible.nix\"]}],\"platform\":\"x86_64-linux\",\"registry\":\"bazel-publication\",\"version\":\"0.1.0\"}\n"
+      },
+      "suite-with-manual-metadata": {
+        "command": [
+          "/nix/store/f6cm3q8m1byvqac5dli47fa4dh62pmv5-aos-cli-0.1.0/bin/apr",
+          "--dry-run",
+          "publish",
+          "/nix/store/x0iqcrdwrf1zrz4xva760df02rkq39kg-crucible-0.1.0",
+          "--registry",
+          "bazel-publication",
+          "--description",
+          "Publication fixture override"
+        ],
+        "exit_code": 1,
+        "stderr": "error: ordinary package publication takes name, version, documentation, and source identity from evaluated Nix metadata; manual metadata flags are valid only with --sysroot\n",
+        "stdout": ""
+      },
+      "suite-with-restricted-named-output": {
+        "command": [
+          "/nix/store/f6cm3q8m1byvqac5dli47fa4dh62pmv5-aos-cli-0.1.0/bin/apr",
+          "--dry-run",
+          "publish",
+          "/nix/store/x0iqcrdwrf1zrz4xva760df02rkq39kg-crucible-0.1.0",
+          "--registry",
+          "bazel-publication"
+        ],
+        "exit_code": 1,
+        "stderr": "error: publication root /nix/store/gidimdd5cnxcyhz56vrz85ybq8z8g7v7-aos-bazel-plugin-unmarked-wrapper contains restricted internal component(s) but has no aggregate release policy\n",
+        "stdout": ""
+      },
+      "unmarked-wrapper": {
+        "command": [
+          "/nix/store/f6cm3q8m1byvqac5dli47fa4dh62pmv5-aos-cli-0.1.0/bin/apr",
+          "--dry-run",
+          "publish",
+          "/nix/store/gidimdd5cnxcyhz56vrz85ybq8z8g7v7-aos-bazel-plugin-unmarked-wrapper",
+          "--registry",
+          "bazel-publication"
+        ],
+        "exit_code": 1,
+        "stderr": "error: publication root /nix/store/gidimdd5cnxcyhz56vrz85ybq8z8g7v7-aos-bazel-plugin-unmarked-wrapper contains restricted internal component(s) but has no aggregate release policy\n",
+        "stdout": ""
+      },
+      "wrong-source": {
+        "command": [
+          "/nix/store/f6cm3q8m1byvqac5dli47fa4dh62pmv5-aos-cli-0.1.0/bin/apr",
+          "--dry-run",
+          "publish",
+          "/nix/store/4k5bz6q7zgd0h1201vq7lamzbx3g1alj-aos-bazel-wrong-source-aggregate",
+          "--registry",
+          "bazel-publication"
+        ],
+        "exit_code": 1,
+        "stderr": "error: corresponding source `/nix/store/717agn9p26q4l3s4z8iwpb8sp7la05av-aos-bazel-wrong-corresponding-source` does not match restricted component identity `b7def134544c7090e6e66b2976a6ba92fd9021e7a50445322daf5ac546d4fa98`\n",
+        "stdout": ""
+      }
+    },
+    "closure": "/nix/store/i3hdimin9r1lz39pkm7jzvs2x1svzvwh-aos-bazel-qemu-gpl-publication-closure-1",
+    "evaluated_publication_inventory": {
+      "packages": [
+        {
+          "deployment": {
+            "derivation": "/nix/store/mfdagw6m419jrkvrfmk5k2ingy83pws2-crucible-out-deployment.drv",
+            "output": "out",
+            "store_path": "/nix/store/1w6yhmsp5985r3g51scyvab2i9bw575i-crucible-out-deployment"
+          },
+          "derivation": "/nix/store/cgjr512my4g7cb15yzndn12c5w4s6qgb-crucible-0.1.0.drv",
+          "module_documentation": {
+            "derivation": "/nix/store/ra1dx4x90kml2c1sc55kq8lx1n4yv8ka-crucible-documentation.drv",
+            "output": "out",
+            "store_path": "/nix/store/dwsd996ks3hfkasw5q121qp6mzakcasp-crucible-documentation"
+          },
+          "name": "crucible",
+          "outputs": [
+            {
+              "deployment": {
+                "derivation": "/nix/store/mfdagw6m419jrkvrfmk5k2ingy83pws2-crucible-out-deployment.drv",
+                "output": "out",
+                "store_path": "/nix/store/1w6yhmsp5985r3g51scyvab2i9bw575i-crucible-out-deployment"
+              },
+              "derivation": "/nix/store/cgjr512my4g7cb15yzndn12c5w4s6qgb-crucible-0.1.0.drv",
+              "name": "out",
+              "output": "out",
+              "store_path": "/nix/store/x0iqcrdwrf1zrz4xva760df02rkq39kg-crucible-0.1.0"
+            }
+          ],
+          "publication": {
+            "description": "Crucible controller with the GPL QEMU backend",
+            "homepage": "https://github.com/andyl/andyl-os",
+            "license_expression": "Apache-2.0 AND MIT AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND BSD-2-Clause AND BSD-3-Clause",
+            "maintainers": [
+              "Andyl, Inc."
+            ],
+            "output_packages": {},
+            "version": "0.1.0"
+          },
+          "qualification": {
+            "derivation": "/nix/store/8hirnywpndrl75hc1ngsh7738rbjw3b2-crucible-qualification.drv",
+            "output": "out",
+            "store_path": "/nix/store/9qs07x16qxdb38vshglncdb30wlwc3dr-crucible-qualification"
+          },
+          "source_store_paths": [
+            "/nix/store/nxcqlgaprkf341wczi95qwz8qkrchkic-live-debugger-matrix.sh",
+            "/nix/store/rjrqini6nq3x2d4996lmp8qp44mv0hjk-crucible.nix"
+          ]
+        }
+      ],
+      "platform": "x86_64-linux",
+      "schema_version": "aos.release.derivation-inventory/v1"
+    },
+    "private_store_payloads_copied": true,
+    "registry_unchanged": true,
+    "selected_root_nar_hashes_verified": true,
+    "status": "PASS"
+  },
+  "qemu_build_identity": "b7def134544c7090e6e66b2976a6ba92fd9021e7a50445322daf5ac546d4fa98",
+  "qualification": "/nix/store/rb6n3wy3v1cggarnxaff44rkcqiwcan5-aos-bazel-qemu-gpl-publication",
+  "rust_test_targets_compile": "/nix/store/n13jrgqwf3xx36v8xc5m7xzl0avs3z1n-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "status": "PASS",
+  "suite": "/nix/store/x0iqcrdwrf1zrz4xva760df02rkq39kg-crucible-0.1.0"
+}

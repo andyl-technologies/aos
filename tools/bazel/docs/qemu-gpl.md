@@ -103,15 +103,21 @@ inputs, and third-party source specifications; qualification reports and Python
 bytecode are excluded because they are generated outputs.
 
 `suite-publication` invokes the installed Bazel-built `apr` against a private
-local registry and a Nix database populated from the actual realized closure.
-Publication preview must accept the aggregate and reject raw QEMU, a raw plugin,
-an unmarked wrapper, and an aggregate paired with the wrong source identity.
-Every preview must leave the fixture registry unchanged. This exercises the
-production validator without publishing artifacts or starting a service.
-The merged-master qualification currently fails before that validator: ordinary
-publication rejects the fixture's manual metadata flags. The fixture must be
-updated for evaluated inventory publication before this check can qualify the
-suite; the existing preview contract is not evidence of a passing run.
+local registry and a private disk-backed Nix store populated with the actual
+closure payloads and registrations. Selected root NAR hashes are verified before
+publication. The [eight-case qualification](../tests/evidence/qemu-gpl-evaluated-publication-preview.json)
+passes: human and JSON previews accept the evaluated aggregate, while manual
+metadata overrides, a restricted named output, raw QEMU, a raw plugin, an
+unmarked wrapper, and a mismatched source identity are rejected. Every preview
+leaves all registry files unchanged, including Git metadata.
+
+Evaluated publication now returns its preview before resolving signing material
+or acquiring a mutation lock. It validates every evaluated payload output and
+reports the full publication group; native companions remain plan metadata.
+This exercises the production validator without signing or uploading artifacts,
+building native companions, or starting a service. The frozen controller passes
+its 5,576 native tests with 75 skipped; it predates the separate control-server
+lint repair. Signed publication and the canonical ABI gate remain separate.
 
 Run the canonical named ABI and license gates with the selected suite,
 controller, plugin, and gateway:
