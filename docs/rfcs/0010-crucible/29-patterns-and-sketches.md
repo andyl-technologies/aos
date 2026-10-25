@@ -591,8 +591,9 @@ unrelated parts.
 unrelated `World` edit does not move another stream's draws ([EXEC-9]); the
 derivation is a fixed, cross-platform keyed hash, never the language's
 randomized default ([SCHED-19], [INV-9]); every recorded `Decision::RngDraw`
-carries its `RngStreamId` so a draw is attributable to its stream after the def
-changes ([EXEC-9]); node-stream and link-stream keys of the same name are
+carries its `RngStreamId` and its draw address, so a draw is attributable to its
+stream after the def changes ([EXEC-9]) and replay checks which draw was taken
+as well as its value ([DET-26]); node-stream and link-stream keys of the same name are
 distinct; and a stream shared by independently scheduled producers addresses
 each draw by event identity, so commit order and worker count cannot change it.
 
@@ -635,10 +636,21 @@ impl DecisionRng {
 }
 
 /// A recorded draw, attributed to its stream so a schedule remains
-/// interpretable after the def changes only in unrelated parts ([EXEC-9]).
+/// interpretable after the def changes only in unrelated parts ([EXEC-9]),
+/// and to its address so replay compares the draw taken, not only its value
+/// ([DET-26]).
 pub struct RecordedDraw {
     pub stream: RngStreamId,
+    pub address: DrawAddress,
     pub value: u64,
+}
+
+/// The exact keyed-hash input of one draw besides its stream key.
+pub enum DrawAddress {
+    /// The `n`th draw of a counter-addressed stream.
+    Ordinal { ordinal: u64 },
+    /// One role-indexed draw of a link frame ([SCHED-50]).
+    LinkFrame { direction: LinkDirection, producer_sequence: u64, role: u64 },
 }
 ```
 
@@ -653,7 +665,8 @@ entity kind, and event identity for any stream with more than one producer.
 - **[PAT-7]** The decision RNG SHOULD follow the keyed stream shape in §29.5:
   derive each per-entity stream key from the root seed, a fixed domain per kind
   and the entity name with a fixed, cross-platform keyed hash, address shared
-  streams by event identity, and record each draw with its `RngStreamId`. Unrelated `World` edits
+  streams by event identity, and record each draw with its `RngStreamId` and
+  draw address. Unrelated `World` edits
   MUST NOT perturb other streams. *Spec:*
   [`04-determinism-contract.md`](04-determinism-contract.md) §4.7,
   [`05-execution-model.md`](05-execution-model.md) §3 ([EXEC-9]),

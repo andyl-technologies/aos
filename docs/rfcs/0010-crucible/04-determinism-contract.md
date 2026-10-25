@@ -416,8 +416,14 @@ in the entire system.
   default randomized hasher. A change to the derivation MUST change its
   algorithm identifier, and the identifier MUST be part of the scenario seed
   material, so a scenario, schedule or recorded draw made under an earlier
-  derivation is refused by identity rather than silently re-valued. *Gate:*
-  `gate:harness-lint`. *Spec:* §4.7.
+  derivation is refused by identity rather than silently re-valued. Each
+  recorded draw MUST carry its stream and its full draw address: the ordinal
+  `n` of a counter-addressed draw, or the event identity and role index of an
+  event-addressed draw. Replay MUST compare the address as well as the value,
+  and a recorded draw whose address differs from the replayed draw's is a
+  divergence that names both addresses even when the values agree. An encoding
+  that records a draw without its address MUST be refused, never assigned an
+  inferred address. *Gate:* `gate:harness-lint`. *Spec:* §4.7.
 
 ```rust
 // Illustrative sketch (CONV-1, 00): the only randomness in the system.
@@ -472,7 +478,7 @@ conflated:
   seeded decision source of §4.7 (it MUST NOT introduce a new entropy source).
   Each app-requested stream MUST be a counter-addressed stream keyed per
   `(node, stream-name)` ([DET-25]), each draw MUST be recorded as a `Decision` in the `Schedule`
-  ([DET-27]), and each draw MUST be delivered to the guest under the injection
+  with its stream and ordinal ([DET-26], [DET-27]), and each draw MUST be delivered to the guest under the injection
   contract (4.4) at a deterministic delivery icount. The guest opts in through
   the white-box channel (16); the capability MUST be distinguishable from ambient
   `fw_cfg` guest entropy (which entails zero guest changes and is opaque). The

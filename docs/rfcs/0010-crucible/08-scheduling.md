@@ -857,7 +857,9 @@ not need a shared memory or a global frontier.
   therefore need no global commit order and are independent of worker count,
   host placement and the interleaving of the link's two directions. The
   scheduling opportunity for a link frame MUST be identified by the same link,
-  direction and producer sequence, never by a cursor shared across frames.
+  direction and producer sequence, never by a cursor shared across frames, and
+  each recorded draw of the frame MUST carry that direction, producer sequence
+  and its role index as its draw address ([DET-26]).
   *Gate:* `gate:e2e-determinism`. *Spec:* §8.12.1; routes [DET-6], [DET-25].
 
 ## 8.13 Worked example: two VMs across a 1 ms link
