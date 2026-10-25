@@ -94,6 +94,65 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+Protected local-v1 intent discovery at `5eb7dd1b09` passes its focused native
+guest in 1,506.333 seconds. Full review verifies all 8,214 immutable source files,
+5,466 crate inputs, the actual retained Cargo library-test executable and its
+installed hash. The original full-D deletion case executes as UID/GID 840 on
+ext4 with empty capabilities and no-new-privileges, observes pending intent and
+durable `Done`, and preserves all original physical absence, incarnation,
+journal, selected-publication and idempotence assertions. Mandatory workspace
+compilation passes in 1,516.815 seconds; review verifies all immutable source
+files, 190 test executables and 59 packages as compilation only. The manifest
+fixture's mandatory workspace compilation at `ed114fc6d5` also passes in 922.495
+seconds with the same complete source/190-target/59-package compilation review.
+
+Mounted manifest, inline and explicit late-open qualifications at `ed114fc6d5`
+pass in 693.444, 690.411 and 694.029 seconds respectively. Full reviews compare
+all 8,214 immutable source files, all three actual images, their bound inputs
+and nine retained Cargo/installed executables. Each guest preserves the eight
+original read-only namespace roots/inodes and executes through the actual
+production fallback loop and original FUSE descriptor. Manifest closing Read
+succeeds in 241 ms after cold-file preparation succeeds in 4,341 ms; the original
+worker service returns success in 8,838 ms. Complete signed multi-chunk bytes,
+coalesced kernel reads, responsive metadata, physical bindings/pins and durable
+drain pass. The separate late-open guest proves actual EIO expiry followed by a
+later open joining the retained original fetch. The manifest retry witness alone
+does not count how many retries occurred. These component results grant no
+production launcher, mount-broker, passthrough or task acceptance.
+
+Automatic-cycle maintenance at `5bb7e9db5b` passes in 299.069 seconds. Full
+review verifies all 8,215 immutable source files, five retained Cargo test
+executables and all eight actual cases as UID/GID 840 on ext4 with empty
+capabilities and no-new-privileges. The updated genuine case passes automatic
+startup, unchanged early-phase refusal, existing explicit-cycle and changed-root
+assertions, fourth-cycle selection under the original holder/epoch and exact
+byte preservation of previous checkpoint files. Mandatory application-target
+compilation remains pending; this does not qualify the complete configured GC
+runtime.
+
+Copied first ownership now accepts an existing original collector session.
+The standalone runner delegates to the same producer, and `Recovery`,
+`Collection` and repository-retained `LocalCollection` can invoke it without
+acquiring another lease or cloning a session. The native producer retains its
+existing DATA, configuration, whole-lease, protected-control, new-barrier,
+full-G/D wait and durable acknowledgment checks. A normalized source comparison
+confirms its effect/check statement sequence is unchanged after replacing member
+access with the supplied references. Ordinary marking still requires genuine
+Original history; copied DATA qualification never supplies that authority.
+
+A new focused guest suite pairs the unchanged standalone pack-only ownership
+case with a same-session copied hint/first ownership/permanent hint/reclamation
+case. It keeps the original per-case 180-second bound and uses a 360-second
+whole-guest bound for its two cases, actual ext4, UID/GID 840, empty capabilities,
+no-new-privileges and retained Cargo/source verification. Its new case checks
+actual full-G/D elapsed time, retained holder/epoch, permanent-owner preservation,
+complete native recovery, empty rechecks and zero extra data-body reads while
+foreign Original remains unavailable. Native qualification and mandatory
+application-target compilation remain pending; both supported Tokio all-target
+strict lint profiles and the std-only library profile pass. Touched Python syntax, Nix formatting, PLAN-2
+ownership and diff checks pass. Configured GC and original-root
+marking/reconciliation acceptance are unchanged.
+
 Collector startup now has an automatic-cycle API on the original `Collection`
 and repository-retained `LocalCollection`. After actual singleton-lease
 acquisition, the held publication supplies the greatest registered cycle across
@@ -108,8 +167,9 @@ Unfinished marking is rejected before renewal or checkpoint effects.
 The existing native fresh-cycle case now starts through this API, retains its
 original explicit-cycle/root-change/competitor assertions, and adds a fourth
 automatically selected cycle with unchanged holder/epoch and byte-preserved
-roots/state for all three earlier cycles. Native qualification and mandatory
-application-target compilation remain pending. Both supported Tokio all-target
+roots/state for all three earlier cycles. Native qualification passes as
+recorded above; mandatory application-target compilation remains pending.
+Both supported Tokio all-target
 strict lint profiles and the std-only library profile pass. Six pure tests pass
 for numeric ordering, copied reservations, Trash/deletion keys, retained absent
 entries, malformed keys and overflow; they execute no native lifecycle effects.
@@ -145,9 +205,10 @@ failed retries remain failures. The original five-second open and phase bounds,
 ten-second fetch bound, signed 2,097,153-byte input and whole guest bound remain
 unchanged. Ordinary inline and the explicitly withheld late-open scenario retain
 their existing flow. Both supported strict Linux all-target lint profiles,
-touched Python syntax and PLAN-2 ownership pass. New native qualification and
-mandatory application-target compilation remain pending;
-no production protocol behavior or task acceptance is changed by this fixture.
+touched Python syntax and PLAN-2 ownership pass. Native manifest, inline,
+late-open and mandatory application-target compilation now pass with full
+reviews as recorded above. No production protocol behavior or task acceptance
+is changed by this fixture.
 
 Mandatory application-target compilation at `5292dbe71f` passes in 1,551.008
 seconds. Full review checks all 8,212 immutable source files, 190 test executables
@@ -175,22 +236,25 @@ recovery and after durable `Done`, preserving its original incarnation, physical
 absence, journal, selected-publication and idempotence assertions. Both supported
 strict Tokio all-target lint profiles and the portable std-only library profile
 pass, along with touched formatting, Python syntax and PLAN-2 ownership checks.
-Native execution and mandatory workspace compilation of this increment remain
-pending. No configured collector service or task acceptance is inferred.
+Native execution and mandatory workspace compilation now pass with full
+reviews as recorded above. No configured collector service or task acceptance
+is inferred.
 
 The eight-case maintenance guest at `9eb645ff25` passes in 327.853 seconds.
 Full review compares all 8,211 immutable source files, five retained Cargo test
 executables and all eight actual ext4 cases under UID/GID 840, empty capabilities
 and no-new-privileges. All four pure maintenance scheduling tests pass, as do
 the three supported strict SDK lint profiles. The separate original owner,
-empty-pass and late-residue guest and mandatory compilation remain running.
+empty-pass and late-residue guest and mandatory compilation also pass with the
+full reviews recorded above.
 
 Mandatory application-target compilation at `819ffc247d` passes in 1,567.817
 seconds. Full review checks all 8,209 immutable source files, 190 test executables
 and 59 packages; this establishes compilation only. Both supported strict Linux
 all-target lint profiles pass for the file-stage tracing at `5292dbe71f`.
-Its original mounted-manifest guest and mandatory compilation remain running;
-the existing mounted-manifest failures remain unqualified.
+Its original mounted-manifest guest fails with the retained diagnostic evidence
+above; mandatory compilation passes. The later `ed114fc6d5` manifest guest
+passes independently without relabeling this earlier failed execution.
 
 The joined configured mounted-worker component at `8647df31e6` passes in
 1,228.127 seconds. Full review compares 8,198 immutable source files, all three

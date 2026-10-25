@@ -318,6 +318,31 @@ where
         .await
     }
 
+    /// Selects copied first ownership through this collection's original session.
+    ///
+    /// Current roots and checkpoints stay unchanged. The copied producer checks
+    /// destination DATA independently and waits its own complete native barrier;
+    /// marking progress grants neither foreign Original nor deletion permission.
+    ///
+    /// # Errors
+    /// Preserves configuration, current DATA, lease, full-wait and native
+    /// acknowledgment refusals. Work failure or cancellation stops this session.
+    pub async fn own_copied_pack(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+        pack: [u8; 16],
+    ) -> Result<terrane_format::gc::retirement::PermanentDeleteOperation, CollectionError> {
+        copied_retirement::own_current(
+            self.guard,
+            self.authority,
+            &mut self.session,
+            coordinator,
+            self.windows,
+            pack,
+        )
+        .await
+    }
+
     /// Reopens selected progress after renewing an exact whole lease through native selection.
     ///
     /// Persisted traversal claims are replayed against actual authenticated roots

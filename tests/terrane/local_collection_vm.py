@@ -27,6 +27,13 @@ LOCAL_DELETE_CASES = [
 ]
 
 
+COPIED_SHARED_CASES = [
+    PREFIX + "recovery::copied_first_ownership_and_recovery_share_one_live_session",
+    "gc::runner::copied_retirement_tests::"
+    "gc_copied_retirement_native_pack_only_selects_new_destination_owner",
+]
+
+
 def verify_image(source, image):
     """Binds the actual retained Cargo test image to every immutable crate input."""
     identity = json.loads((image / "share/identity.json").read_text())
@@ -81,6 +88,8 @@ def main():
         cases = HINT_CASES
     elif suite == "local-deletion-hints":
         cases = LOCAL_DELETE_CASES
+    elif suite == "copied-shared-session":
+        cases = COPIED_SHARED_CASES
     else:
         raise ValueError("unknown native collection qualification suite")
 
@@ -116,6 +125,9 @@ def main():
     elif suite == "maintenance-owner-hints":
         print("PASS actual owner discovery survives completed empty passes and reclaims late residue",
               flush=True)
+    elif suite == "copied-shared-session":
+        print("PASS copied first ownership and permanent recovery retain one live session; "
+              "original standalone ownership still passes", flush=True)
     else:
         print("PASS actual local-v1 intent discovery survives exact full-D deletion and durable Done",
               flush=True)

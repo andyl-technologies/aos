@@ -4,7 +4,7 @@
   image,
   suite ? "collection-reconciliation",
 }:
-assert builtins.elem suite ["collection-reconciliation" "maintenance-owner-hints" "local-deletion-hints"]; let
+assert builtins.elem suite ["collection-reconciliation" "maintenance-owner-hints" "local-deletion-hints" "copied-shared-session"]; let
   testing = import ../../lib/testing {inherit pkgs lib;};
 in
   testing.mkVMTest {
@@ -13,11 +13,15 @@ in
       then "terrane-local-collection-reconciliation"
       else if suite == "maintenance-owner-hints"
       then "terrane-local-maintenance-hints"
-      else "terrane-local-deletion-hints";
+      else if suite == "local-deletion-hints"
+      then "terrane-local-deletion-hints"
+      else "terrane-copied-shared-session";
     memory = 1024;
     timeout =
       if suite == "collection-reconciliation"
       then 1020
+      else if suite == "copied-shared-session"
+      then 360
       else 240;
     rootfsDeps = [image pkgs.terrane.src pkgs.python3 pkgs.coreutils pkgs.diffutils pkgs.util-linux];
     testScript = ''

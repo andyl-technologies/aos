@@ -96,6 +96,33 @@ where
         .await
     }
 
+    /// Selects copied first ownership using this recovery holder's original session.
+    ///
+    /// Complete destination DATA and a genuinely new native barrier must pass
+    /// full grace/deletion waiting before permanent ownership is selected. No
+    /// foreign Original permission is inferred and no physical residue is removed.
+    /// Subsequent reconciliation uses this same whole lease and retained clock.
+    ///
+    /// # Errors
+    /// Refuses another coordinator, invalid windows, incomplete copied DATA,
+    /// changed controls or lease, discontinuous waiting and failed native
+    /// acknowledgments. Actual work failure or cancellation stops the session.
+    pub async fn own_copied_pack(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+        pack: [u8; 16],
+    ) -> Result<terrane_format::gc::retirement::PermanentDeleteOperation, CollectionError> {
+        super::copied_retirement::own_current(
+            self.guard,
+            self.authority,
+            &mut self.session,
+            coordinator,
+            self.windows,
+            pack,
+        )
+        .await
+    }
+
     /// Restores verified owned source content through a fresh secure placement.
     ///
     /// The permanent family remains burned and owned. Extraction is collector-only;

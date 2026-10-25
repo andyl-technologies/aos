@@ -5,7 +5,9 @@ use crate::gc::runner::copied_retirement_tests::support::{CopiedFixture, Residue
 use crate::gc::runner::maintenance::{MaintenanceCursor, MaintenanceHint};
 use crate::gc::runner::permanent_local::Recovery;
 use crate::store::{Clock, RefStore};
-use terrane_format::gc::retirement::{ObservationState, PassCoverage, PassPhase};
+use terrane_format::gc::retirement::{
+    ObservationState, PassCoverage, PassPhase, PermanentDeleteAuthorization,
+};
 use terrane_format::gc::{GcLease, Windows};
 
 #[path = "recovery/renewal.rs"]
@@ -209,6 +211,104 @@ async fn permanent_local_pass_reclaims_pack_index_and_all_observed_trash_cycles(
     );
     drop(recovery);
     let fixture = reopen_checked(fixture, &after).await;
+    cleanup(fixture);
+}
+
+#[tokio::test]
+async fn copied_first_ownership_and_recovery_share_one_live_session() {
+    let fixture = CopiedFixture::new(Residue::Pack).await;
+    assert!(
+        fixture
+            .guard()
+            .original_commit(&fixture.source.head.commit)
+            .is_err()
+    );
+    let chunk_reads = fixture.forbid_chunk_reads().await;
+    fixture.source.clock.enable_timer();
+    let windows = Windows::new(30, 60, 60, 90).unwrap();
+    let mut recovery = Recovery::start(
+        fixture.guard(),
+        &fixture.authority,
+        "copied-own-and-recover".into(),
+        90,
+        fixture.repository.coordinator(),
+        windows,
+    )
+    .await
+    .unwrap();
+    let original_lease = recovery.lease().clone();
+    let mut cursor = MaintenanceCursor::default();
+    assert_eq!(
+        recovery.maintenance_hints(&mut cursor, 1).await.unwrap(),
+        [MaintenanceHint::CopiedRetirement { pack: fixture.pack }]
+    );
+
+    let operation = recovery
+        .own_copied_pack(fixture.repository.coordinator(), *fixture.pack.as_bytes())
+        .await
+        .unwrap();
+
+    let PermanentDeleteAuthorization::Copied(authorization) = &operation.authorization else {
+        panic!("actual copied first ownership expected");
+    };
+    assert!(authorization.grace_elapsed_nanos >= 60_000_000_000);
+    assert!(authorization.deletion_elapsed_nanos >= 60_000_000_000);
+    assert_eq!(recovery.lease().holder, original_lease.holder);
+    assert_eq!(recovery.lease().epoch, original_lease.epoch);
+    assert!(recovery.lease().expiry > original_lease.expiry);
+    assert!(
+        fixture
+            .guard()
+            .store()
+            .root()
+            .join(fixture.pack.pack_key())
+            .exists()
+    );
+    let candidates = residue_paths(&fixture).await;
+    assert!(candidates.len() >= 2);
+    let before = image(&fixture).await;
+    let key = before.owner_key.as_deref().unwrap();
+    assert_eq!(
+        recovery.maintenance_hints(&mut cursor, 1).await.unwrap(),
+        [MaintenanceHint::PermanentOwner {
+            pack: fixture.pack,
+            operation_key: key.to_owned(),
+        }]
+    );
+
+    let report = recovery.reconcile(key, 8).await.unwrap();
+
+    assert_eq!(report.reclaimed, candidates.len());
+    for path in candidates {
+        assert!(!path.exists());
+    }
+    assert!(
+        !fixture
+            .guard()
+            .store()
+            .root()
+            .join(fixture.pack.pack_key())
+            .exists()
+    );
+    let after = image(&fixture).await;
+    assert_owner_retained(&before, &after);
+    assert_completed(&after);
+    assert_eq!(after.pass.as_ref().unwrap().lease, *recovery.lease());
+    assert_eq!(recovery.lease().holder, original_lease.holder);
+    assert_eq!(recovery.lease().epoch, original_lease.epoch);
+    assert_eq!(recovery.reconcile(key, 8).await.unwrap().reclaimed, 0);
+    let final_image = image(&fixture).await;
+    assert_owner_retained(&before, &final_image);
+    assert_completed(&final_image);
+    assert_eq!(fixture.source.fs.data_body_read_attempts(), chunk_reads);
+    assert!(
+        fixture
+            .guard()
+            .original_commit(&fixture.source.head.commit)
+            .is_err()
+    );
+    drop(recovery);
+    let fixture = reopen_checked(fixture, &final_image).await;
     cleanup(fixture);
 }
 

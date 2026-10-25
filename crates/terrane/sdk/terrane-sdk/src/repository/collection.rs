@@ -171,6 +171,23 @@ where
             .await
     }
 
+    /// Selects genuine copied first ownership under this same live collector lease.
+    ///
+    /// The destination producer independently checks complete DATA and a new
+    /// full-wait barrier. This does not unlink residue or change mark checkpoints.
+    ///
+    /// # Errors
+    /// Preserves current configuration, DATA, lease, control and durability
+    /// refusals. Work failure or cancellation stops the original session.
+    pub async fn own_copied_pack(
+        &mut self,
+        pack: [u8; 16],
+    ) -> Result<terrane_format::gc::retirement::PermanentDeleteOperation, CollectionError> {
+        self.collection
+            .own_copied_pack(self.coordinator, pack)
+            .await
+    }
+
     /// Advances bounded metadata traversal through the original collector.
     ///
     /// # Errors
