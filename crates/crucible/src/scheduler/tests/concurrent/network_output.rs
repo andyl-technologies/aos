@@ -16,6 +16,9 @@ mod delayed_release;
 #[path = "network_output/admission_coordinate.rs"]
 mod admission_coordinate;
 
+#[path = "network_output/same_tick_delivery.rs"]
+mod same_tick_delivery;
+
 // The peer's RUN ceiling stays before either TX's earliest possible delivery.
 const NETWORK_PREFIX_TEST_MINIMUM_LATENCY: u64 = 64;
 
