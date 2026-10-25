@@ -12,8 +12,9 @@ impl OriginalLineageRuntimeRecord {
     /// scope and fresh producer/consumer mapping before world readiness.
     ///
     /// # Errors
-    /// Refuses other editions, missing lineage, malformed scope/rows, combined
-    /// unsupported external input or exceeded encoded/role/byte/edge credits.
+    /// Refuses other editions, missing lineage, unordered or reused logical
+    /// identities, malformed scope/rows, combined unsupported external input or
+    /// exceeded encoded/role/byte/edge credits.
     pub fn validate_metadata(
         &self,
         limits: OriginalInputLineageLimits,
@@ -23,6 +24,7 @@ impl OriginalLineageRuntimeRecord {
             return Err(RuntimeError::UnsupportedFacet);
         }
         bounded_metadata(self, maximum_record_bytes)?;
+        self.validate_logical_identities_data()?;
         let mut available = limits;
         for input in &self.inputs {
             if input
@@ -54,6 +56,62 @@ impl OriginalLineageRuntimeRecord {
             }
         }
         Ok(())
+    }
+
+    fn validate_logical_identities_data(&self) -> Result<(), RuntimeError> {
+        if self
+            .operations
+            .windows(2)
+            .any(|pair| pair[0].operation >= pair[1].operation)
+            || self
+                .inputs
+                .windows(2)
+                .any(|pair| pair[0].stage_operation >= pair[1].stage_operation)
+        {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+
+        // Begin and Stage spend the same logical operation namespace. Batch
+        // identities are also world-wide, including failed or uncommitted rows.
+        // Check the original ledgers before any archive lookup or native hook;
+        // insertion into fresh maps must never silently replace a saved row.
+        for (index, input) in self.inputs.iter().enumerate() {
+            if self
+                .operations
+                .iter()
+                .any(|operation| operation.operation == input.stage_operation)
+                || self.inputs[..index]
+                    .iter()
+                    .any(|previous| previous.batch == input.batch)
+            {
+                return Err(RuntimeError::DuplicateOperation);
+            }
+        }
+        Ok(())
+    }
+
+    /// Names fixed borrowed controls for the logical identity validation walk.
+    ///
+    /// This allocation-free walk retains no set or replacement ledger. Enclosing
+    /// funded readers add these controls to their existing metadata/decoder row;
+    /// original records, formatter work and body checks remain independently priced.
+    pub const fn logical_identity_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        size_of::<&Self>()
+            + size_of::<std::slice::Windows<'static, SavedRuntimeOperation>>()
+            + size_of::<std::slice::Windows<'static, OriginalLineageInputRecord>>()
+            + size_of::<&[SavedRuntimeOperation]>()
+            + size_of::<&[OriginalLineageInputRecord]>() * 2
+            + size_of::<std::iter::Enumerate<std::slice::Iter<'static, OriginalLineageInputRecord>>>(
+            )
+            + size_of::<std::slice::Iter<'static, SavedRuntimeOperation>>()
+            + size_of::<std::slice::Iter<'static, OriginalLineageInputRecord>>()
+            + size_of::<&SavedRuntimeOperation>() * 2
+            + size_of::<&OriginalLineageInputRecord>() * 4
+            + size_of::<usize>() * 2
+            + size_of::<bool>() * 4
+            + size_of::<Result<(), RuntimeError>>()
     }
 }
 

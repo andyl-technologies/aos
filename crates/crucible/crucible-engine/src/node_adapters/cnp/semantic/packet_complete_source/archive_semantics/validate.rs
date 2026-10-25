@@ -588,6 +588,7 @@ pub(super) fn authenticate_payload(
 pub(super) fn counter_scratch_data() -> usize {
     use std::mem::size_of;
     size_of::<AncestryValidation<'_>>()
+        + OriginalLineageRuntimeRecord::logical_identity_counter_scratch_data()
         + size_of::<crucible_node_format::Event>()
         + size_of::<Result<crucible_node_format::Event, crucible_node_format::ContractError>>()
         + size_of::<[usize; 4]>()

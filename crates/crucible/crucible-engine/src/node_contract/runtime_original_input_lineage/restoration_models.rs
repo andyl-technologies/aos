@@ -18,6 +18,47 @@ struct Model {
 }
 
 #[test]
+fn original_lineage_context_rejects_reused_logical_ids_before_native_verification() {
+    for duplicate in ["operation", "stage", "batch", "cross_ledger"] {
+        let mut model = Model::new();
+        match duplicate {
+            "operation" => model
+                .record
+                .operations
+                .push(model.record.operations[0].clone()),
+            "stage" => model.record.inputs.push(model.record.inputs[0].clone()),
+            "batch" => {
+                let mut input = model.record.inputs[0].clone();
+                input.stage_operation = id("z-distinct-stage");
+                input.provenance = None;
+                input.lineage = None;
+                model.record.inputs.push(input);
+            }
+            "cross_ledger" => {
+                model.record.operations[0].operation =
+                    model.record.inputs[0].stage_operation.clone();
+                model.record.operations[0].result = SavedRuntimeResult::Pending;
+                model.record.operations[0].scheduling_commit = None;
+            }
+            _ => unreachable!(),
+        }
+        model.reauthenticate_record();
+        let mut verifier = Verifier::new(&model);
+
+        assert!(
+            matches!(
+                model.prepare(&mut verifier),
+                Err(RuntimeError::DuplicateOperation | RuntimeError::InvalidReceipt)
+            ),
+            "reused {duplicate} identity must not form a restoration context"
+        );
+
+        assert_eq!(verifier.calls, 0, "{duplicate}");
+        model.no_native_effects();
+    }
+}
+
+#[test]
 fn original_lineage_context_refuses_changed_original_scheduler_before_effects()
 -> Result<(), RuntimeError> {
     let model = Model::new();

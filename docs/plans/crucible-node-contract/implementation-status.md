@@ -10,6 +10,30 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Runtime7 logical identity integrity
+
+Runtime7 metadata now rejects unordered or duplicate Begin/Stage rosters,
+operation identities reused across those rosters, and batch identities reused
+by separate staged rows. These borrowed checks run before original-body lookup
+and native verification, including failed and uncommitted rows. They allocate no
+replacement ledger. Both funded archive readers independently add the actual
+fixed validation controls while preserving their earlier counter terms.
+
+A new restoration model control reauthenticates four changed records and checks
+refusal before the native verifier or execution effects. Its baseline run
+reproduced acceptance of a reused batch identity. This is a common Core
+integrity control using modeled native hooks; it does not qualify native
+preservation or implement the full SemanticSpend18 grammar.
+
+Both complete Engine codec modes pass 2,069 tests with zero failures and 34
+ignored. All-feature/all-target checking, scoped formatting, six architecture
+checks and application test-target compilation pass. Actual application metadata records 185 test
+artifacts across 58 packages, including 76 integration targets; its captured
+source matches all 640 frozen owned Rust/Cargo inputs. Strict Engine diagnostics
+retain exactly the same 126 errors and 2,171 warnings, including codes and
+messages, without new allowances. Full SDK funding, runtime capacity handoff,
+live Native18, complete preservation and the full RFC remain unfinished.
+
 ## One canonical byte budget for fresh clone backing
 
 Commit `4d3bc17081` bounds cloned arrays, object nodes and decoded strings

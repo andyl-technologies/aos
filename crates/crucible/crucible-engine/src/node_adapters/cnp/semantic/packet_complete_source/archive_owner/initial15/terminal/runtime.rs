@@ -62,6 +62,7 @@ impl OriginalInitial15ArchivedGroup {
 
 pub(super) fn counter_scratch_data() -> usize {
     size_of::<&OriginalInitial15ArchivedGroup>()
+        + OriginalLineageRuntimeRecord::logical_identity_counter_scratch_data()
         + size_of::<&ParentArchive17ReadScope<'static, 'static>>()
         + size_of::<&OriginalLineageRuntimeRecord>()
         + size_of::<&RuntimeOriginalCaptureJournal>()
