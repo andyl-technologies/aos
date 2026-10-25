@@ -19,3 +19,14 @@ The report retains the executed harness, Nix expression, source contracts, and
 immutable analysis inputs. This probe qualifies source filtering only. Full
 compiler and test comparisons remain separate gates; ordinary defaults stay
 conservative until the complete inventory and compiler checks pass.
+
+The [executed precise-source comparison](../tests/evidence/cli-precise-source-tests.json)
+passes all 543 ordinary and 551 fleet cases, together with the selected
+first-party and procedural-macro profile checks. Its 1,269 ordinary and 1,278
+fleet actions execute in Linux sandboxes without cache hits. All selected Rust
+files match the previously executed offline Cargo baselines. The repository
+fixtures differ only in the constructor adding the optional source inventory;
+the report records that difference explicitly. This comparison uses the staged
+inventory and leaves the default unchanged. External dependency units and full
+compiler, native C/linker, runtime, editor, platform, and performance checks
+remain separate qualification work.
