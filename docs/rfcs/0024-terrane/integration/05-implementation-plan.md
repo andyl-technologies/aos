@@ -89,6 +89,46 @@ T0 foundations · T1 local repository · T2 host tier · T3 wire and buckets
 T4 CI caches · T5 sandboxes · T6 hardened MVP
 ```
 
+## Implementation checkpoint (2026-10-25)
+
+Trunk acceptance remains **27/64**. Completed component checks do not establish
+production worker, mount-broker or full RFC conformance.
+
+Complete feature matrices now pass with independent immutable-source, retained
+executable and actual guest review at these checkpoints:
+
+| Source | Elapsed seconds | All-feature native cases | Immutable source files |
+| --- | ---: | ---: | ---: |
+| `29e7a87284` | 31,917.702 | 224 | 8,176 |
+| `5f7cd3aff5` (master merge) | 32,348.629 | 246 | 8,184 |
+| `a09f366782` (fixed namespace reservation) | 31,931.497 | 249 | 8,184 |
+
+Each also verifies the base profile's 130 cases across its three actual cache
+guests. The earlier single-guest reviewer was inapplicable to the scenario
+aggregate; the completed reviews resolve the matrix's actual three guest
+outputs and retain the original Cargo and installed-ELF checks.
+
+The scheduler checkpoint `e60a701e1d` fails its complete matrix in 992.870
+seconds: the source-inventory checker omitted the feature-gated backing module
+from the base profile's exclusions. This remains a failed qualification.
+Correction `5415ebe2f3` verifies that module's explicit Rust feature gate before
+excluding it. Both source inventories match exactly (130 base, 253 all-feature);
+the corrected source's full release matrix is running.
+
+Checkpoint `c763e2cf9a` adds a production index request that maps the original
+authenticated reply descriptor against the root already bound to the private
+worker channel. Mapping validation failure disconnects the channel and consumes
+the refused descriptor. The genuine signed-owner fixture uses this path, and
+the transport control now refuses an authenticated, sealed non-index inode
+without retaining its descriptor or reusing the faulted channel. Strict
+all-feature/all-target Clippy passes. Native success/refusal, confined-worker
+and mandatory application-target qualification remain pending.
+
+Configured Realize/Gc, the production worker actor and launcher, broker and
+passthrough integration, writable exposures, complete Distribution services,
+CI surfaces, sandbox integration and T6 remain outstanding. The detailed
+qualification history below retains earlier failures and component evidence.
+
 ## Trunk
 
 ### T0 — Foundations
