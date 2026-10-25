@@ -74,6 +74,9 @@
           node = nodeHex;
           inherit (installationPolicy) epoch capacity baseline controller components;
         };
+        # The copied bank already prices these audit bounds. Retain its early
+        # kernel queue too, before auditd can install the userspace rules.
+        aos.security.audit.bounds = lib.mkForce runtimeSystem.config.aos.security.audit.bounds;
         # Keep the unchanged genuine target-image Controller in PID1's
         # immutable inventory without activation or runtime private inputs.
         # This offline fixture establishes no online or V11 startup readiness.
@@ -179,6 +182,9 @@ in {
 
     vm.wait_for_unit("multi-user.target", timeout=300)
     vm.succeed("test $(cat /sys/fs/selinux/enforce) = 1")
+    audit = dict(line.split(maxsplit=1) for line in vm.succeed("auditctl -s").splitlines())
+    assert audit["lost"] == "0", audit
+    assert int(audit["backlog_limit"]) == ${toString system.config.aos.security.audit.backlogLimit}, audit
     configuration_labels = r"""
     import os
 
