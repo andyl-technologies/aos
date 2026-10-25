@@ -6836,7 +6836,7 @@
   "contracts": {
     "MODULE.bazel": "82d23a7405f9d486b8baa1c19c6aba75f62e0ff9e6e09f74f5dc24686b93052b",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
-    "crates/crucible/crucible-qemu-debug-gateway/BUILD.bazel": "f42afb3ac1abf1a5efc7a10e780a55d482a4d6287c77cf957ac043612093399c",
+    "crates/crucible/crucible-qemu-debug-gateway/BUILD.bazel": "eac72f29f661b11f0c0c6272464934feee3c2c5df797b8f420e55d4ca03fa3ba",
     "crates/crucible/crucible-qemu-protocol/BUILD.bazel": "b4ac42380f8f97cf7797667e4bc0f55250dbba5e18c68f5466182d489d5800d4",
     "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
     "third_party/rust/accache.bzl": "d77d2b31f800f096d790ca0ceecc415017106bf4f50cd597ac449414ac8fbd9a",

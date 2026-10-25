@@ -80,7 +80,9 @@ aos_rust_test(
     package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_root = "tests/process_lifecycle.rs",
-    srcs = glob(["tests/**/*.rs"]),
+    # Production source selections omit these unselected test files. Explicit
+    # labels defer their existence checks until this test is analyzed.
+    srcs = ["tests/process_lifecycle.rs", "tests/support/process_oracle.rs"],
     deps = DEPENDENCIES + ["//third_party/rust:core_tempfile"],
     data = [":crucible-debug-gateway"],
     rustc_env = {"CARGO_BIN_EXE_crucible-debug-gateway": "$(rootpath :crucible-debug-gateway)"},

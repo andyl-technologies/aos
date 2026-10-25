@@ -107800,7 +107800,7 @@
     "crates/crucible/crucible-device/BUILD.bazel": "25c15d468a562a41578c77307891a3c263a22f59ca77f3e8f5e08b9cc8e2b327",
     "crates/crucible/crucible-engine/BUILD.bazel": "27dd3d248538a2896426698c4215550ba578ad3acf11d498f17d61a080c97673",
     "crates/crucible/crucible-guest/BUILD.bazel": "4665c90eccf06411fb7fcd273e6ca74667eed6fedad6dfc51ddd9fe6fcbe3919",
-    "crates/crucible/crucible-qemu-debug-gateway/BUILD.bazel": "f42afb3ac1abf1a5efc7a10e780a55d482a4d6287c77cf957ac043612093399c",
+    "crates/crucible/crucible-qemu-debug-gateway/BUILD.bazel": "eac72f29f661b11f0c0c6272464934feee3c2c5df797b8f420e55d4ca03fa3ba",
     "crates/crucible/crucible-qemu-host/BUILD.bazel": "dbc63a4022471f162e93f0d80156c99017d73a209f225bfd3eba6b347a834562",
     "crates/crucible/crucible-qemu-plugin/BUILD.bazel": "abc6b3d3d8b8297c38b25f57786205b3e70a8e796bfcd1d471560663ea1607a5",
     "crates/crucible/crucible-qemu-protocol/BUILD.bazel": "b4ac42380f8f97cf7797667e4bc0f55250dbba5e18c68f5466182d489d5800d4",
