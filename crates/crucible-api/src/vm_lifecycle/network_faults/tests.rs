@@ -1617,6 +1617,8 @@ fn association_control_bias_and_replacement_preserve_digest_invariants() {
     );
 }
 
+#[path = "tests/campaign_frame_loss.rs"]
+mod campaign_frame_loss;
 #[path = "tests/control_replacements.rs"]
 mod control_replacements;
 #[path = "tests/production_conformance.rs"]
