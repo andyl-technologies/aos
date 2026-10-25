@@ -401,9 +401,19 @@ match between source selections. A rustix compiler-probe metadata file has a
 different digest in the inputs of 11 compilations; complete input
 reproducibility remains unresolved.
 
-Repository audits, the original Rust feature-powerset driver, and its canonical
-Nix gate still require migration of their source and tool inputs. These
-executable harness fixtures and feature compilations do not replace
+`checks.crucible.phase1.crateFeaturePowerset` now requires the nine compiled
+cases and `checks.build.bazel.crucible-feature-policy.all`. The latter queries
+all Rust declarations in the 12 core packages, checks owned source coverage and
+feature consumers, and audits fresh default production dependency closures.
+It preserves the engine, host, and device's exact dependency differences
+across 14 declared variants and checks the 10 compiled library layouts.
+Guest dependencies and engine test doubles fail at any depth in those
+closures. Both checks use workspaces without Cargo manifests or lockfiles.
+The [canonical-gate receipt](tests/evidence/crucible-canonical-feature-policy.json)
+retains the legacy comparison, seven rejected graph mutations, and identical
+gate results from a repository source copy without first-party Cargo files.
+The temporary Rust feature-powerset driver and other repository audits still
+require migration. These executable harness fixtures and feature checks do not replace
 the named production determinism, ABI, license, or performance gate chains.
 
 ## Isolated Rust tests

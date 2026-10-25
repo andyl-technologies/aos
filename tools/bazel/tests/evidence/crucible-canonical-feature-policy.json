@@ -1,0 +1,557 @@
+{
+  "canonical_gate": {
+    "derivation": "/nix/store/anqzdhhdqmwjdfssv6shmscfz64fgpmy-crucible-phase1-crate-feature-powerset-0.drv",
+    "derivation_sha256": "c3fc47c5e9bf5ee7027ee3fd3677d3eb2be3503ee785f3a0c291cfa73f2ab6a5",
+    "output": "/nix/store/218cqzs3q7zd47iv2gdjz3239p7j3phm-crucible-phase1-crate-feature-powerset-0"
+  },
+  "canonical_result_prefix_preserved": true,
+  "cargo_free_source_execution": {
+    "compilation_output": "/nix/store/v87phfnzl7ql5wf0fwrx958vs5spf7z6-aos-bazel-crucible-feature-case-checks",
+    "first_party_manifests_and_locks_absent": true,
+    "gate": {
+      "derivation": "/nix/store/jx9753rrl09rgl7r1whr234yfnxxfh7r-crucible-phase1-crate-feature-powerset-0.drv",
+      "derivation_sha256": "895688e102751763686731d55bf41420bcc31b0177146653368846f6227ff78c",
+      "output": "/nix/store/3409g5qy5z8f4s0rlnqfwvw39lfa9vbz-crucible-phase1-crate-feature-powerset-0"
+    },
+    "gate_result_and_both_report_files_identical": true,
+    "policy_output": "/nix/store/5apqgyr5fbly4zr9w4jliqrm5iyhhq4h-aos-bazel-crucible-feature-policy",
+    "source": {
+      "nar_hash": "sha256:1sz652x0hns0b8hg2lk0r9jf0m8k681njnpp6ry49cv52c1iwnm9",
+      "output": "/nix/store/hyhj40kh10728d52pyshk8jqxrk2azak-aos-feature-policy-without-first-party-cargo"
+    },
+    "third_party_dependency_locks_retained": true
+  },
+  "checks": {
+    "218cqzs3q7zd47iv2gdjz3239p7j3phm-crucible-phase1-crate-feature-powerset-0": {
+      "derivation": "/nix/store/anqzdhhdqmwjdfssv6shmscfz64fgpmy-crucible-phase1-crate-feature-powerset-0.drv",
+      "derivation_sha256": "c3fc47c5e9bf5ee7027ee3fd3677d3eb2be3503ee785f3a0c291cfa73f2ab6a5",
+      "output": "/nix/store/218cqzs3q7zd47iv2gdjz3239p7j3phm-crucible-phase1-crate-feature-powerset-0"
+    },
+    "8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0": {
+      "derivation": "/nix/store/88sj4hww8gn863d94bvpsfpdl1p51pln-aos-native-evaluation-checks-0.drv",
+      "derivation_sha256": "7835bb633ce93d7c8d6c7e0aea0be869152fe5ffaeba3240a5d9f1211aff07c6",
+      "output": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0"
+    },
+    "zap5a9cxm1scria46gx6zkf2n8x5nnsv-aos-bazel-policy-checks": {
+      "derivation": "/nix/store/1wdc5p7a3mng0xwfxkrnqsjklcnm09v1-aos-bazel-policy-checks.drv",
+      "derivation_sha256": "d584443989bd89267ab355ca5e7cc059e90133b2eef5977eca0243b2f9ba0ab6",
+      "output": "/nix/store/zap5a9cxm1scria46gx6zkf2n8x5nnsv-aos-bazel-policy-checks"
+    }
+  },
+  "compiled_case_count": 9,
+  "complete_policy_suite_tests": 427,
+  "fresh_default_production_inventory_executed_actions": 0,
+  "implementation_sha256": {
+    "tests/build/_bazel-crucible-feature-policy.nix": "0f16128ba42761f531aa8a93efc14a7c6df6217a4fa4bf9eed19ffc28e1940fe",
+    "tests/build/bazel.nix": "e61e12e89d6d4a2c883263f5e4696c4712a347e84ee0d97b5b7ce86a1f1b38f7",
+    "tests/crucible/phase1-crate-feature-powerset.nix": "89eb74234b01b0abf5f596e76af6846fa1a1ef1a41d7b172f054760c4fa8c66f",
+    "tools/bazel/tests/crucible-feature-policy.nix": "681907a620979288ec72afc1489f1b6cde11e4f267287c1224b39d2e3d5d7618",
+    "tools/bazel/tests/test_crucible_feature_policy.py": "9dd8e153b678795898b2cd63c405cf93f94e89e41f2e12cf2bb7d219e6f63fd7",
+    "tools/bazel/tests/verify_crucible_feature_policy.py": "35abd0b2641b170ec57f9a80410c9b6de10d155f08a4c3aa235325f9c3a4047d"
+  },
+  "inputs": {
+    "configuration": {
+      "derivation": "/nix/store/rwn12agi3hncwnnnfs12yyqzxd54js6n-aos-bazel-configuration.json.drv",
+      "derivation_sha256": "4e6d678f96a8ea132785b0e98964aa47d8a082f2d36d3334851686bbe49403c1",
+      "output": "/nix/store/p4b9y3j5d2qlcadyxjhsxm1lzx2vjgkk-aos-bazel-configuration.json"
+    },
+    "inventory": {
+      "derivation": "/nix/store/mnns50gndmv6panz9dml1wz2qyxcdpfs-aos-bazel-crucible-production-feature-inventory-1.drv",
+      "derivation_sha256": "c34010fa5522eae506a9aa8af89b9629a557d3a2211870ef04c670a1596ae879",
+      "output": "/nix/store/pq9d5hcww54qccsgarmpw0pipj8vr14i-aos-bazel-crucible-production-feature-inventory-1"
+    },
+    "policy": {
+      "derivation": "/nix/store/n0fwk924cn4556ihl4xpm5lxqc82wvav-aos-bazel-crucible-feature-policy.drv",
+      "derivation_sha256": "34150f82cd5d9a9862ae4b92d370a7bb667866366f14254fcd3f3d2fad288f2c",
+      "output": "/nix/store/5apqgyr5fbly4zr9w4jliqrm5iyhhq4h-aos-bazel-crucible-feature-policy"
+    },
+    "workspace": {
+      "nar_hash": "sha256:08fsh9jl9rwm8069617rmrgzb80jmaa0q3z083kfqxpyc190h87g",
+      "output": "/nix/store/7nk93aca6kwf58sb1m26l3z1b1amm76f-aos-bazel-workspace"
+    }
+  },
+  "known_performance_overlap": {
+    "derivation": "/nix/store/s6gv3dnf5nbwi1x2qbqz7cyhsbgcmlfv-aos-bazel-store-performance.drv",
+    "known_concurrent_work": [
+      "Bazel formatting root queries",
+      "Source-built rustfmt output parity and idempotence checks",
+      "Python policy and CLI checks",
+      "Boot-identity production builder, runtime closure, and installed CLI qualification",
+      "Production boot benchmark constructor builds, fresh-derivation local-cache restoration, and measurement regression checks",
+      "Crucible test-support fixture compilation, native oracle comparisons, and metadata regeneration",
+      "Crucible no-default feature-matrix compilation, nine offline Cargo checks, and affected source-inventory refreshes",
+      "Cargo-free Crucible canonical feature-policy queries, twelve production-root analyses, and policy regression checks"
+    ],
+    "overlap_observation": "Formatting qualifications overlapped the first Cargo incremental cold scenario. Boot-identity qualification overlapped the first repetition's cold, warm, or implementation-edit scenarios. These scenarios also include untimed case validation, so these observations do not isolate overlap with timed compilation.",
+    "qualification_scope": "Repeated compile-loop baselines; not accepted regression budgets or end-to-end cutover evidence",
+    "required_followup": "Retain this limitation with any published samples; collect matching current Bazel/toolchain observations and quiet controlled acceptance measurements before setting numeric cutover budgets. Do not compare historical earlier-toolchain Bazel timings as matched measurements.",
+    "trial": "f7ffcc09bb-cargo-baseline-v1"
+  },
+  "legacy_gate": {
+    "derivation": "/nix/store/lq74fvavd96wnm8w2852x1dki0jlqs2l-crucible-phase1-crate-feature-powerset-0.drv",
+    "derivation_sha256": "bdd2ae63a93c3c1f1a594619fa030743d46491d3643863f65fc520680dddbb99",
+    "output": "/nix/store/niihid31fjbg5ii95q8m6jkzkcdqz8vj-crucible-phase1-crate-feature-powerset-0"
+  },
+  "limitations": [
+    "The original Rust feature_powerset integration target still invokes Cargo and reads manifests; that temporary driver and other repository source audits remain to migrate.",
+    "Feature-case compiler execution was qualified in the preceding checkpoint; this canonical gate consumes that immutable build and validates its compiled layouts. It does not claim a new full runtime or compiler-default qualification.",
+    "The rustix probe-metadata input difference recorded in crucible-no-default-feature-cases.json remains unresolved.",
+    "Named production ABI, license, determinism, platform, editor and performance gates, remaining production builders, and final Cargo removal retain their independent requirements."
+  ],
+  "owned_rust_sources": 1874,
+  "parent_revision": "db957700e84600c6c479ae24c9759302954a0433",
+  "policy_regression_tests": 17,
+  "policy_report": {
+    "cargo_metadata_absent": true,
+    "declared_rust_targets": 865,
+    "feature_relationships": {
+      "compiled_variants": {
+        "//crates/crucible/crucible-device:lib": {
+          "features": [
+            "default"
+          ],
+          "first_party_dependencies": [
+            "//crates/crucible/crucible-determinism:lib",
+            "//crates/crucible/crucible-qemu-shmem:lib"
+          ]
+        },
+        "//crates/crucible/crucible-device:lib_no_default": {
+          "features": [],
+          "first_party_dependencies": [
+            "//crates/crucible/crucible-determinism:lib",
+            "//crates/crucible/crucible-qemu-shmem:lib"
+          ]
+        },
+        "//crates/crucible/crucible-engine:lib": {
+          "features": [
+            "default"
+          ],
+          "first_party_dependencies": [
+            "//crates/crucible/crucible-campaign:lib",
+            "//crates/crucible/crucible-determinism:lib",
+            "//crates/crucible/crucible-device:lib",
+            "//crates/crucible/crucible-qemu-protocol:lib",
+            "//crates/crucible/crucible-store:lib"
+          ]
+        },
+        "//crates/crucible/crucible-engine:lib_all_features_no_default": {
+          "features": [
+            "test-double",
+            "test-support"
+          ],
+          "first_party_dependencies": [
+            "//crates/crucible/crucible-campaign:lib",
+            "//crates/crucible/crucible-determinism:lib",
+            "//crates/crucible/crucible-device:lib",
+            "//crates/crucible/crucible-qemu-protocol:lib",
+            "//crates/crucible/crucible-qemu-shmem:lib",
+            "//crates/crucible/crucible-store:lib"
+          ]
+        },
+        "//crates/crucible/crucible-engine:lib_no_default": {
+          "features": [],
+          "first_party_dependencies": [
+            "//crates/crucible/crucible-campaign:lib",
+            "//crates/crucible/crucible-determinism:lib",
+            "//crates/crucible/crucible-device:lib",
+            "//crates/crucible/crucible-qemu-protocol:lib",
+            "//crates/crucible/crucible-store:lib"
+          ]
+        },
+        "//crates/crucible/crucible-engine:lib_test_double": {
+          "features": [
+            "default",
+            "test-double"
+          ],
+          "first_party_dependencies": [
+            "//crates/crucible/crucible-campaign:lib",
+            "//crates/crucible/crucible-determinism:lib",
+            "//crates/crucible/crucible-device:lib",
+            "//crates/crucible/crucible-qemu-protocol:lib",
+            "//crates/crucible/crucible-qemu-shmem:lib",
+            "//crates/crucible/crucible-store:lib"
+          ]
+        },
+        "//crates/crucible/crucible-engine:lib_test_double_no_default": {
+          "features": [
+            "test-double"
+          ],
+          "first_party_dependencies": [
+            "//crates/crucible/crucible-campaign:lib",
+            "//crates/crucible/crucible-determinism:lib",
+            "//crates/crucible/crucible-device:lib",
+            "//crates/crucible/crucible-qemu-protocol:lib",
+            "//crates/crucible/crucible-qemu-shmem:lib",
+            "//crates/crucible/crucible-store:lib"
+          ]
+        },
+        "//crates/crucible/crucible-engine:lib_test_support_no_default": {
+          "features": [
+            "test-support"
+          ],
+          "first_party_dependencies": [
+            "//crates/crucible/crucible-campaign:lib",
+            "//crates/crucible/crucible-determinism:lib",
+            "//crates/crucible/crucible-device:lib",
+            "//crates/crucible/crucible-qemu-protocol:lib",
+            "//crates/crucible/crucible-store:lib"
+          ]
+        },
+        "//crates/crucible/crucible-qemu-host:lib_no_default": {
+          "features": [],
+          "first_party_dependencies": [
+            "//crates/crucible/crucible-device:lib",
+            "//crates/crucible/crucible-engine:lib",
+            "//crates/crucible/crucible-qemu-protocol:lib",
+            "//crates/crucible/crucible-qemu-shmem:lib",
+            "//crates/linux/aos-linux-project-quota:lib"
+          ]
+        },
+        "//crates/crucible/crucible-qemu-host:lib_test_support_no_default": {
+          "features": [
+            "test-support"
+          ],
+          "first_party_dependencies": [
+            "//crates/crucible/crucible-device:lib",
+            "//crates/crucible/crucible-engine:lib_test_double",
+            "//crates/crucible/crucible-qemu-protocol:lib",
+            "//crates/crucible/crucible-qemu-shmem:lib",
+            "//crates/linux/aos-linux-project-quota:lib"
+          ]
+        }
+      },
+      "declared_variants": 14
+    },
+    "features": {
+      "crucible-cli": {
+        "consumers": {
+          "destructive-recovery-faults": "independent dependency-forwarding variant",
+          "packaged-midpoint-flight": "owned Rust cfg",
+          "test-double": "owned Rust cfg"
+        },
+        "declared_features": [
+          "default",
+          "destructive-recovery-faults",
+          "packaged-midpoint-flight",
+          "test-double"
+        ],
+        "owned_rust_sources": 172
+      },
+      "crucible-control-api": {
+        "consumers": {},
+        "declared_features": [],
+        "owned_rust_sources": 18
+      },
+      "crucible-daemon": {
+        "consumers": {
+          "destructive-recovery-faults": "owned Rust cfg",
+          "test-support": "owned Rust cfg"
+        },
+        "declared_features": [
+          "default",
+          "destructive-recovery-faults",
+          "test-support"
+        ],
+        "owned_rust_sources": 369
+      },
+      "crucible-determinism": {
+        "consumers": {},
+        "declared_features": [],
+        "owned_rust_sources": 6
+      },
+      "crucible-device": {
+        "consumers": {},
+        "declared_features": [
+          "default"
+        ],
+        "owned_rust_sources": 115
+      },
+      "crucible-engine": {
+        "consumers": {
+          "test-double": "owned Rust cfg",
+          "test-support": "owned Rust cfg"
+        },
+        "declared_features": [
+          "default",
+          "test-double",
+          "test-support"
+        ],
+        "owned_rust_sources": 443
+      },
+      "crucible-qemu-host": {
+        "consumers": {
+          "test-support": "owned Rust cfg"
+        },
+        "declared_features": [
+          "default",
+          "test-support"
+        ],
+        "owned_rust_sources": 327
+      },
+      "crucible-qemu-plugin": {
+        "consumers": {},
+        "declared_features": [],
+        "owned_rust_sources": 147
+      },
+      "crucible-qemu-protocol": {
+        "consumers": {
+          "test-oracle": "owned Rust cfg"
+        },
+        "declared_features": [
+          "test-oracle"
+        ],
+        "owned_rust_sources": 32
+      },
+      "crucible-qemu-shmem": {
+        "consumers": {},
+        "declared_features": [],
+        "owned_rust_sources": 119
+      },
+      "crucible-session": {
+        "consumers": {
+          "test-double": "independent dependency-forwarding variant",
+          "test-support": "owned Rust cfg"
+        },
+        "declared_features": [
+          "default",
+          "test-double",
+          "test-support"
+        ],
+        "owned_rust_sources": 33
+      },
+      "crucible-test-support": {
+        "consumers": {},
+        "declared_features": [],
+        "owned_rust_sources": 93
+      }
+    },
+    "production_closures": {
+      "crucible-cli": [
+        "//crates/crucible/crucible-campaign:lib",
+        "//crates/crucible/crucible-cli:crucible",
+        "//crates/crucible/crucible-control-api:lib_for_daemon",
+        "//crates/crucible/crucible-control-client:lib_for_daemon",
+        "//crates/crucible/crucible-control-server:lib_for_daemon",
+        "//crates/crucible/crucible-daemon:lib",
+        "//crates/crucible/crucible-determinism:lib",
+        "//crates/crucible/crucible-device:lib",
+        "//crates/crucible/crucible-engine:lib_for_daemon",
+        "//crates/crucible/crucible-qemu-host:lib_for_daemon",
+        "//crates/crucible/crucible-qemu-protocol:lib",
+        "//crates/crucible/crucible-qemu-shmem:lib",
+        "//crates/crucible/crucible-session:lib_for_daemon",
+        "//crates/crucible/crucible-store-s3:lib_for_daemon",
+        "//crates/crucible/crucible-store:lib",
+        "//crates/linux/aos-linux-project-quota:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ],
+      "crucible-control-api": [
+        "//crates/crucible/crucible-campaign:lib",
+        "//crates/crucible/crucible-control-api:lib",
+        "//crates/crucible/crucible-determinism:lib",
+        "//crates/crucible/crucible-device:lib",
+        "//crates/crucible/crucible-engine:lib",
+        "//crates/crucible/crucible-qemu-protocol:lib",
+        "//crates/crucible/crucible-qemu-shmem:lib",
+        "//crates/crucible/crucible-session:lib",
+        "//crates/crucible/crucible-store:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ],
+      "crucible-daemon": [
+        "//crates/crucible/crucible-campaign:lib",
+        "//crates/crucible/crucible-control-api:lib_for_daemon",
+        "//crates/crucible/crucible-control-client:lib_for_daemon",
+        "//crates/crucible/crucible-control-server:lib_for_daemon",
+        "//crates/crucible/crucible-daemon:lib",
+        "//crates/crucible/crucible-determinism:lib",
+        "//crates/crucible/crucible-device:lib",
+        "//crates/crucible/crucible-engine:lib_for_daemon",
+        "//crates/crucible/crucible-qemu-host:lib_for_daemon",
+        "//crates/crucible/crucible-qemu-protocol:lib",
+        "//crates/crucible/crucible-qemu-shmem:lib",
+        "//crates/crucible/crucible-session:lib_for_daemon",
+        "//crates/crucible/crucible-store-s3:lib_for_daemon",
+        "//crates/crucible/crucible-store:lib",
+        "//crates/linux/aos-linux-project-quota:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ],
+      "crucible-determinism": [
+        "//crates/crucible/crucible-determinism:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ],
+      "crucible-device": [
+        "//crates/crucible/crucible-determinism:lib",
+        "//crates/crucible/crucible-device:lib",
+        "//crates/crucible/crucible-qemu-protocol:lib",
+        "//crates/crucible/crucible-qemu-shmem:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ],
+      "crucible-engine": [
+        "//crates/crucible/crucible-campaign:lib",
+        "//crates/crucible/crucible-determinism:lib",
+        "//crates/crucible/crucible-device:lib",
+        "//crates/crucible/crucible-engine:lib",
+        "//crates/crucible/crucible-qemu-protocol:lib",
+        "//crates/crucible/crucible-qemu-shmem:lib",
+        "//crates/crucible/crucible-store:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ],
+      "crucible-qemu-host": [
+        "//crates/crucible/crucible-campaign:lib",
+        "//crates/crucible/crucible-determinism:lib",
+        "//crates/crucible/crucible-device:lib",
+        "//crates/crucible/crucible-engine:lib",
+        "//crates/crucible/crucible-qemu-host:lib",
+        "//crates/crucible/crucible-qemu-protocol:lib",
+        "//crates/crucible/crucible-qemu-shmem:lib",
+        "//crates/crucible/crucible-store:lib",
+        "//crates/linux/aos-linux-project-quota:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ],
+      "crucible-qemu-plugin": [
+        "//crates/crucible/crucible-qemu-plugin:plugin",
+        "//crates/crucible/crucible-qemu-protocol:lib",
+        "//crates/crucible/crucible-qemu-shmem:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ],
+      "crucible-qemu-protocol": [
+        "//crates/crucible/crucible-qemu-protocol:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ],
+      "crucible-qemu-shmem": [
+        "//crates/crucible/crucible-qemu-protocol:lib",
+        "//crates/crucible/crucible-qemu-shmem:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ],
+      "crucible-session": [
+        "//crates/crucible/crucible-campaign:lib",
+        "//crates/crucible/crucible-determinism:lib",
+        "//crates/crucible/crucible-device:lib",
+        "//crates/crucible/crucible-engine:lib",
+        "//crates/crucible/crucible-qemu-protocol:lib",
+        "//crates/crucible/crucible-qemu-shmem:lib",
+        "//crates/crucible/crucible-session:lib",
+        "//crates/crucible/crucible-store:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ],
+      "crucible-test-support": [
+        "//crates/crucible/crucible-test-support:lib",
+        "//tools/bazel/rules:workspace_lints"
+      ]
+    },
+    "rejected_negative_controls": [
+      "default engine activates shared memory",
+      "engine test support activates a dependency",
+      "device no-default changes dependencies",
+      "host test support loses engine forwarding",
+      "compiled forwarded engine loses dependency defaults",
+      "default engine acquires a transitive guest edge",
+      "default engine enables test double"
+    ],
+    "schema_version": 1
+  },
+  "schema_version": 1,
+  "status": "Canonical Crucible feature-powerset gate migrated to Bazel; original Rust Cargo driver remains temporary",
+  "temporary_cargo_metadata_oracle": {
+    "crucible-cli": {
+      "features": {
+        "default": [],
+        "destructive-recovery-faults": [
+          "crucible-daemon/destructive-recovery-faults"
+        ],
+        "packaged-midpoint-flight": [],
+        "test-double": [
+          "crucible-session/test-double"
+        ]
+      },
+      "path": "crates/crucible/crucible-cli/Cargo.toml",
+      "sha256": "59f69897b2ab5d713aa676c757fb63782a9691b9df2ab9c349dd5e6fa9dab124"
+    },
+    "crucible-control-api": {
+      "features": {},
+      "path": "crates/crucible/crucible-control-api/Cargo.toml",
+      "sha256": "36936922a8d98da6c27cc01dc908ad1f664a8fd15467d69b48183df060c0864f"
+    },
+    "crucible-daemon": {
+      "features": {
+        "default": [],
+        "destructive-recovery-faults": [
+          "crucible-campaign/destructive-recovery-faults"
+        ],
+        "test-support": [
+          "crucible-control-server/test-support",
+          "crucible-engine/test-support",
+          "crucible-qemu-host/test-support"
+        ]
+      },
+      "path": "crates/crucible/crucible-daemon/Cargo.toml",
+      "sha256": "93e2aaac3ed50937fd4aca655652875994adca1682b8961dcbd76ceae777eb00"
+    },
+    "crucible-determinism": {
+      "features": {},
+      "path": "crates/crucible/crucible-determinism/Cargo.toml",
+      "sha256": "138b74713f8cf72d3685acfc146cf5dd3a549875ccaeb0e5b70a07e4c8b325e5"
+    },
+    "crucible-device": {
+      "features": {
+        "default": []
+      },
+      "path": "crates/crucible/crucible-device/Cargo.toml",
+      "sha256": "4444ceb69e93982ccc4a5dd480f12a4c82760266d21189252a7f190f613cd01f"
+    },
+    "crucible-engine": {
+      "features": {
+        "default": [],
+        "test-double": [
+          "dep:crucible-qemu-shmem"
+        ],
+        "test-support": []
+      },
+      "path": "crates/crucible/crucible-engine/Cargo.toml",
+      "sha256": "850de93c96726d485a12132ea874de856f7065326d308495217dc4dc11b564e2"
+    },
+    "crucible-qemu-host": {
+      "features": {
+        "default": [],
+        "test-support": [
+          "crucible-engine/test-double"
+        ]
+      },
+      "path": "crates/crucible/crucible-qemu-host/Cargo.toml",
+      "sha256": "907ccbe86162e8c2d54ab090e8084b65cb66fdb454445631b23088f1b3596931"
+    },
+    "crucible-qemu-plugin": {
+      "features": {},
+      "path": "crates/crucible/crucible-qemu-plugin/Cargo.toml",
+      "sha256": "cd6ad0874c8567242029f3e508e0019569219d83e0df6287bacc265ed1ee6924"
+    },
+    "crucible-qemu-protocol": {
+      "features": {
+        "test-oracle": []
+      },
+      "path": "crates/crucible/crucible-qemu-protocol/Cargo.toml",
+      "sha256": "9b3c618ecd4d1658d679a5b9ca5b2414601899c235f2df6d1f5781b5d42f180a"
+    },
+    "crucible-qemu-shmem": {
+      "features": {},
+      "path": "crates/crucible/crucible-qemu-shmem/Cargo.toml",
+      "sha256": "6b3c2bd5ee4f6041494b02cbbdf3c619fa09365c9ef1f38b37c7da298fcb7fc7"
+    },
+    "crucible-session": {
+      "features": {
+        "default": [],
+        "test-double": [
+          "crucible-engine/test-double"
+        ],
+        "test-support": []
+      },
+      "path": "crates/crucible/crucible-session/Cargo.toml",
+      "sha256": "ffd3ce16758d5bdc7318ec4e1ba08279a405be98f59f967382f9fca28407527b"
+    },
+    "crucible-test-support": {
+      "features": {},
+      "path": "crates/crucible/crucible-test-support/Cargo.toml",
+      "sha256": "84baf8d97ae8af7351d064e02db5ec58ac4cd3fe97712dd6e21ee27637efb778"
+    }
+  }
+}

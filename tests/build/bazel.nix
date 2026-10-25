@@ -117,6 +117,7 @@ in
     boot-production = import ./_bazel-boot-production.nix {inherit pkgs;};
     test-support = import ./_bazel-test-support.nix {inherit pkgs;};
     feature-powerset = import ./_bazel-feature-powerset.nix {inherit pkgs;};
+    crucible-feature-policy = import ./_bazel-crucible-feature-policy.nix {inherit pkgs;};
     sysroot-metadata = import ./_bazel-sysroot-metadata.nix {inherit pkgs;};
     manifest-extractor = import ./_bazel-manifest-extractor.nix {inherit pkgs;};
     static-runtime = import ./_bazel-static-runtime.nix {inherit pkgs;};
@@ -521,6 +522,7 @@ in
             boot-production.all
             test-support.all
             feature-powerset.all
+            crucible-feature-policy.all
             sysroot-metadata
             manifest-extractor
             native-libraries
