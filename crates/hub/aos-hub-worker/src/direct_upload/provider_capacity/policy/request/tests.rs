@@ -67,6 +67,120 @@ async fn original_cutoff_refuses_a_queued_request_without_another_dispatch() {
 }
 
 #[tokio::test]
+async fn queued_creation_prepares_its_lease_after_capacity_becomes_available() {
+    provider_capacity::configure(3).unwrap();
+    let occupied = provider_capacity::acquire_class(3, Class::Metadata)
+        .await
+        .unwrap();
+    let selected = policy();
+    let now = Cell::new(100);
+    let prepared_at = Cell::new(None);
+    let fresh = || {
+        anyhow::ensure!(now.get() < 130, "original expired");
+        Ok(())
+    };
+    let mut queued = Box::pin(prepare(
+        Some(&selected),
+        Class::Foreground,
+        &fresh,
+        || async {
+            prepared_at.set(Some(now.get()));
+            Ok(now.get() + 6)
+        },
+    ));
+
+    let waker = futures_util::task::noop_waker();
+    let mut context = Context::from_waker(&waker);
+    assert!(queued.as_mut().poll(&mut context).is_pending());
+    assert_eq!(prepared_at.get(), None);
+
+    // A lease borrowed before this wait would expire before the slot is free.
+    now.set(111);
+    drop(occupied);
+    let (permit, lease_expires_at) = queued.await.unwrap();
+
+    assert_eq!(prepared_at.get(), Some(111));
+    assert!(now.get() < lease_expires_at);
+    assert_eq!(provider_capacity::observation().active, 1);
+    validate_held(&selected, permit.as_ref().unwrap(), &fresh).unwrap();
+    drop(permit);
+    assert_eq!(provider_capacity::observation().active, 0);
+}
+
+#[tokio::test]
+async fn expired_creation_never_prepares_authority_or_dispatches_after_queuing() {
+    provider_capacity::configure(3).unwrap();
+    let occupied = provider_capacity::acquire_class(3, Class::Metadata)
+        .await
+        .unwrap();
+    let selected = policy();
+    let valid = Cell::new(true);
+    let prepared = Cell::new(false);
+    let fresh = || {
+        anyhow::ensure!(valid.get(), "original expired");
+        Ok(())
+    };
+    let before = provider_capacity::observation();
+    let mut queued = Box::pin(prepare(
+        Some(&selected),
+        Class::Foreground,
+        &fresh,
+        || async {
+            prepared.set(true);
+            Ok(())
+        },
+    ));
+
+    let waker = futures_util::task::noop_waker();
+    let mut context = Context::from_waker(&waker);
+    assert!(queued.as_mut().poll(&mut context).is_pending());
+    valid.set(false);
+    assert!(queued.await.is_err());
+
+    assert!(!prepared.get());
+    assert_eq!(
+        provider_capacity::observation().dispatches,
+        before.dispatches
+    );
+    drop(occupied);
+    provider_capacity::configure(4).unwrap();
+    provider_capacity::configure(3).unwrap();
+}
+
+#[tokio::test]
+async fn canceled_preparation_releases_capacity_and_expired_preparation_is_refused() {
+    provider_capacity::configure(3).unwrap();
+    let selected = policy();
+    let mut pending = Box::pin(prepare(
+        Some(&selected),
+        Class::Foreground,
+        &|| Ok(()),
+        || futures_util::future::pending::<Result<()>>(),
+    ));
+
+    let waker = futures_util::task::noop_waker();
+    let mut context = Context::from_waker(&waker);
+    assert!(pending.as_mut().poll(&mut context).is_pending());
+    assert_eq!(provider_capacity::observation().active, 1);
+    drop(pending);
+    assert_eq!(provider_capacity::observation().active, 0);
+
+    let valid = Cell::new(true);
+    let fresh = || {
+        anyhow::ensure!(valid.get(), "original expired");
+        Ok(())
+    };
+    let result = prepare(Some(&selected), Class::Foreground, &fresh, || async {
+        valid.set(false);
+        Ok(())
+    })
+    .await;
+
+    assert!(result.is_err());
+    assert_eq!(provider_capacity::observation().active, 0);
+}
+
+#[tokio::test]
 async fn canceled_wait_and_owned_request_release_the_exact_pool_reservation() {
     provider_capacity::configure(3).unwrap();
     let occupied = provider_capacity::acquire_class(3, Class::Metadata)

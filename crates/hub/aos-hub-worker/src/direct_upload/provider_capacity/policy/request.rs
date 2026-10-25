@@ -4,6 +4,8 @@
 //! cohort and original cutoff remain the admission checks. A transferred Copy
 //! permit is already an owner and must not pass through this acquisition again.
 
+use std::future::Future;
+
 use anyhow::{ensure, Result};
 
 use super::Policy;
@@ -20,6 +22,36 @@ pub(crate) async fn acquire(
 ) -> Result<Permit> {
     provider_capacity::configure(policy.maximum_provider_requests)?;
     provider_capacity::acquire_class_checked(1, class, &|| fresh()).await
+}
+
+/// Prepares short-lived authority only after configured request capacity is owned.
+///
+/// The caller retains the returned reservation through the response handler.
+/// Original eligibility and cancellation are checked while waiting and on both
+/// sides of preparation. The executor repeats full authority checks before Fetch.
+///
+/// # Errors
+/// Returns capacity, original eligibility, cancellation or preparation errors.
+pub(crate) async fn prepare<T, F, Fut>(
+    policy: Option<&Policy>,
+    class: Class,
+    fresh: &dyn Fn() -> Result<()>,
+    prepare: F,
+) -> Result<(Option<Permit>, T)>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    fresh()?;
+    let permit = match policy {
+        Some(policy) => Some(acquire(policy, class, fresh).await?),
+        None => None,
+    };
+
+    fresh()?;
+    let prepared = prepare().await?;
+    fresh()?;
+    Ok((permit, prepared))
 }
 
 #[cfg(test)]

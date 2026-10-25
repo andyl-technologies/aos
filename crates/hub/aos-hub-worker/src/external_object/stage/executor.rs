@@ -107,12 +107,28 @@ pub(crate) async fn execute_stage_with_signal(
     work: &ExternalStageRequest,
     signal: Option<worker::web_sys::AbortSignal>,
 ) -> Result<ExternalStageResult> {
+    execute_stage_with_capacity(env, work, signal, None).await
+}
+
+/// Executes a stage under capacity reserved before its lease preparation.
+///
+/// The caller retains the reservation through this awaited execution. The
+/// provider boundary checks its pool identity and repeats current authority.
+///
+/// # Errors
+/// Returns the unchanged executor errors or refuses incompatible capacity.
+pub(crate) async fn execute_stage_with_capacity(
+    env: &Env,
+    work: &ExternalStageRequest,
+    signal: Option<worker::web_sys::AbortSignal>,
+    held: Option<&crate::direct_upload::provider_capacity::Permit>,
+) -> Result<ExternalStageResult> {
     execute_stage_observed_inner(
         env,
         work,
         &|| {},
         signal,
-        None,
+        held,
         #[cfg(feature = "do-e2e")]
         None,
     )

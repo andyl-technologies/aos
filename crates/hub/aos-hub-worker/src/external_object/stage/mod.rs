@@ -40,7 +40,8 @@ pub(crate) use direct_guard::{
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use executor::{
-    execute_stage, execute_stage_observed, execute_stage_with_signal, fetch,
+    execute_stage, execute_stage_observed, execute_stage_with_capacity, execute_stage_with_signal,
+    fetch,
 };
 #[cfg(target_arch = "wasm32")]
 pub(in crate::external_object) use planning::acquire_configured_lease;

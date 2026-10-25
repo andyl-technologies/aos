@@ -139,16 +139,34 @@ pub(super) async fn begin_with_signal(
                             diagnostics,
                             BeginPhase::ExternalPreparation,
                         );
-                        let work = timed(
-                            TimingPhase::StagePreparation,
-                            crate::external_object::prepare_stage_request_with_cutoff(
-                                env,
-                                admission,
-                                placement.placement_id,
-                                operation_id.clone(),
-                                ExternalStageOperation::CreateStage,
-                                context.foreground.expires_at,
-                            ),
+                        // A cached lease can have only a few seconds left. Wait
+                        // for the provider slot before borrowing that lease;
+                        // capacity waiting remains inside the original cutoff.
+                        let policy = super::provider_capacity::policy::installed(env)?;
+                        let fresh = || {
+                            ensure!(
+                                !signal.as_ref().is_some_and(|signal| signal.aborted()),
+                                "direct stage creation canceled"
+                            );
+                            current(authority, context, admission)
+                        };
+                        let (capacity, work) = super::provider_capacity::policy::request::prepare(
+                            policy.as_ref(),
+                            super::provider_capacity::Class::Foreground,
+                            &fresh,
+                            || {
+                                timed(
+                                    TimingPhase::StagePreparation,
+                                    crate::external_object::prepare_stage_request_with_cutoff(
+                                        env,
+                                        admission,
+                                        placement.placement_id,
+                                        operation_id.clone(),
+                                        ExternalStageOperation::CreateStage,
+                                        context.foreground.expires_at,
+                                    ),
+                                )
+                            },
                         )
                         .await
                         .inspect_err(|error| {
@@ -165,10 +183,11 @@ pub(super) async fn begin_with_signal(
                         Ok(CreatedStage::External {
                             result: timed(
                                 TimingPhase::StageCreation,
-                                crate::external_object::execute_stage_with_signal(
+                                crate::external_object::execute_stage_with_capacity(
                                     env,
                                     &work,
                                     signal.clone(),
+                                    capacity.as_ref(),
                                 ),
                             )
                             .await?,
