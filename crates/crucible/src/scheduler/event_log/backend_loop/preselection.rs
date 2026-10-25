@@ -195,10 +195,11 @@ where
 
         for output in pending.remaining_unintercepted_outputs {
             let mut outputs = vec![output];
-            let appends = self.network_output_interceptor.intercept_network_outputs(
+            let appends = super::admission::intercept_at_release_times(
+                &mut self.network_output_interceptor,
                 &mut self.loop_impl,
                 &mut self.backend,
-                outcome.frontier,
+                &self.frozen_network_output_times,
                 &mut self.pending_network_outputs,
                 &mut outputs,
             )?;

@@ -494,7 +494,6 @@ where
                 preselection: &mut self.preselection,
                 pause_before_live_network_choice: self.pause_before_live_network_choice,
                 network_release_at: outcome.frontier,
-                network_cut: None,
             },
             outcome,
             evidence,
@@ -670,10 +669,11 @@ where
             if network_outputs.is_empty() {
                 continue;
             }
-            appends.extend(self.network_output_interceptor.intercept_network_outputs(
+            appends.extend(admission::intercept_at_release_times(
+                &mut self.network_output_interceptor,
                 &mut self.loop_impl,
                 &mut self.backend,
-                frontier,
+                &self.frozen_network_output_times,
                 &mut self.pending_network_outputs,
                 &mut network_outputs,
             )?);

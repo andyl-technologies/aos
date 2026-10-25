@@ -781,7 +781,6 @@ where
                     preselection: &mut staged_preselection,
                     pause_before_live_network_choice: self.pause_before_live_network_choice,
                     network_release_at: release_at,
-                    network_cut: None,
                 },
                 outcome,
                 boundary,
@@ -923,7 +922,6 @@ where
                 preselection: &mut staged_preselection,
                 pause_before_live_network_choice: self.pause_before_live_network_choice,
                 network_release_at: frontier,
-                network_cut: None,
             },
             only,
             BackendBoundaryEvidence {

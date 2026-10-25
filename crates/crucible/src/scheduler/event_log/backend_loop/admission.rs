@@ -19,10 +19,6 @@ pub(super) struct BackendOutcomeAdmission<'a, L, B, I> {
     pub(super) preselection: &'a mut Option<BackendPendingPreselection>,
     pub(super) pause_before_live_network_choice: bool,
     pub(super) network_release_at: VirtualTime,
-    /// The cut a custody release publishes at, which the interceptor
-    /// evaluates in place of the committed frontier. Absent for a RUN's own
-    /// admission.
-    pub(super) network_cut: Option<VirtualTime>,
 }
 
 /// Returns when one frame may leave the pending queue: its emission time, or
@@ -57,6 +53,58 @@ pub(super) fn earliest_pending_network_release<'a, L: QuantumLoop>(
     Ok(earliest)
 }
 
+/// Intercepts each frame at its own release time.
+///
+/// A frame's fault coordinate is its release time from
+/// [`pending_network_release_time`], a function of the frame alone. The time
+/// of the publication that happens to admit it, or the committed frontier,
+/// which an idle node's lagging clock holds back, would depend on how the
+/// host split the RUNs around it, and so would every fault decision taken
+/// there. `outputs` arrive in release-time order; frames sharing a release
+/// time are intercepted together, and the surviving frames keep their order.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError`] when a release time cannot be converted or the
+/// interceptor refuses a frame.
+pub(super) fn intercept_at_release_times<L, B, I>(
+    network_output_interceptor: &mut I,
+    loop_impl: &mut L,
+    backend: &mut B,
+    frozen_network_output_times: &BTreeMap<(NodeId, u64), VirtualTime>,
+    pending_network_outputs: &mut Vec<BackendNetworkOutput>,
+    outputs: &mut Vec<BackendNetworkOutput>,
+) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError>
+where
+    L: QuantumLoop,
+    I: BackendNetworkOutputInterceptor<L, B>,
+{
+    let mut timed = Vec::with_capacity(outputs.len());
+    for output in std::mem::take(outputs) {
+        let at = pending_network_release_time(loop_impl, frozen_network_output_times, &output)?;
+        timed.push((at, output));
+    }
+
+    let mut appends = Vec::new();
+    let mut timed = timed.into_iter().peekable();
+    while let Some((at, first)) = timed.next() {
+        let mut group = vec![first];
+        while let Some((_, output)) = timed.next_if(|(next_at, _)| *next_at == at) {
+            group.push(output);
+        }
+        appends.extend(network_output_interceptor.intercept_network_outputs(
+            loop_impl,
+            backend,
+            at,
+            pending_network_outputs,
+            &mut group,
+        )?);
+        outputs.extend(group);
+    }
+
+    Ok(appends)
+}
+
 pub(super) fn complete_backend_outcome_on<L, B, I>(
     admission: BackendOutcomeAdmission<'_, L, B, I>,
     mut outcome: QuantumOutcome,
@@ -83,9 +131,7 @@ where
         preselection,
         pause_before_live_network_choice,
         network_release_at,
-        network_cut,
     } = admission;
-    let interceptor_frontier = network_cut.unwrap_or(outcome.frontier);
 
     for event in &outcome.resolved_events {
         if staged_inputs.contains(&event.key) {
@@ -172,10 +218,11 @@ where
         if network_outputs.is_empty() {
             continue;
         }
-        let appends = network_output_interceptor.intercept_network_outputs(
+        let appends = intercept_at_release_times(
+            network_output_interceptor,
             loop_impl,
             backend,
-            interceptor_frontier,
+            frozen_network_output_times,
             pending_network_outputs,
             &mut network_outputs,
         )?;

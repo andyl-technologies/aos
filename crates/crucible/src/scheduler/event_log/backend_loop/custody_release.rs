@@ -60,8 +60,8 @@ pub(super) fn next_custody_release(
 
 /// Admits every pending frame whose release time is at or before `cut`.
 ///
-/// The interceptor evaluates the frames at `cut`, where every live node has
-/// already executed, rather than at the lagging committed frontier.
+/// Every live node has already executed to `cut`; the interceptor evaluates
+/// each frame at its own release time.
 ///
 /// # Errors
 ///
@@ -99,7 +99,6 @@ where
             preselection,
             pause_before_live_network_choice,
             network_release_at: cut,
-            network_cut: Some(cut),
         },
         base,
         BackendBoundaryEvidence {
