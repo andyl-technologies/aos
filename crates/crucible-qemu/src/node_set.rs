@@ -23,9 +23,7 @@ use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_protocol::selectable_catalog_plan::{
     SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectablePlanPendingRequest,
 };
-use crucible_shmem::{
-    DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1, MAX_FRAME_DELIVERY_ATTEMPTS,
-};
+use crucible_shmem::{DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1};
 
 use crate::QemuVmSnapshot;
 #[cfg(target_os = "linux")]
@@ -33,7 +31,7 @@ use crate::{
     QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLaunchResourceRequirements,
     QemuNodeLifecycleState, QemuProcessIdentity,
 };
-use crate::{QemuNode, QemuNodeError, QemuNodeIdleState};
+use crate::{QemuNode, QemuNodeError};
 
 #[cfg(target_os = "linux")]
 #[path = "node_set/block_boundary.rs"]
@@ -56,6 +54,9 @@ mod disk_seal;
 mod fault_events;
 #[path = "node_set/lifecycle.rs"]
 mod lifecycle;
+#[path = "node_set/step_progress.rs"]
+mod step_progress;
+use step_progress::{MAX_STEP_REISSUES, consumed_input_without_retiring, stagnant_pause_boundary};
 // Host wall-clock accounting lives with the supervision clock boundary.
 #[path = "supervision/attempt_progress.rs"]
 mod attempt_progress;
@@ -430,39 +431,6 @@ impl QemuNodeSelectablePendingRequest {
     pub const fn pending(&self) -> &SelectablePlanPendingRequest {
         &self.pending
     }
-}
-
-/// Maximum early-pause reissues for one scheduler-selected node step.
-///
-/// A backpressured FIFO head can create one exact pause per canonical QEMU RX
-/// attempt. Use the public transport hard bound so a valid retained frame can
-/// exhaust its own typed retry budget before this adapter reports a generic
-/// progress failure.
-const MAX_STEP_REISSUES: u32 = MAX_FRAME_DELIVERY_ATTEMPTS;
-
-fn consumed_input_without_retiring(
-    observation: &StepObservation,
-    previous: VirtualTime,
-    inbound_frames_consumed: usize,
-) -> bool {
-    observation.reached == previous
-        && matches!(observation.outcome, crucible::AdvanceOutcome::Paused { .. })
-        && inbound_frames_consumed > 0
-}
-
-fn stagnant_pause_boundary(
-    observation: &StepObservation,
-    previous: VirtualTime,
-    final_state: Option<QemuNodeIdleState>,
-) -> Option<(VirtualTime, Option<Icount>)> {
-    (observation.reached == previous
-        && matches!(observation.outcome, crucible::AdvanceOutcome::Paused { .. }))
-    .then(|| {
-        (
-            observation.reached,
-            final_state.and_then(|state| state.next_deadline),
-        )
-    })
 }
 
 /// A deterministic node-addressed collection of live QEMU backends.
@@ -2333,7 +2301,7 @@ mod tests {
     // crucible-lint: allow panic-shortcut -- fixture setup uses panic shortcuts for failure localization.
     #![allow(clippy::expect_used)]
 
-    use crucible::{AdvanceOutcome, Icount};
+    use crucible::Icount;
     use crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
     use crucible_protocol::{SelectionReply, SelectionReplyStatus, SelectionRequest};
 
@@ -2369,76 +2337,6 @@ mod tests {
             "the shutdown node still pins an unlinked attempt inode"
         );
         Ok(())
-    }
-
-    #[test]
-    fn current_coordinate_input_consumption_is_reissuable_boundary_progress() {
-        let previous = VirtualTime { ticks: 41 };
-        let paused = StepObservation::from_advance_outcome(
-            VirtualTime { ticks: 100 },
-            AdvanceOutcome::Paused {
-                at: Icount { retired: 41 },
-            },
-        );
-
-        assert!(consumed_input_without_retiring(&paused, previous, 1));
-        assert!(!consumed_input_without_retiring(&paused, previous, 0));
-
-        let regressed = StepObservation::from_advance_outcome(
-            VirtualTime { ticks: 100 },
-            AdvanceOutcome::Paused {
-                at: Icount { retired: 40 },
-            },
-        );
-        assert!(!consumed_input_without_retiring(&regressed, previous, 1));
-    }
-
-    #[test]
-    fn fresh_stagnant_pause_is_progress_but_an_identical_repeat_is_not() {
-        let previous = VirtualTime { ticks: 41 };
-        let paused = StepObservation::from_advance_outcome(
-            VirtualTime { ticks: 100 },
-            AdvanceOutcome::Paused {
-                at: Icount { retired: 41 },
-            },
-        );
-        let first = stagnant_pause_boundary(
-            &paused,
-            previous,
-            Some(QemuNodeIdleState {
-                current_icount: Icount { retired: 41 },
-                next_deadline: Some(Icount { retired: 60 }),
-            }),
-        );
-        assert_eq!(first, Some((previous, Some(Icount { retired: 60 }))));
-
-        let repeated = stagnant_pause_boundary(
-            &paused,
-            previous,
-            Some(QemuNodeIdleState {
-                current_icount: Icount { retired: 41 },
-                next_deadline: Some(Icount { retired: 60 }),
-            }),
-        );
-        assert_eq!(repeated, first);
-
-        let advanced_boundary = stagnant_pause_boundary(
-            &paused,
-            previous,
-            Some(QemuNodeIdleState {
-                current_icount: Icount { retired: 41 },
-                next_deadline: Some(Icount { retired: 61 }),
-            }),
-        );
-        assert_ne!(advanced_boundary, first);
-
-        let regressed = StepObservation::from_advance_outcome(
-            VirtualTime { ticks: 100 },
-            AdvanceOutcome::Paused {
-                at: Icount { retired: 40 },
-            },
-        );
-        assert_eq!(stagnant_pause_boundary(&regressed, previous, None), None);
     }
 
     #[test]

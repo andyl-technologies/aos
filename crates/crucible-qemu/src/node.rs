@@ -53,7 +53,7 @@ pub use exact_snapshot::{
     QemuExactCheckpointCaptureAdmission, QemuExactCheckpointCaptureBoundary,
     QemuExactCheckpointCaptureOutputs, QemuExactCheckpointCaptureResult,
 };
-pub(crate) use stall_context::{QemuNodeStallContext, StallBoundary, UnprovenCampaignMarker};
+pub(crate) use stall_context::{StallBoundary, UnprovenCampaignMarker};
 mod fault_events;
 #[cfg(target_os = "linux")]
 #[path = "node/hot_fork_child_files.rs"]
@@ -2055,43 +2055,6 @@ impl QemuNode {
     #[must_use]
     pub const fn completed_quantum_boundary(&self) -> Option<crate::QemuCompletedQuantumBoundary> {
         self.last_step_completed_boundary
-    }
-
-    /// Returns host-held evidence naming which quiesced writer may own a stall.
-    pub(crate) fn stall_context(&self) -> QemuNodeStallContext {
-        QemuNodeStallContext::new(
-            [
-                ("selectable", self.selectable_resume_pending),
-                ("network-output", self.network_output_resume_pending),
-                ("console-output", self.console_output_resume_pending),
-                ("hot-fork", self.hot_fork_resume_pending),
-                ("campaign-marker", self.campaign_marker_resume_pending),
-            ],
-            self.host_io_runtime.coordinated_pause_requested(),
-            self.pending_network_outputs.len(),
-            self.last_campaign_markers.clone(),
-            self.unproven_campaign_marker.clone(),
-            self.last_step_completed_boundary
-                .map(crate::QemuCompletedQuantumBoundary::stall_boundaries),
-        )
-    }
-
-    /// Records the newest campaign markers drained from this node, if any.
-    ///
-    /// A drain with no campaign marker keeps the previous record, so a stall
-    /// names the last marker even after later quanta drained nothing.
-    pub(crate) fn note_campaign_markers_drained(&mut self, markers: String) {
-        if !markers.is_empty() {
-            self.last_campaign_markers = Some(markers);
-        }
-    }
-
-    /// Records the campaign marker a step drained without proving its stop.
-    ///
-    /// A proven park or a later step with no marker leaves the record alone;
-    /// only the next marker step replaces it.
-    pub(crate) fn note_campaign_marker_proof(&mut self, unproven: Option<UnprovenCampaignMarker>) {
-        self.unproven_campaign_marker = unproven;
     }
 
     /// Returns the effective shared-memory ceiling from the last scheduler step.

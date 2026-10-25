@@ -22,6 +22,8 @@
 
 use std::fmt;
 
+use super::QemuNode;
+
 /// Campaign marker the host drained beside a stop it could not prove.
 ///
 /// A horizon step admits an unproven marker without parking, so the marker
@@ -164,6 +166,45 @@ impl fmt::Display for QemuNodeStallContext {
             }
             None => formatter.write_str(" discovery=none clamp=none"),
         }
+    }
+}
+
+impl QemuNode {
+    /// Returns host-held evidence naming which quiesced writer may own a stall.
+    pub(crate) fn stall_context(&self) -> QemuNodeStallContext {
+        QemuNodeStallContext::new(
+            [
+                ("selectable", self.selectable_resume_pending),
+                ("network-output", self.network_output_resume_pending),
+                ("console-output", self.console_output_resume_pending),
+                ("hot-fork", self.hot_fork_resume_pending),
+                ("campaign-marker", self.campaign_marker_resume_pending),
+            ],
+            self.host_io_runtime.coordinated_pause_requested(),
+            self.pending_network_outputs.len(),
+            self.last_campaign_markers.clone(),
+            self.unproven_campaign_marker.clone(),
+            self.last_step_completed_boundary
+                .map(crate::QemuCompletedQuantumBoundary::stall_boundaries),
+        )
+    }
+
+    /// Records the newest campaign markers drained from this node, if any.
+    ///
+    /// A drain with no campaign marker keeps the previous record, so a stall
+    /// names the last marker even after later quanta drained nothing.
+    pub(crate) fn note_campaign_markers_drained(&mut self, markers: String) {
+        if !markers.is_empty() {
+            self.last_campaign_markers = Some(markers);
+        }
+    }
+
+    /// Records the campaign marker a step drained without proving its stop.
+    ///
+    /// A proven park or a later step with no marker leaves the record alone;
+    /// only the next marker step replaces it.
+    pub(crate) fn note_campaign_marker_proof(&mut self, unproven: Option<UnprovenCampaignMarker>) {
+        self.unproven_campaign_marker = unproven;
     }
 }
 
