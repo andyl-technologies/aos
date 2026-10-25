@@ -343,6 +343,16 @@ Recent committed startup fixes close narrower prerequisites:
   that frozen result predates the manager, live-policy and unit additions and
   compiles targets without running them.
 
+- The initial unit reader explicitly bounds its owned Runtime to one blocking
+  worker with a 2 MiB stack. The same Source prepays that PID and stack even if
+  the worker is never used. All 26 focused tests still pass; complete Rust
+  target compilation is running for the exact bounded-Runtime source. The
+  earlier manager-image change separately passes complete Rust compilation
+  (`/nix/store/i0gklis9f431b9rdhr5vvd91zi2miy32-aos-test-targets-0.1.0`),
+  compiling targets without running them. That frozen result excludes the later
+  live-policy, unit and Runtime additions. Installed producers and the public
+  lifecycle remain unqualified.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they

@@ -16,6 +16,7 @@ const UNIT_BYTES: usize = 64 * 1024;
 const PROPERTIES: &[&str] = &["FragmentPath", "DropInPaths", "Transient"];
 const PROFILE_FD: &str = "aos-method46-initial-startup-profile";
 const PLACEHOLDER: &str = "@AOS_METHOD46_INITIAL_STARTUP_PROFILE@";
+const WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
 
 pub(super) struct InitialUnitOriginalV1 {
     runtime: Option<std::io::Result<tokio::runtime::Runtime>>,
@@ -334,12 +335,15 @@ fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVe
         ServicePropertiesReadOriginalV2::receiving_memory_bytes_v2(0, PROPERTIES.len())?;
     let memory = manager
         .checked_add(properties.checked_mul(2)?)?
-        .checked_add(1024 * 1024)? // Runtime, task/driver and allocator scratch.
+        // Include the one permitted blocking worker even if it is never used.
+        // The remaining MiB covers Runtime, task/driver and allocator scratch.
+        .checked_add(WORKER_STACK_BYTES + 1024 * 1024)?
         .checked_add(8 * UNIT_BYTES + 8 * PATH_BYTES)?;
     let read = ImmutableFileAcquisitionOriginalV1::materialized_input_bytes_v1(UNIT_BYTES as u64)?
         .checked_add(UNIT_BYTES as u64 + 1)?;
     ResourceVector::ZERO
         .with(D::MemoryBytes, u64::try_from(memory).ok()?)
+        .with(D::Pids, 1)
         .with(D::OpenFiles, 16)
         .with(D::MetadataEntries, 4 * PATH_BYTES as u64)
         .with(
@@ -389,6 +393,8 @@ impl Method46InitialStartupOriginalV1 {
             unit.paid = true;
             unit.runtime = Some(
                 tokio::runtime::Builder::new_current_thread()
+                    .max_blocking_threads(1)
+                    .thread_stack_size(WORKER_STACK_BYTES)
                     .enable_all()
                     .build(),
             );
