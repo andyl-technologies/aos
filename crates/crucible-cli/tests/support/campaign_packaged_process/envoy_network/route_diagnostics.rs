@@ -49,7 +49,12 @@ pub(super) fn assert_hot_fork_tier(
         "qemu-system-",
         "crucible-qemu-plugin: ",
     ] {
-        rows.extend(service.stderr_lines_with_prefix(prefix, 32, 4096)?);
+        // A long flight writes more than the bound for some prefixes; keep
+        // the newest rows, which belong to the attempt that just failed.
+        match service.stderr_recent_lines_with_prefix(prefix, 32, 4096) {
+            Ok(lines) => rows.extend(lines),
+            Err(capture) => rows.push(format!("route rows `{prefix}` unavailable: {capture}")),
+        }
     }
     Err(format!("{error}; route_rows={rows:?}").into())
 }
