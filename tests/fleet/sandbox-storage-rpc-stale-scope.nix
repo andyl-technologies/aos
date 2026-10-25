@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  systems,
   ...
 } @ args:
 import ./sandbox-storage-rpc.nix (args // {seedInPrivateMountNamespace = true;})

@@ -430,6 +430,16 @@ before FloorSeal, failed-Create CAS, or ACK can be enabled.
   separately provisioned attach credentials, a retained authenticated guest
   agent session, and a RUNNING execution projection; the launch-session wiring
   exists, but no qualified CreateExecution path supplies that projection.
+- `sandbox-storage-rpc` passes its positive, repair-conflict, apply-closed,
+  prepare-conflict and prepare-closed VM scenarios at `c3965e8cd0`, using the
+  exact installed lifecycle kernel. The registered result is
+  `/nix/store/1wih4s3cyd359hzx57yfjq7r70fdwfxn-aos-fleet-test-sandbox-storage-rpc-0`
+  (`PASS`, NAR hash
+  `sha256:0wc86iqjl0rmxfxragj8rn8n0azdwg936xr0n23rd3f4hxfvqk4c`).
+  This covers the real ZFS transaction fixture and test-only initial floor
+  staging/install refusal checks. Its non-enforcing composition does not
+  qualify the funded initial floor producer, required-mode journal hooks or
+  public lifecycle. The expired-namespace variant requires its own VM result.
 - Grouped Storage snapshots now have authenticated Method 25 in the broker
   profile and production Storage dispatch. The controller advances Snapshot
   and Hibernate Storage effects from a signed predecessor inventory, reserves
