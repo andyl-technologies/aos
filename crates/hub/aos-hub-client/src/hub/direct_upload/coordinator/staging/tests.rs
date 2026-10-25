@@ -1,6 +1,6 @@
 //! Exercises actual overlap, draining, and the unchanged serial content bound.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::sync::Barrier;
@@ -8,7 +8,7 @@ use tokio::sync::Barrier;
 use super::*;
 
 #[tokio::test]
-async fn metadata_batches_overlap_in_bounded_groups() {
+async fn metadata_batches_overlap_within_the_bound() {
     let barrier = Barrier::new(MAX_PARALLEL_BATCHES);
     let active = AtomicUsize::new(0);
     let peak = AtomicUsize::new(0);
@@ -35,10 +35,11 @@ async fn metadata_batches_overlap_in_bounded_groups() {
 }
 
 #[tokio::test]
-async fn failed_batch_drains_neighbors_without_dispatching_later_groups() {
+async fn observed_failure_drains_neighbors_without_dispatching_more_batches() {
     let started = AtomicUsize::new(0);
     let finished = AtomicUsize::new(0);
     let barrier = Barrier::new(MAX_PARALLEL_BATCHES);
+    let refused = AtomicBool::new(false);
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
@@ -46,10 +47,16 @@ async fn failed_batch_drains_neighbors_without_dispatching_later_groups() {
             let started = &started;
             let finished = &finished;
             let barrier = &barrier;
+            let refused = &refused;
             async move {
                 started.fetch_add(1, Ordering::SeqCst);
                 barrier.wait().await;
-                tokio::task::yield_now().await;
+                if index == 0 {
+                    refused.store(true, Ordering::SeqCst);
+                }
+                while !refused.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
                 finished.fetch_add(1, Ordering::SeqCst);
                 if index == 0 {
                     Err(DirectClientError::ControlUnavailable)
@@ -85,4 +92,76 @@ async fn content_bound_remains_serial_and_invalid_bounds_refuse_dispatch() {
             Err(DirectClientError::Invalid)
         );
     }
+}
+
+#[tokio::test]
+async fn slow_batch_does_not_hold_completed_scheduling_positions() {
+    let release = tokio::sync::Notify::new();
+    let finished = AtomicUsize::new(0);
+    let active = AtomicUsize::new(0);
+    let peak = AtomicUsize::new(0);
+
+    let uploads = run((0..24).collect(), MAX_PARALLEL_BATCHES, |index| {
+        let release = &release;
+        let finished = &finished;
+        let active = &active;
+        let peak = &peak;
+        async move {
+            let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(count, Ordering::SeqCst);
+            if index == 0 {
+                release.notified().await;
+            } else {
+                tokio::task::yield_now().await;
+            }
+            active.fetch_sub(1, Ordering::SeqCst);
+            finished.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    });
+    let release_after_progress = async {
+        while finished.load(Ordering::SeqCst) < 16 {
+            tokio::task::yield_now().await;
+        }
+        release.notify_one();
+    };
+
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(uploads, release_after_progress)
+    })
+    .await
+    .expect("later batches must progress while the original batch remains pending");
+
+    result.expect("all metadata batches staged");
+    assert_eq!(finished.load(Ordering::SeqCst), 24);
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    assert!(peak.load(Ordering::SeqCst) <= MAX_PARALLEL_BATCHES);
+}
+
+#[tokio::test]
+async fn drained_failures_preserve_input_order_after_admission_stops() {
+    let started = AtomicUsize::new(0);
+
+    let result = run((0..8).collect(), 3, |index| {
+        let started = &started;
+        async move {
+            started.fetch_add(1, Ordering::SeqCst);
+            match index {
+                0 => {
+                    tokio::task::yield_now().await;
+                    Ok(())
+                }
+                1 => {
+                    tokio::task::yield_now().await;
+                    tokio::task::yield_now().await;
+                    Err(DirectClientError::Blocked)
+                }
+                _ => Err(DirectClientError::ControlUnavailable),
+            }
+        }
+    })
+    .await;
+
+    assert_eq!(result, Err(DirectClientError::Blocked));
+    assert_eq!(started.load(Ordering::SeqCst), 3);
 }

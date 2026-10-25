@@ -1,4 +1,4 @@
-//! Drains bounded groups of independent, already packed staging batches.
+//! Drains bounded independent, already packed staging batches.
 //!
 //! Small server reply limits can require several control batches within one
 //! admitted descriptor wave. Metadata shares the coordinator's provider and
@@ -7,7 +7,7 @@
 use std::future::Future;
 
 use aos_transfer::direct_upload::DirectClientError;
-use futures_util::future::join_all;
+use futures_util::{StreamExt as _, stream::FuturesUnordered};
 
 // Small advertised control batches still share one admitted descriptor wave
 // and the coordinator's global provider limits across independent metadata.
@@ -16,8 +16,8 @@ pub(super) const MAX_PARALLEL_BATCHES: usize = 8;
 /// Finishes every dispatched neighbor before reporting a failed batch.
 ///
 /// # Errors
-/// Refuses an invalid concurrency bound or returns the first error after its
-/// entire dispatched group has drained, without starting another group.
+/// Refuses an invalid concurrency bound or returns the earliest input error
+/// after every dispatched neighbor drains. Observing an error stops admission.
 pub(super) async fn run<T, F, Fut>(
     batches: Vec<T>,
     maximum: usize,
@@ -31,19 +31,44 @@ where
         return Err(DirectClientError::Invalid);
     }
 
-    let mut batches = batches.into_iter();
-    loop {
-        let active: Vec<_> = batches.by_ref().take(maximum).map(&mut dispatch).collect();
-        if active.is_empty() {
-            return Ok(());
+    let mut batches = batches.into_iter().enumerate();
+    let mut active = FuturesUnordered::new();
+    for (index, batch) in batches.by_ref().take(maximum) {
+        active.push(indexed(index, dispatch(batch)));
+    }
+
+    let mut failure = None;
+    while let Some((index, result)) = active.next().await {
+        if let Err(error) = result {
+            if failure
+                .as_ref()
+                .is_none_or(|(earliest, _)| index < *earliest)
+            {
+                failure = Some((index, error));
+            }
         }
 
-        // Returning early must not drop neighboring futures with unknown
-        // provider effects. A later group starts only after every result is OK.
-        for result in join_all(active).await {
-            result?;
+        // A completed batch frees one position without waiting for slower
+        // neighbors. After a refusal, drain every dispatched effect before
+        // returning; undispatched batches remain untouched for exact retry.
+        if failure.is_none() {
+            if let Some((index, batch)) = batches.next() {
+                active.push(indexed(index, dispatch(batch)));
+            }
         }
     }
+
+    match failure {
+        Some((_, error)) => Err(error),
+        None => Ok(()),
+    }
+}
+
+async fn indexed<Fut>(index: usize, future: Fut) -> (usize, Fut::Output)
+where
+    Fut: Future,
+{
+    (index, future.await)
 }
 
 #[cfg(test)]
