@@ -118,6 +118,8 @@ pub mod mount_preparation;
 pub mod mount_source_acquisition_inventory;
 pub mod local_inventory;
 #[cfg(target_os = "linux")]
+pub mod method46_initial_startup;
+#[cfg(target_os = "linux")]
 pub mod normal_root;
 #[cfg(target_os = "linux")]
 pub use normal_root::{

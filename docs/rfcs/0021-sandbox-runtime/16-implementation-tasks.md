@@ -231,6 +231,17 @@ Recent committed startup fixes close narrower prerequisites:
   services are not selected or installed by this foundation, and no complete
   producer, approved intent, TPM initialization or public admission is claimed.
 
+- The Domain initial-producer startup owner captures that actual receiver
+  before arguments, prepays its retained boxed body before allocation, and
+  accepts profile IO only from the original handed-off descriptor. It pays
+  bounded immutable measurement/read work and retains the native acquisition
+  prefix, raw bytes and independently owed file/source posts. Four native
+  ordering regressions pass for both purposes; complete Rust target compilation
+  of the exact new sources is running. No production binary calls this owner
+  yet. Profile parsing, independent key provenance, image/unit admission,
+  protected writer custody and actual initial-floor publication remain missing;
+  these mechanical results grant no provisioning or readiness authority.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they
