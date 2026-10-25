@@ -70,6 +70,8 @@
   canonicalReadbackPath = "${canonicalReadback}/policy.33";
   productionAdmissionUnit = "aos-selinux-stage0-hold.target";
   selectedStage0 = config.aos.boot.initrd.stage0;
+  # Native package replay omits unselected filesystem-provider options.
+  zfsSystemState = (config.aos.filesystems.zfs.enable or false) && (config.aos.filesystems.zfs.systemState or false);
   controllerFloorRequired = config.aos.sandbox.controllerService.method46TpmFloor.required;
   storageFloorRequired = config.aos.sandbox.storageBroker.method46TpmFloor.required;
   ownerFloorRequired = controllerFloorRequired || storageFloorRequired;
@@ -84,8 +86,11 @@
         cacheViewRequired = config.aos.sandbox.policyAuthority.enable;
         cacheSignerViewRequired = config.aos.sandbox.cacheSignerView.enable;
         environmentEvidenceRequired = config.aos.sandbox.policyAuthority.environmentProvision != null;
-        viewZfsState = config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState;
-        viewZfsSource = "${config.aos.filesystems.zfs.poolName}/var/lib";
+        viewZfsState = zfsSystemState;
+        viewZfsSource =
+          if zfsSystemState
+          then "${config.aos.filesystems.zfs.poolName}/var/lib"
+          else "rpool/var/lib";
         aos-selinux-production-policy = productionPolicy;
         expectedPolicy = canonicalReadbackPath;
         expectedPolicyKernel = config.system.build.kernel;
@@ -164,7 +169,7 @@ in {
           message = "immutable SELinux stage 0 requires aos.security.selinux.enable.";
         }
         {
-          assertion = !ownerFloorRequired || (immutableStage0 && cfg.enable && cfg.mode == "enforcing" && !(config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState));
+          assertion = !ownerFloorRequired || (immutableStage0 && cfg.enable && cfg.mode == "enforcing" && !zfsSystemState);
           message = "required TPM owner-root preparation currently requires immutable enforcing SELinux and the existing exact ext4 /var substrate (ZFS data pools are unaffected)";
         }
         {
@@ -188,7 +193,7 @@ in {
           message = "protected sandbox Network roots require the Network broker.";
         }
         {
-          assertion = !protectedSandboxNetworkRoots || !config.aos.filesystems.zfs.enable;
+          assertion = !protectedSandboxNetworkRoots || !(config.aos.filesystems.zfs.enable or false);
           message = "protected sandbox Network roots currently require the ext4 /var substrate.";
         }
         {
@@ -235,6 +240,15 @@ in {
       aos.activation.stages.initrd = import ./_selinux-initrd-configuration.nix {
         inherit lib;
         policy = productionPolicy;
+        protectMeasuredVar = config.aos.boot.secureBoot.measuredBoot.enable;
+        protectedRootPreparation =
+          if protectedSandboxNetworkRoots || ownerFloorRequired
+          then {
+            executable = "${runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots";
+            prepareOwners = ownerFloorRequired;
+            varRootContext = cfg.protectedSandboxNetworkRoots._varRootContext;
+          }
+          else null;
       };
 
       assertions = [

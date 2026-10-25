@@ -2,6 +2,8 @@
 {
   lib,
   policy,
+  protectedRootPreparation ? null,
+  protectMeasuredVar ? false,
 }: let
   selection = import ./_selinux-initrd-policy.nix;
 
@@ -37,9 +39,22 @@
       };
     })
     contextFiles);
-  configurationData = lib.recursiveUpdate selection {
-    aos.abilities.configuration.operations.file.effects = contextEffects;
-  };
+  # Package-only initrd replay cannot inspect host Sandbox selections. Carry
+  # the exact image-selected preparation as data admitted with its executable.
+  configurationData =
+    lib.recursiveUpdate
+    (lib.recursiveUpdate selection {
+      aos.abilities.configuration.operations.file.effects = contextEffects;
+    })
+    (lib.optionalAttrs (protectedRootPreparation != null) {
+      aos.boot.substrateServices.protectedRootPreparation = protectedRootPreparation;
+      # The format owner must establish this label before mount-var verifies it.
+      # Retaining only the mount recipe would reject a fresh state filesystem.
+      aos.storageProvisioning.protectedVarContext = protectedRootPreparation.varRootContext;
+      aos.security = lib.optionalAttrs protectMeasuredVar {
+        measuredVar.protectedVarContext = protectedRootPreparation.varRootContext;
+      };
+    });
   # Runtime evaluation admits this module by its own fixed NAR. Embed the
   # static selection so replay never imports an unadmitted absolute store path.
   configuration = builtins.toFile "aos-selinux-initrd-policy.nix" ''
@@ -49,5 +64,8 @@ in {
   configuration = [configuration];
   # The retained module carries public path data. This separate admitted
   # input preserves the actual producer dependency without an IFD.
-  supplementalInputs = ["${policy}"];
+  supplementalInputs =
+    ["${policy}"]
+    ++ lib.optional (protectedRootPreparation != null)
+    (builtins.dirOf (builtins.dirOf protectedRootPreparation.executable));
 }

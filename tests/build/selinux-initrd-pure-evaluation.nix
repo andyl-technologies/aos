@@ -11,13 +11,33 @@
   selected = import ../../modules/security/_selinux-initrd-configuration.nix {
     inherit lib policy;
   };
+  provisioner = pkgs.writeTextFile {
+    name = "selinux-initrd-pure-evaluation-provisioner";
+    destination = "/bin/aos-selinux-runtime-roots";
+    text = "immutable provisioner producer";
+  };
+  protectedRootPreparation = {
+    executable = "${provisioner}/bin/aos-selinux-runtime-roots";
+    prepareOwners = true;
+    varRootContext = "system_u:object_r:aos_sandbox_var_root_t";
+  };
+  protectedSelection = import ../../modules/security/_selinux-initrd-configuration.nix {
+    inherit lib policy protectedRootPreparation;
+  };
+  measuredSelection = import ../../modules/security/_selinux-initrd-configuration.nix {
+    inherit lib policy protectedRootPreparation;
+    protectMeasuredVar = true;
+  };
   configuration = builtins.head selected.configuration;
+  protectedConfiguration = assert protectedSelection.supplementalInputs == ["${policy}" "${provisioner}"];
+    builtins.head protectedSelection.configuration;
+  measuredConfiguration = builtins.head measuredSelection.configuration;
   absoluteImport = builtins.toFile "selinux-initrd-absolute-import.nix" ''
     { imports = [${../../modules/security/_selinux-initrd-policy.nix}]; }
   '';
 in
   pkgs.runCommand "selinux-initrd-pure-evaluation-check" {
-    buildDeps = [pkgs.coreutils pkgs.nix pkgs.jq pkgs.grep] ++ selected.supplementalInputs;
+    buildDeps = [pkgs.coreutils pkgs.nix pkgs.jq pkgs.grep] ++ protectedSelection.supplementalInputs;
   } ''
     export XDG_CACHE_HOME="$TMPDIR/cache"
     export XDG_STATE_HOME="$TMPDIR/state"
@@ -78,7 +98,35 @@ in
       }]
     ' module.json > /dev/null
 
+    # Host-only module selections disappear during native initrd replay. Its
+    # admitted data must still retain the exact producer without importing it.
+    evaluate_module ${protectedConfiguration} > protected-module.json
+    ${pkgs.jq}/bin/jq -e \
+      --arg executable ${lib.escapeShellArg protectedRootPreparation.executable} \
+      --arg context ${lib.escapeShellArg protectedRootPreparation.varRootContext} '
+      .aos.boot.substrateServices.protectedRootPreparation == {
+        executable: $executable,
+        prepareOwners: true,
+        varRootContext: $context
+      }
+      and .aos.storageProvisioning.protectedVarContext == $context
+      and (.aos.security | has("measuredVar") | not)
+    ' protected-module.json > /dev/null
+
+    evaluate_module ${measuredConfiguration} > measured-module.json
+    ${pkgs.jq}/bin/jq -e \
+      --slurpfile plain protected-module.json \
+      --arg context ${lib.escapeShellArg protectedRootPreparation.varRootContext} '
+      .aos.boot == $plain[0].aos.boot
+      and .aos.storageProvisioning == $plain[0].aos.storageProvisioning
+      and .aos.security.selinux == $plain[0].aos.security.selinux
+      and .aos.security.measuredVar.protectedVarContext == $context
+    ' measured-module.json > /dev/null
+    ${pkgs.jq}/bin/jq -e '
+      (.aos.boot.substrateServices // {} | has("protectedRootPreparation")) | not
+    ' module.json > /dev/null
+
     mkdir -p "$out"
-    cp module.json "$out/"
+    cp module.json protected-module.json measured-module.json "$out/"
     echo PASS > "$out/result"
   ''

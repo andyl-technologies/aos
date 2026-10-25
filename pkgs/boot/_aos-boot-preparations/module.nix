@@ -10,11 +10,18 @@
   cfg = config.aos.boot.substrateServices;
   protectedSandboxNetworkRoots =
     config.aos.security.selinux.protectedSandboxNetworkRoots.enable or false;
+  retainedRootPreparation = cfg.protectedRootPreparation;
   protectedSandboxOwnerRoots =
-    (config.aos.sandbox.controllerService.method46TpmFloor.required or false)
-    || (config.aos.sandbox.storageBroker.method46TpmFloor.required or false);
-  protectedSandboxRoots = protectedSandboxNetworkRoots || protectedSandboxOwnerRoots;
-  varRootContext = config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
+    if retainedRootPreparation != null
+    then retainedRootPreparation.prepareOwners
+    else
+      (config.aos.sandbox.controllerService.method46TpmFloor.required or false)
+      || (config.aos.sandbox.storageBroker.method46TpmFloor.required or false);
+  protectedSandboxRoots = retainedRootPreparation != null || protectedSandboxNetworkRoots || protectedSandboxOwnerRoots;
+  varRootContext =
+    if retainedRootPreparation != null
+    then retainedRootPreparation.varRootContext
+    else config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
   managerIdentity = name: {
     inherit name;
     aliases = [];
@@ -354,7 +361,10 @@
         else "";
       AOS_RUNTIME_ROOTS_EXECUTABLE =
         if protectedSandboxRoots
-        then "${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots"
+        then
+          if retainedRootPreparation != null
+          then retainedRootPreparation.executable
+          else "${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots"
         else "";
       AOS_DEBUGFS =
         if protectedSandboxRoots
@@ -768,6 +778,27 @@ in {
   };
 
   options.aos.boot.substrateServices = {
+    protectedRootPreparation = lib.mkOption {
+      type = lib.types.nullOr (lib.types.submodule {
+        options = {
+          executable = lib.mkOption {
+            type = lib.types.strMatching "/nix/store/[0-9a-z]{32}-[^/]+/bin/aos-selinux-runtime-roots";
+            description = "Exact immutable image provisioner admitted with the initrd policy.";
+          };
+          prepareOwners = lib.mkOption {
+            type = lib.types.bool;
+            description = "Whether the pinned image provisioner creates its selected owner roots.";
+          };
+          varRootContext = lib.mkOption {
+            type = lib.types.nonEmptyStr;
+            description = "Exact durable SELinux label of the selected writable state root.";
+          };
+        };
+      });
+      default = null;
+      internal = true;
+      description = "Image-authenticated protected state preparation replayed without host-only module imports.";
+    };
     initrdStateDirectory = lib.mkOption {
       type = lib.types.str;
       default = "/run/aos-boot-transaction-storage/aos/initrd-stage-journal";

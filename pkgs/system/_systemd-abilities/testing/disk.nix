@@ -117,7 +117,12 @@
       else throw "mkTestDisk provisioningSource must be operator or fallback";
     storageLayout = import ./storage-layout.nix {inherit varProvisioning varSizeMiB;};
     bakeVar = builtins.seq checkedProvisioningSource storageLayout.baked;
-    protectedVar = system.config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+    # This fixture owns the fresh filesystem format, including the durable
+    # label required before any selected protected owner preparation.
+    protectedVar =
+      system.config.aos.security.selinux.protectedSandboxNetworkRoots.enable
+      || (system.config.aos.sandbox.controllerService.method46TpmFloor.required or false)
+      || (system.config.aos.sandbox.storageBroker.method46TpmFloor.required or false);
     varRootContext = system.config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
 
     # The root label changes filesystem metadata without changing staging bytes.
