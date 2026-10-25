@@ -56,7 +56,11 @@ pub(super) fn assert_hot_fork_tier(
             Err(capture) => rows.push(format!("route rows `{prefix}` unavailable: {capture}")),
         }
     }
-    Err(format!("{error}; route_rows={rows:?}").into())
+    // A declined anchor whose replay stalled names the stalled node only in
+    // the host error; the plugin's idle-plan and stall rows say which wake
+    // held it at its own coordinate.
+    let stall_rows = service_failure_rows(service);
+    Err(format!("{error}; route_rows={rows:?}; stall_rows=\n{stall_rows}").into())
 }
 
 /// Names the directory where the service traces each retained attempt log.
