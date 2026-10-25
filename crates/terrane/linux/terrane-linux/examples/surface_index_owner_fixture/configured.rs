@@ -18,6 +18,9 @@ mod recovery;
 #[path = "configured/cold.rs"]
 mod cold;
 
+#[path = "configured/worker.rs"]
+pub(super) mod worker;
+
 /// Runs the fresh actor without adding its async frame to the other selectors.
 ///
 /// # Errors

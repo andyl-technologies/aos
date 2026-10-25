@@ -8,6 +8,7 @@ import os
 import pathlib
 import runpy
 import select
+import shutil
 import signal
 import struct
 import subprocess
@@ -22,12 +23,16 @@ NAMESPACE_OBSERVATION = b"NATIVE_SDK_NAMESPACE "
 PUBLISHER_PRIVATE_ROOTS = ["sealed", "staging", "pending-delete", "state/publication"]
 
 
-def namespace_actor(driver, image, arguments, policy, stack):
+def namespace_actor(driver, image, arguments, policy, stack, launcher=False):
     """Keeps the publisher outside a fresh client's private mount namespace."""
     credentials = ["setpriv", "--reuid", "840", "--regid", "840", "--groups", "844,845",
                    "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
                    "--no-new-privs"]
     executable = [str(image / "bin" / arguments[0]), *map(str, arguments[1:])]
+    if launcher:
+        driver.require(policy == "readonly" and arguments[:2] == [
+            "surface-index-owner-fixture", "configured-worker"],
+            "invalid configured worker fixture launcher")
     if policy is None:
         return credentials + executable
 
@@ -44,6 +49,10 @@ def namespace_actor(driver, image, arguments, policy, stack):
         prefix="sdk-namespace-", dir=driver.ROOT / "scratch"))
     script = str(driver.IMAGE / "share/configured_sdk_cache_vm.py")
     verify = [sys.executable, script, "--verify-namespace", policy, encoded, *executable]
+    if launcher:
+        verify = [sys.executable, script, "--configured-worker-launcher", policy,
+                  encoded, json.dumps(executable)]
+        credentials = []
     return ["unshare", "--mount", "--propagation", "private", sys.executable, script,
             "--mount-namespace", policy, scratch, encoded, *credentials, *verify]
 
@@ -91,6 +100,26 @@ def verify_namespace(policy, bindings, command):
     os.execv(command[0], command)
 
 
+def configured_worker_launcher(policy, bindings, command):
+    """Starts the actual child before Rust irrevocably enters UID 840 custody."""
+    if (os.geteuid() != 0 or policy != "readonly" or len(command) != 3
+            or pathlib.Path(command[0]).name != "surface-index-owner-fixture"
+            or command[1] != "configured-worker"):
+        raise RuntimeError("invalid configured worker fixture launcher")
+    # Observe the very same namespace as the actual unprivileged actor. The
+    # short verifier opens no readable publisher-private aliases for its parent.
+    subprocess.run(["setpriv", "--reuid", "840", "--regid", "840", "--groups", "844,845",
+                    "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
+                    "--no-new-privs", sys.executable, __file__, "--verify-namespace",
+                    policy, json.dumps(bindings), sys.executable, "-c", "pass"],
+                   check=True, timeout=5)
+    setpriv = shutil.which("setpriv")
+    if setpriv is None:
+        raise RuntimeError("missing AOS-built fixture launcher")
+    os.environ["TERRANE_WORKER_SETPRIV"] = setpriv
+    os.execv(command[0], command)
+
+
 def manifest_payload():
     """Computes the supervisor's independent expected multi-chunk plaintext."""
     state = 7
@@ -103,10 +132,11 @@ def manifest_payload():
     return bytes(result)
 
 
-def actor(driver, image, label, arguments, success=True, mount_policy=None, maintained=False):
+def actor(driver, image, label, arguments, success=True, mount_policy=None, maintained=False,
+          launcher=False):
     """Runs one fresh source-bound actor under the original supervisor's bounds."""
     with contextlib.ExitStack() as stack:
-        command = namespace_actor(driver, image, arguments, mount_policy, stack)
+        command = namespace_actor(driver, image, arguments, mount_policy, stack, launcher)
         return run_actor(driver, label, command, success, mount_policy, maintained)
 
 
@@ -374,8 +404,9 @@ def run_surface(driver, image, surface_image):
     store = tomllib.loads(config.read_text())["store"]
     original = 'role = "serve"\nstore = ' + json.dumps(store) + "\n"
 
-    for mode in ["disabled", "bound", "admit", "recover-draining"]:
-        text = original + host_configuration(driver, mode="always" if mode == "admit" else "never")
+    for mode in ["disabled", "bound", "admit", "recover-draining", "service"]:
+        text = original + host_configuration(driver,
+            mode="always" if mode in {"admit", "service"} else "never")
         if mode != "disabled":
             node_bytes = 32 if mode == "bound" else 65536
             text += f"""
@@ -387,10 +418,14 @@ capacity_bytes = 25165824
 future_hold_bytes = 327680
 """
         config.write_text(text)
-        stdout, _ = actor(driver, surface_image, "surface-" + mode,
-                          ["surface-index-owner-fixture", "configured-surface", config, mode],
-                          mount_policy="readonly")
-        if mode == "recover-draining":
+        arguments = (["surface-index-owner-fixture", "configured-worker", config]
+                     if mode == "service" else
+                     ["surface-index-owner-fixture", "configured-surface", config, mode])
+        stdout, _ = actor(driver, surface_image, "surface-" + mode, arguments,
+                          mount_policy="readonly", launcher=mode == "service")
+        if mode == "service":
+            witness = "PASS retained configured worker service completes original cold cache handoff after cancelled wait and acknowledged drain without disclosing backing"
+        elif mode == "recover-draining":
             witness = "PASS configured funded cache reopen completes actual recovery and new Resume while retaining the original draining mapping; exact final-unmap charge release precedes authenticated policy discharge"
         elif mode == "admit":
             witness = "PASS configured funded surface policy reaches actual recovered owner and warm reuse retains original sealed inode"
@@ -537,5 +572,7 @@ if __name__ == "__main__":
         mount_namespace(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]), sys.argv[5:])
     elif len(sys.argv) >= 6 and sys.argv[1] == "--verify-namespace":
         verify_namespace(sys.argv[2], json.loads(sys.argv[3]), sys.argv[4:])
+    elif len(sys.argv) == 5 and sys.argv[1] == "--configured-worker-launcher":
+        configured_worker_launcher(sys.argv[2], json.loads(sys.argv[3]), json.loads(sys.argv[4]))
     else:
         raise SystemExit("expected a privileged mount fixture or unprivileged namespace verifier")

@@ -39,21 +39,27 @@ impl WorkerChannel {
                 "worker receive deadline overflow",
             )
         })?;
+        tokio::time::timeout_at(deadline, self.receive_ready())
+            .await
+            .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?
+    }
+
+    /// Waits for the next actual packet without imposing an idle-mount deadline.
+    ///
+    /// Cancellation still faults the channel; the retained serving task owns
+    /// this wait until receipt or explicit shutdown, independently of opens.
+    pub(super) async fn receive_ready(&mut self) -> io::Result<PendingRequest<'_>> {
         let mut socket = AsyncFd::new(Receiving {
             endpoint: Arc::clone(&self.endpoint),
             transferred: false,
         })?;
-        let request = tokio::time::timeout_at(deadline, async {
-            loop {
-                let mut ready = socket.readable_mut().await?;
-                match ready.try_io(|_| self.receive_inner()) {
-                    Ok(result) => return result,
-                    Err(_) => continue,
-                }
+        let request = loop {
+            let mut ready = socket.readable_mut().await?;
+            match ready.try_io(|_| self.receive_inner()) {
+                Ok(result) => break result?,
+                Err(_) => continue,
             }
-        })
-        .await
-        .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
+        };
 
         // There is no suspension between disarming this guard and transferring
         // the same connection into its original pending-request guard.

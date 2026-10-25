@@ -13,6 +13,7 @@ mod client;
 #[cfg(feature = "native-test-fixtures")]
 pub mod native_fixture;
 mod runtime;
+pub mod service;
 mod socket;
 mod wire;
 

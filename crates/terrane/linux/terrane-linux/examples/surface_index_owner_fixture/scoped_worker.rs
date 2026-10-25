@@ -90,6 +90,14 @@ pub(super) fn launch() -> Result<Launched> {
     launch_mode("worker-child")
 }
 
+/// Starts a distinct worker before genuine configured recovery and confinement.
+///
+/// # Errors
+/// Preserves original-child binding and irreversible identity-drop failures.
+pub(super) fn launch_configured() -> Result<Launched> {
+    launch_mode("configured-worker-child")
+}
+
 /// Starts the original child used by the administrative crash supervisor.
 ///
 /// # Errors
@@ -209,6 +217,26 @@ impl Launched {
     /// Returns the identifier of the original child, without granting authority.
     pub(super) fn child_id(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Waits for the original child under the existing five-second exit bound.
+    ///
+    /// # Errors
+    /// Refuses a failed child, wait failure or an elapsed exit deadline.
+    pub(super) async fn wait_for_exit(&mut self) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(status) = self.child.try_wait()? {
+                    return if status.success() {
+                        Ok(())
+                    } else {
+                        Err("configured worker child failed".into())
+                    };
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?
     }
 
     /// Binds the original endpoint and child to an actual native exposure.

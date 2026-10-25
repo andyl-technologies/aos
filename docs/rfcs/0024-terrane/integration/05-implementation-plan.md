@@ -107,6 +107,19 @@ FLUSH. The fixture now requires that exact errno and an actually closed
 descriptor, then continues unmount and original-owner closure checks. Both
 original failures remain failed qualifications; fresh guest evidence is pending.
 
+The retained `worker_channel::service` task owns each authenticated request's
+original repository, mapped signed root, credential and native read driver on
+one explicit Tokio `LocalSet`. Cancelling a borrowed supervisor wait preserves
+the original task; stop or supervisor drop requests durable drain while the
+task continues an accepted preparation, including cold producer cache handoff
+after refused disclosure. Final Send remains serialized with drain. The new
+configured guest scenario uses genuine recovery, a distinct original child and
+a withheld actual lower read to check that ordering and subsequent sealed warm
+reuse without another lower read. Strict all-feature/all-target and Tokio-only
+all-target Clippy pass. Native execution and mandatory hermetic compilation of
+this source remain pending. This component supplies no launch, mount-broker,
+passthrough or kernel-reference closure authority and accepts no further task.
+
 Complete feature matrices now pass with independent immutable-source, retained
 executable and actual guest review at these checkpoints:
 
