@@ -281,6 +281,33 @@ FAKE_SETOOLS = SimpleNamespace(
 
 
 class EffectivePolicyTest(unittest.TestCase):
+    def test_native_bus_transition_stays_with_pid_one(self) -> None:
+        transition = effective_policy.Transition(
+            "init_t", "dbusd_exec_t", "process", "system_dbusd_t"
+        )
+        policy = self._storage_policy()
+        policy.transitions[transition] = []
+        with self.assertRaisesRegex(ValueError, "missing effective transition"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        for access in (
+            effective_policy.Access("init_t", "system_dbusd_t", "process", "transition"),
+            effective_policy.Access("init_t", "system_dbusd_t", "process2", "nosuid_transition"),
+        ):
+            with self.subTest(access=access):
+                self.assert_missing_allow_rejected(access)
+
+        for source in effective_policy.owner_policy.ENFORCING:
+            for object_class, permission in (
+                ("process", "transition"),
+                ("process2", "nnp_transition"),
+                ("process2", "nosuid_transition"),
+            ):
+                with self.subTest(source=source, permission=permission):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(source, "system_dbusd_t", object_class, permission)
+                    )
+
     def test_native_manager_requires_labeled_dbus_start(self) -> None:
         for access in (
             effective_policy.Access("init_t", "dbusd_unit_t", "service", "start"),

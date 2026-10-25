@@ -11,6 +11,8 @@ require {
     type init_tmpfs_t;
     type systemd_unit_t;
     type dbusd_unit_t;
+    type dbusd_exec_t;
+    type system_dbusd_t;
     type auditd_unit_t;
     type chronyd_unit_t;
     type sshd_unit_t;
@@ -70,6 +72,11 @@ allow init_t self:system { reload status };
 allow init_t systemd_unit_t:service { reload start status stop };
 # Native activation adopts the image's already labeled D-Bus socket/service.
 allow init_t dbusd_unit_t:service { start status };
+# Native D-Bus starts from PID 1 on the immutable nosuid image. Keep its
+# process and socket identity in the existing dedicated bus domain.
+allow init_t system_dbusd_t:process transition;
+allow init_t system_dbusd_t:process2 nosuid_transition;
+type_transition init_t dbusd_exec_t:process system_dbusd_t;
 # The same native activation reconciles the fixed image audit service.
 allow init_t auditd_unit_t:service { start status };
 # Native activation starts and observes the fixed image time-sync service.

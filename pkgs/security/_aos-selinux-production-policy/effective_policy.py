@@ -170,6 +170,7 @@ class Transition:
 
 
 TRANSITIONS = (
+    Transition("init_t", "dbusd_exec_t", "process", "system_dbusd_t"),
     Transition("init_t", fuse_worker_policy.WORKER_EXECUTABLE, "process", fuse_worker_policy.WORKER_DOMAIN),
     Transition(GUEST_OWNER, "devpts_t", "chr_file", "aos_sandbox_guest_pty_t"),
     Transition(GUEST_ROOT_PUBLISHER, GUEST_PUBLICATION, "file", GUEST_PUBLICATION),
@@ -253,6 +254,8 @@ def execution_access() -> tuple[Access, ...]:
 
 
 POSITIVE_ACCESS = (
+    Access("init_t", "system_dbusd_t", "process", "transition"),
+    Access("init_t", "system_dbusd_t", "process2", "nosuid_transition"),
     Access("init_t", "init_t", "user_namespace", "create"),
     # Native host activation requires the manager and generated-unit API;
     # owner_policy separately forbids manager mutation by Sandbox services.
@@ -1177,6 +1180,18 @@ POSITIVE_ACCESS = (
 )
 TRANSITIONS = (*TRANSITIONS, *OWNER_TRANSITIONS)
 NEGATIVE_ACCESS = (
+    *(
+        access
+        for source in dict.fromkeys((
+            HANDOFF_DOMAIN, PROVISIONER_DOMAIN, GUEST_ROOT_PUBLISHER,
+            *DOMAINS, *owner_policy.ENFORCING,
+        ))
+        for access in (
+            Access(source, "system_dbusd_t", "process", "transition"),
+            *accesses(source, "system_dbusd_t", "process2",
+                      ("nnp_transition", "nosuid_transition")),
+        )
+    ),
     *negative_access(), *OWNER_NEGATIVE,
     Access("init_t", "init_t", "system", "start"),
     *accesses("init_t", "auditd_unit_t", "service", ("stop", "reload")),
