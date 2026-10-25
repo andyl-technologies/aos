@@ -10,6 +10,9 @@
 //! exposure:32ascii | generation:u64le | root:32 | inline_content:32
 //! ```
 
+#[path = "scoped_worker/mounted.rs"]
+pub(super) mod mounted;
+
 use super::{
     Result, config, exposure,
     repository_fixture::{MAIN, RepositoryFixture},
@@ -147,6 +150,9 @@ fn launch_mode(mode: &str) -> Result<Launched> {
         network,
     };
 
+    if mode == "worker-mounted-child" {
+        mounted::handoff(&launched)?;
+    }
     drop_to_serve()?;
     Ok(launched)
 }

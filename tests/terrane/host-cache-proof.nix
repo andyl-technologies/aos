@@ -54,6 +54,7 @@
         python3 ../tests/terrane/surface_index_owner_image.py
         cp ${./surface_index_owner_vm.py} "$out/share/surface_index_owner_vm.py"
         cp ${./scoped_worker_vm.py} "$out/share/scoped_worker_vm.py"
+        cp ${./mounted_worker_vm.py} "$out/share/mounted_worker_vm.py"
       '');
   native =
     if surfaceIndex

@@ -165,16 +165,17 @@ def load(name, path):
 def main():
     """Runs real administrative helpers and a capability-free scoped owner."""
     if len(sys.argv) not in [3, 4] or (len(sys.argv) == 4
-            and sys.argv[3] not in ["--crash", "--pressure", "--admission", "--maintenance", "--maintenance-listener", "--worker-network"]):
-        raise RuntimeError("expected image, source and optional --crash, --pressure, --admission, --maintenance, --maintenance-listener or --worker-network")
+            and sys.argv[3] not in ["--crash", "--pressure", "--admission", "--maintenance", "--maintenance-listener", "--worker-network", "--worker-mounted"]):
+        raise RuntimeError("expected image, source and one supported native worker or maintenance selector")
     image, source = map(Path, sys.argv[1:3])
     network = len(sys.argv) == 4 and sys.argv[3] == "--worker-network"
+    mounted = len(sys.argv) == 4 and sys.argv[3] == "--worker-mounted"
     crash = len(sys.argv) == 4 and sys.argv[3] == "--crash"
     pressure = len(sys.argv) == 4 and sys.argv[3] == "--pressure"
     admission = len(sys.argv) == 4 and sys.argv[3] == "--admission"
     listener = len(sys.argv) == 4 and sys.argv[3] == "--maintenance-listener"
     maintenance = listener or (len(sys.argv) == 4 and sys.argv[3] == "--maintenance")
-    case = ("worker-network" if network else "gc-maintenance-listener" if listener else "gc-maintenance" if maintenance else "host-admission" if admission
+    case = ("worker-mounted" if mounted else "worker-network" if network else "gc-maintenance-listener" if listener else "gc-maintenance" if maintenance else "host-admission" if admission
         else "pressure" if pressure else "worker-crash" if crash else "scoped-worker")
     if os.geteuid() != 0:
         raise RuntimeError("scoped supervisor requires explicit administration")
@@ -190,7 +191,7 @@ def main():
     support.BUDGET = support.HARD * len(support.CASES)
     support.administrative_preflight("before")
     support.scaffold()
-    if network:
+    if network or mounted:
         fuse = Path("/dev/fuse")
         if not fuse.exists():
             os.mknod(fuse, 0o20600, os.makedev(10, 229))
@@ -198,6 +199,8 @@ def main():
         support.require(stat.S_ISCHR(device.st_mode)
             and device.st_rdev == os.makedev(10, 229),
             "original FUSE character device unavailable")
+        if mounted:
+            fuse.chmod(0o666)
     maintenance_socket = support.RUNTIME / "maintenance" / "owner.sock"
     if listener:
         maintenance_socket.parent.mkdir()
@@ -261,6 +264,17 @@ def main():
                 and time.monotonic() < deadline,
                 "actual scoped helper or publisher failed readiness: " + prepared.stderr)
             time.sleep(0.02)
+        if mounted:
+            script = image / "share/mounted_worker_vm.py"
+            support.require(script.read_bytes()
+                == (source / "tests/terrane/mounted_worker_vm.py").read_bytes(),
+                "installed mounted supervisor differs from immutable source")
+            worker = load("scoped_mounted_worker", script)
+            worker.run(support, executable, environment, source)
+            support.verify_image()
+            surface.verify_surface(image, source)
+            print("PASS native mounted-worker component; production launch, mount broker and passthrough remain unqualified", flush=True)
+            return
         if pressure or admission:
             pressure_actors(support, executable, environment_for, admission)
             support.verify_image()

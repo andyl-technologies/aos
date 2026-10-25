@@ -68,6 +68,9 @@ fn main() -> Result<()> {
     if mode == "worker-network-child" {
         return scoped_worker::child_network();
     }
+    if mode == "worker-mounted-child" {
+        return scoped_worker::mounted::child();
+    }
     if mode == "worker-crash-child" {
         return worker_crash::child();
     }
@@ -86,6 +89,8 @@ fn main() -> Result<()> {
         Some(scoped_worker::launch()?)
     } else if mode == "worker-network" {
         Some(scoped_worker::launch_network()?)
+    } else if mode == "worker-mounted" {
+        Some(scoped_worker::mounted::launch()?)
     } else if mode == "worker-crash" {
         let launched = scoped_worker::launch_crash()?;
         println!("WORKER_PID {}", launched.child_id());
@@ -160,6 +165,7 @@ fn main() -> Result<()> {
             | "index-closure"
             | "worker-send"
             | "worker-network"
+            | "worker-mounted"
             | "worker-crash"
             | "crash-refuse"
             | "crash-recover"
@@ -204,6 +210,9 @@ fn main() -> Result<()> {
         return pressure::run(&mode, &runtime, &owner, &inputs, policy, baseline);
     }
     if let Some(launched) = launched {
+        if mode == "worker-mounted" {
+            return scoped_worker::mounted::run(launched, &runtime, &owner, &inputs);
+        }
         if mode == "worker-crash" {
             return worker_crash::run(launched, &runtime, &owner, &inputs);
         }

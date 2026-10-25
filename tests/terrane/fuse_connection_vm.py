@@ -134,7 +134,10 @@ def scenario(executable, directory, mode):
             else:
                 require(supervisor.send(b"U") == 1,
                         "production actor stop was truncated")
-                expected_errno = errno.ENOTCONN
+                # This request entered the original worker before disconnect.
+                # Closing its device aborts it; subsequent requests below must
+                # still return the disconnected-worker errno from FUSE-48.
+                expected_errno = errno.ECONNABORTED
                 expected_status = b"STOPPED"
             for waiting in pending:
                 try:

@@ -146,9 +146,25 @@ the production loop with distinct-node grants and hardlink coalescing, a stop
 during an outstanding fetch, and malformed backing refusal shared by two
 opens. These use explicitly synthetic indexes; they do not prove authenticated
 startup and kernel serving together. Strict Clippy, exact pure preparation and
-both closed source inventories pass. The twelve-scenario native guest and
-mandatory workspace compilation are running from `73d1ee57a7`. The unused
-intermediate qualification checkout was removed before running any build.
+both closed source inventories pass. The twelve-scenario guest at
+`73d1ee57a7` fails in 363.402 seconds: the new production serving scenario
+passes, then the stop scenario expects `ENOTCONN` for an open already in flight
+when the original device closes. The kernel returns `ECONNABORTED`. This is
+retained as a failed qualification. The corrected scenario checks that exact
+in-flight abort result and separately retains the exact `ENOTCONN` assertion
+for metadata submitted after disconnection; FUSE-48's disconnected-worker
+contract and all deadlines remain unchanged. Mandatory workspace compilation
+from `73d1ee57a7` is running. The unused intermediate qualification checkout
+was removed before running any build.
+
+A new mounted-worker component joins the actual signed owner, authenticated
+index startup and production `serve` loop in one disposable guest. The original
+capability-free child owns the FUSE device; only the guest supervisor mounts
+its temporary alias. Actual kernel opens coalesce while metadata remains
+responsive, and durable drain must retain every original backing binding and
+pin after worker closure. This fixture is not production launch or broker
+integration. Its strict all-feature/all-target Clippy check passes; native
+qualification is pending.
 
 Configured Realize/Gc, full production worker integration and launch, broker and
 passthrough integration, writable exposures, complete Distribution services,
