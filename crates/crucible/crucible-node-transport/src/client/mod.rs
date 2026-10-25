@@ -20,9 +20,10 @@ mod session;
 pub use crate::connection::CanonicalAckCodecMetadataExtent;
 pub use content::{ClientContent, OriginalClientContentGrowthStorageData};
 pub use controller::{
-    CnpController, CnpRegistrarRead, ControllerRoute, InstalledArchivedProtocolState,
-    OriginalCanonicalBlobAckEmitter, OriginalCanonicalRestoreInputEmitter,
-    OriginalCompleteRestoreInputUpload, OriginalCompleteRestoreInputUploadProspectiveStorageData,
+    CnpController, CnpRegistrarRead, CompactRuntimeController, ControllerRoute,
+    InstalledArchivedProtocolState, OriginalCanonicalBlobAckEmitter,
+    OriginalCanonicalRestoreInputEmitter, OriginalCompleteRestoreInputUpload,
+    OriginalCompleteRestoreInputUploadProspectiveStorageData,
     OriginalCompleteRestoreInputUploadStorageData, OriginalCompleteRestoreUploadBeforeMappingData,
     OriginalCompletedRestoredObservation17Data, OriginalFreshRestorePrepareBindingStorageData,
     OriginalFreshRestorePrepareInputs, OriginalFreshRestoreQuery,

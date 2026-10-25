@@ -10,6 +10,50 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Opaque compact SDK runtime owner
+
+`CompactRuntimeController` now retains the original controller behind an API
+with no mutable legacy accessor, extractor or deref conversion. Its slot-based
+constructor checks original ownership, pending correlation, settled journals,
+unsupported future assignments and remaining credit before moving the whole
+controller. It creates no replacement content store and performs no fallible
+work after the move. The protocol actor, route, budget, content allocations and
+consumed legacy history remain original; both journal representations share
+the unchanged lifetime request and byte ceilings.
+
+Runtime calls use the same scoped-request builder as the legacy controller.
+The builder's additional fixed return controls are charged in the existing
+Initial lifecycle funding row. Promised content arriving after a terminal reply
+now uses the compact provider namespace and original content store as well.
+Exhausted or changed provider originals remain pending before refusal; unsupported
+notifications keep both envelope and typed backing while the stream is fenced.
+Already-owned content needs no new or unexpired wire cut. A known-supervisor
+metadata census visits both journal representations and the original live SDK.
+
+Four actual socket controls cover the opaque handoff, original actor/content
+identity, real post-terminal transfers, authentic cached legacy replies,
+unchanged combined credit, input/output slot refusal, unresolved originals,
+post-terminal provider exhaustion and typed notification custody. A fifth
+control checks the unchanged expired deadline during a local content read.
+These controls use modeled registration and establish SDK mechanics only.
+
+The complete future SDK R/T/S row, genuine Source18 once/admission and production
+selection still need implementation before this owner can be installed by the
+Source. Its constructor supplies SDK ownership only; it grants no Source or
+native action. Native18 capsule operations, complete physical SDK/Source18
+history and full RFC qualification remain unfinished.
+
+All four owner, 42 journal/history and fourteen JSON-bank controls pass in both
+codec builds. Both complete Transport suites pass 2,233 tests with zero failures
+and twenty ignored using frozen compiler-selected artifacts. Scoped formatting,
+all-feature/all-target checking and all six architecture checks pass. Strict
+Transport Clippy retains the exact preceding diagnostic multiset: four existing
+errors and 1,725 warnings; it is not a strict lint pass. Application test-target
+compilation passes with 185 artifacts across 58 packages, including 76 integration
+targets. Its captured source matches all 697 frozen owned Rust/Cargo inputs.
+Protected user work remains outside this commit; no clean published-PR or new
+native lifecycle qualification is claimed.
+
 ## Compact journals with retained legacy content
 
 The compact exchange now borrows its journal and actual content owner separately.

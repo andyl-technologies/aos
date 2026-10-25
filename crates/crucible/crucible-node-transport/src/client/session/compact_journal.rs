@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 mod identity;
 mod journal;
 mod prefix;
+mod runtime;
 use prefix::CompactJournalPrefix;
 pub mod physical18;
 pub mod physical19;

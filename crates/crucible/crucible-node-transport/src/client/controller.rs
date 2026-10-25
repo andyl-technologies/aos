@@ -51,11 +51,14 @@ pub use restored_suffix_host::{
     OriginalRestoredSuffixHostHistoricalData, PreparedOriginalRestoredSuffixHostAttempt,
 };
 mod assigned_transfer;
+mod compact_runtime;
 mod content_growth;
+pub use compact_runtime::CompactRuntimeController;
 mod fresh_restore_query;
 #[path = "controller/input_emitter.rs"]
 mod input_emitter;
 mod owned11_quote;
+mod request;
 mod restore_upload;
 pub use ack_emitter::OriginalCanonicalBlobAckEmitter;
 pub use assigned_admit::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCanonicalAckAdmit};
@@ -1445,59 +1448,8 @@ impl CnpController {
         extensions: Extensions,
     ) -> Result<ResponseBody, ProviderError> {
         self.ensure_no_pending_original_ack_admit()?;
-        let CallScope {
-            operation_id,
-            method,
-            owner_scoped,
-            capture_owner,
-        } = scope;
-        if self.fenced {
-            return Err(ProviderError::Correlation(
-                "generic original controller is fenced",
-            ));
-        }
-        let session_id = self.session.authority().session_id().clone();
-        let incarnation_id = self.session.authority().incarnation_id().clone();
-        let node_id = owner_scoped.then(|| self.route.node.clone());
-        let execution_owner_id =
-            (owner_scoped && capture_owner.is_none()).then(|| self.route.execution_owner.clone());
-        let wire = BorrowedEnvelope {
-            protocol: "CNP/1",
-            message: MessageKind::Request,
-            session_id: &session_id,
-            incarnation_id: &incarnation_id,
-            node_id: &node_id,
-            execution_owner_id: &execution_owner_id,
-            capture_owner_id: capture_owner.as_ref(),
-            request_id: &request_id,
-            operation_id: &operation_id,
-            sequence: U64::new(u64::MAX),
-            method,
-            body: &body,
-            extensions: &extensions,
-        };
-        count_serialized(&wire, self.maximum_frame()?)?;
-
-        let body = serde_json::to_value(body).map_err(crucible_node_format::ContractError::from)?;
-        let Value::Object(body) = body else {
-            return Err(ProviderError::Frame("generic method body is not an object"));
-        };
-        let original = decode_request(method, &body)?;
-        let request = Envelope {
-            protocol: "CNP/1".into(),
-            message: MessageKind::Request,
-            session_id: Nullable(Some(session_id)),
-            incarnation_id: Nullable(Some(incarnation_id)),
-            node_id: Nullable(node_id),
-            execution_owner_id: Nullable(execution_owner_id),
-            capture_owner_id: Nullable(capture_owner),
-            request_id: Nullable(Some(request_id)),
-            operation_id: Nullable(operation_id),
-            sequence: U64::new(2),
-            method,
-            body,
-            extensions,
-        };
+        let (original, request) =
+            self.prepare_scoped_request(request_id, scope, body, extensions)?;
         let reply = self
             .session
             .exchange(&mut self.custody, request, self.budget)?;
