@@ -3,12 +3,63 @@
 use super::{BackingReply, PendingBacking, RequestedBacking, WorkerClient};
 use std::{
     io,
-    os::fd::{AsRawFd, RawFd},
+    os::fd::{AsFd, AsRawFd, RawFd},
     time::Duration,
 };
 use tokio::{io::unix::AsyncFd, time::Instant};
 
 impl WorkerClient {
+    /// Awaits disconnection or a protocol fault while no request is outstanding.
+    ///
+    /// An idle owner must send no packets. This future borrows the original
+    /// socket without cloning it; cancellation while waiting retains the channel.
+    /// Receiving EOF or any unsolicited packet faults it immediately. Previously
+    /// disclosed backing and kernel-reference custody remain independently owned.
+    ///
+    /// # Errors
+    /// Returns `UnexpectedEof` when the original owner disconnects, `InvalidData`
+    /// for an unsolicited packet, or native reactor/transport errors. A completed
+    /// wait always returns an error and disconnects the original channel.
+    ///
+    /// # Panics
+    /// Panics without a Tokio I/O driver after validating the original client.
+    pub async fn wait_idle_fault(&mut self) -> io::Result<()> {
+        if !self.active {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        let outcome = async {
+            let socket = AsyncFd::new(self.socket.as_fd())?;
+            loop {
+                let mut ready = socket.readable().await?;
+                match ready.try_io(|socket| {
+                    let mut byte = [0];
+                    // No ancillary buffer is supplied: Linux disposes of any
+                    // unsolicited rights instead of importing a new descriptor.
+                    match rustix::net::recv(
+                        socket.get_ref(),
+                        &mut byte,
+                        rustix::net::RecvFlags::DONTWAIT,
+                    ) {
+                        Ok((0, _)) => Ok(io::Error::from(io::ErrorKind::UnexpectedEof)),
+                        Ok(_) => Ok(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "unsolicited idle backing reply",
+                        )),
+                        Err(error) => Err(io::Error::from(error)),
+                    }
+                }) {
+                    Ok(Ok(failure)) => return Err(failure),
+                    Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Ok(Err(error)) => return Err(error),
+                    Err(_) => continue,
+                }
+            }
+        }
+        .await;
+        self.abort();
+        outcome
+    }
+
     /// Requests and maps the structural index for this channel's exposure root.
     ///
     /// The private launcher context supplies the root; a caller cannot replace

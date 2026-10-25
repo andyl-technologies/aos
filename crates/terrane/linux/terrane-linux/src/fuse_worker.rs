@@ -117,6 +117,10 @@ pub enum Event {
 pub enum Exit {
     /// The exposure controller completed its explicit stop future.
     Stopped,
+    /// The original backing owner disconnected while no request was outstanding.
+    ///
+    /// The worker closes its device; retained backing custody remains charged.
+    OwnerDisconnected,
     /// The original kernel connection reported that it was unmounted.
     Unmounted,
 }

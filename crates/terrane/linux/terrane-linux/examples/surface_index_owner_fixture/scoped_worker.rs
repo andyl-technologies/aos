@@ -219,15 +219,6 @@ impl Launched {
         self.child.id()
     }
 
-    /// Sends a bounded phase control on the original child's private endpoint.
-    ///
-    /// # Errors
-    /// Refuses an unavailable endpoint or an incomplete packet.
-    pub(super) fn send_control(&self, bytes: &[u8]) -> Result<()> {
-        mounted::send(self.control.as_fd(), bytes)?;
-        Ok(())
-    }
-
     /// Awaits the original child's phase while the retained service keeps running.
     ///
     /// # Errors

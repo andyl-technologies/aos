@@ -229,7 +229,9 @@ async fn verify(
     }
 
     service.stop().await?;
-    launched.send_control(b"S")?;
+    // The retained service closes its original channel only after durable
+    // drain. The idle worker must observe that closure without a kernel open
+    // or a second supervisor control causing its device to abort.
     launched.receive_control(b"STOPPED").await?;
     launched.wait_for_exit().await?;
     let after = snapshot().await?;

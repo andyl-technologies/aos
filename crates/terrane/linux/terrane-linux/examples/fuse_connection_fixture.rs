@@ -57,6 +57,8 @@ fn main() -> Result {
             | "actor"
             | "actor-stop"
             | "actor-failure"
+            | "actor-idle"
+            | "actor-unsolicited"
             | "large"
             | "readiness"
             | "timeout"
@@ -106,7 +108,7 @@ fn main() -> Result {
         if mode == "large" && directory.len() <= 16 {
             return Err("large immutable index does not exceed the worker node budget".into());
         }
-        if matches!(mode.as_str(), "actor" | "actor-stop" | "actor-failure") {
+        if matches!(mode.as_str(), "actor" | "actor-stop" | "actor-failure" | "actor-idle" | "actor-unsolicited") {
             let client = WorkerClient::bind(
                 io::stdin().as_fd().try_clone_to_owned()?,
                 ExposureContext::new("0123456789abcdef0123456789abcdef", 1, [7; 32])?,
@@ -170,6 +172,20 @@ fn main() -> Result {
                 stopped(&control),
             ).await;
             let exit = match result {
+                Ok(fuse_worker::Exit::OwnerDisconnected) if mode == "actor-idle" => {
+                    notify(b"OWNER_CLOSED")?;
+                    return Ok(());
+                }
+                Err(fuse_worker::Error::Io(error))
+                    if mode == "actor-unsolicited" && error.kind() == io::ErrorKind::InvalidData =>
+                {
+                    notify(b"OWNER_REFUSED")?;
+                    return Ok(());
+                }
+                Ok(_) if matches!(mode.as_str(), "actor-idle" | "actor-unsolicited") => {
+                    return Err("idle backing owner did not fault the original worker".into());
+                }
+
                 Err(fuse_worker::Error::Io(error))
                     if mode == "actor-failure" && error.kind() == io::ErrorKind::InvalidData =>
                 {
@@ -585,7 +601,16 @@ fn main() -> Result {
 fn metadata_bytes(mode: &str) -> Result<Vec<u8>> {
     if !matches!(
         mode,
-        "metadata" | "read" | "late" | "multi" | "actor" | "actor-stop" | "actor-failure" | "large"
+        "metadata"
+            | "read"
+            | "late"
+            | "multi"
+            | "actor"
+            | "actor-stop"
+            | "actor-failure"
+            | "actor-idle"
+            | "actor-unsolicited"
+            | "large"
     ) {
         return Ok(structural_index::compile([7; 32], &[], 1, 4096)?);
     }

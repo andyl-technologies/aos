@@ -112,7 +112,7 @@ fn send_device(
     Ok(())
 }
 
-pub(super) fn send(channel: std::os::fd::BorrowedFd<'_>, bytes: &[u8]) -> io::Result<()> {
+fn send(channel: std::os::fd::BorrowedFd<'_>, bytes: &[u8]) -> io::Result<()> {
     if net::send(
         channel,
         bytes,
@@ -377,7 +377,10 @@ pub(crate) fn child(late: bool) -> Result<()> {
             },
         )
         .await?;
-        if exit != fuse_worker::Exit::Stopped {
+        if !matches!(
+            exit,
+            fuse_worker::Exit::Stopped | fuse_worker::Exit::OwnerDisconnected
+        ) {
             return Err("mounted worker stopped before its durable drain".into());
         }
         send(control.get_ref().as_fd(), b"STOPPED")?;

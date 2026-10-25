@@ -240,6 +240,19 @@ review compares all 8,196 immutable source files for each result and verifies
 they neither execute those application tests nor qualify the failed owning or
 configured aggregates. Newer joined-worker source compilation remains running.
 
+The production worker now monitors its original backing channel while idle.
+An owner EOF closes the actual FUSE device without waiting for another kernel
+open; an unsolicited idle reply faults it. The readiness wait borrows the
+original descriptor, has no idle timeout and leaves the channel intact when
+cancelled by ordinary kernel traffic. Completed transport/protocol failures
+fault the original channel without importing unsolicited descriptors. Native
+fixture controls require exact `ENOTCONN` after both idle faults. The configured
+mounted fixture now requires worker exit from the service's post-drain channel
+closure, without a second supervisor stop packet. Both strict native feature
+profiles and Python syntax pass; actual kernel execution and mandatory
+application-target compilation remain required. This closes no custody or task
+obligation by inference from disconnection.
+
 Complete feature matrices now pass with independent immutable-source, retained
 executable and actual guest review at these checkpoints:
 

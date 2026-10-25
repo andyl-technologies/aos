@@ -177,6 +177,20 @@ async fn run_connection(
                     None => pending().await,
                 }
             } => continue,
+            result = async {
+                match backing_client.as_mut() {
+                    Some(client) => client.wait_idle_fault().await,
+                    None => pending().await,
+                }
+            } => {
+                match result {
+                    Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                        return Ok(Exit::OwnerDisconnected);
+                    }
+                    Err(error) => return Err(Error::Io(error)),
+                    Ok(()) => return Err("idle backing monitor returned without a fault".into()),
+                }
+            },
             result = connection.wait_readable() => result,
         };
         let received = match readable {

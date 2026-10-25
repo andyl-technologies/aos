@@ -94,7 +94,7 @@ def scenario(executable, directory, mode):
             "setpriv", "--reuid=840", "--regid=840", "--clear-groups",
             "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
             "--no-new-privs", str(executable), mode,
-        ], stdin=backing_child if mode in {"read", "late", "multi", "actor", "actor-stop", "actor-failure"} else subprocess.DEVNULL,
+        ], stdin=backing_child if mode in {"read", "late", "multi", "actor", "actor-stop", "actor-failure", "actor-idle", "actor-unsolicited"} else subprocess.DEVNULL,
             stdout=child_socket, stderr=subprocess.PIPE,
             close_fds=True)
         child_socket.close()
@@ -117,6 +117,35 @@ def scenario(executable, directory, mode):
         os.close(descriptors.pop())
         require(supervisor.send(b"M") == 1, "mount-ready message was truncated")
         require(supervisor.recv(64) == b"READY", "actual kernel INIT did not complete")
+
+        if mode in {"actor-idle", "actor-unsolicited"}:
+            require(stat.S_ISDIR(target.stat().st_mode),
+                    "production idle worker never served original kernel metadata")
+            if mode == "actor-idle":
+                backing_server.close()
+                expected_status = b"OWNER_CLOSED"
+            else:
+                require(backing_server.send(b"unsolicited") == len(b"unsolicited"),
+                        "unsolicited idle owner control was truncated")
+                expected_status = b"OWNER_REFUSED"
+            require(supervisor.recv(64) == expected_status,
+                    "idle production worker did not observe its original backing owner")
+            try:
+                target.stat()
+            except OSError as error:
+                require(error.errno == errno.ENOTCONN,
+                        "idle backing owner fault returned another kernel errno")
+            else:
+                raise RuntimeError("idle worker kept serving after its backing owner faulted")
+            unmount(target)
+            mounted = False
+            require(child.wait(timeout=5) == 0,
+                    "production idle owner control failed: " + child.stderr.read().decode(errors="replace"))
+            print("PASS idle production worker closes original kernel connection on "
+                  + ("backing owner disconnect" if mode == "actor-idle" else "unsolicited backing reply"),
+                  flush=True)
+            print("PASS actual confined FUSE transport " + mode, flush=True)
+            return
 
         if mode in {"actor-stop", "actor-failure"}:
             executor = ThreadPoolExecutor(max_workers=2)
@@ -388,5 +417,5 @@ def scenario(executable, directory, mode):
 
 if __name__ == "__main__":
     executable, directory = map(pathlib.Path, sys.argv[1:])
-    for selected in ["serve", "metadata", "read", "late", "multi", "actor", "actor-stop", "actor-failure", "large", "readiness", "timeout", "cancel"]:
+    for selected in ["serve", "metadata", "read", "late", "multi", "actor", "actor-stop", "actor-failure", "actor-idle", "actor-unsolicited", "large", "readiness", "timeout", "cancel"]:
         scenario(executable, directory, selected)
