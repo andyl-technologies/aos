@@ -419,6 +419,7 @@ impl<S: ProviderStream> Connection<S> {
             + "cnp.blob.v1".len()
             + 64
             + acknowledgements::PREFIX_ACK_COUNTER_ADDITIONAL
+            + crate::bodies::response_shape_decode_counter_scratch_data()
             + FRAME_CHARGE_ADAPTER_COUNTER_SCRATCH_DATA
     }
 }

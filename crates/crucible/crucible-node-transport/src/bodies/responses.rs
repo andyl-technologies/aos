@@ -2,6 +2,9 @@
 
 use super::*;
 
+mod shape;
+pub(crate) use shape::{decode_response_shape, response_shape_decode_counter_scratch_data};
+
 pub use crucible_source_birth_data::profile::envelope::OperationState;
 
 /// States certainty about the reported operation's effects.
@@ -171,12 +174,6 @@ impl ResponseShape {
             } => *operation_state,
         }
     }
-}
-
-pub(crate) fn decode_response_shape(
-    body: &Map<String, Value>,
-) -> Result<ResponseShape, ContractError> {
-    object(body)
 }
 
 /// Contains a selected successful baseline method result.

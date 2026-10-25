@@ -10,6 +10,46 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Direct live response-shape decoding
+
+The live response decoder now selects its closed field schema from the original
+borrowed status value, then deserializes the remaining borrowed fields directly.
+It no longer builds Serde's internally tagged enum buffer for that live path.
+The shared canonical geometry and hard body ceiling still run before typed
+allocation. Status remains a strict variant identifier; absent, malformed,
+unknown and cross-variant fields retain the preceding decoder's refusals.
+The public generic ResponseShape deserializer remains unchanged.
+
+Independent comparison with that preceding generic decoder covers all statuses,
+exact refusal messages, nested values, numeric representation, literal private
+markers, independent result ownership and the original depth/byte ceilings.
+The defining borrowed iterator, branch and result controls have a named fixed
+counter, included in the Initial lifecycle and packet-prefix counters. Existing
+conservative backing rows and negotiated quotas remain unchanged. This removes
+one transient population from the forthcoming SDK calculation; it does not
+complete future SDK R/T/S, grant a Source18 action or implement the funded handoff.
+
+Both complete Transport codec suites pass 2,248 tests with zero failures and
+twenty ignored; all three new decoder controls and all 62 SourceBirth tests pass
+in each codec. Scoped formatting, five-package all-feature/all-target checks and
+all six architecture checks pass. SourceBirth strict Clippy has no warnings;
+Transport retains the exact prior four errors and 1,725 warnings, so it is not a
+strict Transport lint pass. Required application test-target compilation passes
+with 185 artifacts across 58 packages and 76 integration targets. All 724 frozen
+Rust/Cargo inputs match its captured source and the candidate tree.
+
+The source-built original-scene inactive-runtime/reclamation baseline passes in
+718.59 seconds with the repository's size-optimized test-profile companions,
+normal provider stderr handling and unchanged sixty-second Initial deadlines.
+It covers all three Initial lifecycles, InputOwners, CollectingGraph, inactive
+runtime construction/rechecks, exact/one-short census checks and actual
+retirement/reclamation. The final test-counter corrections produce the same
+Daemon test, provider and device executable hashes as that successful run.
+This qualifies the inactive lifecycle only; Arm, Capture, Native18 production
+selection and the other full RFC obligations remain unfinished. User-owned
+changes remain outside this component, and no clean whole-PR qualification is
+claimed.
+
 ## Original-controller compact journal projection
 
 The original Controller now quotes future compact suffix journal backing before

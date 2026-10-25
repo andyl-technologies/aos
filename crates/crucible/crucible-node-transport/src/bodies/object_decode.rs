@@ -19,13 +19,22 @@ const MAXIMUM_BODY_BYTES: usize = 16_777_216;
 pub(super) fn object<T: DeserializeOwned + Validate>(
     value: &Map<String, Value>,
 ) -> Result<T, ContractError> {
-    if canonical::canonical_json_object_length_with_limit(value, MAXIMUM_BODY_BYTES)?.is_none() {
-        return Err(invalid("body", "body exceeds hard frame ceiling"));
-    }
+    validate_geometry(value)?;
 
     let decoded = T::deserialize(value)?;
     decoded.validate()?;
     Ok(decoded)
+}
+
+/// Checks the same canonical grammar and byte limit before typed allocation.
+///
+/// # Errors
+/// Refuses invalid canonical JSON geometry or the original hard body ceiling.
+pub(super) fn validate_geometry(value: &Map<String, Value>) -> Result<(), ContractError> {
+    if canonical::canonical_json_object_length_with_limit(value, MAXIMUM_BODY_BYTES)?.is_none() {
+        return Err(invalid("body", "body exceeds hard frame ceiling"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
