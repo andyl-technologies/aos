@@ -166,6 +166,25 @@ pin after worker closure. This fixture is not production launch or broker
 integration. Its strict all-feature/all-target Clippy check passes; native
 qualification is pending.
 
+The structural-index requirements audit distinguishes the qualified component
+from the remaining open-path composition:
+
+| Requirement | Implementation and evidence | Remaining integration |
+| --- | --- | --- |
+| FUSE-7 | `CompiledIndex::from_nodes` accepts metadata only; the native owner stores its derived root/version key. The owning gate checks canonical reuse, mutation refusal and absence of content fetches. | Configured FUSE exposure startup must call the authenticated owner path for its selected root. |
+| FUSE-8 | `Index::lookup` binary-searches sorted entries; `Entry::children` scans the contiguous child-index run. Codec and first-touch directory tests check ordering and allocation-free access. | No missing index operation identified; configured worker composition remains separate. |
+| FUSE-9 | The native owner permanently seals its original inode; `MappedIndex::open` measures it before creating a read-only mapping. Actual mapping and scoped-disclosure guests qualify descriptor refusal and retained-inode behavior. | Production launch must bind the original worker and exposure context; the mounted fixture alone supplies no launcher. |
+| FUSE-10 | Native index custody has a separate cap, eviction and durable exposure protection. Pressure guests check retained mappings, release grace and actual charge before capacity credit. | Configured exposure supervision must preserve those obligations across worker failure and shutdown. |
+| FUSE-11 | The index records typed inline/manifest references and logical sizes. Scoped native file preparation verifies genuine whole-file backing against the signed selection. | `prepare_file_backing` explicitly requires existing backing. The mounted fixture prepublishes one inline file; it does not prove cold-open fetching, manifest reassembly on open or their cancellation/accounting composition. |
+| FUSE-12 | Canonical compilation expands nested/repeated grafts, retains governing roots and refuses malformed identities, depth and geometry. The owning codec inventory executes those cases. | No missing index operation identified; configured exposure startup must use the checked projection. |
+
+The reviewed `35f86562ff` owning gate and its seven actual guests remain valid
+component evidence. Since that checkpoint, the index implementation changes
+only by exposing the retained mapping descriptor through `AsFd`; authenticated
+mapping and refusal are separately qualified at `c763e2cf9a`. This audit does
+not equate those component results with configured FUSE startup or lazy cold
+opens. T-FUSE-1 and T-FUSE-2 remain open pending their complete acceptance scope.
+
 Configured Realize/Gc, full production worker integration and launch, broker and
 passthrough integration, writable exposures, complete Distribution services,
 CI surfaces, sandbox integration and T6 remain outstanding. The detailed
