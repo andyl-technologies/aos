@@ -218,7 +218,7 @@ impl<'a, F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidat
     pub(crate) async fn acquire_read_namespace(
         bucket: &'a FileBucket<F, C, V>,
     ) -> Result<Self, StoreFailure> {
-        if bucket.inner.access.read_only() {
+        if bucket.inner.access.legacy() {
             return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
         }
         let checked_identity = identity(bucket).await?;

@@ -1,6 +1,7 @@
 //! Opens and initializes actual local bucket repositories with sibling authority.
 
 mod maintenance;
+mod readonly;
 mod recovery;
 
 pub use maintenance::LocalMaintenanceIdentity;
@@ -113,6 +114,9 @@ use super::{
     Error, LocalAuthority, LocalAuthorityIdentity, LocalAuthorityParameters, MetadataValidator,
     PreparedTree, Repository,
 };
+
+type LocalCoordinator<F, C> = Coordinator<FileBucket<F, C, MetadataValidator>, C, F>;
+type LocalParts<F, C> = (LocalCoordinator<F, C>, crate::domain::DomainNamespace);
 
 /// Locates a bucket and its distinct sibling signing authority.
 pub struct LocalRepositoryLocation {
@@ -482,6 +486,32 @@ where
         MetadataValidator::new(profile.clone()),
     )
     .await?;
+    Ok(local_coordinator(
+        location,
+        issuer_keys,
+        policy,
+        profile,
+        fs,
+        clock,
+        bucket,
+    ))
+}
+
+/// Shares the exact guard configuration between writable and read-only opens.
+fn local_coordinator<F, C>(
+    location: &LocalRepositoryLocation,
+    issuer_keys: &[terrane_format::auth::IssuerKey],
+    policy: LocalRepositoryPolicy,
+    profile: ChunkProfile,
+    fs: F,
+    clock: C,
+    bucket: FileBucket<F, C, MetadataValidator>,
+) -> LocalParts<F, C>
+where
+    F: LocalFs + BucketBinding + Clone + Sync + 'static,
+    C: Clock + BucketBinding + Clone + Sync + 'static,
+    FileBucket<F, C, MetadataValidator>: Sync,
+{
     let namespace = crate::domain::DomainNamespace {
         root: location.bucket.clone(),
         domain: policy.domain.clone(),
@@ -504,7 +534,7 @@ where
     );
     let coordinator = Coordinator::new(guard, policy.timing, fs);
 
-    Ok((coordinator, namespace))
+    (coordinator, namespace)
 }
 
 fn validate_local_reference(reference: &str) -> Result<(), Error> {

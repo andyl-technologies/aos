@@ -133,7 +133,12 @@ where
         let guard = coordinator.guard();
         #[cfg(test)]
         index_rebuild_trace("native-reopen-verifier-install");
-        guard.install_original_verifier(&authority).await?;
+        let read_only = guard.store().native_read_only();
+        if read_only {
+            guard.install_existing_original_verifier(&authority).await?;
+        } else {
+            guard.install_original_verifier(&authority).await?;
+        }
         #[cfg(test)]
         index_rebuild_trace("native-reopen-verifier-installed");
         let retention = NativeRetention {
@@ -149,8 +154,10 @@ where
         let root = guard.store().root().to_path_buf();
 
         let mut repository = Self::new(coordinator);
-        repository.local_retention = Some(retention);
-        repository.local_backend_root = Some(root);
+        if !read_only {
+            repository.local_retention = Some(retention);
+            repository.local_backend_root = Some(root);
+        }
         Ok(repository)
     }
 }

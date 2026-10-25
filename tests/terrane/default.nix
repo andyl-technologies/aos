@@ -524,6 +524,11 @@ in {
     image = nativeSdkTestImage;
     suite = "coordination-locks";
   };
+  integration.native-readonly-repository = import ./local-collection-reconciliation.nix {
+    inherit pkgs lib;
+    image = nativeSdkTestImage;
+    suite = "readonly-repository";
+  };
   integration.native-preownership-restore = import ./native-preownership-restore.nix {
     inherit pkgs lib;
     image = nativeSdkTestImage;

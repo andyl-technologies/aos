@@ -100,6 +100,32 @@ T-TOPO-2 on B-topology. The trunk's HOST-24 periodic lease-expiry obligation
 remains with the original physical worker; it is not replaced by that optional
 collection work.
 
+Existing-lock qualification at `9d89554155` passes its four-case ext4 guest
+in 1,361.242 seconds. Complete review matches all 8,242 immutable source
+files, 5,485 bound crate inputs and the retained Cargo library test executable.
+The UID 840 actor has empty capabilities, no supplementary groups and
+no-new-privileges. Actual read-only lock descriptors preserve shared/exclusive
+contention, retained duplicates, missing-state refusal and original inode checks.
+This qualifies coordination only; the separate configured-maintenance guest
+at that source still fails during read-only repository reopening.
+
+The candidate correction adds a native read-only repository open mode that
+retains protected registration, native exclusions and selected signed history.
+It performs no initialization, write probes, selected-Guard installation or
+mutable-projection repair, advertises no ref-write capability, and withholds
+authoring and collection bindings. Configured Serve uses this mode; ordinary
+writable repository opens retain their original probes and repair behavior.
+The new `integration.native-readonly-repository` guest checks actual signed
+reads and mutation refusal while the backing filesystem remains writable,
+unchanged physical identities and bytes across those operations, missing
+registration and coordination refusal without repair, and the original writable
+reopen regression. Both supported native SDK profiles and the actual CLI pass
+strict all-target Clippy. Python syntax, exact selector review, Nix formatting,
+PLAN-2 and guest derivation evaluation pass. Native qualification, renewed
+configured-maintenance qualification and mandatory application-target
+compilation are pending.
+No task acceptance changes.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement

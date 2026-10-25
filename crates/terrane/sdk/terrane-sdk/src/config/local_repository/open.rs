@@ -37,12 +37,17 @@ pub enum LocalOpenError {
 }
 
 impl Config {
-    /// Reopens a strict local file-bucket repository owned by the serve role.
+    /// Reopens an existing local file-bucket repository for read-only serving.
     ///
     /// Only an exact leaf `bucket(file:///...)` is supported. This factory does
     /// not implement routed stores or host-cache composition. It returns no
     /// instance signing authority; exposure credentials must be independently
     /// resolved and passed to `PreparedExposures::prepare`.
+    /// Original registration, native exclusions and signed selected history are
+    /// required. Reopening never initializes, probes writes or repairs state,
+    /// and the returned repository cannot author or collect data even when its
+    /// backing filesystem permits writes. Snapshot output uses the supplied
+    /// filesystem independently of the read-only bucket.
     ///
     /// # Errors
     /// Rejects non-serve invocations, missing explicit trust, unsupported store
@@ -87,7 +92,7 @@ impl Config {
             key_id: trusted.key_id.clone(),
             owner_uid: trusted.owner_uid,
         };
-        let (repository, authority) = Repository::open_local(
+        let (repository, authority) = Repository::open_local_read_only(
             &location,
             &identity,
             trusted.policy(self.locality())?,

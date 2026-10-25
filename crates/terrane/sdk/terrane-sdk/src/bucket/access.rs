@@ -1,4 +1,4 @@
-//! Pins each handle to writable layout two or explicit read-only layout one.
+//! Separates native layout selection from permission to perform effects.
 
 use super::{BucketBinding, FileBucket, files};
 use crate::store::{Clock, ContentValidator, LocalFs, StoreErrorKind, StoreFailure};
@@ -9,6 +9,8 @@ use terrane_format::bucket::{BucketCapabilities, BucketKey};
 pub(super) enum Access {
     /// Permits effects only while the persisted namespace remains layout two.
     Writable,
+    /// Reads existing protected layout two without initialization or effects.
+    NativeReadOnly,
     /// Reads original layout-one locations without probes, locks, or mutations.
     LegacyReadOnly,
 }
@@ -17,13 +19,18 @@ impl Access {
     /// Returns the exact version selected when this handle opened.
     pub(super) const fn version(self) -> u64 {
         match self {
-            Self::Writable => 2,
+            Self::Writable | Self::NativeReadOnly => 2,
             Self::LegacyReadOnly => 1,
         }
     }
 
-    /// Reports whether the handle permits only legacy reads.
+    /// Reports whether the handle refuses effects.
     pub(super) const fn read_only(self) -> bool {
+        !matches!(self, Self::Writable)
+    }
+
+    /// Reports whether reads use the original layout-one locations.
+    pub(super) const fn legacy(self) -> bool {
         matches!(self, Self::LegacyReadOnly)
     }
 }
@@ -43,7 +50,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             || capabilities.profile != self.profile()
             || (capabilities.publication_protocol.is_some()
                 && (capabilities.publication_protocol != Some(1)
-                    || self.inner.access.read_only()
+                    || self.inner.access.legacy()
                     || self.inner.config.publication_control.is_none()))
         {
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
@@ -87,7 +94,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         #[cfg(test)]
         let trace =
             crate::ref_advance::NativeTrace::new(self.root(), "plain-bucket-read-exclusion");
-        let guard = if self.inner.access.read_only() {
+        let guard = if self.inner.access.legacy() {
             None
         } else {
             Some(self.existing_exclusive().await?)

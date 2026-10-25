@@ -224,7 +224,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// Refuses missing existing-only locking, unsafe configured ownership or
     /// coordination directories, and changed protected namespace admission.
     pub(super) async fn existing_exclusive(&self) -> Result<F::Lock, StoreFailure> {
-        if self.inner.access.read_only() {
+        if self.inner.access.legacy() {
             return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
         }
         self.preflight_publication_namespace().await?;

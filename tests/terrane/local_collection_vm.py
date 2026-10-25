@@ -81,6 +81,18 @@ COORDINATION_LOCK_CASES = [
 ]
 
 
+READONLY_REPOSITORY_CASES = [
+    "repository::local::readonly::tests::" + name for name in [
+        "native_read_only_reopen_keeps_writable_backing_and_denies_mutations",
+        "native_read_only_reopen_refuses_missing_registration_without_repair",
+        "native_read_only_reopen_refuses_missing_coordination_without_repair",
+    ]
+] + [
+    "repository::local::tests::"
+    "local_directory_edit_preserves_canonical_implicit_owner_on_reopen",
+]
+
+
 def verify_image(source, image):
     """Binds the actual retained Cargo test image to every immutable crate input."""
     identity = json.loads((image / "share/identity.json").read_text())
@@ -147,6 +159,8 @@ def main():
         cases = STARTUP_RESTORATION_CASES
     elif suite == "coordination-locks":
         cases = COORDINATION_LOCK_CASES
+    elif suite == "readonly-repository":
+        cases = READONLY_REPOSITORY_CASES
     else:
         raise ValueError("unknown native collection qualification suite")
 
@@ -197,6 +211,10 @@ def main():
     elif suite == "coordination-locks":
         print("PASS existing read-only coordination preserves shared/exclusive exclusion, retained "
               "descriptors, missing-state refusal and original inode checks", flush=True)
+    elif suite == "readonly-repository":
+        print("PASS native read-only reopening preserves writable backing and selected signed reads; "
+              "mutations and missing controls refuse without repair; original writable reopen passes",
+              flush=True)
     elif suite == "restoration-session":
         print("PASS restoration and fresh marking retain original session poison and lease; "
               "expired handoff has no effects and original Meta restoration still passes", flush=True)

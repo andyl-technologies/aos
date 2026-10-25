@@ -28,6 +28,7 @@ mod held_tests;
 #[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
 mod metadata_test_support;
 mod missing_placement;
+mod native_readonly;
 
 /// Stages verified recovered data through fresh native placement recipes.
 pub(crate) mod permanent_restore;

@@ -233,6 +233,10 @@ where
         token: &[u8],
         surface: &str,
     ) -> Result<WriterSession, Error> {
+        if self.coordinator.guard().store().capabilities().refs == crate::store::RefCapability::None
+        {
+            return Err(Error::Denied);
+        }
         self.coordinator
             .begin(reference, token, surface)
             .await

@@ -199,6 +199,25 @@ impl<
         self.configure_original_verifier(authority, true).await
     }
 
+    /// Loads existing physical verification without installing a selected Guard.
+    ///
+    /// Only the native read-only factory uses this path, then independently
+    /// requires an existing signed selected snapshot before returning a reader.
+    ///
+    /// # Errors
+    /// Refuses unsafe physical bindings and incomplete or conflicting retained
+    /// records. It never initializes selected authority or repairs missing state.
+    pub(crate) async fn install_existing_original_verifier(
+        &self,
+        authority: &OriginalAuthority,
+    ) -> Result<(), StoreFailure>
+    where
+        F: Sync,
+        C: Clock,
+    {
+        self.configure_original_verifier(authority, false).await
+    }
+
     /// Prepares physical checks for a private pending paired destination.
     ///
     /// This installs no selected Guard. Only the private recovery constructor

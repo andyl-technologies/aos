@@ -268,7 +268,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
         let current = if let Some(current) = self.read_ref(&key).await? {
             current
-        } else if self.inner.access.read_only() {
+        } else if self.inner.access.legacy() {
             return Ok(Vec::new());
         } else {
             let selected = self.selected_publication_locked().await?;

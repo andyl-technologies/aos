@@ -1014,7 +1014,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         &self,
         key: &terrane_format::bucket::BucketKey,
     ) -> Result<Option<Vec<u8>>, StoreFailure> {
-        if self.inner.access.read_only() {
+        if self.inner.access.legacy() {
             return self.read_optional(key).await;
         }
         self.check_payload_namespace(key).await?;

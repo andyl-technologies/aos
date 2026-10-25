@@ -23,6 +23,31 @@ use terrane_format::bucket::{BucketCapabilities, BucketKey};
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
+    /// Validates an existing active native publication without repair or probes.
+    ///
+    /// # Errors
+    /// Refuses missing, pending, unbound or incomplete selected registration and
+    /// propagates unsafe controls, changed observations and unavailable reads.
+    pub(in crate::bucket) async fn verify_read_only_publication(&self) -> Result<(), StoreFailure> {
+        let holder = SingleHeld::acquire_read_only(self).await?;
+        let control = Control::open(self, false).await?;
+        let bytes = control
+            .read(&self.inner.fs, "backend-registration.cbor")
+            .await?
+            .ok_or_else(corrupt)?;
+        let registration = BackendRegistration::decode(&bytes).map_err(|_| corrupt())?;
+        if registration.binding != control.binding
+            || registration.activation != Activation::Active
+            || registration.genesis.is_none()
+        {
+            return Err(corrupt());
+        }
+        let source = holder.source();
+        let observed = source.observe_for_read().await?;
+        observed.revalidate().await?;
+        control.recheck(&self.inner.fs).await
+    }
+
     /// Checks configured protected namespace admission before filesystem effects.
     ///
     /// # Errors

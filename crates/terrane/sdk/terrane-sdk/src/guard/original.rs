@@ -245,7 +245,7 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
     ) -> Result<OriginalAuthority, StoreFailure> {
         use std::os::unix::fs::MetadataExt;
 
-        if self.store.capabilities().refs != RefCapability::Cas {
+        if self.store.capabilities().refs != RefCapability::Cas && !self.store.native_read_only() {
             return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
         }
         if !normalized(control)

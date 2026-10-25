@@ -976,7 +976,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     ) -> Result<Vec<u8>, StoreFailure> {
         let mode = member_reads::mode(self.fs()).await?;
         #[cfg(all(feature = "tokio", unix))]
-        if !self.inner.access.read_only() {
+        if !self.inner.access.legacy() {
             return self.get_selected_request(identity, range, mode).await;
         }
         #[cfg(test)]
@@ -1006,7 +1006,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
 
         #[cfg(all(feature = "tokio", unix))]
-        if !self.inner.access.read_only() {
+        if !self.inner.access.legacy() {
             let mode = member_reads::mode(self.fs()).await?;
             // Limit retained physical inputs per closing boundary. Selection is
             // freshly observed for every group and never cached across calls.
