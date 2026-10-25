@@ -154,6 +154,10 @@ executes 107 actions in `linux-sandbox`, with zero action-cache hits and no
 shared disk cache. Both installed binaries match the qualified checkout build
 byte for byte. This uses previously realized toolchain and source dependencies;
 it does not claim a cold bootstrap or qualify another host architecture.
+The later [package-owned recipe rebuild](../tests/evidence/package-owned-gpl-offline-source-rebuild.json)
+uses a unique trial and executes all 107 actions again from the exported entry
+point. It has zero action-cache hits and produces the same plugin and gateway
+bytes after extracting the production recipes into `pkgs/emulation/`.
 
 The live white-box gate runs unchanged against `installed.plugin`:
 
