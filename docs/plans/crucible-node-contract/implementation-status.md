@@ -76,6 +76,20 @@ full debug information. Temporary Source error tracing and inherited provider
 stderr were restored exactly; neither diagnostic variant qualifies the native
 lifecycle. The fixed deadline remains sixty seconds, with no renewal.
 
+The uninstrumented candidate subsequently passes the source-built original-scene
+inactive-runtime/reclamation test with companions built using `cargo build
+--profile test`: the repository's size optimization and omitted debug information,
+with debug assertions and overflow checks retained. All three Initial lifecycles,
+collecting-graph and inactive-runtime construction/rechecks, preservation
+descriptions, exact/one-short census controls, destination checks and actual
+retirement/reclamation complete. The test passes in 699.11 seconds. Its fixed
+sixty-second Initial deadlines are unchanged. Compiler-selected executable hashes
+are checked before and after the run, and all 720 frozen Rust/Cargo inputs match
+the current tree, committed component and application gate's captured source.
+Owned executable scratch is removed after the actual child test terminates.
+This qualifies that inactive-runtime baseline only; no Arm, Capture, restored
+Native18 class, clean whole-PR tree or complete RFC qualification follows.
+
 Both production capsule constructors initialize the new slot empty. Complete
 future SDK R/T/S, the genuine same-Source one-use funded handoff and production
 Native18 selection remain unfinished, as do the remaining full RFC obligations.
