@@ -1,6 +1,24 @@
 # Bazel development shares action results while keeping each worktree's mutable
 # execution state separate. Credentials and ambient compiler flags are removed
 # by the AOS launcher before Bazel starts.
+aos_dev_bazel_format_rust() (
+  [[ $# == 0 || ( $# == 1 && $1 == --check ) ]] || aos_dev_error 'usage: aos-dev fmt rust [--check]'
+  local rust_dev python query_file
+  rust_dev=$(aos_dev_nix_build_ordinary -A pkgs.rust.dev --no-out-link)
+  python=$(aos_dev_nix_build_ordinary -A pkgs.python3 --no-out-link)
+  query_file=$(mktemp /tmp/aos-rust-format.XXXXXXXX)
+  trap 'rm -f -- "$query_file"' EXIT
+
+  # Querying ownership does not compile actions or need shared cache mounts.
+  local aos_dev_bazel_cache=false
+  aos_dev_bazel query --output=xml \
+    'kind("(_source_package|rust_(library|binary|proc_macro|test)) rule", //crates/...)' \
+    > "$query_file"
+  "$python/bin/python3" "$aos_dev_root/tools/bazel/format_rust.py" \
+    --root "$aos_dev_root" --query "$query_file" \
+    --rustfmt "$rust_dev/bin/rustfmt" "$@"
+)
+
 aos_dev_bazel() (
   (( $# > 0 )) || aos_dev_error 'bazel requires a command and optional labels'
   if [[ $1 == release-metadata ]]; then

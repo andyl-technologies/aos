@@ -182,11 +182,7 @@ aos_dev_fmt() {
   fi
 
   if [[ $language == rust || $language == all ]]; then
-    local rust rust_dev
-    rust=$(nix-build "$aos_dev_root/default.nix" -A pkgs.rust --no-out-link)
-    rust_dev=$(nix-build "$aos_dev_root/default.nix" -A pkgs.rust.dev --no-out-link)
-    PATH="$rust_dev/bin:$rust/bin:$PATH" \
-      "$rust_dev/bin/cargo-fmt" --all --manifest-path "$aos_dev_root/crates/Cargo.toml" "$@"
+    aos_dev_bazel_format_rust "$@"
   fi
 }
 

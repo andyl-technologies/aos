@@ -113,6 +113,7 @@ in
     source-selection = import ./_bazel-source-selection.nix {inherit pkgs;};
     source-catalog = import ./_bazel-source-catalog.nix {inherit pkgs;};
     release-metadata = import ./_bazel-release-metadata.nix {inherit pkgs;};
+    rust-format = import ./_bazel-rust-format.nix {inherit pkgs;};
     sysroot-metadata = import ./_bazel-sysroot-metadata.nix {inherit pkgs;};
     manifest-extractor = import ./_bazel-manifest-extractor.nix {inherit pkgs;};
     static-runtime = import ./_bazel-static-runtime.nix {inherit pkgs;};
@@ -513,6 +514,7 @@ in
             source-selection
             source-catalog.all
             release-metadata.all
+            rust-format
             sysroot-metadata
             manifest-extractor
             native-libraries

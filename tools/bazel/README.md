@@ -365,6 +365,18 @@ build drivers retain their existing qualification requirements.
 The [release metadata receipt](tests/evidence/crucible-release-metadata.json)
 retains the complete Cargo baseline manifest and observed qualification outputs.
 
+`aos-dev fmt rust [--check]` discovers formatting roots through an offline Bazel
+query and runs the AOS-built rustfmt directly. It covers both first-party
+workspaces, including standalone accache, and preserves each package's edition.
+Declared source ownership also supplies conventional entry points for structural
+tests awaiting compilation migration. Missing ownership, ambiguous roots, and
+edition conflicts fail before formatting. Querying needs no shared action-cache
+mounts. `checks.build.bazel.rust-format` compares formatted source bytes with the
+temporary Cargo oracle, checks idempotence, and proves that the new formatter
+works after removing Cargo manifests and lockfiles from its source tree.
+The [formatting receipt](tests/evidence/rust-format-workflow.json) retains the
+complete root inventory, output hashes, and observed CLI behavior.
+
 ## Isolated Rust tests
 
 `rules/test.bzl` compiles ordinary `rules_rust` libtest artifacts and runs each

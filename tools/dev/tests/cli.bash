@@ -52,6 +52,7 @@ case " $* " in
     printf '%s\n' /tmp/aos-dev-test-probe
     ;;
   *' -A pkgs.aos '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.rust.dev '*|*' -A pkgs.python3 '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aos.apm '*|*' -A pkgs.aos.apr '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelEngineLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
@@ -146,6 +147,10 @@ cat > "$scratch/cli/bin/aos-bazel" <<'MOCK'
 #!@BASH@
 printf '%s\n' "$AOS_DEV_ROOT" "$AOS_BAZEL_OUTPUT_BASE" > "$AOS_DEV_TEST_BAZEL_ENV_LOG"
 printf '<%s>' "$@" > "$AOS_DEV_TEST_BAZEL_ARGS_LOG"
+if [[ -n ${AOS_DEV_TEST_FORMAT_QUERY:-} ]]; then
+  [[ ${AOS_DEV_TEST_FORMAT_QUERY_STATUS:-0} == 0 ]] || exit "$AOS_DEV_TEST_FORMAT_QUERY_STATUS"
+  cat "$AOS_DEV_TEST_FORMAT_QUERY"
+fi
 MOCK
 sed -i "s|@BASH@|$BASH|" "$scratch/cli/bin/aos-bazel"
 chmod +x "$scratch/cli/bin/aos-bazel"
@@ -167,6 +172,46 @@ export AOS_DEV_TEST_TOOL_ARGS_LOG="$scratch/tool-args.log"
 export AOS_DEV_TEST_NIX_CONFIG_LOG="$scratch/nix-config.log"
 export AOS_DEV_TEST_BAZEL_ENV_LOG="$scratch/bazel-env.log"
 export AOS_DEV_TEST_BAZEL_ARGS_LOG="$scratch/bazel-args.log"
+
+cat > "$scratch/cli/bin/python3" <<'MOCK'
+#!@BASH@
+printf '<%s>' "$@" > "$AOS_DEV_TEST_FORMAT_ARGS_LOG"
+while (( $# )); do
+  if [[ $1 == --query ]]; then
+    cmp "$2" "$AOS_DEV_TEST_FORMAT_QUERY" || exit 1
+  fi
+  shift
+done
+exit "${AOS_DEV_TEST_FORMAT_STATUS:-0}"
+MOCK
+sed -i "s|@BASH@|$BASH|" "$scratch/cli/bin/python3"
+chmod +x "$scratch/cli/bin/python3"
+export AOS_DEV_TEST_FORMAT_ARGS_LOG="$scratch/format-args.log"
+printf '<query version="2"/>\n' > "$scratch/format-query.xml"
+AOS_DEV_TEST_FORMAT_QUERY="$scratch/format-query.xml" bash "$root/tools/dev/aos-dev" fmt rust --check
+grep -Fq "<$root/tools/bazel/format_rust.py><--root><$root><--query>" "$AOS_DEV_TEST_FORMAT_ARGS_LOG"
+grep -Fq "<--rustfmt><$scratch/cli/bin/rustfmt><--check>" "$AOS_DEV_TEST_FORMAT_ARGS_LOG"
+grep -Fq '<query><--output=xml>' "$AOS_DEV_TEST_BAZEL_ARGS_LOG"
+if grep -Fq '<--cache>' "$AOS_DEV_TEST_BAZEL_ARGS_LOG"; then
+  printf 'formatting requested a shared action cache\n' >&2
+  exit 1
+fi
+rm "$AOS_DEV_TEST_FORMAT_ARGS_LOG"
+if AOS_DEV_TEST_FORMAT_QUERY="$scratch/format-query.xml" AOS_DEV_TEST_FORMAT_QUERY_STATUS=17 \
+    bash "$root/tools/dev/aos-dev" fmt rust --check; then
+  printf 'formatting accepted a failed ownership query\n' >&2
+  exit 1
+fi
+test ! -e "$AOS_DEV_TEST_FORMAT_ARGS_LOG"
+if AOS_DEV_TEST_FORMAT_QUERY="$scratch/format-query.xml" AOS_DEV_TEST_FORMAT_STATUS=1 \
+    bash "$root/tools/dev/aos-dev" fmt rust --check; then
+  printf 'formatting suppressed a formatter failure\n' >&2
+  exit 1
+fi
+if bash "$root/tools/dev/aos-dev" fmt rust --unknown 2>/dev/null; then
+  printf 'formatting accepted an unknown option\n' >&2
+  exit 1
+fi
 
 bash -n "$root/tools/dev/aos-dev" "$root"/tools/dev/lib/*.bash
 bash "$root/tools/dev/aos-dev" help | grep -Fq 'Usage: aos-dev'
