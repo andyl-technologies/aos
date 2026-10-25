@@ -191,7 +191,11 @@ in {
           mode = "0444";
         };
       };
-      aos.kernel.commandLineParts.audit = ["audit=1"];
+      # Retain early admission records within the same declared queue bound;
+      # waiting for auditctl leaves initrd startup on the kernel's small default.
+      aos.kernel.commandLineParts.audit =
+        ["audit=1"]
+        ++ lib.optional (cfg.bounds != null) "audit_backlog_limit=${toString cfg.backlogLimit}";
     })
   ];
 }

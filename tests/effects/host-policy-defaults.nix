@@ -171,6 +171,34 @@ let
   explicitLink = builtins.head (links explicit);
   graph = defaults.config.aos.activation.graph;
 in {
+  boundedAuditQueueAppliesBeforeHostRuleLoading = let
+    bounded = stage:
+      evaluate ({lib, ...}: {
+        options.aos.boot.stage = lib.mkOption {
+          type = lib.types.enum ["initrd" "host"];
+          default = stage;
+        };
+        config.aos.security.audit = {
+          backlogLimit = 512;
+          bounds = {
+            maxLogFileMiB = 8;
+            numLogs = 2;
+            maximumRules = 64;
+            maximumRuleBytes = 65536;
+            maximumBacklog = 8192;
+          };
+        };
+      });
+    host = bounded "host";
+    early = bounded "initrd";
+  in
+    host.config.aos.kernel.commandLineParts.audit
+    == ["audit=1" "audit_backlog_limit=512"]
+    && early.config.aos.kernel.commandLineParts.audit == host.config.aos.kernel.commandLineParts.audit
+    && lib.hasInfix "-b 512\n" host.config.aos.abilities.configuration.operations.file.effects.audit-rules.input.content
+    && !(early.config.aos.abilities.configuration.operations.file.effects ? audit-rules)
+    && defaults.config.aos.kernel.commandLineParts.audit == ["audit=1"];
+
   pamFilesMaterializeOnlyOnHost = let
     pamEffects = evaluated:
       lib.filterAttrs (name: _: lib.hasPrefix "pam-" name)
