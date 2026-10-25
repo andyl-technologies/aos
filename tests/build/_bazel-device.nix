@@ -7,6 +7,14 @@
     inherit pkgs sourceInventory;
     pname = "aos-bazel-device";
     dependencyProfile = "device";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    # Native analyzer cfg queries retain their optimized target defaults;
+    # Cargo builds the analyzer's host macros with its unoptimized profile.
+    editorTargetRustcFlags = [];
+    editorExecRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    retainTestActionGraph = true;
+    captureCompilerArguments = true;
     packages = {
       crucible-determinism = "crates/crucible/crucible-determinism";
       crucible-device = "crates/crucible/crucible-device";
@@ -14,6 +22,18 @@
       crucible-qemu-shmem = "crates/crucible/crucible-qemu-shmem";
     };
     extraSourceDirectories = ["docs/rfcs/0020-crucible-campaigns"];
+  };
+  execution-profiles = import ./_bazel-rust-test-profiles.nix {
+    inherit pkgs;
+    inherit (family) tests cargo;
+    pname = "aos-bazel-device-execution-profiles";
+    firstPartyTests = {
+      "//crates/crucible/crucible-determinism:unit_binary" = "crucible_determinism";
+      "//crates/crucible/crucible-device:unit_binary" = "crucible_device";
+      "//crates/crucible/crucible-qemu-protocol:unit_binary" = "crucible_qemu_protocol";
+      "//crates/crucible/crucible-qemu-shmem:unit_binary" = "crucible_qemu_shmem";
+    };
+    proceduralMacros = ["serde_derive" "thiserror_impl" "zerocopy_derive"];
   };
   license-policy = pkgs.runCommand "aos-bazel-ciborium-license-policy" {buildDeps = [pkgs.python3];} ''
     mkdir workspace
@@ -65,13 +85,14 @@
 in
   family
   // {
-    inherit license-policy;
-    all = pkgs.runCommand "aos-bazel-device-qualified-checks" {buildDeps = [family.all family.editor-parity license-policy];} ''
+    inherit license-policy execution-profiles;
+    all = pkgs.runCommand "aos-bazel-device-qualified-checks" {buildDeps = [family.all family.editor-parity license-policy execution-profiles];} ''
       mkdir -p "$out"
       cp -r ${family.all}/evidence "$out/evidence"
       cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
       cp -r ${license-policy} "$out/license-policy"
       cp -r ${family.editor} "$out/editor"
       cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
+      cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
     '';
   }

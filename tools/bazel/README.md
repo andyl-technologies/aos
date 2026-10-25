@@ -461,6 +461,16 @@ precise qualification entry points. The connected family includes determinism,
 device, protocol, and shared-memory tests, doctests, examples, Clippy, formatting,
 and documentation; Cargo remains its execution and feature-parity oracle.
 
+The [device profile qualification](tests/evidence/device-profile-qualification.json)
+uses Cargo's size-optimized test target profile and unoptimized execution-tool
+profile, with assertions and overflow checks enabled in both roles. The editor
+keeps an independent optimized target cfg configuration and unoptimized host
+macros. All 642 cases and one doctest pass; 34 editor roots, 20 raw diagnostic
+rows, and whole-model inference statistics match Cargo without analyzer panics.
+Both models retain incomplete inference. The shared audit authenticates four
+unit binaries and all three macros, and its protocol extraction preserves the
+previous report byte for byte. Other families keep their existing defaults.
+
 The source updater separately reviews shared and host-only SPDX expressions.
 Ciborium, `ciborium-io`, and `ciborium-ll` retain their Apache-2.0-only ownership
 as `apache-host` dependencies, even though their dependencies share the same

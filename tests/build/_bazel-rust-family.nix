@@ -32,8 +32,10 @@
   nativeLibraries ? [],
   nativeTools ? [],
   rustcFlags ? [],
+  editorTargetRustcFlags ? rustcFlags,
   execRustcFlags ? [],
   editorExecRustcFlags ? execRustcFlags,
+  retainTestActionGraph ? false,
   cargoSource ? import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;},
   cargoManifest ? "crates/Cargo.toml",
   cargoVendor ? pkgs.aos.passthru.cargoDeps,
@@ -62,10 +64,11 @@
       == "regular"
       && pkgs.lib.hasSuffix ".rs" file
       && !(directoryName == "tests" && builtins.elem (pkgs.lib.removeSuffix ".rs" file) excludedTests)) (builtins.attrNames entries));
-  workspaceFor = executionFlags:
+  workspaceFor = targetFlags: executionFlags:
     pkgs.mkAosBazelWorkspace {
       root = ../..;
-      inherit sourceInventory dependencyProfile repositories rustcFlags;
+      inherit sourceInventory dependencyProfile repositories;
+      rustcFlags = targetFlags;
       execRustcFlags = executionFlags;
       sourceDirectories = pkgs.lib.optionals (sourceInventory == null) ([
           "tools/bazel/toolchains"
@@ -77,18 +80,19 @@
         ++ builtins.attrValues packages ++ extraSourceDirectories);
       analysisTargets = assert builtins.attrNames packageTargets == names; map (name: "${label name}:${packageTargets.${name}.unit}") names;
     };
-  workspace = workspaceFor execRustcFlags;
-  # Cargo editor flags can reach host tools even when test/release flags do not.
-  # Keep the selected target graph while compiling editor macros independently.
+  workspace = workspaceFor rustcFlags execRustcFlags;
+  # Analyzer cfg queries and execution-tool builds have independent profiles.
+  # Preserve the same source graph while selecting each role explicitly.
   editorWorkspace =
-    if editorExecRustcFlags == execRustcFlags
+    if editorTargetRustcFlags == rustcFlags && editorExecRustcFlags == execRustcFlags
     then workspace
-    else workspaceFor editorExecRustcFlags;
+    else workspaceFor editorTargetRustcFlags editorExecRustcFlags;
 in rec {
   inherit workspace editorWorkspace;
   tests = pkgs.mkAosBazelCheck {
     pname = "${pname}-tests";
     inherit workspace;
+    retainActionGraph = retainTestActionGraph;
     targets =
       pkgs.lib.concatMap (name:
         ["${label name}:${packageTargets.${name}.license or "license_closure"}" "${label name}:${packageTargets.${name}.unit}"]
