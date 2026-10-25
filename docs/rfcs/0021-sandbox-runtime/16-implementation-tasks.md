@@ -125,7 +125,17 @@ Recent committed startup fixes close narrower prerequisites:
   The frozen v10 candidate now reaches its fixed kernel boot-ID read, which
   SELinux denies at `sysctl_kernel_t:dir search`. Its refusal aborts and PID 1
   correctly refuses a replacement original delivery. Host startup remains
-  unqualified; a read-only boot-ID policy follow-up is under separate checks.
+  unqualified; the read-only boot-ID follow-up below addresses this policy gap.
+
+- Host authentication may now traverse `sysctl_kernel_t` directories and read
+  their files to obtain its fixed kernel boot UUID. The SELinux grant is
+  type-wide; the native reader selects `boot_id`. Mutation, executable access
+  and file ioctls remain forbidden. The isolated committed-base candidate
+  passes 176 policy unit tests, the linked-policy guard and negative fixtures
+  (`/nix/store/m3giqqama6y9ja8mjj8w3grwi447bh3c-aos-selinux-production-policy-1`).
+  It excludes the pending Host custody, SwitchRoot, networkd and offline-cleanup
+  patches. The enforcing installed Host retry remains pending; this policy
+  receipt supplies neither original funding nor public readiness.
 
 - `a03d34dc15` replays only the ext4 journal before reading the protected
   `/var` root label. The installed hard-loss diagnostic returned an empty raw

@@ -255,6 +255,8 @@ def execution_access() -> tuple[Access, ...]:
 
 
 POSITIVE_ACCESS = (
+    Access("aos_sandbox_host_t", "sysctl_kernel_t", "dir", "search"),
+    *accesses("aos_sandbox_host_t", "sysctl_kernel_t", "file", ("getattr", "open", "read")),
     Access("init_t", "system_dbusd_t", "process", "transition"),
     Access("init_t", "system_dbusd_t", "process2", "nosuid_transition"),
     Access("system_dbusd_t", "init_t", "fd", "use"),
@@ -774,6 +776,17 @@ def negative_access() -> tuple[Access, ...]:
     ))
     checks.extend(accesses(
         "aos_nspawn_t", "nsfs_t", "file", ("ioctl", "map", "write", "execute"),
+    ))
+
+    # Boot identity inspection grants no sysctl mutation or executable access.
+    checks.extend(accesses(
+        "aos_sandbox_host_t", "sysctl_kernel_t", "dir",
+        ("add_name", "create", "remove_name", "rename", "rmdir", "setattr", "write"),
+    ))
+    checks.extend(accesses(
+        "aos_sandbox_host_t", "sysctl_kernel_t", "file",
+        ("append", "create", "execute", "execute_no_trans", "ioctl", "link", "map",
+         "relabelfrom", "relabelto", "rename", "setattr", "unlink", "write"),
     ))
 
     # Read-only kind inspection never delegates namespace entry or mutation.

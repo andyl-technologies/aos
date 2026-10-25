@@ -285,6 +285,12 @@ allow init_t aos_sandbox_host_t:process transition;
 allow aos_sandbox_host_t aos_sandbox_host_exec_t:file { entrypoint execute getattr map open read };
 type_transition init_t aos_sandbox_host_exec_t:process aos_sandbox_host_t;
 
+# Host authentication binds its original kernel boot before manager admission.
+# These type-wide reads expose kernel sysctls without permitting their mutation;
+# the native KernelBootId reader selects the fixed boot_id path.
+allow aos_sandbox_host_t sysctl_kernel_t:dir search;
+allow aos_sandbox_host_t sysctl_kernel_t:file { getattr open read };
+
 # These fixed services retain NoNewPrivileges; PID 1 may enter only their
 # dedicated domains when executing their labeled immutable-store binaries.
 allow init_t aos_sandbox_network_publisher_exec_t:file { execute getattr map open read };

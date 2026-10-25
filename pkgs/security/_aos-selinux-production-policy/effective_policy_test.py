@@ -1370,6 +1370,33 @@ class EffectivePolicyTest(unittest.TestCase):
                     effective_policy.Access("aos_sandbox_host_t", executable, "file", permission)
                 )
 
+    def test_host_requires_boot_id_read_without_sysctl_mutation(self) -> None:
+        host = "aos_sandbox_host_t"
+        required = (
+            ("dir", "search"),
+            *(("file", permission) for permission in ("getattr", "open", "read")),
+        )
+        forbidden = (
+            *(("dir", permission) for permission in (
+                "add_name", "create", "remove_name", "rename", "rmdir", "setattr", "write",
+            )),
+            *(("file", permission) for permission in (
+                "append", "create", "execute", "execute_no_trans", "ioctl", "link", "map",
+                "relabelfrom", "relabelto", "rename", "setattr", "unlink", "write",
+            )),
+        )
+        for object_class, permission in required:
+            with self.subTest(required=(object_class, permission)):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access(host, "sysctl_kernel_t", object_class, permission)
+                )
+
+        for object_class, permission in forbidden:
+            with self.subTest(forbidden=(object_class, permission)):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access(host, "sysctl_kernel_t", object_class, permission)
+                )
+
     def test_worker_requires_boot_id_read_without_sysctl_mutation(self) -> None:
         worker = effective_policy.fuse_worker_policy.WORKER_DOMAIN
         for access in (
