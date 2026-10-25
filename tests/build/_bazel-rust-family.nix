@@ -32,9 +32,23 @@
   nativeLibraries ? [],
   nativeTools ? [],
   rustcFlags ? [],
-  editorTargetRustcFlags ? rustcFlags,
-  execRustcFlags ? [],
-  editorExecRustcFlags ? execRustcFlags,
+  # Native analyzer cfg queries use its own global flags, independently of the
+  # ordinary test target's profile or static-linking options.
+  editorTargetRustcFlags ? editorRustcFlags,
+  # Cargo builds host macros without optimization in both ordinary profiles;
+  # release disables assertions even for these unoptimized execution tools.
+  execRustcFlags ? let
+    assertions =
+      if builtins.elem "--release" cargoFlags
+      then "no"
+      else "yes";
+  in ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=${assertions}" "-Coverflow-checks=${assertions}"],
+  # Explicit editor RUSTFLAGS reach host macros too. Without them, the native
+  # analyzer uses unoptimized development tools even for a release-test family.
+  editorExecRustcFlags ?
+    if editorRustcFlags != []
+    then editorRustcFlags
+    else ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"],
   retainTestActionGraph ? false,
   cargoSource ? import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;},
   cargoManifest ? "crates/Cargo.toml",

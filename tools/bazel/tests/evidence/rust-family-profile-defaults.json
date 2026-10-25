@@ -1,0 +1,88 @@
+{
+  "actual_qualifications": {
+    "formats": {
+      "qualified_checks": "/nix/store/d90hd2pvqk6dh2sd8ni422j7v6g1i3al-aos-bazel-formats-qualified-checks",
+      "report_sha256": "4e43a37b3b149c0547d5521abd13ddef6380e34c5393de608fd052c36e7da137"
+    },
+    "guest": {
+      "qualified_checks": "/nix/store/9mc0f4qq8dc7ym2k73ddn6gr8pgijwhy-aos-bazel-guest-qualified-checks",
+      "report_sha256": "b6cb8c6cb0f6500324b78364c32076455b99501b4753a91f2eb1088a9cbc7559"
+    }
+  },
+  "after_snapshot_sha256": "32c7c2a22784d92741a4a4c398a4787fc5bef60e1bc9b746fb4215188e01dd0b",
+  "before_snapshot_sha256": "32c7c2a22784d92741a4a4c398a4787fc5bef60e1bc9b746fb4215188e01dd0b",
+  "checkout_parent": "5b86ef8a1ea7275eb815f16ccf400986c4e8bef6",
+  "declarations_sha256": {
+    "tests/build/_bazel-rust-family.nix": "4177698223e3b70b31d1034b52dd7eced22fe10053d8b6e6c494550bf1ed3997",
+    "tests/build/_bazel-rust-test-profiles.nix": "80bb140556f108a56376909540c23510418ea559494b67f030d535362f9c7ff1"
+  },
+  "identity_evaluator": "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+  "limits": [
+    "Declaration identity preservation does not requalify the earlier eight families against the current checkout; their retained runs keep their own source snapshots and limits.",
+    "Inherited defaults alone do not qualify other families, independently constructed production or ordinary development workspaces, or complete compiler, built-in editor cfg, native ABI, linker, cache or performance equivalence."
+  ],
+  "native_profile_baselines": {
+    "cargo-execution-profile-baseline.json": "5e698789a9eb19e5639c430eddcaa8d0365ef7a83ba6c13d7fb1484fd0e652ad",
+    "rust-analyzer-execution-profile-baseline.json": "bdba3593d83d7ab0058d32aaa186a03baed8e986f5cbc0f66a4456185322a3d8"
+  },
+  "preserved_declaration_identities": {
+    "accache": {
+      "developer": "/nix/store/l5khb35wxnqpjgzw6alrsp7km2k5rqdy-aos-bazel-accache-developer-tools-1.drv",
+      "editor": "/nix/store/lcyzn6fp3k9vaqpsc0w93vg66fsddc97-aos-bazel-accache-editor.drv",
+      "editorConfiguration": "/nix/store/pn4j21hm1rcq4fv1rf8hkjwngg2qljkg-aos-bazel-configuration.json",
+      "targetConfiguration": "/nix/store/mciikry1xz0m3vn1xnnzywlbdms4c1n1-aos-bazel-configuration.json",
+      "tests": "/nix/store/w4nmqlrzy1dqj8d32az1jqdz05kap6z2-aos-bazel-accache-tests-1.drv"
+    },
+    "cli-support": {
+      "developer": "/nix/store/h9qshr71n9skv7ps8jmcsyg31bzl4ayp-aos-bazel-cli-support-developer-tools-1.drv",
+      "editor": "/nix/store/5mnw5b21yv92z4rnpqcq9yanyyp8grjw-aos-bazel-cli-support-editor.drv",
+      "editorConfiguration": "/nix/store/8fzvddiscmqhndljjv201chvgj6mkiil-aos-bazel-configuration.json",
+      "targetConfiguration": "/nix/store/cskp8z2dvd5pyr8yhbddl8ydb58wkyfi-aos-bazel-configuration.json",
+      "tests": "/nix/store/csdkv53jwanp32h6aam6sf9rxlrph07j-aos-bazel-cli-support-tests-1.drv"
+    },
+    "control": {
+      "developer": "/nix/store/8d1vcd7afvg5f4ipczv66q98qrm8dc0y-aos-bazel-control-developer-tools-1.drv",
+      "editor": "/nix/store/c3ybdd3x6ksds3hnxqna3m92pdwy9700-aos-bazel-control-editor.drv",
+      "editorConfiguration": "/nix/store/7fg3f2i1l2c14vssdx7k4k4ri85f5gpj-aos-bazel-configuration.json",
+      "targetConfiguration": "/nix/store/r8scz5rsrlf5wbzq2m9xfv0rkdl3zvg7-aos-bazel-configuration.json",
+      "tests": "/nix/store/dkf7gkrl3l5zyxza83bd2d693mggsc11-aos-bazel-control-tests-1.drv"
+    },
+    "device": {
+      "developer": "/nix/store/br6yl0ln85h7ci5ki88xxvm0znsrzfqn-aos-bazel-device-developer-tools-1.drv",
+      "editor": "/nix/store/vyx1sqqrj3yqac11mk999a5g5bz8nbws-aos-bazel-device-editor.drv",
+      "editorConfiguration": "/nix/store/hnwhsixym7vckyrdqcwli67g43cha27z-aos-bazel-configuration.json",
+      "targetConfiguration": "/nix/store/wqzlwq5rhpwvaz4bq5k9w57n22k93b73-aos-bazel-configuration.json",
+      "tests": "/nix/store/rrkbddndh2a0yzgvf38la93j4k3akr8b-aos-bazel-device-tests-1.drv"
+    },
+    "engine": {
+      "developer": "/nix/store/lqcacqa6nvpwh7bh2shz9ilwjk67xgpq-aos-bazel-engine-developer-tools-1.drv",
+      "editor": "/nix/store/gahq5sjjc5d8a1b9s35b10brw7ydhkvj-aos-bazel-engine-editor.drv",
+      "editorConfiguration": "/nix/store/yjxzmwv8gb7psb6gczmivbg211dm8jr4-aos-bazel-configuration.json",
+      "targetConfiguration": "/nix/store/g0wqgd8p9hq8pp99fs78f0gqzd83qmhj-aos-bazel-configuration.json",
+      "tests": "/nix/store/i83088fr5caii7q1ixv9n3ghqllryj0y-aos-bazel-engine-tests-1.drv"
+    },
+    "quota": {
+      "developer": "/nix/store/y3ikmnq7wbv8swv0j4hmd1pcdnr9sz08-aos-bazel-quota-developer-tools-1.drv",
+      "editor": "/nix/store/lkckvqi24xqs0wbxlka0r2l0ikh2qr35-aos-bazel-quota-editor.drv",
+      "editorConfiguration": "/nix/store/8ipiykf08kpnlfl6cn5af2w3bz4n60mj-aos-bazel-configuration.json",
+      "targetConfiguration": "/nix/store/4bwwzgpb3kqzak901gcn2aaglsnp0cbk-aos-bazel-configuration.json",
+      "tests": "/nix/store/99s0ia2cbg13wc9fx56hcp9sjqzv0ddk-aos-bazel-quota-tests-1.drv"
+    },
+    "session": {
+      "developer": "/nix/store/jim5113lkm9k34hzy3awxk8a86m6p96p-aos-bazel-session-developer-tools-1.drv",
+      "editor": "/nix/store/c4dqq4jfsly80872r42czfclfmrdbs8m-aos-bazel-session-editor.drv",
+      "editorConfiguration": "/nix/store/0nvi6cicpa1p4q00586ihm0nrxr4hh3m-aos-bazel-configuration.json",
+      "targetConfiguration": "/nix/store/wvkvbck2n0ry7y1qks3ssdqilgba8rvl-aos-bazel-configuration.json",
+      "tests": "/nix/store/kyy4r0x7k9f7q8kvaackmjyydhk3qgsl-aos-bazel-session-tests-1.drv"
+    },
+    "store": {
+      "developer": "/nix/store/w99kb5x8q9qf64vnjvpjlf627mx74h5s-aos-bazel-store-developer-tools-1.drv",
+      "editor": "/nix/store/kdhaf9z110l2ma25gjsz0xix7ificwd3-aos-bazel-store-editor.drv",
+      "editorConfiguration": "/nix/store/a56rsrmxcpdqw5fhfqlz1wyydskkybib-aos-bazel-configuration.json",
+      "targetConfiguration": "/nix/store/rwryhhlgcvp9l3s1zyxzcxn3pl2z12an-aos-bazel-configuration.json",
+      "tests": "/nix/store/092xpd7n1f412xk6igk0shx7w6886cs8-aos-bazel-store-tests-1.drv"
+    }
+  },
+  "schema_version": 1,
+  "status": "PASS"
+}

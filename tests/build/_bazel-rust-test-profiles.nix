@@ -6,6 +6,11 @@
   cargo,
   firstPartyTests,
   proceduralMacros,
+  targetOptLevel ? "s",
+  debugAssertions ? true,
+  # Library and executable libtests may share a crate name. Select their
+  # actual Cargo source arguments explicitly rather than dropping a unit.
+  testSources ? {},
 }: let
   scripts = builtins.path {
     path = ../../tools/bazel/tests;
@@ -18,7 +23,9 @@ in
     PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${scripts} ${pkgs.python3}/bin/python3 - \
       ${tests} ${cargo} \
       ${pkgs.lib.escapeShellArg (builtins.toJSON firstPartyTests)} \
-      ${pkgs.lib.escapeShellArg (builtins.toJSON proceduralMacros)} "$out/evidence.json" <<'PYTHON'
+      ${pkgs.lib.escapeShellArg (builtins.toJSON proceduralMacros)} "$out/evidence.json" \
+      ${pkgs.lib.escapeShellArg targetOptLevel} ${builtins.toJSON debugAssertions} \
+      ${pkgs.lib.escapeShellArg (builtins.toJSON testSources)} <<'PYTHON'
     import hashlib
     import json
     from pathlib import Path
@@ -32,7 +39,17 @@ in
     targets = json.loads(sys.argv[3])
     required_macros = json.loads(sys.argv[4])
     output = Path(sys.argv[5])
-    assert targets and len(set(targets.values())) == len(targets), targets
+    target_opt_level = sys.argv[6]
+    debug_assertions = sys.argv[7] == "true"
+    test_sources = json.loads(sys.argv[8])
+    assert test_sources.keys() <= targets.keys(), test_sources
+    assert all(isinstance(source, str) and source.endswith(".rs") for source in test_sources.values())
+
+    def test_key(label):
+        name = targets[label]
+        return name + ":" + test_sources[label] if label in test_sources else name
+
+    assert targets and len({test_key(label) for label in targets}) == len(targets), targets
     assert required_macros and len(set(required_macros)) == len(required_macros), required_macros
     inventory = json.loads((build / "inventory.json").read_text())
     macros = {target["label"]: target["label"].rsplit(":", 1)[1]
@@ -49,9 +66,10 @@ in
             value = scalar.get(option)
             if value is None and not explicit:
                 if option == "debug-assertions":
-                    assert expected == "0", scalar
+                    assert (expected == "0") == debug_assertions, scalar
                 continue
-            assert value in {"yes", "on", "true"}, scalar
+            accepted = {"yes", "on", "true"} if debug_assertions else {"no", "off", "false"}
+            assert value in accepted, scalar
         return scalar
 
     trace = cargo / "compiler-arguments.jsonl"
@@ -64,14 +82,23 @@ in
         name = arguments[arguments.index("--crate-name") + 1] if "--crate-name" in arguments else None
         macro = any(left == "--crate-type" and right == "proc-macro"
                     for left, right in zip(arguments, arguments[1:]))
-        if not ((macro and name in macros.values()) or ("--test" in arguments and name in targets.values())):
+        if macro and name in macros.values():
+            key = name
+        elif "--test" in arguments:
+            matching = [label for label, crate in targets.items() if name == crate
+                        and (label not in test_sources or test_sources[label] in arguments)]
+            if not matching:
+                continue
+            assert len(matching) == 1, matching
+            key = test_key(matching[0])
+        else:
             continue
-        assert name not in cargo_actions, name
-        cargo_actions[name] = {
+        assert key not in cargo_actions, key
+        cargo_actions[key] = {
             "arguments": arguments,
-            "compiler_options": profile(arguments, "0" if macro else "s", False),
+            "compiler_options": profile(arguments, "0" if macro else target_opt_level, False),
         }
-    assert set(cargo_actions) == set(macros.values()) | set(targets.values()), cargo_actions.keys()
+    assert set(cargo_actions) == set(macros.values()) | {test_key(label) for label in targets}, cargo_actions.keys()
 
     evidence = build / "evidence"
     events = execution_events(build)
@@ -97,7 +124,7 @@ in
         event = matching[0]
         assert event["runner"] == "linux-sandbox" and not event["cacheHit"] and event["exitCode"] == 0
         selected[label] = {
-            "compiler_options": profile(arguments, "0" if label in macros else "s", True),
+            "compiler_options": profile(arguments, "0" if label in macros else target_opt_level, True),
             **{key: event[key] for key in ["runner", "cacheHit", "exitCode"]},
         }
     assert selected.keys() == macros.keys() | targets.keys(), selected.keys()

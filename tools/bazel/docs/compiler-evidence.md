@@ -37,6 +37,29 @@ profiles, native ABI, linker closure, and runtime comparisons remain independent
 gates. `../tests/evidence/cli-compiler-input-reconstruction.json` binds the
 reconstruction checkpoint to its exact source and execution inputs.
 
+The shared Rust-family qualifier selects host-tool profiles independently of
+target flags. Ordinary host tools use optimization level 0 with assertions;
+release host tools keep level 0 and disable assertions. Editor execution tools
+follow explicit global editor flags when present, or the native development
+profile otherwise. Editor target flags have their own selection.
+The [retained default check](../tests/evidence/rust-family-profile-defaults.json)
+preserves the pre-change declaration identities of eight explicit families.
+The format and static-guest aggregates qualify two actual inherited profiles;
+other families still require their own current qualification.
+
+The [open editor cfg discrepancy](../tests/evidence/editor-builtin-cfg-gap.json)
+records a separate gap: the pinned aspect inserts `debug_assertions`
+unconditionally, while the current native Cargo model takes it from its
+compiler cfg query. The guest's actual optimized query omits it. Selected
+diagnostic parity does not qualify this built-in cfg behavior, and the retained
+profile checks do not waive its correction before editor acceptance.
+
+The selected compiler audit also supports release targets and source-qualified
+Cargo names. The [release audit checks](../tests/evidence/rust-release-profile-auditor.json)
+accept the retained guest requests and reject incorrect optimization,
+assertions, ambiguous names and a missing source mapping. These are checks
+against actual retained requests, not additional compiler executions.
+
 The Cargo baseline can retain actual process execution as an independent
 wrapper check. The GPL production oracle opts into source-built `strace`
 inside the Nix sandbox; the inspection gate requires all requested Rust

@@ -603,6 +603,18 @@ package roots, so source selection remains a pure Nix evaluation input.
 
 ## Static guest qualification
 
+The [profile qualification](tests/evidence/guest-profile-qualification.json)
+retains 33 executed cases and the existing ignored case, plus Clippy,
+documentation, formatting, installed static-runtime checks and six CLI
+comparisons. A required audit pairs four actual libtest compiler calls and
+three host macros with the native Cargo release trace. Target code uses
+optimization level 3; macros use level 0. Both disable assertions and overflow
+checks. Only target actions receive the static runtime flags. Source arguments
+distinguish the library and executable libtests, which share a Cargo crate name.
+The four-root editor comparison preserves three selected diagnostic identities;
+inference remains incomplete. Complete built-in editor cfg parity, VM
+determinism, production migration and performance acceptance remain separate.
+
 `checks.build.bazel.guest.all` builds the guest library and executable, both
 libtest artifacts, both integration tests, doctests, Clippy, formatting,
 documentation, and editor parity. Its separate `guest` dependency profile
@@ -1614,6 +1626,16 @@ It retains the complete metadata report for the frozen CLI checkpoint before
 the format library conversion.
 
 ## AOS format library qualification
+
+The [profile qualification](tests/evidence/formats-profile-qualification.json)
+retains 159 default cases and 176 compression cases, with zero ignored cases
+and matching Cargo feature inventories. The default configuration additionally
+audits three actual unit compiler calls and five macros: test targets use
+size optimization and host macros use level 0, with assertions and overflow
+checks enabled. Both configurations require Clippy, documentation and
+formatting. The three-root editor comparison preserves eight selected
+diagnostic identities; inference remains incomplete. Production migration,
+shared-cache and performance acceptance remain separate requirements.
 
 `tests/evidence/formats-cargo-feature-baselines.json` retains the connected
 `aos-nar`, `aos-module-format`, and `aos-registry-format` Cargo baselines. Default

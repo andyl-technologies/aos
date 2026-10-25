@@ -41,11 +41,25 @@
       editorComparisonScope = "selected-packages";
       editorRustcFlags = rustcFlags;
       editorDiagnosticContext = true;
+      retainTestActionGraph = true;
+      captureCompilerArguments = true;
     };
   default = family false;
+  execution-profiles = import ./_bazel-rust-test-profiles.nix {
+    inherit pkgs;
+    inherit (default) tests cargo;
+    pname = "aos-bazel-formats-execution-profiles";
+    firstPartyTests = {
+      "//crates/artifacts/aos-nar:unit_binary" = "aos_nar";
+      "//crates/modules/aos-module-format:unit_binary" = "aos_module_format";
+      "//crates/registry/aos-registry-format:unit_binary" = "aos_registry_format";
+    };
+    proceduralMacros = ["curve25519_dalek_derive" "ref_cast_impl" "schemars_derive" "serde_derive" "thiserror_impl"];
+  };
 in
   default
   // rec {
+    inherit execution-profiles;
     compression = family true;
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-formats-inventory";
@@ -59,11 +73,12 @@ in
     };
     all =
       pkgs.runCommand "aos-bazel-formats-qualified-checks" {
-        buildDeps = [default.all default.editor-parity compression.all];
+        buildDeps = [default.all default.editor-parity compression.all execution-profiles];
       } ''
         mkdir -p "$out/default" "$out/compression"
         cp -r ${default.all}/. "$out/default/"
         cp ${default.editor-parity}/parity.json "$out/default/editor-parity.json"
+        cp ${execution-profiles}/evidence.json "$out/default/execution-profiles.json"
         cp -r ${compression.all}/. "$out/compression/"
       '';
   }

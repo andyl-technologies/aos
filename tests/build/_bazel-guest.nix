@@ -33,8 +33,10 @@
     };
     editorComparisonScope = "selected-packages";
     dependencyProfile = "guest";
-    rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
+    rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
     cargoFlags = ["--release"];
+    retainTestActionGraph = true;
+    captureCompilerArguments = true;
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.guest // {aos_native = pkgs.aosBazelGuestLibraries;};
     nativeLibraries = [pkgs.sqliteStatic pkgs.zstdStaticMultithread];
     nativeTools = [pkgs.pkg-config];
@@ -53,9 +55,28 @@
     extraTests = ["${label}:bin_crucible-guest"];
     extraEditorTargets = ["${label}:crucible-guest" "${label}:bin_crucible-guest_binary"];
   };
+  execution-profiles = import ./_bazel-rust-test-profiles.nix {
+    inherit pkgs;
+    inherit (family) tests cargo;
+    pname = "aos-bazel-guest-execution-profiles";
+    targetOptLevel = "3";
+    debugAssertions = false;
+    firstPartyTests = {
+      "${label}:unit_binary" = "crucible_guest";
+      "${label}:bin_crucible-guest_binary" = "crucible_guest";
+      "${label}:gate_abi_conformance_binary" = "gate_abi_conformance";
+      "${label}:gate_single_vm_fingerprint_binary" = "gate_single_vm_fingerprint";
+    };
+    testSources = {
+      "${label}:unit_binary" = "crucible/crucible-guest/src/lib.rs";
+      "${label}:bin_crucible-guest_binary" = "crucible/crucible-guest/src/main.rs";
+    };
+    proceduralMacros = ["curve25519_dalek_derive" "serde_derive" "thiserror_impl"];
+  };
 in
   family
   // rec {
+    inherit execution-profiles;
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-guest-inventory";
       workspace = family.workspace;
@@ -127,12 +148,13 @@ in
       '';
     all =
       pkgs.runCommand "aos-bazel-guest-qualified-checks" {
-        buildDeps = [family.all family.editor-parity runtime];
+        buildDeps = [family.all family.editor-parity runtime execution-profiles];
       } ''
         mkdir -p "$out"
         cp -r ${family.all}/evidence "$out/evidence"
         cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
         cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
+        cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
         cp -r ${runtime} "$out/runtime"
       '';
   }
