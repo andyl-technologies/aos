@@ -336,6 +336,20 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(source, "sshd_unit_t", "service", permission)
                     )
 
+    def test_normal_owner_logs_preserve_inherited_manager_streams(self) -> None:
+        for domain in effective_policy.owner_policy.OWNER_DOMAINS:
+            for permission in ("read", "write"):
+                with self.subTest(domain=domain, permission=permission):
+                    self.assert_missing_allow_rejected(
+                        effective_policy.Access(domain, "init_t", "unix_stream_socket", permission)
+                    )
+
+            for permission in ("connect", "connectto"):
+                with self.subTest(domain=domain, permission=permission):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(domain, "init_t", "unix_stream_socket", permission)
+                    )
+
     def test_fixed_startup_log_streams_are_inherited_only(self) -> None:
         for domain in (
             "aos_sandbox_source_view_preparer_t",

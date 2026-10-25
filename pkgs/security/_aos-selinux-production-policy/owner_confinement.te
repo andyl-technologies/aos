@@ -253,6 +253,8 @@ allow aos_sandbox_controller_t aos_sandbox_controller_exec_t:file { entrypoint e
 allow aos_sandbox_controller_t self:process { fork getattr getsched setrlimit sigchld signal };
 allow aos_sandbox_controller_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
 allow aos_sandbox_controller_t init_t:fd use;
+# Fixed normal units inherit PID 1 journal streams across exec.
+allow aos_sandbox_controller_t init_t:unix_stream_socket { read write };
 allow aos_sandbox_controller_t null_device_t:chr_file { getattr open read write };
 allow aos_sandbox_controller_t { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
 allow aos_sandbox_controller_t device_t:dir { getattr open search };
@@ -315,6 +317,7 @@ allow aos_sandbox_storage_t aos_sandbox_storage_exec_t:file { entrypoint execute
 allow aos_sandbox_storage_t self:process { fork getattr getsched setrlimit sigchld signal };
 allow aos_sandbox_storage_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
 allow aos_sandbox_storage_t init_t:fd use;
+allow aos_sandbox_storage_t init_t:unix_stream_socket { read write };
 # Read-only validation of PID 1's inherited mount namespace. The broker cannot
 # open arbitrary namespace files or issue namespace mutation ioctls.
 allow aos_sandbox_storage_t nsfs_t:file { getattr ioctl read };
@@ -411,6 +414,7 @@ allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_exec_t:file { 
 allow aos_sandbox_policy_authority_t self:process { fork getattr getsched setrlimit sigchld signal };
 allow aos_sandbox_policy_authority_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
 allow aos_sandbox_policy_authority_t init_t:fd use;
+allow aos_sandbox_policy_authority_t init_t:unix_stream_socket { read write };
 # Original PID1 OpenFile is an already-owned executable FD, not permission to
 # execute PID1 or inspect its procfs task. Only Root's own exe symlink is read.
 allow aos_sandbox_policy_authority_t init_exec_t:file { getattr read };

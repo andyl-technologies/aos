@@ -222,6 +222,9 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         state = f"aos_sandbox_{role}_state_t"
         runtime = f"aos_sandbox_{role}_runtime_t"
 
+        positive.extend(accesses(domain, "init_t", "unix_stream_socket", ("read", "write")))
+        negative.extend(accesses(domain, "init_t", "unix_stream_socket", ("connect", "connectto")))
+
         positive.extend(accesses(
             "init_t", executable, "file",
             ("execute", "execute_no_trans", "getattr", "map", "open", "read"),
