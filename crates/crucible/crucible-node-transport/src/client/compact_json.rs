@@ -31,6 +31,7 @@ const CONTAINER_WIDTH: usize = 17;
 const MAXIMUM_DEPTH: usize = 64;
 
 mod envelope;
+mod materialize;
 
 /// Owns one immutable, losslessly encoded JSON DATA value.
 ///

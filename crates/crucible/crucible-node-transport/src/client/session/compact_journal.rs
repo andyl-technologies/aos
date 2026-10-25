@@ -62,9 +62,9 @@ impl CompactClientOriginal {
 
     /// Materializes an independent request under the caller's transient admission.
     ///
-    /// This allocating operation constructs a JSON tree and then an Envelope.
-    /// Both simultaneous constructor populations require separate funding; the
-    /// persistent bank's numeric bound does not admit either population.
+    /// This allocating operation constructs the Envelope directly from its
+    /// immutable bank. The complete fresh population and its construction work
+    /// require separate funding; the persistent bank's bound admits neither.
     ///
     /// # Errors
     /// Refuses bank traversal or typed envelope decoding failure.
@@ -568,12 +568,7 @@ fn observe_unexpected_frame(
 }
 
 fn materialize(bank: &CompactJson) -> Result<Envelope, ProviderError> {
-    let value = bank
-        .to_value()
-        .map_err(crucible_node_format::ContractError::from)?;
-    serde_json::from_value(value)
-        .map_err(crucible_node_format::ContractError::from)
-        .map_err(Into::into)
+    bank.materialize_envelope()
 }
 
 fn credit() -> ProviderError {

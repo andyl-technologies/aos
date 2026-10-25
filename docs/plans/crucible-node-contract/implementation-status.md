@@ -10,6 +10,37 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Direct compact SDK materialization
+
+Compact request views and cached responses now materialize the concrete
+Envelope directly from its immutable bank. Body and extension maps are built
+into their actual destination types without a whole-envelope Value or a second
+recursive deserializer. The defining serializer's field order and complete
+extent are checked; ordinary scalar decoders still validate IDs, enum variants
+and decimal U64s. The complete bank remains independently retained throughout.
+
+Nested JSON, exact numeric variants and floating-point bits survive this path,
+including serde_json marker keys as ordinary DATA in both codec modes. Caller
+spare capacities remain with the original owners. Materialization still needs
+independent admission for its complete fresh population, bounded controls and
+failed constructor prefixes. No production Source reservation or quota changes.
+
+Eleven focused SDK controls pass in both codec builds. Both complete Transport
+suites pass 2,168 tests with zero failures and twenty ignored, using frozen
+compiler-selected artifacts. All-feature/all-target checking, scoped formatting
+and six architecture checks pass. Strict Transport Clippy retains the exact
+preceding code/message multiset: four existing errors and 1,726 warnings, with
+no diagnostics in the changed modules. It is not a strict lint pass.
+
+Application test-target compilation passes. Actual metadata records 185 test
+artifacts across 58 packages, including 76 integration targets; its captured
+source matches all 651 frozen owned Rust/Cargo inputs.
+
+Source selection, complete SDK R/T/S, genuine Initial/runtime handoff and paired
+physical histories remain unfinished, along with the remaining Native18
+lifecycle and full RFC qualification. No new native or VM qualification is
+claimed.
+
 ## Compact journal backing and complete failed-frame census
 
 The compact custody now projects its full future journal backing from the

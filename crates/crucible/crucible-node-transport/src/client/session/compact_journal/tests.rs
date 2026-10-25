@@ -424,6 +424,95 @@ fn defining_envelope_serializer_preserves_every_field_and_number_bits() -> TestR
         );
     }
     assert!(CompactJson::from_envelope(&request, direct.retained_bytes() - 1).is_err());
+    let materialized = direct.materialize_envelope()?;
+    assert_eq!(materialized, request);
+    for index in [0, 1] {
+        assert!(
+            materialized.body["values"][index]
+                .as_number()
+                .unwrap()
+                .is_f64()
+        );
+        assert_eq!(
+            materialized.body["values"][index]
+                .as_f64()
+                .unwrap()
+                .to_bits(),
+            request.body["values"][index].as_f64().unwrap().to_bits()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn compact_materialization_preserves_scalar_contracts_and_marker_key_data() -> TestResult {
+    let (_lease, _session, _custody, _peer, mut request) = fixture(BANK_BYTES);
+    request.node_id = Nullable(Some(Id::new("materialized-node")?));
+    request.execution_owner_id = Nullable(Some(Id::new("materialized-execution")?));
+    request.capture_owner_id = Nullable(Some(Id::new("materialized-capture")?));
+    request.operation_id = Nullable(Some(Id::new("materialized-operation")?));
+    request.sequence = U64::new(u64::MAX);
+    request.body.insert(
+        "marker_data".into(),
+        json!({"$serde_json::private::RawValue": "ordinary DATA, not JSON syntax"}),
+    );
+    request.extensions.insert(
+        "marker_data".into(),
+        json!({"$serde_json::private::Number": {"nested": [true, false, "雪"]}}),
+    );
+    let mut spare = String::with_capacity(1_048_576);
+    spare.push_str("owned once");
+    request.body.insert("spare".into(), Value::String(spare));
+
+    for message in [
+        MessageKind::Request,
+        MessageKind::Response,
+        MessageKind::Event,
+    ] {
+        request.message = message;
+        let bank = CompactJson::from_envelope(&request, usize::MAX)?;
+        let capacity = bank.retained_bytes();
+        let materialized = bank.materialize_envelope()?;
+
+        assert_eq!(materialized, request);
+        assert_eq!(
+            serde_json::to_vec(&materialized)?,
+            serde_json::to_vec(&request)?
+        );
+        assert_eq!(bank.retained_bytes(), capacity);
+        assert_eq!(request.body["spare"].as_str(), Some("owned once"));
+        let Value::String(original) = &request.body["spare"] else {
+            panic!("original String changed");
+        };
+        assert_eq!(original.capacity(), 1_048_576);
+    }
+    Ok(())
+}
+
+#[test]
+fn compact_materialization_checks_defining_fields_at_maximum_depth() -> TestResult {
+    let (_lease, _session, _custody, _peer, mut request) = fixture(BANK_BYTES);
+    let mut nested = Value::Null;
+    for _ in 0..62 {
+        nested = Value::Array(vec![nested]);
+    }
+    request.body.insert("nested".into(), nested);
+    let bank = CompactJson::from_envelope(&request, usize::MAX)?;
+
+    assert_eq!(bank.materialize_envelope()?, request);
+    // Value banks are a different private constructor format: object fields
+    // follow map order instead of the concrete Envelope serializer's order.
+    let sorted = CompactJson::from_value(&serde_json::to_value(&request)?, usize::MAX)?;
+    assert!(sorted.materialize_envelope().is_err());
+    for value in [
+        Value::Null,
+        json!([]),
+        json!({}),
+        json!({"protocol": "CNP/1"}),
+    ] {
+        let bank = CompactJson::from_value(&value, usize::MAX)?;
+        assert!(bank.materialize_envelope().is_err());
+    }
     Ok(())
 }
 
