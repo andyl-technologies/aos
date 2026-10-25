@@ -17,6 +17,7 @@ use std::{io::Read, os::unix::net::UnixStream, rc::Rc};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 mod identity;
+mod packet;
 mod retained;
 
 struct Supervisor;

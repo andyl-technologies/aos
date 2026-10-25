@@ -152,3 +152,45 @@ fn begin_capture_results_include_their_typed_reference_vector() -> TestResult {
     assert!(decoded.owner_state_refs.capacity() > decoded.owner_state_refs.len());
     Ok(())
 }
+
+#[test]
+fn actual_serde_initial_reservations_match_the_pinned_failed_prefix_bound() -> TestResult {
+    struct ReservationHint;
+
+    impl<'de> serde::de::SeqAccess<'de> for ReservationHint {
+        type Error = serde_json::Error;
+
+        fn next_element_seed<T: serde::de::DeserializeSeed<'de>>(
+            &mut self,
+            _: T,
+        ) -> Result<Option<T::Value>, Self::Error> {
+            Ok(None)
+        }
+
+        fn size_hint(&self) -> Option<usize> {
+            // Isolate the visitor's initial reservation without requiring an
+            // allocator hook. Live borrowed Value arrays provide their real
+            // lengths; the malformed nested control exercises that path.
+            Some(usize::MAX)
+        }
+    }
+
+    fn verify<T: serde::de::DeserializeOwned>() -> Result<(), serde_json::Error> {
+        let sequence = serde::de::value::SeqAccessDeserializer::new(ReservationHint);
+
+        let values = Vec::<T>::deserialize(sequence)?;
+
+        assert!(values.is_empty());
+        assert_eq!(
+            values.capacity(),
+            CAUTIOUS_RESERVATION_BYTES / size_of::<T>()
+        );
+        Ok(())
+    }
+
+    verify::<Id>()?;
+    verify::<ContentRef>()?;
+    verify::<Event>()?;
+    verify::<ObservationBatch>()?;
+    Ok(())
+}

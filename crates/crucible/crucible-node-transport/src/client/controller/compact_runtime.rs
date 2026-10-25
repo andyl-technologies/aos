@@ -51,6 +51,16 @@ impl CompactRuntimeController {
         if output.is_some() {
             return Err(changed());
         }
+        let runtime = Self::retain_original(original)?;
+        *output = Some(runtime);
+        Ok(())
+    }
+
+    // Both public ownership surfaces use this same pre-move validation. A
+    // successful result is a concrete owner, ready for an infallible slot move.
+    pub(super) fn retain_original(
+        original: &mut Option<CnpController>,
+    ) -> Result<Self, ProviderError> {
         let controller = original.as_mut().ok_or_else(changed)?;
         controller.protocol_owner.ensure_current()?;
         if controller.fenced
@@ -81,11 +91,10 @@ impl CompactRuntimeController {
             .prepare_compact_runtime_journal(&controller.custody)?;
 
         let controller = original.take().ok_or_else(changed)?;
-        *output = Some(Self {
+        Ok(Self {
             original: controller,
             journal,
-        });
-        Ok(())
+        })
     }
 
     /// Borrows the same original transport authority without granting effects.
@@ -202,7 +211,27 @@ impl CompactRuntimeController {
         owner_scoped: bool,
         body: impl Serialize,
     ) -> Result<ResponseBody, ProviderError> {
-        let result = self.call_inner(request_id, operation_id, method, owner_scoped, body);
+        self.call_scoped(
+            request_id,
+            CallScope {
+                operation_id,
+                method,
+                owner_scoped,
+                capture_owner: None,
+            },
+            body,
+            Extensions::new(),
+        )
+    }
+
+    pub(super) fn call_scoped(
+        &mut self,
+        request_id: Id,
+        scope: CallScope,
+        body: impl Serialize,
+        extensions: Extensions,
+    ) -> Result<ResponseBody, ProviderError> {
+        let result = self.call_inner(request_id, scope, body, extensions);
         if result.is_err() {
             self.fence();
         }
@@ -212,21 +241,14 @@ impl CompactRuntimeController {
     fn call_inner(
         &mut self,
         request_id: Id,
-        operation_id: Option<Id>,
-        method: Method,
-        owner_scoped: bool,
+        scope: CallScope,
         body: impl Serialize,
+        extensions: Extensions,
     ) -> Result<ResponseBody, ProviderError> {
         self.ensure_live()?;
-        let scope = CallScope {
-            operation_id,
-            method,
-            owner_scoped,
-            capture_owner: None,
-        };
-        let (original, mut request) =
-            self.original
-                .prepare_scoped_request(request_id, scope, body, Extensions::new())?;
+        let (original, mut request) = self
+            .original
+            .prepare_scoped_request(request_id, scope, body, extensions)?;
         let reply = self.exchange(&mut request)?;
         let response = decode_response(&original, &reply.body)?;
         if matches!(response.shape, ResponseShape::Completed { .. }) {

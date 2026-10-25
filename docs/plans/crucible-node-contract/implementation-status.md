@@ -10,6 +10,54 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Closed packet runtime call surface
+
+`PacketRuntimeController` now retains the actual compact owner behind an API
+that accepts only immutable Input, Observe, Begin, Poll, Retire and Blob DTOs.
+The body selects its method and owner scope; callers cannot substitute a custom
+Serialize callback, arbitrary envelope or different method. The wrapper exposes
+read-only originals, content, registrar, peer, descriptor and metadata views,
+without a mutable controller or extractor. This supplies an enforced method
+family for the forthcoming SDK funding calculation; it is not a Source grant.
+
+Outgoing legacy request IDs are refused before body construction or cached
+response cloning. New compact originals retain their exact replay behavior and
+unchanged journal debit. Incoming provider legacy replay remains a separately
+priced case. Capture Begin requires its actual capture owner, and other bodies
+refuse that scope before serialization. Negotiated envelope extensions pass
+through the shared scoped constructor. Both public runtime constructors now use
+one pre-move validator returning a concrete owner; only infallible inline slot
+assignment follows the move.
+
+Real SDK socket controls check runtime replay, legacy refusal before publication,
+original content/registrar/peer/descriptor preservation, actual Capture wire
+scope, scope refusal before oversized-body construction and failed handoff slot
+preservation. These use modeled peer authority and establish SDK mechanics,
+not native qualification or Source18 permission. A permanent safe SeqAccess
+control pins the actual Serde initial Vec reservation for Id, ContentRef, Event
+and ObservationBatch without an allocator hook.
+
+Both codec configurations pass all seventeen compact-runtime owner controls
+and all five vector controls. Both complete Transport suites pass 2,263 tests
+with zero failures and twenty ignored. Format passes 44 with one ignored,
+SourceBirth passes 62 and Engine passes 2,074 with thirty-four ignored in each
+configuration. Scoped formatting of eight changed Rust files, five-package
+all-feature/all-target checks and all six architecture checks pass. SourceBirth
+strict Clippy is clean; Transport retains exactly the prior four errors and
+1,725 warnings, so this is not a strict Transport lint pass.
+
+Required application test-target compilation passes with 185 artifacts across
+58 packages and 76 integration targets. All 751 frozen Rust/Cargo inputs match
+the captured build source and current candidate tree.
+
+The Engine's production runtime slot has not yet selected this closed owner.
+Complete SDK R/T/S, the same-Source one-use admission and funded handoff,
+Source18/Node18 history writers and readers, Native18 production selection and
+the remaining full RFC qualification stay unfinished. The preceding native
+inactive-lifecycle result remains evidence for its stated earlier stage; this
+SDK-only change claims no new native execution result. User-owned changes stay
+outside this component, and no clean whole-PR qualification is claimed.
+
 ## Runtime typed-vector construction bounds
 
 The original controller now supplies an allocation-free DATA bound for typed

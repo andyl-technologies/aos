@@ -54,6 +54,8 @@ mod assigned_transfer;
 mod compact_runtime;
 mod content_growth;
 pub use compact_runtime::CompactRuntimeController;
+mod packet_runtime;
+pub use packet_runtime::{PacketRuntimeController, PacketRuntimeRequest};
 mod fresh_restore_query;
 #[path = "controller/input_emitter.rs"]
 mod input_emitter;
