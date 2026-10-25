@@ -329,11 +329,27 @@ pub(crate) fn materialize_start_from_tracked<F, D>(
         {
             let index = prior_len + offset;
             // The neighbours show whether the two runs ordered the same
-            // decisions differently or produced different ones.
+            // decisions differently or produced different ones; the replayed
+            // entries show the time each was logged at.
             use std::io::Write as _;
+            let center = replay_window_center(
+                target.schedule.decision_history(),
+                index,
+                target.schedule.len(),
+            );
+            let entries = replay_entry_window(
+                outcome.event_log_entries.iter().map(|entry| {
+                    (
+                        entry.sequence(),
+                        entry.at().ticks,
+                        entry.event_payload().kind(),
+                    )
+                }),
+                center,
+            );
             let _ = writeln!(
                 std::io::stderr().lock(),
-                "CRUCIBLE-REPLAY-DIVERGENCE-V1 index={index} quantum_start={prior_len} quantum_end={next_len} expected=[{}] observed=[{}]",
+                "CRUCIBLE-REPLAY-DIVERGENCE-V1 index={index} quantum_start={prior_len} quantum_end={next_len} expected=[{}] observed=[{}] observed_entries=[{entries}]",
                 replay_decision_window(
                     target.schedule.decision_history(),
                     index,
@@ -520,6 +536,53 @@ pub(super) fn authenticated_live_network_start_selection(
     }
 }
 
+/// Returns the latest delivery time within eight decisions of `index`.
+///
+/// The decision window names positions only; this time centers the window of
+/// replayed log entries that shows when each of them was logged.
+fn replay_window_center(
+    history: &crucible::History<Decision>,
+    index: usize,
+    length: usize,
+) -> Option<u64> {
+    const RADIUS: usize = 8;
+
+    let start = index.saturating_sub(RADIUS);
+    let end = index.saturating_add(RADIUS).min(length);
+    (start..end)
+        .filter_map(|position| match history.get(position) {
+            Some(Decision::DeliveryOrder(order)) => Some(order.at.ticks),
+            _ => None,
+        })
+        .max()
+}
+
+/// Summarizes the replayed quantum's log entries near the divergence.
+///
+/// A draw admitted at a delivery's time but logged on the other side of it
+/// shows its admission time here, and the evaluation boundaries between
+/// entries show how the replayed RUNs split around it. Each entry is
+/// `sequence@at:kind`. Only entries within 40 microseconds of `center` are
+/// kept, at most 64, so the row stays one bounded line.
+fn replay_entry_window<'a>(
+    entries: impl IntoIterator<Item = (u64, u64, &'a str)>,
+    center: Option<u64>,
+) -> String {
+    const HALF_WINDOW_PS: u64 = 40_000_000;
+    const MAXIMUM_ENTRIES: usize = 64;
+
+    let Some(center) = center else {
+        return String::new();
+    };
+    entries
+        .into_iter()
+        .filter(|(_, at, _)| at.abs_diff(center) <= HALF_WINDOW_PS)
+        .take(MAXIMUM_ENTRIES)
+        .map(|(sequence, at, kind)| format!("{sequence}@{at}:{kind}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub(super) fn start_replay_guest_selectable_failure<F, D>(
     error: GuestSelectableError,
 ) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
@@ -548,5 +611,31 @@ pub(super) fn map_start_replay_scheduler_failure<F, D>(
         Some(SchedulerOperationalFailureClass::Terminal) | None => {
             AttemptWorkerFailure::Terminal(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replay_entry_window;
+
+    #[test]
+    fn replayed_entries_near_the_divergence_carry_their_log_times() {
+        let entries = [
+            (9, 1_000, "delivery_order"),
+            (10, 20_000_000, "delivery_order"),
+            (11, 50_000_000, "evaluation_boundary"),
+            (12, 50_000_000, "rng_draw"),
+            (13, 95_000_000, "delivery_order"),
+        ];
+
+        assert_eq!(
+            replay_entry_window(entries, Some(50_000_000)),
+            "10@20000000:delivery_order 11@50000000:evaluation_boundary 12@50000000:rng_draw"
+        );
+    }
+
+    #[test]
+    fn a_window_without_a_delivery_prints_no_entries() {
+        assert_eq!(replay_entry_window([(1, 5, "rng_draw")], None), "");
     }
 }
