@@ -212,8 +212,14 @@ pub enum QemuNodeError {
         message: String,
     },
     /// A plugin-emitted network frame broke the per-node sequence contract.
-    #[error("QEMU network output sequence mismatch: expected {expected}, observed {observed}")]
+    #[error(
+        "QEMU network output sequence mismatch for `{node}` at emit icount {emit_icount}: expected {expected}, observed {observed}"
+    )]
     NetworkOutputSequence {
+        /// Source node named by the emitted frame.
+        node: String,
+        /// Source icount at which the guest emitted the frame.
+        emit_icount: u64,
         /// Next sequence required by the host continuation.
         expected: u64,
         /// Sequence carried by the emitted frame.

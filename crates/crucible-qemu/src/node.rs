@@ -1534,17 +1534,11 @@ impl QemuNode {
         let mut next_sequence = self.next_network_output_sequence;
         for output in outputs {
             if output.sequence != next_sequence {
-                return Err(QemuNodeError::NetworkOutputSequence {
-                    expected: next_sequence,
-                    observed: output.sequence,
-                });
+                return Err(network_output_sequence_error(output, next_sequence));
             }
-            next_sequence = next_sequence.checked_add(1).ok_or({
-                QemuNodeError::NetworkOutputSequence {
-                    expected: next_sequence,
-                    observed: output.sequence,
-                }
-            })?;
+            next_sequence = next_sequence
+                .checked_add(1)
+                .ok_or_else(|| network_output_sequence_error(output, next_sequence))?;
         }
         self.next_network_output_sequence = next_sequence;
         Ok(())
@@ -1554,19 +1548,13 @@ impl QemuNode {
         &mut self,
         output: &QemuNodeEmittedFrame,
     ) -> Result<(), QemuNodeError> {
-        if output.sequence != self.next_network_output_sequence {
-            return Err(QemuNodeError::NetworkOutputSequence {
-                expected: self.next_network_output_sequence,
-                observed: output.sequence,
-            });
+        let expected = self.next_network_output_sequence;
+        if output.sequence != expected {
+            return Err(network_output_sequence_error(output, expected));
         }
-        self.next_network_output_sequence = self
-            .next_network_output_sequence
+        self.next_network_output_sequence = expected
             .checked_add(1)
-            .ok_or(QemuNodeError::NetworkOutputSequence {
-                expected: self.next_network_output_sequence,
-                observed: output.sequence,
-            })?;
+            .ok_or_else(|| network_output_sequence_error(output, expected))?;
         Ok(())
     }
 
@@ -2864,6 +2852,16 @@ impl QemuNode {
             });
         }
         Ok(observation)
+    }
+}
+
+/// Names the emitting node and coordinate of a frame that broke its sequence.
+fn network_output_sequence_error(output: &QemuNodeEmittedFrame, expected: u64) -> QemuNodeError {
+    QemuNodeError::NetworkOutputSequence {
+        node: output.source.name.clone(),
+        emit_icount: output.emit_icount.retired,
+        expected,
+        observed: output.sequence,
     }
 }
 

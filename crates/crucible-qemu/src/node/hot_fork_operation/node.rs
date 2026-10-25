@@ -376,6 +376,14 @@ impl QemuNode {
         }
         let node_state = QemuHotForkNodeStateContinuation::capture(self)
             .map_err(|source| QemuHotForkLaunchError::Rejected { source })?;
+        // crucible-lint: allow direct-diagnostic -- one row per forked node names the host mirror a child inherits; packaged-VM stderr captures it.
+        eprintln!(
+            "CRUCIBLE-HOT-FORK-NODE-STATE-V1 template_pid={} template_generation={} last_observed_ps={} next_network_output_sequence={}",
+            self.process_id(),
+            request.template_generation(),
+            node_state.last_observed_time().ticks,
+            node_state.next_network_output_sequence(),
+        );
         let mapping = match self.hot_fork_private_ring_stage.as_ref() {
             Some(QemuHotForkPrivateRingStage::Installed(mapping)) => mapping,
             Some(QemuHotForkPrivateRingStage::TransferUncertain(_)) | None => {

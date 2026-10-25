@@ -459,6 +459,46 @@ fn child_and_logical_restore_require_original_output_consumption()
 }
 
 #[test]
+fn child_reset_entry_points_continue_a_restored_template_tx_sequence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = OutputFixture::new()?;
+    let mut state = fixture.state()?;
+    state.on_vcpu_init(0)?;
+
+    // The template was itself launched from a restore: its one logical-time
+    // continuation is acknowledged before it emits anything.
+    let generation = fixture.slot.arm_logical_time_restore(1_000)?;
+    state.restore_logical_time_if_requested(20, true)?;
+    assert_eq!(fixture.slot.snapshot().logical_time_restore_ack, generation);
+
+    // It then emits two frames that the host consumes before the fork.
+    state.try_halted_vcpus()?.mark_halted(0)?;
+    state.on_network_tx(20, b"first")?;
+    state.on_network_tx(20, b"second")?;
+    let next_ceiling = authorize_advance_ceiling(1_000, 2_500, None)?;
+    fixture
+        .slot
+        .publish_scheduler_advance(next_ceiling, AdvanceStopCondition::Ceiling)?;
+    for _ in 0..2 {
+        let consumed = fixture.outbound.dequeue(&fixture.outbound_entries)?;
+        assert!(consumed.is_some());
+        state.on_vcpu_resume(0, 20)?;
+    }
+
+    // A fork child runs the process-local reset entry points and then its
+    // first boundary check; neither may rewind the inherited sequence.
+    state.reinitialize_hot_fork_child_workers(LiveWorkerQuiescence::new(WORKER_REQUIRED))?;
+    state.restore_logical_time_if_requested(20, true)?;
+    assert_eq!(fixture.slot.snapshot().status, STATUS_RUNNING);
+    state.on_network_tx(21, b"child")?;
+
+    assert_eq!(fixture.outbound.write_index(), 3);
+    assert_eq!(fixture.outbound_entries[2].seq, 2);
+    assert_eq!(fixture.outbound_entries[2].payload()?, b"child");
+    Ok(())
+}
+
+#[test]
 fn explicit_pause_shutdown_and_their_control_ack_keep_priority()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = OutputFixture::new()?;
