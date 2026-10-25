@@ -691,6 +691,9 @@ qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/helpers.rs|qmp
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/helpers.rs|Qmp
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/hot_fork/boundary.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/network_faults/route.rs|Qemu
+qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/network_faults/route_tests/campaign_choices.rs|Qemu
+qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/network_faults/route_tests/campaign_choices.rs|crucible_qemu
+qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/network_faults/route_tests/campaign_choices.rs|qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/network_faults/tests/production_conformance.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/network_faults/tests.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/network_faults.rs|Qemu
