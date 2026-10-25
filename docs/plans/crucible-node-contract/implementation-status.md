@@ -10,6 +10,40 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Paired compact SDK envelope-bank history
+
+Actual compact originals now lend request and cached-response banks through the
+explicit `source-private.compact-envelope/18` format. The writer borrows every
+byte using the existing chunked compact-byte codec; no logical JSON tree or
+owning byte copy is constructed. A separately bounded paired reader requests
+one exact bank, then validates tags, finite numeric bits, typed root fields,
+UTF-8, strictly ordered nested keys, counts, nesting and complete extents without
+a second owning population. Imported banks remain historical DATA.
+
+The decoder reports its independent bank/control demand; an encoded-extent
+projection uses the defining chunk supplier. These rows grant no allocation or
+Source permission. Logical materialization and caller-owned encoded storage
+remain independently funded. Four codec controls and all twenty-two compact SDK
+controls pass in both codec builds. Actual socket controls include bank export
+after a failed send and both original namespaces during Blob transfer and
+duplicate ACK. Both complete Transport suites pass 2,183 tests with zero failures
+and twenty ignored, using frozen compiler-selected artifacts. Both SourceBirth
+suites pass 62 tests with zero failures or ignored tests. All-feature/all-target
+checking, scoped formatting and six architecture checks pass. Strict SourceBirth
+Clippy passes. Strict Transport Clippy retains four existing errors and 1,725
+warnings; no diagnostics were added, and using the defining encoded extent removes
+one prior unused-field warning. It is not a strict Transport lint pass.
+
+Application test-target compilation passes. Actual metadata records 185 test
+artifacts across 58 packages, including 76 integration targets; its captured
+source matches all 660 frozen owned Rust/Cargo inputs.
+
+This format covers individual envelope banks. Complete custody identity fields,
+limits, content aliases, pending envelopes and unexpected typed frames still
+need the enclosing paired journal grammar. Complete SDK R/T/S, Source18
+construction and handoff, specialized Native18 and full lifecycle qualification
+remain unfinished. Production Source selection and all quotas are unchanged.
+
 ## Frame-bounded compact SDK identity funding
 
 Outgoing compact originals now meet the actual connection's canonical frame

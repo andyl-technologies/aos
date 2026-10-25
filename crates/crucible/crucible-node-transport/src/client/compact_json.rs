@@ -33,10 +33,15 @@ const MAXIMUM_DEPTH: usize = 64;
 mod envelope;
 mod materialize;
 
+/// Reconstructs versioned compact envelope history as inert DATA.
+pub mod physical18;
+
 /// Owns one immutable, losslessly encoded JSON DATA value.
 ///
-/// No decoder accepts caller-supplied binary banks. Construction starts from an
-/// actual borrowed Value and checks its complete geometry before allocating.
+/// Live construction starts from an actual borrowed Value or Envelope and
+/// checks its complete geometry before allocating. The explicit physical18
+/// reader owns imported banks in a distinct historical DATA type; it cannot
+/// construct live journal custody.
 /// The bank does not preserve the caller's spare capacities or establish any
 /// relationship between independently owning requests, journals or snapshots.
 pub struct CompactJson {

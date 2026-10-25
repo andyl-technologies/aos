@@ -134,6 +134,7 @@ fn failed_send_keeps_compact_original_and_caller_spare_capacity() -> TestResult 
         &original.request_hash(RequestOrigin::Controller)?
     );
     assert!(!retained.has_response());
+    check_physical18_pair(retained)?;
     assert!(custody.pending_envelope().is_none());
     assert_eq!(request.protocol.capacity(), caller_capacity);
     assert_eq!(request, original);
@@ -384,6 +385,9 @@ fn actual_content_transfer_keeps_namespaces_distinct_and_recovers_original_ack()
     assert!(bank_bytes <= 9 * custody.retained_journal_bytes());
     assert!(journal_backing(&custody)? <= custody.journal_retained_storage_data(usize::MAX)?);
     assert!(custody.retained_metadata_facts()?.vector_capacity_bytes >= bank_bytes);
+    for original in custody.originals() {
+        check_physical18_pair(original)?;
+    }
     Ok(())
 }
 
@@ -835,5 +839,36 @@ fn bootstrap_failed_data_census_counts_typed_banks_without_eligibility() -> Test
             assert!(facts.string_capacity_bytes >= 4096);
         }
     }
+    Ok(())
+}
+
+fn check_physical18_pair(original: &CompactClientOriginal) -> TestResult {
+    use crate::client::compact_json::physical18::HistoricalCompactEnvelope18;
+
+    let retained = original.retained_bank_bytes();
+    let physical_request = serde_json::to_vec(&original.physical_request18_data()?)?;
+    let request =
+        HistoricalCompactEnvelope18::decode(&physical_request, physical_request.len(), retained)?;
+    assert_eq!(request.materialize_data()?, original.materialize_request()?);
+    assert_eq!(
+        serde_json::to_vec(&request.physical_data())?,
+        physical_request
+    );
+
+    let response_bytes = original
+        .physical_response18_data()?
+        .map(|response| serde_json::to_vec(&response))
+        .transpose()?;
+    match response_bytes {
+        Some(bytes) => {
+            let response = HistoricalCompactEnvelope18::decode(&bytes, bytes.len(), retained)?;
+            assert_eq!(
+                Some(response.materialize_data()?),
+                original.materialize_response()?
+            );
+        }
+        None => assert!(!original.has_response()),
+    }
+    assert_eq!(original.retained_bank_bytes(), retained);
     Ok(())
 }

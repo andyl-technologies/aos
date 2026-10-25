@@ -42,6 +42,32 @@ impl CompactClientOriginal {
         self.request.as_serializable()
     }
 
+    /// Borrows the complete request bank in the explicit physical18 DATA grammar.
+    ///
+    /// Validation and serialization borrow the actual bank without constructing
+    /// a logical JSON tree or copying its bytes. The caller separately admits
+    /// codec controls and output storage before invoking this operation.
+    ///
+    /// # Errors
+    /// Refuses geometry or field ordering unsupported by the paired reader.
+    pub fn physical_request18_data(&self) -> Result<impl Serialize + '_, ProviderError> {
+        self.request.physical18_data()
+    }
+
+    /// Borrows the complete response bank in the explicit physical18 DATA grammar.
+    ///
+    /// An unresolved original emits no response. This view preserves no other
+    /// custody fields and supplies no Source, retry or installation permission.
+    ///
+    /// # Errors
+    /// Refuses geometry or field ordering unsupported by the paired reader.
+    pub fn physical_response18_data(&self) -> Result<Option<impl Serialize + '_>, ProviderError> {
+        self.response
+            .as_ref()
+            .map(CompactJson::physical18_data)
+            .transpose()
+    }
+
     /// Reports whether authentic response custody has completed.
     pub fn has_response(&self) -> bool {
         self.response.is_some()
