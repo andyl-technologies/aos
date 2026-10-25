@@ -339,6 +339,26 @@ narrows the failure beyond successful lower reads but proves neither the cause
 nor manifest-open conformance. No input, fetch count, custody assertion or
 original deadline is changed. Both native failures remain unqualified.
 
+`LocalCollection::begin_cycle` now starts a fresh marking cycle through the
+original mutable collector session. It requires the prior frontier to have
+reached sweep and an increasing unused cycle identifier, renews the actual
+whole lease and invokes the existing complete current-root/checkpoint producer.
+Only after durable acknowledgment does it replace the in-memory roots/state.
+Existing cycle records and permanent duties remain unchanged; it neither
+acquires a second lease nor declares prior sweep/deletion complete. Actual work
+failure or cancellation keeps the original fail-stop behavior; phase/number
+preflight performs no effects.
+
+The maintenance guest adds an eighth exact case using genuine native Original
+history. It requires unfinished-frontier refusal without changes, marking and
+sweep, an independently signed new current head, fresh authenticated roots,
+unchanged holder/epoch, exact same-holder `LeaseLost` acquisition refusal, cycle
+reuse refusal and further marking across a third cycle. Strict all-target
+Clippy passes under both supported Tokio profiles; std-only library Clippy and
+the final exact-refusal target check pass. Python syntax and PLAN-2 ownership
+checks pass. Native execution and mandatory workspace compilation remain
+pending; the full configured GC service is still outstanding.
+
 The complete `fuse-index-roundtrip` owning gate at `91abbf8445` passes in
 1,567.153 seconds. Independent review verifies all six retained prerequisite
 outputs, the 82-case structural codec inventory, eight actual native guests,

@@ -315,6 +315,43 @@ where
         &self.state
     }
 
+    /// Starts a fresh marking cycle under this collector's original live session.
+    ///
+    /// The current mark frontier must already have reached sweep. The new cycle
+    /// independently authenticates current roots and publishes its own initial
+    /// checkpoint after whole-lease renewal. Previous cycle records remain
+    /// unchanged; starting this cycle completes no retirement or deletion duty.
+    /// No second collector lease is acquired and no session is cloned.
+    ///
+    /// # Errors
+    /// Rejects an unfinished mark frontier, a nonincreasing or occupied cycle,
+    /// lost ownership, incomplete current roots and native checkpoint failures.
+    /// Failed renewal, checkpoint work or cancellation permanently stops the
+    /// session; invalid phase or cycle-number preflight performs no effects.
+    pub async fn begin_cycle(&mut self, cycle: u64) -> Result<(), CollectionError> {
+        if self.state.phase != terrane_format::gc::Phase::Sweep || cycle <= self.state.cycle {
+            return Err(denied().into());
+        }
+
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let (roots, state) = crate::selected_bridge::native_collection_checkpoints::begin(
+            self.guard,
+            self.authority,
+            &self.session,
+            cycle,
+            self.windows,
+        )
+        .await?;
+
+        self.roots = roots;
+        self.state = state;
+        operation.complete();
+        Ok(())
+    }
+
     /// Borrows the exact whole currently acknowledged collector lease.
     pub fn lease(&self) -> &GcLease {
         self.session.lease()

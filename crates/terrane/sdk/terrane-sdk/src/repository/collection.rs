@@ -155,6 +155,20 @@ where
         self.collection.finish_mark().await
     }
 
+    /// Starts a fresh authenticated mark cycle under the original collector lease.
+    ///
+    /// Requires the current frontier to have reached sweep. Existing cycle
+    /// records and permanent recovery duties remain unchanged; this completes
+    /// no deletion pass and acquires no replacement collector session.
+    ///
+    /// # Errors
+    /// Rejects unfinished marking, nonincreasing or occupied cycles, lost leases,
+    /// incomplete roots and native checkpoint failures. Actual work failure or
+    /// cancellation stops the session; phase/number preflight has no effects.
+    pub async fn begin_cycle(&mut self, cycle: u64) -> Result<(), CollectionError> {
+        self.collection.begin_cycle(cycle).await
+    }
+
     /// Retires at most one eligible pack through the original coordinator.
     ///
     /// # Errors

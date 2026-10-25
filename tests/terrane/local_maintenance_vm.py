@@ -16,6 +16,7 @@ CASES = [
     "public_issuers::configured_gc_reopens_public_keys_without_private_authority",
     "public_issuers::configured_gc_checks_role_and_store_before_public_key_io",
     "public_issuers::public_issuer_files_reject_unsafe_and_ambiguous_trust",
+    "collection_cycles::fresh_cycles_retain_the_live_session_and_authenticate_changed_roots",
 ]
 
 

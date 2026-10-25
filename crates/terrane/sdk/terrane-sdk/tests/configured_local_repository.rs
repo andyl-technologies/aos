@@ -11,6 +11,9 @@ mod fixture;
 #[path = "configured_local_repository/public_issuers.rs"]
 mod public_issuers;
 
+#[path = "configured_local_repository/collection_cycles.rs"]
+mod collection_cycles;
+
 use fixture::{Fixture, MAIN, OLD, TestResult};
 use terrane_format::auth::{Attenuation, Grant, Token, Verbs};
 use terrane_sdk::{
