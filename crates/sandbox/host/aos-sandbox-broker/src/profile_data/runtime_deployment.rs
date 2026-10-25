@@ -280,7 +280,9 @@ pub fn normalize_publisher_unit_data_v1(
 
 // Both old arrays already admit at most512 elements. Stop BEFORE a 513th
 // deserialization/allocation, rather than relying on a post-growth shape check.
-fn deserialize_bounded_profile_sequence_v1<'de, T, S>(deserializer: S) -> Result<Vec<T>, S::Error>
+pub(super) fn deserialize_bounded_profile_sequence_v1<'de, T, S>(
+    deserializer: S,
+) -> Result<Vec<T>, S::Error>
 where
     T: serde::Deserialize<'de>,
     S: serde::Deserializer<'de>,

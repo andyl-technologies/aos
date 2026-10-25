@@ -226,8 +226,12 @@ Recent committed startup fixes close narrower prerequisites:
   The hermetic systemd package passes its ten fixed-profile tests and existing
   seccomp/offline-output checks
   (`/nix/store/yyjibcj21ayifymr6bm9jzjrfp7lxs37-systemd-261.2`). Two native
-  receiver regressions and 28 image pair-shape probes pass. Complete Rust target
-  compilation and the measured profile build remain in progress. The manual
+  receiver regressions and 28 image pair-shape probes pass. Complete Rust unit
+  and integration targets compile successfully for this foundation
+  (`/nix/store/raksjj84k4fhmgdmz5m20h4xc06knssx-aos-test-targets-0.1.0`);
+  that check does not run tests. Core evaluation also passes
+  (`/nix/store/bjgcsychhmwgsl22wxxdk3dgxb8rfjp9-aos-native-evaluation-checks-0`).
+  The measured profile build remains in progress. The manual
   services are not selected or installed by this foundation, and no complete
   producer, approved intent, TPM initialization or public admission is claimed.
 
@@ -235,10 +239,17 @@ Recent committed startup fixes close narrower prerequisites:
   before arguments, prepays its retained boxed body before allocation, and
   accepts profile IO only from the original handed-off descriptor. It pays
   bounded immutable measurement/read work and retains the native acquisition
-  prefix, raw bytes and independently owed file/source posts. Four native
-  ordering regressions pass for both purposes; complete Rust target compilation
-  of the exact new sources is running. No production binary calls this owner
-  yet. Profile parsing, independent key provenance, image/unit admission,
+  prefix, raw bytes and independently owed file/source posts. Its strict profile
+  decoder prepays retained serde representations, joins shape to the actual
+  captured purpose and binds policy comparison paths beside the original
+  profile. Initial image measurement accepts only the original inherited PID1
+  descriptor and the kernel's actual executing file. Paid native metadata
+  bounds later, separately paid hashing and posts; neither a claimed file length
+  nor a decoded image pin funds the work. Four schema, seven startup and one
+  receiver native regressions pass. These test malformed/substituted DATA and
+  negative ordering, not a positive installed capture. Full Rust compilation of
+  the exact profile/image sources is running. No production binary calls this
+  owner yet. Independent key provenance, full runtime/unit/policy admission,
   protected writer custody and actual initial-floor publication remain missing;
   these mechanical results grant no provisioning or readiness authority.
 

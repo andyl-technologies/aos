@@ -15,6 +15,10 @@ use aos_sandbox_broker::immutable_image::{
     ImmutableFileAcquisitionOriginalV1, ImmutableFileAcquisitionRefusalV1,
     ImmutableFileRevalidationOriginalV1, ImmutableImageErrorV1,
 };
+use aos_sandbox_broker::profile_data::method46_initial::{
+    Method46InitialProfileDataErrorV1, Method46InitialProfileDataV1,
+    method46_initial_profile_representation_bytes_v1,
+};
 use aos_sandbox_broker::receiving::{
     Method46InitialOriginComparisonDataV1, Method46InitialReceivingClosedV1,
     Method46InitialServiceRoleV1, Method46InitialSourceCaptureV1,
@@ -26,12 +30,15 @@ const PROFILE_BYTES: usize = 1024 * 1024;
 const PATH_BYTES: usize = 1024;
 const PROFILE_SUFFIX: &str = "-aos-method46-initial-startup-profile-1/profile.json";
 
+mod images;
+
 #[derive(Clone, Copy)]
 enum First {
     Source,
     Geometry,
     Body,
     Profile,
+    Image,
     Order,
 }
 
@@ -66,13 +73,16 @@ pub struct Method46InitialStartupOriginalV1 {
 // parked here until purpose-specific image/profile admission consumes them.
 struct StartupRolesOriginalV1 {
     listener: Option<RecordSubjectListenerAdmissionAttemptV1>,
-    pid1: Option<File>,
+    images: images::InitialImagesOriginalV1,
     profile_original: Option<File>,
     profile: ImmutableFileAcquisitionOriginalV1,
     profile_flags: Option<Result<rustix::fs::OFlags, rustix::io::Errno>>,
     profile_path: Option<std::io::Result<PathBuf>>,
     profile_measure: Option<Result<(), ImmutableFileAcquisitionRefusalV1>>,
     profile_read: Option<Result<(), ImmutableImageErrorV1>>,
+    profile_decode_attempted: bool,
+    profile_decoded: Option<Result<Method46InitialProfileDataV1, serde_json::Error>>,
+    profile_shape: Option<Result<(), Method46InitialProfileDataErrorV1>>,
     profile_post: RefCell<ProfilePostOriginalV1>,
 }
 
@@ -85,13 +95,16 @@ impl StartupRolesOriginalV1 {
     fn new() -> Self {
         Self {
             listener: None,
-            pid1: None,
+            images: images::InitialImagesOriginalV1::new(),
             profile_original: None,
             profile: ImmutableFileAcquisitionOriginalV1::new(),
             profile_flags: None,
             profile_path: None,
             profile_measure: None,
             profile_read: None,
+            profile_decode_attempted: false,
+            profile_decoded: None,
+            profile_shape: None,
             profile_post: RefCell::new(ProfilePostOriginalV1 {
                 original: ImmutableFileRevalidationOriginalV1::new(),
                 result: None,
@@ -221,7 +234,7 @@ impl Method46InitialStartupOriginalV1 {
         let (listener, pid1, profile) = roles.into_parts_v1();
         let body = self.body.as_mut().ok_or(self.closed)?;
         body.listener = Some(RecordSubjectListenerAdmissionAttemptV1::new(listener));
-        body.pid1 = Some(File::from(pid1));
+        body.images.park_pid1(File::from(pid1));
         body.profile_original = Some(File::from(profile));
         Ok(())
     }
@@ -331,6 +344,57 @@ impl Method46InitialStartupOriginalV1 {
         Ok(())
     }
 
+    /// Decodes only the already-measured profile under the same paid source.
+    ///
+    /// The actual raw bytes, serde Result and shape Result stay resident. The
+    /// source's captured role fixes the purpose, and policy comparison files
+    /// must reside beside that same original profile. Successful comparison
+    /// admits no native image, independent key, writer, TPM or readiness.
+    ///
+    /// # Errors
+    /// Refuses missing positive acquisition, repetition, poison, exhausted
+    /// funding, malformed bounded JSON or foreign image-profile shape.
+    pub fn decode_profile_once_v1(&mut self) -> Result<(), Method46InitialStartupClosedV1> {
+        if self.first.get().is_some() || self.after_attempted.get() {
+            return Err(self.fail(First::Order));
+        }
+        let Some(body) = self.body.as_mut() else {
+            return Err(self.fail(First::Order));
+        };
+        if body.profile_decode_attempted || !matches!(body.profile_read, Some(Ok(()))) {
+            return Err(self.fail(First::Order));
+        }
+        body.profile_decode_attempted = true;
+        let demand = method46_initial_profile_representation_bytes_v1(body.profile.bytes().len())
+            .and_then(|bytes| {
+                Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(bytes).ok()?))
+            });
+        self.fund_additional(demand)?;
+
+        let role = self.origin.as_ref().ok_or(self.closed)?.role;
+        let body = self.body.as_mut().ok_or(self.closed)?;
+        body.profile_decoded = Some(serde_json::from_slice(body.profile.bytes()));
+        let Some(Ok(profile)) = body.profile_decoded.as_ref() else {
+            return Err(self.fail(First::Profile));
+        };
+        body.profile_shape = Some(profile.require_shape_data_v1(role).and_then(|()| {
+            let original = body
+                .profile
+                .completed_measurement()
+                .ok_or(Method46InitialProfileDataErrorV1)?;
+            if std::path::Path::new(&profile.source_policy.path).parent()
+                != original.path().parent()
+            {
+                return Err(Method46InitialProfileDataErrorV1);
+            }
+            Ok(())
+        }));
+        if !matches!(body.profile_shape, Some(Ok(()))) {
+            return Err(self.fail(First::Profile));
+        }
+        Ok(())
+    }
+
     fn finish_profile_post(&self) {
         let Some(body) = self.body.as_ref() else {
             return;
@@ -373,6 +437,11 @@ impl Method46InitialStartupOriginalV1 {
             return Err(self.fail(First::Order));
         }
         self.finish_profile_post();
+        if let Some(body) = self.body.as_ref() {
+            if body.images.finish_posts().is_err() {
+                self.fail(First::Image);
+            }
+        }
         let result = self
             .source
             .try_borrow_mut()
@@ -415,6 +484,21 @@ mod tests {
             assert!(matches!(startup.first.get(), Some(First::Order)));
             assert!(!startup.capture_attempted);
             assert!(!startup.profile_attempted);
+            assert!(startup.body.is_none());
+            assert_eq!(startup.receiving.get(), ResourceVector::ZERO);
+        }
+    }
+
+    #[test]
+    fn decoding_before_original_read_cannot_capture_or_replace_source() {
+        for role in purposes() {
+            let mut startup = ManuallyDrop::new(Method46InitialStartupOriginalV1::new(role));
+
+            assert!(startup.decode_profile_once_v1().is_err());
+            assert!(startup.capture_before_arguments_once_v1().is_err());
+
+            assert!(matches!(startup.first.get(), Some(First::Order)));
+            assert!(!startup.capture_attempted);
             assert!(startup.body.is_none());
             assert_eq!(startup.receiving.get(), ResourceVector::ZERO);
         }
