@@ -228,6 +228,28 @@ and no-new-privileges. All ten existing physical proof prerequisites remain
 required; the host gate phases only consume completed guest results. Renewed
 committed-source qualification is pending; no host-tier task is accepted.
 
+The corrected manager-image prerequisites at `b9cb44105f` pass in 835.132
+seconds. Complete review verifies all 51 newly missing derivations in the
+isolated builder and all twelve unchanged, previously guest-qualified runtime
+check derivations retained in the new image closure. The fresh sandbox probe,
+exact imported disk, original source fingerprint and clean shutdown pass.
+Only two metadata copies and the original KVM check remain afterward.
+
+The manager check reaches its actual agent and test body, then fails in
+170.724 seconds before enrollment: its completed-image verifier cannot find
+`readelf`. The fixture now explicitly includes source-built binutils and
+places its tools on the proof script's PATH. Original ELF/runtime checks,
+Terrane assertions, service identities and time limits remain intact. This
+closes a missing test dependency; renewed runtime qualification is required.
+
+Surface qualification at `df3be1fe77` fails in 1,808.691 seconds. The original
+schema-before-endpoint guest passes, and the interface guest executes fifteen
+original cases before its cache-read case returns `Denied`. Source inspection
+finds that the test still expects a read-only composition to create an authoring
+session, despite the explicit early mutation refusal. The failed result is
+retained for localization and correction; the complete surface gates and
+T-SURF-1 remain unaccepted.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement

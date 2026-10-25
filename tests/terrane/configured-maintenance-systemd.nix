@@ -148,7 +148,7 @@
         systemd.timers.terrane-gc.wantedBy = lib.mkForce [];
         # The scripts retain the proof images by explicit store references.
         # They are evidence inputs, not installable package catalogs or PATH tools.
-        environment.systemPackages = [guest pkgs.python3 pkgs.util-linux pkgs.e2fsprogs pkgs.coreutils];
+        environment.systemPackages = [guest pkgs.python3 pkgs.util-linux pkgs.e2fsprogs pkgs.coreutils pkgs.binutils];
         # Retained debug ELFs and their source belong only to this test image.
         aos.image.testArtifactRoots = [image sdkImage launcher];
         aos.image.rootPartitionMiB = lib.mkForce 3072;
@@ -182,6 +182,8 @@
     destination = "/run-proof";
     text = ''
       set -eu
+      # Completed-image verification inspects the actual ELF closure in the guest.
+      export PATH=${pkgs.binutils}/bin:$PATH
       mkdir -p /var/lib/terrane-enrollment-proof /var/lib/terrane-host
       chmod 700 /var/lib/terrane-host
       mkdir /var/lib/terrane-host/project-claims
