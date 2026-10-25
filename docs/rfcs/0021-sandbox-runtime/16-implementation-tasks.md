@@ -11624,3 +11624,14 @@ fixture; this is not an installed startup-readiness receipt. Test-only
 provisioning and non-enforcing userspace do not qualify the production initial
 floor producer or either installed journal hook. Public admission remains
 closed.
+
+Commit `a70ce91c91` also binds the nspawn platform proof to the installed Host
+kernel with an evaluation-time equality check. The clean QEMU test passes at
+`/nix/store/zngs2mv2q2wpn0br1hnpwx2z0844glrb-aos-fleet-test-sandbox-nspawn-platform-proof-0`,
+using the same `ggrgpka7s23nvpizl42klk7hf98hgl1d` kernel. Assertions cover
+payload syscall isolation, the explicit user map, ignored hostile settings,
+the inherited default-drop network namespace, supervisor/payload cgroup
+separation, observer restart and two internal reboots with advancing payload
+namespace generations and fresh payload cgroups. This standalone,
+non-enforcing component proof uses a fixture pin holder; it does not qualify
+the production launch compiler, enforcing Host service or public lifecycle.
