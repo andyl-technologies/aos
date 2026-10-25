@@ -2,8 +2,9 @@
 //!
 //! Programmatic callers meet the same hard grammar and byte limits as decoded
 //! traffic. Canonical validation retains neither a root DOM copy nor a whole
-//! text bank. Typed decoding still owns its independent cloned input and result;
-//! canonical ordering, formatting and diagnostics remain separately funded work.
+//! text bank. The defining borrowed Map deserializer constructs an independent
+//! typed result without a complete input-tree clone. Typed fields, tagged-enum
+//! buffers, canonical ordering, formatting and diagnostics require separate funding.
 
 use super::*;
 use serde::de::DeserializeOwned;
@@ -22,7 +23,7 @@ pub(super) fn object<T: DeserializeOwned + Validate>(
         return Err(invalid("body", "body exceeds hard frame ceiling"));
     }
 
-    let decoded: T = serde_json::from_value(Value::Object(value.clone()))?;
+    let decoded = T::deserialize(value)?;
     decoded.validate()?;
     Ok(decoded)
 }

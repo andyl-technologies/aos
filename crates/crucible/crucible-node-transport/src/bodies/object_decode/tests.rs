@@ -5,6 +5,8 @@ use serde_json::json;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+mod borrowed_typed;
+
 fn preceding<T: DeserializeOwned + Validate>(
     value: &Map<String, Value>,
 ) -> Result<T, ContractError> {

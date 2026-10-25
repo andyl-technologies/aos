@@ -10,6 +10,40 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Borrowed typed body construction
+
+Shared typed body decoding now constructs its independent typed result directly
+from the borrowed JSON map. It removes the remaining complete input-tree clone;
+typed fields, tagged-enum buffers, canonical ordering, escaping and diagnostics
+remain real work requiring separate funding. Error and notification details
+validation uses the defining canonical writer with a sink instead of cloning
+the details and retaining an unused text bank. Standalone details validation
+keeps its existing grammar without acquiring a whole-body byte ceiling.
+
+Four new controls compare tagged responses, malformed fields, notifications and
+blob bytes with the preceding decoder, preserve private-marker compatibility,
+and verify independent typed ownership after input mutation. Details controls
+compare numeric, Unicode, escaping, depth, array and oversized standalone data
+with the defining canonical oracle. All thirty SDK/history, four bank-codec,
+nine canonical/publication and nine body controls pass in both codec builds.
+Both complete Transport suites pass 2,209 tests with zero failures and twenty
+ignored, using frozen compiler-selected artifacts. Both Format suites pass 39
+tests with one ignored; both SourceBirth suites pass all 62 tests.
+
+All-feature/all-target checking, scoped formatting and six architecture checks
+pass. Strict Format and SourceBirth Clippy pass. Strict Transport Clippy retains
+the exact preceding code/message multiset: four existing errors and 1,725
+warnings. It is not a strict Transport lint pass. Application test-target
+compilation passes with 185 test artifacts across 58 packages, including 76
+integration targets. Its captured source matches all 679 frozen owned Rust/Cargo
+inputs.
+
+This supplies no Source grant, quota rebate or dispatch widening. Complete future
+SDK R/T/S, independently funded Source18 runtime capacity handoff, the five-phase
+recipe producer and full RFC qualification remain unfinished. The handoff must
+preserve independently established journal and content ceilings and their
+consumed credit.
+
 ## Isolated ordinary compact exchanges
 
 The actual compact ClientSession now checks that the connection has no unresolved

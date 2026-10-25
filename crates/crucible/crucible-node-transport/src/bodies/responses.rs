@@ -40,7 +40,11 @@ impl Validate for ErrorRecord {
         if self.message.len() > 4096 {
             return Err(invalid("message", "error message exceeds 4096 UTF-8 bytes"));
         }
-        canonical::canonical_json(&Value::Object(self.details.clone()))?;
+        canonical::canonical_json_object_to_writer_at_depth(
+            &self.details,
+            &mut std::io::sink(),
+            0,
+        )?;
         Ok(())
     }
 }
@@ -448,7 +452,11 @@ pub struct NotificationBody {
 
 impl Validate for NotificationBody {
     fn validate(&self) -> Result<(), ContractError> {
-        canonical::canonical_json(&Value::Object(self.details.clone()))?;
+        canonical::canonical_json_object_to_writer_at_depth(
+            &self.details,
+            &mut std::io::sink(),
+            0,
+        )?;
         Ok(())
     }
 }
