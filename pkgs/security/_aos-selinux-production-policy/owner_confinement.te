@@ -98,6 +98,9 @@ allow aos_nix_offline_prepare_t sysctl_kernel_t:dir search;
 allow aos_nix_offline_prepare_t sysctl_kernel_t:file { getattr open read };
 allow aos_nix_offline_prepare_t systemd_unit_t:file { getattr open read };
 allow aos_nix_offline_prepare_t tmpfs_t:filesystem getattr;
+# Immutable input readback checks the installed overlay's mount attributes.
+# This observes filesystem metadata without permitting a mount or remount.
+allow aos_nix_offline_prepare_t fs_t:filesystem getattr;
 
 # Sole existing unique-PID1 status observer; no manager mutation grant.
 allow aos_nix_offline_prepare_t self:unix_stream_socket { connect create getattr getopt read setopt shutdown write };
