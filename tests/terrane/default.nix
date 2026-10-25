@@ -501,6 +501,9 @@ in {
   integration.native-sdk-refusals = initialEnrollmentProof.sdkRefusals;
   integration.native-sdk-wipe = initialEnrollmentProof.sdkWipe;
   integration.native-configured-maintenance = initialEnrollmentProof.maintenance;
+  integration.native-configured-maintenance-systemd = import ./configured-maintenance-systemd.nix {
+    inherit pkgs lib mkSystem initialEnrollmentProof configuredSdkProof;
+  };
   integration.native-configured-manifest-open = initialEnrollmentProof.manifestOpen;
   integration.native-configured-surface-index = initialEnrollmentProof.surface;
   integration.native-configured-worker = initialEnrollmentProof.worker;

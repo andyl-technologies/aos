@@ -40,7 +40,8 @@ def require(condition, message):
 def verify_inputs():
     """Checks the completed image identity again before guest fixture effects."""
     identity = json.loads((IMAGE / "share/identity.json").read_text())
-    for filename in ["initial_enrollment_vm.py", "initial_enrollment_image.py", "configured_sdk_cache_vm.py"]:
+    for filename in ["initial_enrollment_vm.py", "initial_enrollment_image.py", "configured_sdk_cache_vm.py",
+                     "configured_maintenance_systemd_vm.py"]:
         key = "tests/terrane/" + filename
         expected = identity["input_sha256"][key]
         require(hashlib.sha256((SOURCE / key).read_bytes()).hexdigest() == expected,
@@ -215,6 +216,10 @@ def sealed_snapshot():
 
 def configured_publication():
     """Requires the real two-domain publisher and actual content-role preparation."""
+    if SCENARIO == "maintenance-systemd":
+        runpy.run_path(str(IMAGE / "share/configured_maintenance_systemd_vm.py"))["run"](
+            sys.modules[__name__], pathlib.Path(os.environ["TERRANE_CONFIGURED_SDK_IMAGE"]))
+        return
     publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-refusals", "sdk-wipe", "maintenance", "surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest", "manifest-open"] else "publisher-positive"
     publisher = subprocess.Popen(role_command(publisher_selector, 841, [845]),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -354,7 +359,7 @@ def configured_publication():
 
 def main():
     """Runs real same-process enrollment, authenticated queries and credential refusals."""
-    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-refusals", "sdk-wipe", "maintenance", "surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest", "manifest-open"],
+    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-refusals", "sdk-wipe", "maintenance", "maintenance-systemd", "surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest", "manifest-open"],
             "requires a registered native proof scenario")
     verify_inputs()
     # Fixture TOML publication intentionally respects the caller's umask. Fix
@@ -365,7 +370,7 @@ def main():
     for selector in ADMIN_CASES:
         run_case(selector, admin_command(selector))
 
-    if SCENARIO in ["maintenance", "surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest", "manifest-open"]:
+    if SCENARIO in ["maintenance", "maintenance-systemd", "surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest", "manifest-open"]:
         # Host administration explicitly funds the bounded original-inode
         # census before starting the real authenticated quota helper.
         host_config = ROOT / "positive/host.toml"

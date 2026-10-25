@@ -34,8 +34,10 @@ SELECTORS = ["positive", "unknown", "wrong-profile", "incomplete", "preexisting"
              "read-public", "read-private", "read-publisher", "foreign-private",
              "capabilities-update"]
 HELPERS = ["initial-enrollment-proof.nix", "initial_enrollment_image.py",
-           "initial_enrollment_vm.py", "native_sdk_test_image.py", "configured_sdk_cache_vm.py"]
-GUEST_SCRIPTS = ["initial_enrollment_image.py", "initial_enrollment_vm.py", "configured_sdk_cache_vm.py"]
+           "initial_enrollment_vm.py", "native_sdk_test_image.py", "configured_sdk_cache_vm.py",
+           "configured_maintenance_systemd_vm.py"]
+GUEST_SCRIPTS = ["initial_enrollment_image.py", "initial_enrollment_vm.py", "configured_sdk_cache_vm.py",
+                 "configured_maintenance_systemd_vm.py"]
 FLAGS = ["--frozen", "--offline", "-p", PACKAGE, "--example", NAME]
 
 

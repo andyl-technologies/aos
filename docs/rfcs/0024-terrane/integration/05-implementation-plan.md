@@ -18696,3 +18696,38 @@ maintenance cases and a positive control with local GC disabled. These
 declarative invariants do not supply the outstanding service-manager and
 restart-lifecycle qualification. Acceptance
 remains 28/64.
+
+
+The frozen `21871350bf` startup-restoration guest now passes in 1,554.535
+seconds, the original-session guest in 1,492.029 seconds and the eleven-case
+preownership guest in 1,572.736 seconds. Complete reviews match all 8,234
+immutable source files and 5,483 bound inputs to the retained SDK test ELF
+`c8f437933cf0866cfd89f4686d513b836b4c4377626a0210c70a78c05478fe9e`.
+All original selectors execute on guest ext4 as UID 840 with empty capabilities
+and no-new-privileges. Required Meta restoration, original-session handoff,
+protected Done and preownership refusal controls pass without weakening their
+assertions. This resolves the focused startup-restoration failure; earlier
+failed evidence remains preserved. Mandatory application compilation also
+passes in 1,530.420 seconds, with all 8,234 immutable files and 190 actual test
+executables across 59 packages reviewed. Compilation alone grants no runtime
+qualification or task acceptance.
+
+The `601cc64863` readiness guest passes in 704.959 seconds. Complete review
+matches all 8,237 immutable files, both proof images and five retained Cargo
+executables. The actual main CLI PID sends the exact readiness datagram with
+kernel UID/GID 840 after both original owners and listeners are ready. All
+15 enrollment controls, four bounded maintenance exchanges, private-state
+refusal, unchanged listener custody, owner locks and acknowledged shutdown
+remain required and pass. This qualifies notification without claiming actual
+systemd execution or draining-exposure release.
+
+A separate `integration.native-configured-maintenance-systemd` fixture now
+boots the rendered roles under actual guest systemd, retaining the original
+CLI bytes and enrollment controls. It checks exact configuration and unit
+bodies, manager-applied credentials, main-process notification, dependency
+ordering, two fresh GC executions and original-owner shutdown. Source parsing,
+formatting and derivation evaluation pass; runtime qualification is pending.
+The fixture reserves a separate guest data disk and preserves its diagnostics
+in the serial log. The module's writable paths may still prevent SDK output
+creation; this test retains that potential failure. Restart cleanup and full
+role deployment remain open. Acceptance remains 28/64.
