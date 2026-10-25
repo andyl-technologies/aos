@@ -12218,6 +12218,8 @@ conformance tests passing over Terrane.
   `checks.terrane.gates.exec-through-overlay`.
 - [ ] **T-FUSE-1** Structural index compiler and mmap reader. — satisfies
   FUSE-7 to FUSE-12; `checks.terrane.gates.fuse-index-roundtrip`.
+  The [requirement audit](acceptance/fuse-index.md) records the inspected
+  implementation and complete owning-gate evidence still required for acceptance.
 - [ ] **T-FUSE-2** FUSE worker: passthrough, fallback, inode policy,
   attributes, open path, coalescing, mount options, leases, drain. —
   satisfies FUSE-1 to FUSE-6, FUSE-13 to FUSE-31, FUSE-43 to FUSE-50,
