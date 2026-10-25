@@ -219,6 +219,23 @@ impl Launched {
         self.child.id()
     }
 
+    /// Sends a bounded phase control on the original child's private endpoint.
+    ///
+    /// # Errors
+    /// Refuses an unavailable endpoint or an incomplete packet.
+    pub(super) fn send_control(&self, bytes: &[u8]) -> Result<()> {
+        mounted::send(self.control.as_fd(), bytes)?;
+        Ok(())
+    }
+
+    /// Awaits the original child's phase while the retained service keeps running.
+    ///
+    /// # Errors
+    /// Refuses a changed packet, endpoint failure or elapsed phase deadline.
+    pub(super) async fn receive_control(&self, expected: &[u8]) -> Result<()> {
+        mounted::receive_async(self.control.as_fd(), expected).await
+    }
+
     /// Waits for the original child under the existing five-second exit bound.
     ///
     /// # Errors

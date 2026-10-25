@@ -11,6 +11,8 @@ import select
 import shutil
 import signal
 import struct
+import stat
+import types
 import subprocess
 import sys
 import tempfile
@@ -30,8 +32,8 @@ def namespace_actor(driver, image, arguments, policy, stack, launcher=False):
                    "--no-new-privs"]
     executable = [str(image / "bin" / arguments[0]), *map(str, arguments[1:])]
     if launcher:
-        driver.require(policy == "readonly" and arguments[:2] == [
-            "surface-index-owner-fixture", "configured-worker"],
+        driver.require(policy == "readonly" and arguments[0] == "surface-index-owner-fixture"
+            and arguments[1] in {"configured-worker", "configured-mounted"},
             "invalid configured worker fixture launcher")
     if policy is None:
         return credentials + executable
@@ -104,7 +106,7 @@ def configured_worker_launcher(policy, bindings, command):
     """Starts the actual child before Rust irrevocably enters UID 840 custody."""
     if (os.geteuid() != 0 or policy != "readonly" or len(command) != 3
             or pathlib.Path(command[0]).name != "surface-index-owner-fixture"
-            or command[1] != "configured-worker"):
+            or command[1] not in {"configured-worker", "configured-mounted"}):
         raise RuntimeError("invalid configured worker fixture launcher")
     # Observe the very same namespace as the actual unprivileged actor. The
     # short verifier opens no readable publisher-private aliases for its parent.
@@ -112,7 +114,8 @@ def configured_worker_launcher(policy, bindings, command):
                     "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
                     "--no-new-privs", sys.executable, __file__, "--verify-namespace",
                     policy, json.dumps(bindings), sys.executable, "-c", "pass"],
-                   check=True, timeout=5)
+                   check=True, timeout=5,
+                   stdout=sys.stderr if command[1] == "configured-mounted" else None)
     setpriv = shutil.which("setpriv")
     if setpriv is None:
         raise RuntimeError("missing AOS-built fixture launcher")
@@ -386,7 +389,7 @@ def verify_funding(driver, directory, before, after):
                        "native SDK dropped consumer funding before its original grace expired")
 
 
-def run_surface(driver, image, surface_image, service_only=False):
+def run_surface(driver, image, surface_image, service_only=False, mounted_only=False):
     """Requires configured bounds to reach the original enrolled physical owners."""
     subprocess.run([sys.executable, str(image / "share/configured_sdk_proof.py"),
                     "verify", str(image), str(driver.SOURCE)], check=True, timeout=30)
@@ -407,10 +410,10 @@ def run_surface(driver, image, surface_image, service_only=False):
     # Index recovery measures unchanged original exposure pins and leases. Run
     # it before cold manifest publication: later recovery legitimately funds
     # independently verified reconstruction metadata with additional pins.
-    modes = ["service"] if service_only else ["disabled", "bound", "recover-draining", "admit", "service"]
+    modes = ["mounted"] if mounted_only else ["service"] if service_only else ["disabled", "bound", "recover-draining", "admit", "service"]
     for mode in modes:
         text = original + host_configuration(driver,
-            mode="always" if mode in {"admit", "service"} else "never")
+            mode="always" if mode in {"admit", "service", "mounted"} else "never")
         if mode != "disabled":
             node_bytes = 32 if mode == "bound" else 65536
             text += f"""
@@ -422,6 +425,9 @@ capacity_bytes = 25165824
 future_hold_bytes = 327680
 """
         config.write_text(text)
+        if mode == "mounted":
+            run_configured_mount(driver, surface_image, config)
+            continue
         arguments = (["surface-index-owner-fixture", "configured-worker", config]
                      if mode == "service" else
                      ["surface-index-owner-fixture", "configured-surface", config, mode])
@@ -444,10 +450,49 @@ future_hold_bytes = 327680
 
     runpy.run_path(str(surface_image / "share/surface_index_owner_vm.py"))["verify_surface"](
         surface_image, driver.SOURCE)
-    if service_only:
+    if mounted_only:
+        print("PASS native configured cold backing serves actual mounted production worker; production broker and task acceptance remain unqualified", flush=True)
+    elif service_only:
         print("PASS native configured retained worker service component; deployed FUSE and task acceptance remain unqualified", flush=True)
     else:
         print("PASS native configured surface-index policy component; deployed FUSE and task acceptance remain unqualified", flush=True)
+
+
+
+def run_configured_mount(driver, image, config):
+    """Uses the genuine guest device and original configured owner in one mount."""
+    fuse = pathlib.Path("/dev/fuse")
+    if not fuse.exists():
+        os.mknod(fuse, stat.S_IFCHR | 0o600, os.makedev(10, 229))
+    observed = fuse.stat()
+    driver.require(stat.S_ISCHR(observed.st_mode)
+                   and observed.st_rdev == os.makedev(10, 229),
+                   "original configured FUSE character device unavailable")
+    fuse.chmod(0o666)
+    runtime = driver.ROOT / "configured-mounted-runtime"
+    runtime.mkdir(mode=0o700)
+    try:
+        with contextlib.ExitStack() as stack:
+            command = namespace_actor(driver, image,
+                ["surface-index-owner-fixture", "configured-mounted", config],
+                "readonly", stack, launcher=True)
+            support = types.SimpleNamespace(RUNTIME=runtime, require=driver.require)
+            runpy.run_path(str(image / "share/mounted_worker_vm.py"))["run"](
+                support, str(image / "bin/surface-index-owner-fixture"), dict(os.environ),
+                driver.SOURCE, owner_command=command, configured=True)
+        observations = [json.loads(line[len(NAMESPACE_OBSERVATION):])
+                        for line in (runtime / "mounted-owner.log").read_bytes().splitlines()
+                        if line.startswith(NAMESPACE_OBSERVATION)]
+        driver.require(observations == [{"policy": "readonly", "roots": 8,
+            "read_denied": True, "readonly": True, "original_inodes": True}],
+            "configured mounted owner lacks actual original namespace observation")
+    finally:
+        # The mounted supervisor already removed its mount and original child.
+        # Preserve its log in the ordinary guest proof packet before cleanup.
+        log = runtime / "mounted-owner.log"
+        if log.exists():
+            shutil.move(log, driver.ROOT / "proof-logs/configured-mounted-owner.log")
+        runtime.rmdir()
 
 
 def run(driver, image, wipe_only=False, refusals=False):

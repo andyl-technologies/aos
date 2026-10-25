@@ -1,0 +1,283 @@
+//! Drives genuine configured cold reads from actual coalesced kernel opens.
+//!
+//! The guest administrator mounts the original worker device. Serve holds only
+//! its configured native owner and retained local service; no fabricated native
+//! readiness or prepublished fixture backing enters this scenario.
+
+use super::{
+    NativeCachePlan, Result, paused_lower::PausedLower, quota_confinement,
+    require_empty_capabilities,
+};
+use crate::{
+    exposure::{limits, now},
+    repository_fixture::RepositoryFixture,
+    scoped_worker,
+};
+use std::{
+    fs, io,
+    os::fd::AsFd,
+    path::PathBuf,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+use terrane_format::{
+    identity::{IdentityKind, TERRANE_V1},
+    surface::ViewTarget,
+};
+use terrane_linux::{
+    host_cache::NativeReadPolicy,
+    worker_channel::service::{Context, Options, Service},
+};
+use terrane_sdk::{
+    config::Config,
+    host::cache::{CacheState, ExposurePhase, ReassemblyMode, StateLimits},
+    store::TokioLocalFs,
+};
+use tokio::{sync::Notify, task::LocalSet, time::timeout};
+
+const BODY: &[u8] = b"actual scoped worker backing through serialized owner Send";
+
+/// Starts the fixture child before dropping privilege and recovering real caches.
+///
+/// # Errors
+/// Refuses invalid configuration, child identity, confinement, native recovery,
+/// original request lifetime, cache handoff or final disclosure behavior.
+pub(crate) fn run() -> Result<()> {
+    let mut arguments = std::env::args().skip(2);
+    let path = PathBuf::from(arguments.next().ok_or("missing worker configuration")?);
+    if arguments.next().is_some() {
+        return Err("unexpected configured worker argument".into());
+    }
+    let launched = scoped_worker::mounted::launch()?;
+    require_empty_capabilities()?;
+    let config = Config::parse(&fs::read_to_string(&path)?)?;
+    let host = config
+        .host_tier()
+        .ok_or("missing configured worker host tier")?;
+    let plan = NativeCachePlan::from_host(host, Default::default())?;
+    let confinement = Arc::new(quota_confinement::install()?);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let local = LocalSet::new();
+    runtime.block_on(async {
+        let result = local
+            .run_until(Box::pin(verify(
+                &local,
+                launched,
+                plan,
+                confinement,
+                host,
+                path.parent().ok_or("worker configuration has no parent")?,
+            )))
+            .await;
+        // Even a failed assertion must drive an accepted service through drain
+        // and its bounded publication before the fixture tears down its runtime.
+        local.await;
+        result
+    })
+}
+
+async fn verify(
+    local: &LocalSet,
+    mut launched: scoped_worker::Launched,
+    plan: NativeCachePlan,
+    confinement: Arc<quota_confinement::Installed>,
+    host: &terrane_sdk::config::host::HostTier,
+    source_parent: &std::path::Path,
+) -> Result<()> {
+    let mut caches = plan.open(confinement).await?;
+    let cache = caches
+        .remove("public")
+        .ok_or("missing original worker cache")?;
+    if cache.reassembly() != ReassemblyMode::Always {
+        return Err("configured worker requires explicit always policy".into());
+    }
+    let native = cache.into_content();
+    let profile = native.ready().layout().layout().chunk_profile();
+    let mut policy = Vec::new();
+    terrane_format::cbor::write_text(&mut policy, "always");
+    let fixture = Box::pin(RepositoryFixture::new_with_properties(
+        "public",
+        source_parent,
+        vec![("reassembly".into(), policy)],
+        profile.seed(),
+    ))
+    .await?;
+    let commit = Box::pin(fixture.commit(BODY)).await?;
+    let content: [u8; 32] = TERRANE_V1
+        .calculate(IdentityKind::Chunk, BODY)?
+        .digest()
+        .try_into()?;
+    let reads = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let mut driver = None;
+    let read_policy = NativeReadPolicy::new(Duration::from_secs(10), 3, Duration::from_secs(5))?;
+    let repository = Rc::new(fixture.repository.with_read_driver(|original| {
+        let actual = native.with_lower(
+            PausedLower {
+                original: original.clone(),
+                reads: Arc::clone(&reads),
+                started: Arc::clone(&started),
+                resume: Arc::clone(&resume),
+            },
+            read_policy,
+        );
+        driver = Some(actual.clone());
+        actual
+    }));
+    let driver = driver.ok_or("missing original configured worker driver")?;
+    let owner = driver.native().ready().owner();
+    let root = &host.domains["public"];
+    let resources = root
+        .cache
+        .as_ref()
+        .ok_or("missing worker cache resources")?;
+    let state_limits = StateLimits {
+        bytes: resources.state_bytes,
+        records: resources.state_records,
+    };
+    let state_path = PathBuf::from(&root.path).join("state/cache");
+    let snapshot = || snapshot(&state_path, state_limits);
+    let target = ViewTarget::Commit(commit);
+    let selected = repository
+        .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
+        .await?;
+    let served = Rc::new(owner.prepare_surface_mapping(selected).await?);
+    let expires = now()? + 90;
+    let lease = owner.retain_surface_exposure(&served, expires).await?;
+    owner.check_running().await?;
+    println!(
+        "PASS configured native owner completes actual recovery and acknowledged Resume before mounted worker startup"
+    );
+    send(b"PREPARED")?;
+    let channel = launched.bind(&lease)?;
+    launched.send_context(&lease, content)?;
+    let mut service = Service::start(
+        local,
+        channel,
+        Context {
+            repository: Rc::clone(&repository),
+            served: Rc::clone(&served),
+            driver: driver.clone(),
+            token: fixture.authority.token().to_vec(),
+            surface: "sdk".into(),
+            options: Options {
+                metadata_budget: Duration::from_secs(5),
+                fetch_budget: Duration::from_secs(10),
+                reassembly: ReassemblyMode::Always,
+                file_expires: expires,
+                root_limits: limits(),
+            },
+        },
+    )?;
+
+    phase(&mut service, launched.receive_control(b"READY")).await??;
+    send(b"READY")?;
+    phase(
+        &mut service,
+        timeout(Duration::from_secs(5), started.notified()),
+    )
+    .await??;
+    phase(&mut service, launched.receive_control(b"COALESCED")).await??;
+    send(b"FETCH")?;
+    phase(&mut service, receive(b"G")).await??;
+    resume.notify_one();
+    phase(&mut service, receive(b"D")).await??;
+
+    let before = snapshot().await?;
+    let original = before
+        .exposures
+        .iter()
+        .find(|row| row.id == lease.id())
+        .ok_or("mounted configured worker lost its original exposure")?;
+    let hash: String = content.iter().map(|byte| format!("{byte:02x}")).collect();
+    if original.phase != ExposurePhase::Active
+        || original.backings.len() != 2
+        || reads.load(Ordering::Relaxed) != 1
+        || !before.residences.iter().any(|row| row.chunk == hash)
+        || before
+            .pins
+            .iter()
+            .any(|row| row.hash == hash && row.owner.starts_with("publication:"))
+    {
+        return Err(
+            "mounted configured reads omitted original cache handoff or backing custody".into(),
+        );
+    }
+
+    service.stop().await?;
+    launched.send_control(b"S")?;
+    launched.receive_control(b"STOPPED").await?;
+    launched.wait_for_exit().await?;
+    let after = snapshot().await?;
+    let retained = after
+        .exposures
+        .iter()
+        .find(|row| row.id == lease.id())
+        .ok_or("mounted configured stop erased original exposure custody")?;
+    let original_pins = before
+        .pins
+        .iter()
+        .map(|pin| (&pin.owner, &pin.hash, pin.expires));
+    let retained_pins = after
+        .pins
+        .iter()
+        .map(|pin| (&pin.owner, &pin.hash, pin.expires));
+    if retained.phase != ExposurePhase::Draining
+        || retained.backings != original.backings
+        || !original_pins.eq(retained_pins)
+    {
+        return Err(
+            "mounted configured stop inferred physical release from connection closure".into(),
+        );
+    }
+    println!(
+        "PASS actual signed-owner index and verified backing serve coalesced kernel opens through the production worker"
+    );
+    println!(
+        "PASS durable drain stops the mounted production worker while retaining original physical bindings and pins"
+    );
+    println!(
+        "PASS configured production worker opens fetch and seal original signed cold backing through retained service before kernel reads"
+    );
+    send(b"DRAINED")?;
+    Ok(())
+}
+
+async fn snapshot(path: &std::path::Path, limits: StateLimits) -> Result<CacheState> {
+    CacheState::load(&TokioLocalFs, path, limits)
+        .await?
+        .ok_or_else(|| "missing original mounted configured state".into())
+}
+
+async fn phase<T>(
+    service: &mut Service,
+    future: impl std::future::Future<Output = T>,
+) -> Result<T> {
+    tokio::select! {
+        result = service.wait() => Err(format!("retained service ended before mounted phase: {result:?}").into()),
+        result = future => Ok(result),
+    }
+}
+
+fn send(bytes: &[u8]) -> Result<()> {
+    if rustix::net::send(
+        io::stdout().as_fd(),
+        bytes,
+        rustix::net::SendFlags::NOSIGNAL | rustix::net::SendFlags::DONTWAIT,
+    )? != bytes.len()
+    {
+        return Err("incomplete mounted configured supervisor control".into());
+    }
+    Ok(())
+}
+
+async fn receive(expected: &[u8]) -> Result<()> {
+    scoped_worker::mounted::receive_async(io::stdout().as_fd(), expected).await
+}

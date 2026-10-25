@@ -15,7 +15,7 @@ import time
 BODY = b"actual scoped worker backing through serialized owner Send"
 
 
-def run(support, executable, environment, source):
+def run(support, executable, environment, source, owner_command=None, configured=False):
     """Mounts only the original worker device and drives authenticated serving."""
     support.require(os.geteuid() == 0, "mounted supervisor requires administration")
     specification = importlib.util.spec_from_file_location(
@@ -80,7 +80,7 @@ def run(support, executable, environment, source):
 
     try:
         with log_path.open("wb") as log:
-            owner = subprocess.Popen([executable, "worker-mounted"], env=environment,
+            owner = subprocess.Popen(owner_command or [executable, "worker-mounted"], env=environment,
                 stdout=owner_socket, stderr=log, close_fds=True)
             owner_socket.close()
             device = receive(b"DEVICE", uid=0)
@@ -137,10 +137,14 @@ def run(support, executable, environment, source):
             mounted = False
             support.require(owner.wait(timeout=5) == 0,
                 "mounted signed owner did not finish its genuine checks")
-            support.require(b"".join(output).decode().splitlines() == [
-                "PASS surface admission requires actual recovery and acknowledged Resume",
+            expected_witnesses = [
+                ("PASS configured native owner completes actual recovery and acknowledged Resume before mounted worker startup"
+                 if configured else "PASS surface admission requires actual recovery and acknowledged Resume"),
                 "PASS actual signed-owner index and verified backing serve coalesced kernel opens through the production worker",
-                "PASS durable drain stops the mounted production worker while retaining original physical bindings and pins"],
+                "PASS durable drain stops the mounted production worker while retaining original physical bindings and pins"]
+            if configured:
+                expected_witnesses.append("PASS configured production worker opens fetch and seal original signed cold backing through retained service before kernel reads")
+            support.require(b"".join(output).decode().splitlines() == expected_witnesses,
                 "mounted owner omitted its original authority or custody checks")
             print("PASS mounted production worker joins signed index startup, coalesced verified reads, responsive metadata and durable drain", flush=True)
     finally:

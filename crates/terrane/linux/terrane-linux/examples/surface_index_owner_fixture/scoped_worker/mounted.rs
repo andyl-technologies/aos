@@ -104,7 +104,7 @@ fn send_device(
     Ok(())
 }
 
-fn send(channel: std::os::fd::BorrowedFd<'_>, bytes: &[u8]) -> io::Result<()> {
+pub(super) fn send(channel: std::os::fd::BorrowedFd<'_>, bytes: &[u8]) -> io::Result<()> {
     if net::send(
         channel,
         bytes,
@@ -127,6 +127,44 @@ fn expect(channel: std::os::fd::BorrowedFd<'_>, expected: &[u8]) -> Result<()> {
     if received != length || bytes.get(..length) != Some(expected) {
         return Err("unexpected mounted fixture control packet".into());
     }
+    Ok(())
+}
+
+/// Awaits a private phase without blocking the local service executor.
+///
+/// # Errors
+/// Refuses truncated or changed packets, I/O failure or an elapsed five-second bound.
+pub(crate) async fn receive_async(
+    channel: std::os::fd::BorrowedFd<'_>,
+    expected: &[u8],
+) -> Result<()> {
+    let flags = rustix::fs::fcntl_getfl(channel)?;
+    rustix::fs::fcntl_setfl(channel, flags | rustix::fs::OFlags::NONBLOCK)?;
+    let channel = tokio::io::unix::AsyncFd::new(channel)?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let mut ready = channel.readable().await?;
+            match ready.try_io(|channel| {
+                let mut bytes = [0; 16];
+                let (length, received) = net::recv(
+                    channel.get_ref(),
+                    &mut bytes,
+                    net::RecvFlags::DONTWAIT | net::RecvFlags::TRUNC,
+                )?;
+                if received == length && bytes.get(..length) == Some(expected) {
+                    Ok(())
+                } else {
+                    Err(io::Error::other(
+                        "unexpected mounted fixture control packet",
+                    ))
+                }
+            }) {
+                Ok(result) => return result,
+                Err(_) => continue,
+            }
+        }
+    })
+    .await??;
     Ok(())
 }
 

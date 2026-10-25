@@ -59,6 +59,9 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
     let mode = std::env::args().nth(1).unwrap_or_default();
+    if mode == "configured-mounted" {
+        return configured::mounted::run();
+    }
     if mode == "configured-worker" {
         return configured::worker::run();
     }

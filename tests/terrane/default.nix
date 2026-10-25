@@ -487,6 +487,7 @@ in {
   integration.native-sdk-wipe = initialEnrollmentProof.sdkWipe;
   integration.native-configured-surface-index = initialEnrollmentProof.surface;
   integration.native-configured-worker = initialEnrollmentProof.worker;
+  integration.native-configured-mounted-worker = initialEnrollmentProof.mountedWorker;
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};
   integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};
   integration.retirement-reference-models = import ./retirement-models.nix {inherit sourceGate;};

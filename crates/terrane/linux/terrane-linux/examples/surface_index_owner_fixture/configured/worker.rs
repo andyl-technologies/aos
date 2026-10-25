@@ -1,6 +1,9 @@
 //! Retains an actual configured cold request through cancelled waits and drain.
 
-use super::{NativeCachePlan, Result, quota_confinement, require_empty_capabilities};
+use super::{
+    NativeCachePlan, Result, paused_lower::PausedLower, quota_confinement,
+    require_empty_capabilities,
+};
 use crate::{
     exposure::{limits, now},
     repository_fixture::RepositoryFixture,
@@ -18,7 +21,7 @@ use std::{
     time::Duration,
 };
 use terrane_format::{
-    identity::{Identity, IdentityKind, TERRANE_V1},
+    identity::{IdentityKind, TERRANE_V1},
     surface::{View, ViewTarget},
 };
 use terrane_linux::{
@@ -32,58 +35,11 @@ use terrane_linux::{
 use terrane_sdk::{
     config::Config,
     host::cache::{CacheState, ExposurePhase, ReassemblyMode, StateLimits},
-    store::{
-        ByteRange, Capabilities, CapabilityReport, ContentStore, ContentUpload, IdentityPrefix,
-        StoreErrorKind, StoreFailure, TokioLocalFs,
-    },
+    store::{StoreErrorKind, TokioLocalFs},
 };
 use tokio::{sync::Notify, task::LocalSet, time::timeout};
 
 const BODY: &[u8] = b"retained configured cold worker completes original cache handoff";
-
-struct PausedLower<S> {
-    original: S,
-    reads: Arc<AtomicUsize>,
-    started: Arc<Notify>,
-    resume: Arc<Notify>,
-}
-
-impl<S: CapabilityReport> CapabilityReport for PausedLower<S> {
-    fn capabilities(&self) -> &Capabilities {
-        self.original.capabilities()
-    }
-}
-
-#[async_trait::async_trait]
-impl<S: ContentStore + Send + Sync> ContentStore for PausedLower<S> {
-    async fn put(&self, _: ContentUpload<'_>) -> std::result::Result<Identity, StoreFailure> {
-        Err(StoreFailure::new(StoreErrorKind::ReadOnly))
-    }
-
-    async fn get(
-        &self,
-        identity: &Identity,
-        range: Option<ByteRange>,
-    ) -> std::result::Result<Vec<u8>, StoreFailure> {
-        if identity.kind() == IdentityKind::Chunk {
-            self.reads.fetch_add(1, Ordering::Relaxed);
-            self.started.notify_one();
-            self.resume.notified().await;
-        }
-        self.original.get(identity, range).await
-    }
-
-    async fn has(&self, identities: &[Identity]) -> std::result::Result<Vec<bool>, StoreFailure> {
-        self.original.has(identities).await
-    }
-
-    async fn list(
-        &self,
-        prefix: &IdentityPrefix,
-    ) -> std::result::Result<Vec<Identity>, StoreFailure> {
-        self.original.list(prefix).await
-    }
-}
 
 /// Starts the fixture child before dropping privilege and recovering real caches.
 ///

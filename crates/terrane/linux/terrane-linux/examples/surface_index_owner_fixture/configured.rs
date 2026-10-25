@@ -18,6 +18,12 @@ mod recovery;
 #[path = "configured/cold.rs"]
 mod cold;
 
+#[path = "configured/paused_lower.rs"]
+mod paused_lower;
+
+#[path = "configured/mounted.rs"]
+pub(super) mod mounted;
+
 #[path = "configured/worker.rs"]
 pub(super) mod worker;
 

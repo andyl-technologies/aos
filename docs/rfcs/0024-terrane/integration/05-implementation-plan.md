@@ -179,6 +179,22 @@ and all original actor/guest deadlines. The service scenario still follows cold
 publication and requires genuine populated-cache recovery. Fresh aggregate
 qualification remains required; neither individual pass changes acceptance.
 
+The `native-configured-mounted-worker` check joins those components in a
+separate actual guest. The original child supplies its FUSE device; the
+administrative supervisor mounts and closes its temporary alias before serve
+irrevocably drops privilege. Genuine configured recovery supplies the native
+read driver and original signed selection to the retained service. A withheld
+actual lower read permits checking coalesced kernel opens and responsive
+metadata before original cold sealing, producer cache handoff and authenticated
+disclosure. Repeated kernel reads, durable drain and unchanged original backing
+bindings and pins remain required. Namespace verification runs in the same
+readonly namespace and is logged separately from the original-owner credential
+protocol. Existing mounted and configured service scenarios retain their own
+assertions. Both strict native feature-profile Clippy runs, Python syntax and
+targeted Nix formatting pass; actual joined guest execution and this source's
+mandatory application-target compilation remain pending. This is no production
+broker, passthrough or physical-release qualification and accepts no task.
+
 Complete feature matrices now pass with independent immutable-source, retained
 executable and actual guest review at these checkpoints:
 
