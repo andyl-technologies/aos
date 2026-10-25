@@ -92,14 +92,16 @@ registry archives and the merged lockfile; the pinned CBOR seed patch remains
 applied after archive verification.
 
 The crate migration check and focused Nix formatting checks pass. Core Nix
-evaluation passes at `p0dcd4r7i1xmwbd0byjs53q3kybpd8s2`; the broader evaluation
-aggregate remains pending. Inventory
+evaluation passes at `p0dcd4r7i1xmwbd0byjs53q3kybpd8s2`; the complete evaluation
+aggregate passes at `d8dhkghg0nlm427cj01k3gq50nn55yxr`, with all 23 leaf suites
+independently verified. The initial merged inventory
 `yxhq4f1k81d99zk5xx52l3x3nhl3ks41` preserves all 651 bindings, 142 uncovered
 requirements and zero qualifications. Engineering hygiene passes at
 `zcvijji792yblcv5r97p578pnwrl3izi`, with content-bound reviews of the merged
 sources.
-Current-toolchain application compilation, hermetic Store execution and ABI
-execution remain pending; pre-merge passing checks do not qualify this merge.
+Current-toolchain Store and ABI component results are recorded below. Mandatory
+application compilation remains pending; pre-merge passing checks do not qualify
+this merge.
 No native fixture execution or activation authority follows from these source
 and inventory checks.
 
@@ -133,7 +135,8 @@ controls, and all 95 policy
 controls, along with strict Store/RAM Clippy across all targets. Three large
 stress cases are excluded from this ordinary run. This is supplemental component
 feedback, not current-toolchain hermetic qualification.
-Hermetic component execution and mandatory application compilation remain pending.
+The current-toolchain hermetic Store component result is recorded below.
+Mandatory application compilation remains pending.
 
 Inventory `w7rs8whryrz04653xc8dy7xd7szclyj0` validates 653 bindings across
 243 requirements, with 142 uncovered and none qualified. No whole-world
@@ -156,7 +159,7 @@ content-bound responsibility review includes this output ownership check. All
 pass after the repair. Production client admission is unchanged, and no Native
 authority is issued.
 
-#### Current-toolchain logical component checks
+#### Current-toolchain component checks
 
 The merged production toolchain has rebuilt from source through Rust 1.98.1.
 Both final Rust outputs are registered against the expected derivation. Using
@@ -175,8 +178,27 @@ All 5,462 tracked Rust/TOML inputs, the complete lockfile and six protocol
 fixtures match revision `2630bfadd1cb214db97c8e2df41cf655625b5185` in the
 immutable source used by these gates. These checks advertise no capabilities
 and exercise logical RAM components without Native activation or VM execution.
-Mandatory application compilation, Store and ABI execution, and the complete
-Nix evaluation aggregate remain pending. Full RFC qualification remains open.
+
+The Store transfer gate passes all 130 selected cases across three groups at
+`gih6j3yw15mljsirxw3d56k2cgllf3yg-crucible-gate-ram-store-transfer-0`.
+Its registered result, exact case records and 151 successful nonempty nested
+test summaries pass independent verification. Its direct Cargo package owners
+match revision `2630bfadd1cb214db97c8e2df41cf655625b5185`; the frozen workspace
+predates only the control-server TLS fixture change. This comparison does not
+establish equivalence of every transitive dependency.
+
+The ABI gate passes 47 nonempty groups and 268 tests at
+`9cpa14h2s69nvrxrygiwb4jvpd50z2sf-crucible-phase2-abi-conformance-0`.
+Independent verification checks its registered output, result record and actual
+build-log execution against the frozen owner roster. Its direct Cargo owners
+match the same revision, but its workspace snapshot predates the Store receiver
+correction and the TLS fixture correction. The Store gate separately exercises
+the receiver correction. This ABI result qualifies Rust/C layout and codec
+components; it does not qualify all dependency changes or Native activation.
+
+The complete Nix evaluation aggregate and all 23 leaf suites pass independent
+registration and result checks. Mandatory application compilation remains
+pending. Full RFC qualification remains open.
 
 #### Isolated patched-libc build support
 
