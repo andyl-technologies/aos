@@ -36,6 +36,6 @@ in
       export TMPDIR="$fixture_root/storage"
       setpriv --reuid=840 --regid=840 --clear-groups --bounding-set=-all \
         --inh-caps=-all --ambient-caps=-all --no-new-privs \
-        python3 ${./local_maintenance_vm.py}
+        python3 ${pkgs.terrane.src}/tests/terrane/local_maintenance_vm.py
     '';
   }

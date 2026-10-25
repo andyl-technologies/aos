@@ -148,8 +148,10 @@ failure before runtime drain, and records actual provisioning/open phases and
 unexpected worker events. The same 2,097,153-byte signed input, exact chunk and
 manifest counters, open/fetch budgets, custody assertions and guest bounds remain
 required. Both strict all-target Clippy profiles and touched Python syntax pass.
-The cause of the native abort and qualification of these diagnostics remain
-pending; T-FUSE-1 and T-FUSE-2 remain open.
+Mandatory workspace compilation at `c64ba460c4` passes in 652.986 seconds;
+independent review checks all 8,198 immutable source files, 190 test executables
+and 59 packages. The cause of the native abort and native qualification of
+these diagnostics remain pending; T-FUSE-1 and T-FUSE-2 remain open.
 
 A separate GC prerequisite now reopens the actual local repository using an
 explicit trusted public issuer key and expected Unix owner. It never calls the
@@ -177,6 +179,14 @@ feature sets; portable std-only library Clippy also passes. The initial SDK
 Tokio/Wasm compile guards and is not a valid qualification profile. New-case
 syntax, touched Nix formatting and PLAN-2 coverage checks pass; runtime success
 is not inferred from these compilation and metadata checks.
+
+The initial maintenance guest at `6570934587` fails in 261.665 seconds before
+executing a Rust case: its separately interpolated Python entry point is absent
+from the guest closure. The corrected guest invokes that same checked-in script
+through the already retained immutable Terrane source dependency. Its three
+exact cases, privilege checks, assertions and deadlines remain unchanged. The
+failed receipt and source snapshot are retained; native qualification of the
+corrected guest remains pending.
 
 The complete `fuse-index-roundtrip` owning gate at `91abbf8445` passes in
 1,567.153 seconds. Independent review verifies all six retained prerequisite
