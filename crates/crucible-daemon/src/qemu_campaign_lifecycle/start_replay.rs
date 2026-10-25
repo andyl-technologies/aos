@@ -317,7 +317,9 @@ pub(crate) fn materialize_start_from_tracked<F, D>(
             let index = prior_len + offset;
             // The neighbours show whether the two runs ordered the same
             // decisions differently or produced different ones.
-            eprintln!(
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr().lock(),
                 "CRUCIBLE-REPLAY-DIVERGENCE-V1 index={index} quantum_start={prior_len} quantum_end={next_len} expected=[{}] observed=[{}]",
                 replay_decision_window(
                     target.schedule.decision_history(),
