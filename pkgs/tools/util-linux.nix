@@ -207,6 +207,7 @@ in
           # Failed mapping must release the waiting namespace child even when
           # a confined caller cannot kill it. Never wait with its socket open.
           patch -p1 < ${./patches/util-linux-idmap-close-before-reap.patch}
+          patch -p1 < ${./patches/util-linux-idmap-pass-namespace-fd.patch}
         '';
       }
       {
@@ -317,7 +318,12 @@ in
     # This recipe carries the hook_idmap source correction applied at unpack.
     passthru = {
       sourceRecipes = [sourceRecipe];
-      evidenceSources = [src sourceRecipe ./patches/util-linux-idmap-close-before-reap.patch];
+      evidenceSources = [
+        src
+        sourceRecipe
+        ./patches/util-linux-idmap-close-before-reap.patch
+        ./patches/util-linux-idmap-pass-namespace-fd.patch
+      ];
     };
 
     meta = {
