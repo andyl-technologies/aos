@@ -256,6 +256,8 @@ impl Database {
         let target_kind = target.kind.as_str();
         let actor_kind = actor.kind.as_str();
 
+        // PostgreSQL needs nullable baseline parameters typed at their first
+        // use, even when a later comparison would establish the same type.
         let guard = Statement::new(
             "UPDATE authorization_scopes
                 SET owner_guard_version = owner_guard_version + 1
@@ -267,7 +269,7 @@ impl Database {
                        SELECT 1 FROM service_accounts target_account
                        JOIN orgs target_org ON target_org.id = target_account.org_id
                         WHERE target_account.id = ?2 AND target_org.deleted_at IS NULL)))
-                AND ((?4 IS NULL AND NOT EXISTS (
+                AND ((CAST(?4 AS BIGINT) IS NULL AND NOT EXISTS (
                        SELECT 1 FROM memberships target
                         WHERE target.principal_kind = ?1
                           AND target.principal_id = ?2
@@ -279,7 +281,7 @@ impl Database {
                           AND target.principal_id = ?2
                           AND target.scope_key = ?3
                           AND target.role = ?5
-                          AND ((?10 IS NULL AND target.incarnation_id IS NULL)
+                          AND ((CAST(?10 AS TEXT) IS NULL AND target.incarnation_id IS NULL)
                             OR target.incarnation_id = ?10)))
                 AND EXISTS (
                      SELECT 1 FROM memberships actor_membership
@@ -339,7 +341,7 @@ impl Database {
                     "UPDATE memberships SET role = ?6
                       WHERE id = ?4 AND principal_kind = ?1 AND principal_id = ?2
                         AND scope_key = ?3 AND role = ?5
-                        AND ((?7 IS NULL AND incarnation_id IS NULL)
+                        AND ((CAST(?7 AS TEXT) IS NULL AND incarnation_id IS NULL)
                           OR incarnation_id = ?7)",
                     vals![
                         target_kind,
@@ -358,7 +360,7 @@ impl Database {
                     "DELETE FROM memberships
                       WHERE id = ?4 AND principal_kind = ?1 AND principal_id = ?2
                         AND scope_key = ?3 AND role = ?5
-                        AND ((?6 IS NULL AND incarnation_id IS NULL)
+                        AND ((CAST(?6 AS TEXT) IS NULL AND incarnation_id IS NULL)
                           OR incarnation_id = ?6)",
                     vals![
                         target_kind,
