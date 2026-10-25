@@ -3,6 +3,28 @@
   "checkpoint": "9a1e9186f526eb8f34b5c758f153e81148335966",
   "command": "nix-build default.nix -A checks.crucible.phase1.gates.licenseBoundary -A checks.crucible.phase2.gates.abiConformance --no-out-link --max-jobs 4 --cores 4 --option substitute false --keep-going",
   "failures": {
+    "controller-strict-clippy": {
+      "build_log_sha256": "8c45e68950e1ef4b1996b28fa34915f605e66b52bc1c3cff664635383f3c8f99",
+      "derivation": "/nix/store/f2r74gvlpfzsq86fxbfmhj5h0pbxwfgy-crucible-controller-0.1.0.drv",
+      "diagnostic": "clippy::expect_used in crucible-control-server/tests/transport_dependency_versions.rs workspace_lockfile",
+      "focused_requalification": {
+        "logs": {
+          "missing.log": "\nrunning 1 test\ntest transport_dependencies_retain_required_protocol_fixes ... FAILED\n\nfailures:\n\n---- transport_dependencies_retain_required_protocol_fixes stdout ----\nError: Os { code: 2, kind: NotFound, message: \"No such file or directory\" }\n\n\nfailures:\n    transport_dependencies_retain_required_protocol_fixes\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+          "selected.log": "\nrunning 1 test\ntest transport_dependencies_retain_required_protocol_fixes ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+          "workspace.log": "\nrunning 1 test\ntest transport_dependencies_retain_required_protocol_fixes ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+        },
+        "output": "/nix/store/gv3hgbiqh5g56c9ggw1xwvc14a86qzli-aos-bazel-transport-lock-regression",
+        "strict_clippy_flags": [
+          "-D",
+          "warnings",
+          "-D",
+          "clippy::expect_used",
+          "-D",
+          "clippy::unwrap_used"
+        ]
+      },
+      "repair": "Propagate lockfile I/O errors through the existing regression test Result; retain strict Clippy and missing-lock rejection."
+    },
     "license-metadata": {
       "diagnostic": "crates/bindings/libssh2-sys/Cargo.toml: expected explicit license `Apache-2.0`, found Some(\"MIT OR Apache-2.0\")",
       "focused_requalification": {
@@ -37,8 +59,9 @@
   "schema_version": 1,
   "source_sha256": {
     "crates/bindings/libssh2-sys/Cargo.toml": "01ab35767b179c4bc6ff58938937126a12abd2544ac472b3612328fc36d585cd",
+    "crates/crucible/crucible-control-server/tests/transport_dependency_versions.rs": "59deabbdc77c53204b81fd8af5d3dc4b0bb9765cccecba125b3a3fedfed9137a",
     "crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs": "f53158456954707fc0d5398e6307e814f9294662df241d23327086060af7e882",
     "crates/crucible/crucible-test-support/tests/gate_license_boundary.rs": "81b8ae29db27b5ec411ac297f390bac75b875fa4a002afaba0cc195d4d73de4e"
   },
-  "status": "Named normative gates remain failed; focused license metadata audit repaired"
+  "status": "Named normative gates remain failed; focused license audit and transport Clippy checks repaired"
 }

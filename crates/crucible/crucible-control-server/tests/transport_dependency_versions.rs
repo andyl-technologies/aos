@@ -1,18 +1,18 @@
 //! Regression checks for the resolved HTTP/2 and TLS transport versions.
 
-fn workspace_lockfile() -> String {
+fn workspace_lockfile() -> std::io::Result<String> {
     // Bazel selects its resolved SDK lock; Cargo checks its workspace oracle.
     let path = std::env::var_os("AOS_TRANSPORT_LOCKFILE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock")
         });
-    std::fs::read_to_string(path).expect("read the selected transport dependency lockfile")
+    std::fs::read_to_string(path)
 }
 
 #[test]
-fn transport_dependencies_retain_required_protocol_fixes() {
-    let lockfile = workspace_lockfile();
+fn transport_dependencies_retain_required_protocol_fixes() -> std::io::Result<()> {
+    let lockfile = workspace_lockfile()?;
     assert!(
         package_version(&lockfile, "h2") >= Some((0, 4, 16)),
         "the resolved h2 release must retain bounded empty DATA-frame handling"
@@ -21,6 +21,8 @@ fn transport_dependencies_retain_required_protocol_fixes() {
         package_version(&lockfile, "rustls") >= Some((0, 23, 46)),
         "the resolved rustls release must retain the required TLS 1.3 handshake fixes"
     );
+
+    Ok(())
 }
 
 fn package_version(lockfile: &str, package_name: &str) -> Option<(u64, u64, u64)> {
