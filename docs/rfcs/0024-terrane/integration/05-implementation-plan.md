@@ -18557,3 +18557,20 @@ with empty capabilities, no-new-privileges and seccomp; initial readiness,
 full-D reclamation, real grace, original Done, fresh cycles and unchanged live
 signed reads pass. These regressions qualify neither the failed configured
 host-maintenance exchange nor complete role deployment. Acceptance stays 27/64.
+
+
+The isolated-node startup guest at `1864485857` fails in 1,413.263 seconds.
+The first startup selector passes, and the required-Meta selector passes its
+real restoration and unchanged catalog assertions before
+`begin_next_collection` rejects `Corrupt(RefName("publication"))`. The
+replacement-node isolation assertion passes, so that fixture change has not
+resolved the publication failure. No production guard or original test
+assertion is weakened. The failed guest derivation and frozen source remain
+preserved; the publication failure requires further diagnosis.
+
+The separate three-case original-session guest at the same checkpoint passes
+in 1,421.562 seconds. Complete review binds all 8,230 immutable files, 5,479
+crate inputs and the actual retained SDK library-test ELF, including exact
+selectors, UID/GID 840, empty capabilities, no-new-privileges and guest ext4.
+This regression does not qualify the failed startup path. Acceptance stays
+27/64.
