@@ -56,6 +56,7 @@ use super::{
 };
 
 mod checkpoint_stop_witness;
+mod clock_domain_trace;
 mod console_control;
 pub(super) mod console_effect;
 pub(super) mod console_output;
@@ -1489,6 +1490,11 @@ impl LiveVcpuTimeCallbackState {
                     self.note_zero_length_boundary(
                         zero_length_trace::ZeroLengthBoundary::Idle("already-due"),
                         "vcpu-idle",
+                        raw_icount,
+                    );
+                    clock_domain_trace::note_already_due(
+                        current_icount,
+                        timer_deadline_ps,
                         raw_icount,
                     );
                     self.idle_plan_witness.end(

@@ -1,6 +1,6 @@
-From 8d43e5ee8377d812ce108053a7064d4b9c951698 Mon Sep 17 00:00:00 2001
+From dcdeb9b8ebd2bb9167fe6c3285837665799c76e3 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 22 Oct 2026 19:54:02 +0000
+Date: Sun, 25 Oct 2026 02:45:17 +0000
 Subject: [PATCH] Re-deliver coalesced RR control wakes and claim them before
  idle waits
 
@@ -27,6 +27,8 @@ Shared-memory ABI 33 adds a hostward publication futex word and a count of parke
 The native console advance reader and its paired-clamp check admitted only the ceiling and authenticated-idle stop encodings. An exact-event advance, which the host publishes when a frame is due at a node's current boundary, therefore read as torn: the reader returned unavailable after its retries, the RR loop took its no-execution retry without reaching the plugin's budget, and the node spun without publishing while the host waited for it. Both checks now admit every current shared-memory stop condition through the exact event, and the plugin's budget keeps each condition's meaning. test-crucible-console-seal adds an exact-event advance that reads as owned with its stop preserved and accepts a sealed operation, while a larger stop stays unavailable.
 
 A standalone sim run, with no Crucible host registered, stopped retiring at its first all-halted wait and never booted to its ready marker. Two faults kept the virtual clock from reaching the guest's next timer. The idle warp returned early for every sim run because a host commands sim clock movement, so nothing advanced the clock without one. And when every vCPU halted, the RR loop woke the main loop so it could start the warp timer; the main loop's ready poll then published host work that woke the RR thread straight back, so rr_wait_io_event returned at its wake boundary on every pass and the two threads spun without reaching the idle boundary. Only a run whose plugin registered the host dispatch callbacks now skips the warp, and hosted runs are unchanged. A standalone run warps at the RR idle boundary to the next virtual timer deadline, advancing the sim tick bias because a sim clock rejects any icount bias. Its RR loop no longer wakes the main loop at an idle pass, and the main-loop poll, which runs at host-scheduled times, neither warps nor notifies the clock, whose notification would wake the poll again. The new test-crucible-icount-standalone-warp extracts the production warp body and the RR loop's idle wake: a standalone RR boundary warps to the deadline, the main-loop poll does nothing, every hosted call only notifies, expired or absent timers and other accelerators keep their handling, a refused tick advance stops the run, and only a standalone idle pass skips the main-loop wake. Six negative controls restore the unconditional return, ignore the host, warp or notify from the main loop, warp the icount bias, or wake the main loop from a standalone idle pass, and each fails.
+
+qemu_plugin_crucible_clock_diagnostic gives a plugin a read-only view of the terms QEMU uses to decide whether a virtual timer has expired: QEMU_CLOCK_VIRTUAL, the next virtual deadline, the committed raw icount, the sim tick bias, the upstream icount bias and the upstream warp start. It reads them under the clock seqlock and changes no clock, timer or guest state. The plugin calls it only when its all-halted idle pass finds a timer already due and returns for the round robin to run it, and prints the terms when QEMU_CLOCK_VIRTUAL has not reached that deadline or the same point repeats, so a disagreement between the two clock domains shows in the node's stderr.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -2173,7 +2175,7 @@ index 0000000000000000000000000000000000000000..8668bb73cf1245f809429f3130be163d
 +    errno = saved_errno;
 +}
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f2b34d8eb 100644
+index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..12d662844b0fee042e700aaa5712ff87df8bf1b5 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -24,11 +24,18 @@
@@ -2636,7 +2638,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
  }
  
  int64_t icount_get_raw(void)
-@@ -139,23 +529,358 @@ int64_t icount_get_raw(void)
+@@ -139,23 +529,384 @@ int64_t icount_get_raw(void)
      return icount;
  }
  
@@ -2694,6 +2696,32 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
 +    }
 +    return (raw_icount + executed) *
 +           CRUCIBLE_SIM_TICKS_PER_INSTRUCTION + tick_bias;
++}
++
++bool icount_crucible_clock_diagnostic(int64_t *raw_icount, int64_t *tick_bias,
++                                      int64_t *icount_bias_ps,
++                                      int64_t *warp_start)
++{
++    int64_t raw, bias, warp;
++    __int128 clock_bias;
++    unsigned start;
++
++    do {
++        start = seqlock_read_begin(&timers_state.vm_clock_seqlock);
++        raw = qatomic_read(&timers_state.qemu_icount);
++        bias = qatomic_read(&timers_state.crucible_sim_tick_bias);
++        clock_bias = icount_get_bias_ps_locked();
++        warp = qatomic_read(&timers_state.vm_clock_warp_start);
++    } while (seqlock_read_retry(&timers_state.vm_clock_seqlock, start));
++
++    if (clock_bias < INT64_MIN || clock_bias > INT64_MAX) {
++        return false;
++    }
++    *raw_icount = raw;
++    *tick_bias = bias;
++    *icount_bias_ps = (int64_t)clock_bias;
++    *warp_start = warp;
++    return true;
 +}
 +
 +bool icount_crucible_owned_snapshot(int64_t *raw, int64_t *logical_ps,
@@ -2999,7 +3027,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
  }
  
  /*
-@@ -171,6 +896,7 @@ static void icount_adjust(void)
+@@ -171,6 +922,7 @@ static void icount_adjust(void)
      int64_t cur_time;
      int64_t cur_icount;
      int64_t delta;
@@ -3007,7 +3035,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
  
      /* If the VM is not running, then do nothing.  */
      if (!runstate_is_running()) {
-@@ -182,6 +908,7 @@ static void icount_adjust(void)
+@@ -182,6 +934,7 @@ static void icount_adjust(void)
      cur_time = REPLAY_CLOCK_LOCKED(REPLAY_CLOCK_VIRTUAL_RT,
                                     cpu_get_clock_locked());
      cur_icount = icount_get_locked();
@@ -3015,7 +3043,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
  
      delta = cur_icount - cur_time;
      /* FIXME: This is a very crude algorithm, somewhat prone to oscillation.  */
-@@ -194,15 +921,14 @@ static void icount_adjust(void)
+@@ -194,15 +947,14 @@ static void icount_adjust(void)
      }
      if (delta < 0
          && timers_state.last_delta - ICOUNT_WOBBLE > delta * 2
@@ -3034,7 +3062,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
      seqlock_write_unlock(&timers_state.vm_clock_seqlock,
                           &timers_state.vm_clock_lock);
  }
-@@ -216,16 +942,18 @@ static void icount_adjust_rt(void *opaque)
+@@ -216,16 +968,18 @@ static void icount_adjust_rt(void *opaque)
  
  static void icount_adjust_vm(void *opaque)
  {
@@ -3059,7 +3087,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
  }
  
  static void icount_warp_rt(void)
-@@ -268,8 +996,9 @@ static void icount_warp_rt(void)
+@@ -268,8 +1022,9 @@ static void icount_warp_rt(void)
              }
              warp_delta = MIN(warp_delta, delta);
          }
@@ -3071,7 +3099,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
      }
      timers_state.vm_clock_warp_start = -1;
      seqlock_write_unlock(&timers_state.vm_clock_seqlock,
-@@ -292,7 +1021,7 @@ static void icount_timer_cb(void *opaque)
+@@ -292,7 +1047,7 @@ static void icount_timer_cb(void *opaque)
  void icount_start_warp_timer(void)
  {
      int64_t clock;
@@ -3080,7 +3108,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
  
      assert(icount_enabled());
  
-@@ -331,18 +1060,44 @@ void icount_start_warp_timer(void)
+@@ -331,18 +1086,44 @@ void icount_start_warp_timer(void)
          }
      }
  
@@ -3130,7 +3158,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
          /*
           * Ensure QEMU_CLOCK_VIRTUAL proceeds even when the virtual CPU goes to
           * sleep.  Otherwise, the CPU might be waiting for a future timer
-@@ -358,14 +1113,28 @@ void icount_start_warp_timer(void)
+@@ -358,14 +1139,28 @@ void icount_start_warp_timer(void)
               * It is useful when we want a deterministic execution time,
               * isolated from host latencies.
               */
@@ -3161,7 +3189,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
              /*
               * We do stop VCPUs and only advance QEMU_CLOCK_VIRTUAL after some
               * "real" time, (related to the time left until the next event) has
-@@ -382,10 +1151,12 @@ void icount_start_warp_timer(void)
+@@ -382,10 +1177,12 @@ void icount_start_warp_timer(void)
              }
              seqlock_write_unlock(&timers_state.vm_clock_seqlock,
                                   &timers_state.vm_clock_lock);
@@ -3176,7 +3204,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
          qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
      }
  }
-@@ -421,15 +1192,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -421,15 +1218,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      bool sleep = qemu_opt_get_bool(opts, "sleep", true);
      bool align = qemu_opt_get_bool(opts, "align", false);
      long time_shift = -1;
@@ -3204,7 +3232,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
      if (align && !sleep) {
          error_setg(errp, "align=on and sleep=off are incompatible");
          return false;
-@@ -437,7 +1220,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -437,7 +1246,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
  
      if (strcmp(option, "auto") != 0) {
          if (qemu_strtol(option, NULL, 0, &time_shift) < 0
@@ -3213,7 +3241,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
              error_setg(errp, "icount: Invalid shift value");
              return false;
          }
-@@ -450,6 +1233,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -450,6 +1259,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      }
  
      icount_sleep = sleep;
@@ -3221,7 +3249,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
      if (icount_sleep) {
          timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
                                           icount_timer_cb, NULL);
-@@ -459,6 +1243,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -459,6 +1269,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
  
      if (time_shift >= 0) {
          timers_state.icount_time_shift = time_shift;
@@ -3229,7 +3257,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f
          icount_enable_precise();
          return true;
      }
-@@ -485,12 +1270,22 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -485,12 +1296,22 @@ bool icount_configure(QemuOpts *opts, Error **errp)
                     qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL_RT) + 1000);
      timers_state.icount_vm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                          icount_adjust_vm, NULL);
@@ -64178,7 +64206,7 @@ index 0000000000000000000000000000000000000000..153ded5d116fd715207aaf1ad237573b
 + * Decoding a phase label does not confer execution authority. */
 +#endif
 diff --git a/include/exec/icount.h b/include/exec/icount.h
-index 7a26b40084dbf8c14560607f3350b89b49fa41bd..6008ed0c6b127af5c81785691be58ae9d2e7b690 100644
+index 7a26b40084dbf8c14560607f3350b89b49fa41bd..1d2947ebff16c56c11785666c3d517ad22bf3016 100644
 --- a/include/exec/icount.h
 +++ b/include/exec/icount.h
 @@ -22,6 +22,10 @@ typedef enum {
@@ -64192,7 +64220,7 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..6008ed0c6b127af5c81785691be58ae9
  #ifdef CONFIG_TCG
  extern ICountMode use_icount;
  #define icount_enabled() (use_icount)
-@@ -46,14 +50,87 @@ void icount_update(CPUState *cpu);
+@@ -46,14 +50,94 @@ void icount_update(CPUState *cpu);
  /* get raw icount value */
  int64_t icount_get_raw(void);
  
@@ -64249,6 +64277,13 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..6008ed0c6b127af5c81785691be58ae9
 +/* current sim logical tick, including an executing vCPU's retired prefix */
 +int64_t icount_crucible_sim_tick_observed(void);
 +
++/* Diagnostic-only coherent read of every virtual-clock domain term. It never
++ * commits icount or moves a clock; false means a torn or unrepresentable read.
++ */
++bool icount_crucible_clock_diagnostic(int64_t *raw_icount, int64_t *tick_bias,
++                                      int64_t *icount_bias_ps,
++                                      int64_t *warp_start);
++
 +/* One coherent executed-prefix/SIM pair, only at a BQL-owned running vCPU.
 + * Failure leaves all caller outputs untouched; this never commits icount.
 + */
@@ -64281,7 +64316,7 @@ index 7a26b40084dbf8c14560607f3350b89b49fa41bd..6008ed0c6b127af5c81785691be58ae9
  int64_t icount_to_ns(int64_t icount);
  
  /**
-@@ -65,8 +142,23 @@ int64_t icount_to_ns(int64_t icount);
+@@ -65,8 +149,23 @@ int64_t icount_to_ns(int64_t icount);
   */
  bool icount_configure(QemuOpts *opts, Error **errp);
  
@@ -67143,7 +67178,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..827f0f13c8e468b4e4671280cb67fab6124535fa 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..31d380e5b5a091c016062317b5e0d6ef64cd5c3d 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,352 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -68697,7 +68732,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..827f0f13c8e468b4e4671280cb67fab6
  /**
   * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
   *
-@@ -1292,6 +2474,666 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
+@@ -1292,6 +2474,701 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
  QEMU_PLUGIN_API
  bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
  
@@ -69061,6 +69096,41 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..827f0f13c8e468b4e4671280cb67fab6
 +int64_t qemu_plugin_clock_deadline_ps(void);
 +
 +/**
++ * struct qemu_plugin_crucible_clock_diagnostic - virtual-clock domain terms
++ * @virtual_ps: QEMU_CLOCK_VIRTUAL as timers compare against it
++ * @deadline_ps: next virtual timer deadline, or a qemu_plugin_clock_deadline_ps
++ *               sentinel
++ * @raw_icount: committed raw instruction count
++ * @sim_tick_bias: sim logical ticks ahead of the raw icount
++ * @icount_bias_ps: upstream icount bias in picoseconds
++ * @warp_start: upstream warp start, or -1 when no warp is pending
++ */
++struct qemu_plugin_crucible_clock_diagnostic {
++    int64_t virtual_ps;
++    int64_t deadline_ps;
++    int64_t raw_icount;
++    int64_t sim_tick_bias;
++    int64_t icount_bias_ps;
++    int64_t warp_start;
++};
++
++/**
++ * qemu_plugin_crucible_clock_diagnostic() - read the virtual-clock domain
++ * @out: plugin-owned output
++ *
++ * This AOS Crucible extension is diagnostic only. It reads, without changing
++ * any clock, timer or guest state, the terms from which QEMU decides whether a
++ * virtual timer has expired, so a plugin can compare them with its own
++ * logical coordinate.
++ *
++ * Returns: zero on success, -EINVAL for a NULL @out, or -ERANGE when a term
++ * cannot be read coherently or represented.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_clock_diagnostic(
++    struct qemu_plugin_crucible_clock_diagnostic *out);
++
++/**
 + * qemu_plugin_crucible_arm_virtual_timer_witness() - bind an idle deadline
 + * @deadline_ps: exact next QEMU_CLOCK_VIRTUAL timer deadline
 + * @deadline_tick: logical idle-wake coordinate published for the deadline
@@ -69364,7 +69434,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..827f0f13c8e468b4e4671280cb67fab6
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
-@@ -1363,6 +3205,115 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+@@ -1363,6 +3240,115 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
  
@@ -83822,7 +83892,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6024c1903a0c98898e76ab90d6825aacfb96bbb1 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..84fe47f062fa915e6b0afb6b745bad780231c8ec 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,43 @@
@@ -84834,7 +84904,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6024c1903a0c98898e76ab90d6825aac
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1101,2099 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1101,2119 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -86840,6 +86910,26 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6024c1903a0c98898e76ab90d6825aac
 +{
 +    return qemu_clock_deadline_ps_all_absolute(QEMU_CLOCK_VIRTUAL,
 +                                               QEMU_TIMER_ATTR_ALL);
++}
++
++int qemu_plugin_crucible_clock_diagnostic(
++    struct qemu_plugin_crucible_clock_diagnostic *out)
++{
++    struct qemu_plugin_crucible_clock_diagnostic read = { 0 };
++
++    if (!out) {
++        return -EINVAL;
++    }
++    if (!icount_crucible_clock_diagnostic(&read.raw_icount,
++                                          &read.sim_tick_bias,
++                                          &read.icount_bias_ps,
++                                          &read.warp_start)) {
++        return -ERANGE;
++    }
++    read.virtual_ps = qemu_clock_get_ps(QEMU_CLOCK_VIRTUAL);
++    read.deadline_ps = qemu_plugin_clock_deadline_ps();
++    *out = read;
++    return 0;
 +}
 +
 +int qemu_plugin_crucible_arm_virtual_timer_witness(
