@@ -11600,3 +11600,18 @@ and the installed verity publication checks at
 `/nix/store/51hf50wrpgz4ap52pam6pj0biv4wx0xw-systemd-verity-check-0`.
 The effects suite includes all 109 service-handler and 36 network tests. The
 corrected transport VM remains pending; no installed admission gate changes.
+
+The clean `e8ca5ef4aa` transport retry now passes at
+`/nix/store/z8xpndxdf694qlchxi2dfnc4syshpjai-aos-fleet-test-sandbox-method46-tpm-transport-0`.
+Its actual QEMU command uses the installed Root kernel
+`/nix/store/ggrgpka7s23nvpizl42klk7hf98hgl1d-linux-7.2.3/boot/vmlinuz-7.2.3`;
+the fixture rejects evaluation if its kernel differs from Root's. Both roles
+pass initialization and identity/authentication refusal cases, reboot and
+unclean-reset recovery, recovery after a QEMU/swtpm power cut, refusal with
+unchanged pending bytes after a cut before extend, and invalidation after TPM
+clear with successful fresh provisioning. The handler NAR mismatch no longer
+blocks boot. Quote and registry-refresh services still fail in this transport
+fixture; this is not an installed startup-readiness receipt. Test-only
+provisioning and non-enforcing userspace do not qualify the production initial
+floor producer or either installed journal hook. Public admission remains
+closed.
