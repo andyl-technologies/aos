@@ -208,9 +208,12 @@ Recent committed startup fixes close narrower prerequisites:
   the complete merged-policy scan and linked negative fixtures
   (`/nix/store/drs1wpvr19xfiar9yibc8f2bpcsczc4k-aos-selinux-production-policy-1`).
   The preceding enforcing run reached Service admission and recorded the
-  selected unit's symlink-read denial. The installed retry is still running
-  with the separately listed pending startup-policy dependencies. This grant
-  does not qualify key preparation, TPM initialization or recovery.
+  selected unit's symlink-read denial. The installed retry gets past Service
+  admission and fails later at stopped-runtime observation, without a new
+  preparer-domain denial. Its separately listed pending startup-policy
+  dependencies remain explicit. This QEMU fixture intentionally enables no
+  TPM hardware effects. Key preparation and cold-restart refusal remain
+  unqualified; the readback grant supplies no floor or recovery authority.
 
 - The TPM transport fixture now durably publishes a distinct initial intent
   before its first encrypted Extend. Both fixed endpoints recover exactly once
@@ -256,7 +259,10 @@ Recent committed startup fixes close narrower prerequisites:
   (`/nix/store/raksjj84k4fhmgdmz5m20h4xc06knssx-aos-test-targets-0.1.0`);
   that check does not run tests. Core evaluation also passes
   (`/nix/store/bjgcsychhmwgsl22wxxdk3dgxb8rfjp9-aos-native-evaluation-checks-0`).
-  The measured profile build remains in progress. The manual
+  The measured profile check also passes against its actual Parent06 manifest
+  and normalized installed Controller unit
+  (`/nix/store/27ynvy3z9m9v9qbsq85z71aklzk716a7-sandbox-nix-method46-profile-check`).
+  That frozen foundation predates the new initial-startup owner. The manual
   services are not selected or installed by this foundation, and no complete
   producer, approved intent, TPM initialization or public admission is claimed.
 
@@ -272,8 +278,10 @@ Recent committed startup fixes close narrower prerequisites:
   bounds later, separately paid hashing and posts; neither a claimed file length
   nor a decoded image pin funds the work. Four schema, seven startup and one
   receiver native regressions pass. These test malformed/substituted DATA and
-  negative ordering, not a positive installed capture. Full Rust compilation of
-  the exact profile/image sources is running. No production binary calls this
+  negative ordering, not a positive installed capture. Complete Rust unit and
+  integration targets compile for the exact profile/image sources
+  (`/nix/store/q170w9y5l6nb4cwvys80ngff7i1k82xh-aos-test-targets-0.1.0`);
+  this check does not run the tests. No production binary calls this
   owner yet. Independent key provenance, full runtime/unit/policy admission,
   protected writer custody and actual initial-floor publication remain missing;
   these mechanical results grant no provisioning or readiness authority.
