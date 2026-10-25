@@ -23,6 +23,14 @@ pub(crate) struct QualifiedConfig {
 
 impl QualifiedConfig {
     pub(crate) async fn load(env: &Env) -> Result<Self> {
+        super::observation::timed(
+            super::observation::TimingPhase::Qualification,
+            Self::load_inner(env),
+        )
+        .await
+    }
+
+    async fn load_inner(env: &Env) -> Result<Self> {
         let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
         let source = option_env!("AOS_HUB_WORKER_SOURCE_DIGEST")
             .filter(|source| valid_direct_digest(source))

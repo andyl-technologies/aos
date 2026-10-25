@@ -558,5 +558,39 @@ os._exit(0)
                 call()
 
 
+class StageTimingDiagnostics(unittest.TestCase):
+    def setUp(self):
+        selected = Path(__file__).with_name("_hub-direct-concurrent-publications.py")
+        self.namespace = {}
+        exec(compile(selected.read_text(), str(selected), "exec"), self.namespace)
+        self.receipts = []
+        self.namespace["retain_direct_flow"] = lambda name, value: self.receipts.append(
+            (name, copy.deepcopy(value)))
+
+    def test_timing_chunks_accumulate_without_retaining_private_lines(self):
+        timings = {}
+        collect = self.namespace["retain_direct_stage_timings"]
+        collect("direct_stage_timing phase=stage_begin elapsed_millis=0 success=true\n", timings)
+        collect("direct_stage_timing phase=stage_begin elapsed_millis=8 success=false\n"
+                "unit-only-private-body\n", timings)
+
+        row = timings["stage_begin"]
+        self.assertEqual((row["count"], row["failures"], row["totalMillis"]), (2, 1, 8))
+        self.assertEqual(row["maximumMillis"], 8)
+        self.assertEqual(sum(row["powerOfTwoMillisBuckets"]), 2)
+        self.assertNotIn("unit-only-private-body", json.dumps(self.receipts))
+
+    def test_unknown_labels_malformed_lines_and_excessive_durations_are_ignored(self):
+        collect = self.namespace["retain_direct_stage_timings"]
+        collect("\n".join([
+            "direct_stage_timing phase=unit_only_private elapsed_millis=1 success=true",
+            "direct_stage_timing phase=stage_begin elapsed_millis=3600001 success=true",
+            "direct_stage_timing phase=stage_begin elapsed_millis=1 success=true private=body",
+            "direct_stage_timing phase=stage_begin elapsed_millis=-1 success=true",
+        ]), {})
+
+        self.assertEqual(self.receipts, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,8 @@ use super::{
     protocol::{self, Intent, Operation, Receipt, Reply, SourceProof, Turn},
 };
 
+use crate::direct_upload::observation::{timed, TimingPhase};
+
 const EXECUTOR_KEY: &str = "HUB_EXTERNAL_STAGE_KEY";
 const PROVIDER_URL_SECONDS: u32 = 30;
 
@@ -190,15 +192,18 @@ async fn execute_stage_observed_inner(
 
     // This readonly lookup cannot infer settlement from a missing receipt. The
     // subsequent Begin still refuses every unrelated or unknown mutation.
-    match call(
-        env,
-        &protocol::Request {
-            domain: protocol::DOMAIN.into(),
-            scope: scope.clone(),
-            operation: Operation::Lookup {
-                intent: intent.clone(),
+    match timed(
+        TimingPhase::StageLookup,
+        call(
+            env,
+            &protocol::Request {
+                domain: protocol::DOMAIN.into(),
+                scope: scope.clone(),
+                operation: Operation::Lookup {
+                    intent: intent.clone(),
+                },
             },
-        },
+        ),
     )
     .await
     .map_err(|error| diagnostics::at(Phase::Lookup, error))?
@@ -217,10 +222,13 @@ async fn execute_stage_observed_inner(
         );
         None
     };
-    let publication = crate::hybrid_binding::resolve_for_delivery(
-        env,
-        i64::try_from(work.context.placement.binding_id.get())?,
-        i64::try_from(work.context.placement.binding_resource_version.get())?,
+    let publication = timed(
+        TimingPhase::BindingPublication,
+        crate::hybrid_binding::resolve_for_delivery(
+            env,
+            i64::try_from(work.context.placement.binding_id.get())?,
+            i64::try_from(work.context.placement.binding_resource_version.get())?,
+        ),
     )
     .await
     .map_err(|error| diagnostics::at(Phase::Binding, error))?;
@@ -248,19 +256,22 @@ async fn execute_stage_observed_inner(
     } else {
         None
     };
-    let reply = call(
-        env,
-        &protocol::Request {
-            domain: protocol::DOMAIN.into(),
-            scope: scope.clone(),
-            operation: Operation::Begin {
-                admission_mode: work.admission_mode,
-                intent: intent.clone(),
-                write_lease: work.write_lease.clone(),
-                read_lease: work.read_lease.clone(),
-                source,
+    let reply = timed(
+        TimingPhase::StageBegin,
+        call(
+            env,
+            &protocol::Request {
+                domain: protocol::DOMAIN.into(),
+                scope: scope.clone(),
+                operation: Operation::Begin {
+                    admission_mode: work.admission_mode,
+                    intent: intent.clone(),
+                    write_lease: work.write_lease.clone(),
+                    read_lease: work.read_lease.clone(),
+                    source,
+                },
             },
-        },
+        ),
     )
     .await
     .map_err(|error| diagnostics::at(Phase::Begin, error))?;
@@ -347,25 +358,28 @@ async fn execute_stage_observed_inner(
         now,
     )?;
     let relative = relative_key(&publication.snapshot.object_prefix, &scope.full_key)?;
-    let (outcome, provider_version) = dispatch(
-        env,
-        work,
-        &object,
-        &config,
-        &publication,
-        &surface,
-        relative,
-        &turn,
-        &floor,
-        source.as_ref(),
-        closed.as_ref(),
-        &parts,
-        direct_permission_expires_at,
-        before_dispatch,
-        signal,
-        held,
-        #[cfg(feature = "do-e2e")]
-        observation,
+    let (outcome, provider_version) = timed(
+        TimingPhase::StageProvider,
+        dispatch(
+            env,
+            work,
+            &object,
+            &config,
+            &publication,
+            &surface,
+            relative,
+            &turn,
+            &floor,
+            source.as_ref(),
+            closed.as_ref(),
+            &parts,
+            direct_permission_expires_at,
+            before_dispatch,
+            signal,
+            held,
+            #[cfg(feature = "do-e2e")]
+            observation,
+        ),
     )
     .await
     .map_err(|error| diagnostics::at(Phase::Provider, error))?;
@@ -375,15 +389,18 @@ async fn execute_stage_observed_inner(
         provider_version,
     };
     receipt.validate()?;
-    match call(
-        env,
-        &protocol::Request {
-            domain: protocol::DOMAIN.into(),
-            scope,
-            operation: Operation::Terminal {
-                receipt: receipt.clone(),
+    match timed(
+        TimingPhase::StageTerminal,
+        call(
+            env,
+            &protocol::Request {
+                domain: protocol::DOMAIN.into(),
+                scope,
+                operation: Operation::Terminal {
+                    receipt: receipt.clone(),
+                },
             },
-        },
+        ),
     )
     .await
     .map_err(|error| diagnostics::at(Phase::Terminal, error))?

@@ -181,6 +181,63 @@ pub(crate) fn digest(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
 
+/// Names setup boundaries measured only by the emulated fleet build.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+pub(crate) enum TimingPhase {
+    Qualification,
+    OriginalAdmission,
+    ProtectedMaterial,
+    StagePreparation,
+    StageCreation,
+    StageLookup,
+    BindingPublication,
+    StageBegin,
+    StageProvider,
+    StageTerminal,
+}
+
+/// Observes a boundary without changing its result or dispatch eligibility.
+///
+/// # Errors
+/// Returns the original boundary failure unchanged.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn timed<T, E>(
+    phase: TimingPhase,
+    work: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    #[cfg(all(feature = "do-e2e", target_arch = "wasm32"))]
+    let started = now_millis();
+
+    let result = work.await;
+
+    #[cfg(all(feature = "do-e2e", target_arch = "wasm32"))]
+    {
+        let phase = match phase {
+            TimingPhase::Qualification => "qualification",
+            TimingPhase::OriginalAdmission => "original_admission",
+            TimingPhase::ProtectedMaterial => "protected_material",
+            TimingPhase::StagePreparation => "stage_preparation",
+            TimingPhase::StageCreation => "stage_creation",
+            TimingPhase::StageLookup => "stage_lookup",
+            TimingPhase::BindingPublication => "binding_publication",
+            TimingPhase::StageBegin => "stage_begin",
+            TimingPhase::StageProvider => "stage_provider",
+            TimingPhase::StageTerminal => "stage_terminal",
+        };
+        worker::console_log!(
+            "direct_stage_timing phase={} elapsed_millis={} success={}",
+            phase,
+            now_millis().saturating_sub(started),
+            result.is_ok()
+        );
+    }
+    #[cfg(not(all(feature = "do-e2e", target_arch = "wasm32")))]
+    let _ = phase;
+
+    result
+}
+
 impl Session {
     /// Commits the exact session and immutable original fingerprint.
     pub(crate) fn new(session: &str, fingerprint: &str) -> Self {

@@ -11,6 +11,8 @@ use aos_hub_db::storage_authority::external_object::stage::ExternalStageOutcome;
 use serde::{Deserialize, Serialize};
 use worker::Env;
 
+use super::observation::{timed, TimingPhase};
+
 use super::{
     authority::{current, MaterialProfile, StageAuthority},
     config::QualifiedConfig,
@@ -84,10 +86,18 @@ pub(super) async fn begin_with_signal(
     );
     current(authority, context, admission)?;
     qualification_failure::enter_begin(diagnostics, BeginPhase::AdmissionJournal);
-    storage::call(env, admission, Operation::Admit).await?;
+    timed(
+        TimingPhase::OriginalAdmission,
+        storage::call(env, admission, Operation::Admit),
+    )
+    .await?;
     for placement in &admission.placements {
         qualification_failure::enter_begin(diagnostics, BeginPhase::ProtectedMaterial);
-        authority.protected_material(env, placement).await?;
+        timed(
+            TimingPhase::ProtectedMaterial,
+            authority.protected_material(env, placement),
+        )
+        .await?;
         current(authority, context, admission)?;
         let operation_id = verification::step_id(
             admission,
@@ -129,13 +139,16 @@ pub(super) async fn begin_with_signal(
                             diagnostics,
                             BeginPhase::ExternalPreparation,
                         );
-                        let work = crate::external_object::prepare_stage_request_with_cutoff(
-                            env,
-                            admission,
-                            placement.placement_id,
-                            operation_id.clone(),
-                            ExternalStageOperation::CreateStage,
-                            context.foreground.expires_at,
+                        let work = timed(
+                            TimingPhase::StagePreparation,
+                            crate::external_object::prepare_stage_request_with_cutoff(
+                                env,
+                                admission,
+                                placement.placement_id,
+                                operation_id.clone(),
+                                ExternalStageOperation::CreateStage,
+                                context.foreground.expires_at,
+                            ),
                         )
                         .await
                         .inspect_err(|error| {
@@ -150,10 +163,13 @@ pub(super) async fn begin_with_signal(
                             BeginPhase::ExternalExecution,
                         );
                         Ok(CreatedStage::External {
-                            result: crate::external_object::execute_stage_with_signal(
-                                env,
-                                &work,
-                                signal.clone(),
+                            result: timed(
+                                TimingPhase::StageCreation,
+                                crate::external_object::execute_stage_with_signal(
+                                    env,
+                                    &work,
+                                    signal.clone(),
+                                ),
                             )
                             .await?,
                         })

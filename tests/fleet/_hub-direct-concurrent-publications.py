@@ -9,6 +9,7 @@ production queue intervals determine whether real overlap occurred.
 import base64
 import hashlib
 import json
+import re
 import shlex
 import textwrap
 import time
@@ -251,7 +252,45 @@ def poll_direct_publication(client, tools, process):
     """, process))
 
 
-def direct_visibility_rendezvous(worker, tools, cursor, expected_source):
+def retain_direct_stage_timings(body, timings):
+    """Retain fixed diagnostic timing buckets, never authority or private inputs."""
+    phases = {
+        "qualification", "original_admission", "protected_material", "stage_preparation",
+        "stage_creation", "stage_lookup", "binding_publication", "stage_begin",
+        "stage_provider", "stage_terminal",
+    }
+    changed = False
+    for line in body.splitlines():
+        marker = "direct_stage_timing "
+        if marker not in line:
+            continue
+        match = re.fullmatch(
+            r"phase=([a-z_]+) elapsed_millis=([0-9]+) success=(true|false)",
+            line.split(marker, 1)[1].strip(),
+        )
+        if match is None or match[1] not in phases:
+            continue
+        elapsed = int(match[2])
+        if elapsed > 3_600_000:
+            continue
+        row = timings.setdefault(match[1], {
+            "count": 0, "failures": 0, "totalMillis": 0, "maximumMillis": 0,
+            "powerOfTwoMillisBuckets": [0] * 23,
+        })
+        row["count"] += 1
+        row["failures"] += match[3] == "false"
+        row["totalMillis"] += elapsed
+        row["maximumMillis"] = max(row["maximumMillis"], elapsed)
+        row["powerOfTwoMillisBuckets"][elapsed.bit_length()] += 1
+        changed = True
+    if changed:
+        retain_direct_flow("actual-stage-timings.json", {
+            "version": 1, "phases": timings,
+            "scope": "diagnostic setup timings before the genuine Visibility rendezvous; no authority",
+        })
+
+
+def direct_visibility_rendezvous(worker, tools, cursor, expected_source, timings=None):
     """Read genuine production events since A started, before B is dispatched."""
     captured = json.loads(direct_guest_python(worker, tools["python"], """
         import os
@@ -270,6 +309,8 @@ def direct_visibility_rendezvous(worker, tools, cursor, expected_source):
     """, cursor))
     body = base64.b64decode(captured["body"], validate=True)
     cursor["offset"] = captured["offset"]
+    if timings is not None:
+        retain_direct_stage_timings(body.decode(), timings)
     if DIRECT_RUNTIME_PREFIX not in body.decode():
         return None
     events = direct_runtime_observations(body.decode(), expected_source)
@@ -290,6 +331,7 @@ def run_direct_concurrent_publications(client, worker, tools, sources, registrie
     sparse = {"interruption": None, "changedSource": None, "continuity": None,
         "terminalCountersUnavailable": []}
     cursor = {**before_worker, "offset": before_worker["byteSize"]}
+    stage_timings = {}
     for signed in sources.values():
         login_direct_publisher(client, tools, signed)
 
@@ -333,7 +375,8 @@ def run_direct_concurrent_publications(client, worker, tools, sources, registrie
                         client, tools, process, sources["a"], source, None)
                     start("a", process["attempt"] + 1)
         if "b" not in processes:
-            rendezvous = direct_visibility_rendezvous(worker, tools, cursor, expected_source)
+            rendezvous = direct_visibility_rendezvous(
+                worker, tools, cursor, expected_source, stage_timings)
             if rendezvous is not None:
                 retain_direct_flow("actual-publication-rendezvous.json", rendezvous)
                 start("b", 1)
