@@ -14,9 +14,8 @@ sys.path.insert(0, sys.argv[1])
 from native_sdk_test_image import allowed_directory, require, runtime_closure, source_hashes
 
 FEATURES = ["native-test-fixtures", "tokio"]
-# Nix forbids creating setgid directories. Preserve these exact native cases
-# for the AOS guest, where the ordinary publisher identity can exercise them.
-NATIVE_SOCKET_CASES = {
+# These original mode controls need the guest's actual ext4 setgid operations.
+SETGID_SOCKET_CASES = {
     "retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group",
     "replaced_socket_name_is_rejected_without_changing_either_inode",
     "socket_chmod_rejects_wrong_type_and_owner_before_mutation",
@@ -53,6 +52,9 @@ EXPECTED = {
     "publisher_local_vm": {"publisher_local_multuid_vm", "publisher_local_vm_role"},
     "publisher_local_native": {"publisher_local_native_lifecycle_vm", "publisher_local_native_role"},
 }
+# All socket cases exercise actual kernel state, including descriptor import
+# and temporary files. Image construction only discovers their original names.
+NATIVE_SOCKET_CASES = EXPECTED["terrane_linux"]
 
 
 def sha256(path):
@@ -212,11 +214,9 @@ def install_and_execute():
         require(len(actual) == len(set(actual)) and set(actual) == expected,
                 f"publisher-local exact inventory mismatch: {name}: {actual}")
         evidence[name] = {"inventory": sorted(actual), "executed": []}
-        if name in {"publisher_local_vm", "publisher_local_native"}:
+        if name in {"terrane_linux", "publisher_local_vm", "publisher_local_native"}:
             continue
         for case in sorted(actual):
-            if name == "terrane_linux" and case in NATIVE_SOCKET_CASES:
-                continue
             result = run_captured([str(executable), "--exact", prefix + case, "--nocapture"],
                                   environment)
             require("test result: ok. 1 passed; 0 failed; 0 ignored;" in result.stdout,
@@ -225,8 +225,9 @@ def install_and_execute():
     require(source_hashes(workspace, source) == {key: value for key, value in hashes.items()
                                                if not key.startswith("tests/")},
             "source changed during transport discovery/execution")
-    require(len(NATIVE_SOCKET_CASES) == 3 and NATIVE_SOCKET_CASES <= EXPECTED["terrane_linux"],
-            "native socket inventory must retain its three original source cases")
+    require(len(NATIVE_SOCKET_CASES) == 12 and len(SETGID_SOCKET_CASES) == 3
+            and SETGID_SOCKET_CASES <= NATIVE_SOCKET_CASES,
+            "native socket inventory must retain all twelve original source cases")
     native_cases = ["publisher_local::socket::tests::" + case
                     for case in sorted(NATIVE_SOCKET_CASES)]
     (output / "share/native-socket-cases").write_text("\n".join(native_cases) + "\n")

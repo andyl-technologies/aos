@@ -21,7 +21,8 @@ pkgs.mkDerivation {
         test -e ${hostCacheProof.native}
         mkdir -p "$out"
         python3 ${./publisher_ownership.py} ${publisherLocalProof.image} \
-          ${hostCacheProof.image} ${pkgs.terrane.src} > "$out/source-review.json"
+          ${hostCacheProof.image} ${pkgs.terrane.src} \
+          ${publisherLocalProof.native} > "$out/source-review.json"
         printf '%s\n' 'PASS ARCH-8: role permissions, read-only native handoff and confined production publisher' > "$out/result"
       '';
     }

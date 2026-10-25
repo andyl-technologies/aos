@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Exercises the unchanged setgid fixtures outside Nix's chmod restriction.
+# Exercises every original socket case as the guest's unprivileged publisher.
 set -euo pipefail
 
 if [ "$#" -ne 3 ] || [ "$EUID" -ne 0 ]; then
@@ -12,6 +12,8 @@ unit_root=$2
 setpriv=$3
 
 mkdir -- "$unit_root"
+test "$(findmnt --noheadings --output FSTYPE --target "$unit_root")" = ext4
+printf '%s\n' 'SOCKET_UNIT_FILESYSTEM ext4'
 chown 841:845 "$unit_root"
 chmod 0700 "$unit_root"
 trap 'rm -f -- "$unit_root/result.log"; rmdir -- "$unit_root"' EXIT
@@ -68,8 +70,9 @@ while IFS= read -r socket_case; do
     *'test result: ok. 1 passed; 0 failed; 0 ignored;'*) ;;
     *) exit 1 ;;
   esac
+  printf 'SOCKET_UNIT_PASS %s\n' "$socket_case"
   executed=$((executed + 1))
 done < "$image/share/native-socket-cases"
 
-[ "$executed" -eq 3 ]
-printf '%s\n' 'PASS three actual native socket custody cases under the ordinary publisher identity'
+[ "$executed" -eq 12 ]
+printf '%s\n' 'PASS twelve actual native socket custody cases under the ordinary publisher identity'

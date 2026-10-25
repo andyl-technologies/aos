@@ -141,7 +141,7 @@ def check_transport(image, source):
         require(group.get("inventory") == sorted(inventory),
                 "publisher transport selected tests changed: " + name)
         executed = group.get("executed", [])
-        cases = SOCKET_CASES if name == "terrane_linux" else PROTOCOL_CASES if name == "publisher_local_protocol" else set()
+        cases = PROTOCOL_CASES if name == "publisher_local_protocol" else set()
         require([record.get("case") for record in executed] == sorted(cases),
                 "publisher transport omitted or duplicated a portable case: " + name)
         for record in executed:
@@ -151,7 +151,7 @@ def check_transport(image, source):
                     and f"test {prefix}{record['case']} ... ok" in record["stdout"],
                     "publisher transport did not execute the original selected case")
     require(identity.get("native_socket_tests") == [
-        "publisher_local::socket::tests::" + name for name in sorted(NATIVE_SOCKET_CASES)
+        "publisher_local::socket::tests::" + name for name in sorted(SOCKET_CASES | NATIVE_SOCKET_CASES)
     ], "publisher transport native socket cases changed")
     require(evidence["fresh-process-fixture"] == {
         "inventory": ["transport:native-publisher", "transport:native-client"], "executed": [],
@@ -159,11 +159,36 @@ def check_transport(image, source):
     return identity
 
 
+def check_socket_guest(proof, identity):
+    """Requires exact nonignored execution and actual guest identity for all sockets."""
+    require((proof / "result").read_text().strip() == "PASS",
+            "publisher socket guest did not pass")
+    serial = (proof / "serial.log").read_text()
+    lines = serial.splitlines()
+    require(lines.count("TEST_RESULT:PASS") == 1 and "TEST_RESULT:FAIL" not in serial,
+            "publisher socket guest has no unique successful termination")
+    require("Firecracker exiting successfully. exit_code=0" in serial,
+            "publisher socket guest did not exit cleanly")
+    cases = [line.removeprefix("SOCKET_UNIT_PASS ") for line in lines
+             if line.startswith("SOCKET_UNIT_PASS ")]
+    require(cases == identity["native_socket_tests"],
+            "publisher socket guest omitted, repeated or reordered an original case")
+    require(lines.count("SOCKET_UNIT_FILESYSTEM ext4") == 1
+            and lines.count("SOCKET_UNIT_IDENTITY uid=841 gid=845 groups=none caps=zero nnp=1") == len(cases),
+            "publisher socket guest lacks its actual ext4 and per-case identity controls")
+    for case in cases:
+        require(lines.count("test " + case + " ... ok") == 1,
+                "publisher socket guest did not pass the original nonignored case: " + case)
+    return {"output": str(proof), "serial_sha256": sha256(proof / "serial.log"),
+            "executed": cases, "uid": 841, "gid": 845, "filesystem": "ext4"}
+
+
 def main():
     """Qualifies source identity after all real native prerequisites succeed."""
-    require(len(sys.argv) == 4, "expected transport image, cache image and source")
-    transport, cache, source = map(pathlib.Path, sys.argv[1:])
+    require(len(sys.argv) == 5, "expected transport image, cache image, source and native proof")
+    transport, cache, source, native = map(pathlib.Path, sys.argv[1:])
     transport_identity = check_transport(transport, source)
+    socket_guest = check_socket_guest(native, transport_identity)
     cache_identity = check_inputs(cache, source, [
         "host-cache-proof.nix", "host-cache-scenarios.nix", "host_cache_image.py", "host_cache_vm.py",
         "host_cache_temporaries_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py",
@@ -177,7 +202,8 @@ def main():
         "transport_image": str(transport), "cache_image": str(cache),
         "transport_inputs_verified": len(transport_identity["input_sha256"]),
         "cache_inputs_verified": len(cache_identity["input_sha256"]),
-        "portable_cases_verified": len(SOCKET_CASES) + len(PROTOCOL_CASES),
+        "portable_cases_verified": len(PROTOCOL_CASES),
+        "socket_guest": socket_guest,
         "transport_ELFs_verified": len(transport_identity["artifacts"]),
         "scope": "Native prerequisites qualify sole-writer custody; full host readiness is separate.",
     }, indent=2))

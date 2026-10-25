@@ -268,6 +268,17 @@ cold-manifest-release prerequisites. The selector guests execute as UID/GID
 This qualifies the guest migration; complete cross-surface domain deployment
 and T-STORE-3 remain unaccepted. Trunk acceptance remains 28/64.
 
+Publisher transport image construction now defers all twelve original Linux
+socket cases to its existing unprivileged ext4 guest, including the nine
+peer-credential, packet-correlation and descriptor-import cases that previously
+ran during image construction. The original three setgid/inode controls and
+all twelve pure protocol cases remain unchanged. The guest checks ext4 and
+UID 841/GID 845 with empty groups/capabilities and no-new-privileges for every
+case, requiring exact nonignored success. The sole-writer gate also consumes
+the completed guest's original ordered case witnesses and clean termination.
+Source inventory, Python/shell syntax and Nix formatting checks pass; renewed
+committed-source guest qualification remains pending. No task is accepted.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement
