@@ -89,6 +89,10 @@
     cargo = family.editor-cargo-oracle;
     proceduralMacros = ["curve25519_dalek_derive" "ref_cast_impl" "schemars_derive" "serde_derive" "thiserror_impl" "tracing_attributes" "zerocopy_derive"];
   };
+  development = import ./_bazel-activation-crucible-development.nix {
+    inherit pkgs packages dependencyPackages editor-builtin-cfg;
+    inherit (family) editor tests cargo;
+  };
   productionTargets = ["${label}:package" "${label}:production_license_closure"];
   productionLibraries = pkgs.mkAosBazelStaticLibraries {libraries = {};};
   productionWorkspace = pkgs.mkAosBazelWorkspace {
@@ -105,7 +109,7 @@
 in
   family
   // rec {
-    inherit execution-profiles editor-builtin-cfg editor-execution-profiles;
+    inherit execution-profiles editor-builtin-cfg editor-execution-profiles development;
     inherit packages dependencyPackages productionDependencies productionWorkspace productionLibraries;
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-activation-crucible-inventory";
@@ -189,7 +193,7 @@ in
       '';
     all =
       pkgs.runCommand "aos-bazel-activation-crucible-qualified-checks" {
-        buildDeps = [family.all family.editor-parity production-parity runtime execution-profiles editor-builtin-cfg editor-execution-profiles];
+        buildDeps = [family.all family.editor-parity production-parity runtime execution-profiles editor-builtin-cfg editor-execution-profiles development];
       } ''
         mkdir -p "$out"
         cp -r ${family.all}/evidence "$out/evidence"
@@ -198,6 +202,7 @@ in
         cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
         cp ${editor-builtin-cfg}/evidence.json "$out/editor-builtin-cfg.json"
         cp ${editor-execution-profiles}/evidence.json "$out/editor-execution-profiles.json"
+        cp ${development}/evidence.json "$out/development.json"
         cp ${production-parity}/parity.json "$out/production-parity.json"
         cp -r ${runtime} "$out/runtime"
       '';

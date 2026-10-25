@@ -39,6 +39,7 @@
     "aosBazelDeploymentLauncher"
     "aosBazelBuildServicesLauncher"
     "aosBazelActivationCrucibleLauncher"
+    "aosBazelActivationCrucibleEditorLauncher"
     "aosBazelActivationSystemdLauncher"
     "aosBazelCrucibleCliLauncher"
   ];

@@ -90,6 +90,7 @@ case " $* " in
   *' -A pkgs.aosBazelRegistryNativeLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelCliSupportLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelActivationCrucibleLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelActivationCrucibleEditorLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelActivationSystemdLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelFormatsLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelCrucibleCliLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
@@ -419,6 +420,7 @@ test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:activation
 grep -Fq -- '-A pkgs.aosBazelActivationCrucibleLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-crucible rust-project //example:activation-crucible
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/activation/aos-activation-crucible><--><build><//example:activation-crucible>"
+grep -Fq -- '-A pkgs.aosBazelActivationCrucibleEditorLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-systemd build //example:activation-systemd
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:activation-systemd>"
 grep -Fq -- '-A pkgs.aosBazelActivationSystemdLauncher ' "$AOS_DEV_TEST_LOG"

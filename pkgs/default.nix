@@ -1890,7 +1890,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit (bazelSupport) aosBazelDeploymentWorkspace aosBazelDeploymentLauncher aosBazelNixTestTools;
       inherit (bazelSupport) aosBazelBuildServicesWorkspace aosBazelBuildServicesLauncher;
       inherit (bazelSupport) aosBazelCliSupportWorkspace aosBazelCliSupportLauncher;
-      inherit (bazelSupport) aosBazelActivationCrucibleWorkspace aosBazelActivationCrucibleLauncher;
+      inherit (bazelSupport) aosBazelActivationCrucibleWorkspace aosBazelActivationCrucibleLauncher aosBazelActivationCrucibleEditorWorkspace aosBazelActivationCrucibleEditorLauncher;
       inherit (bazelSupport) aosBazelActivationSystemdWorkspace aosBazelActivationSystemdLauncher;
       inherit (bazelSupport) aosBazelCrucibleCliRuntime aosBazelCrucibleCliWorkspace aosBazelCrucibleCliLauncher;
       inherit (bazelSupport) aosBazelDependencyGenerator aosBazelDependencyUpdater aosBazelCodegenTools;

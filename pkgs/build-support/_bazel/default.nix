@@ -908,14 +908,16 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/cli/aos-cli-ui:unit" "//crates/cli/aos-closure-analysis:unit" "//crates/cli/aos-nix-docs:unit"];
   };
-  aosBazelActivationCrucibleWorkspace = mkAosBazelWorkspace {
-    root = ../../..;
-    sourceDirectories = ["crates/activation" "crates/modules/aos-module-format" "crates/core/aos-core" "crates/artifacts/aos-artifact-evidence" "crates/crucible" "tools/bazel" "third_party/rust"];
-    repositories = aosBazelRepositories // aosBazelRustRepositories.activation-crucible-tests // {aos_native = aosBazelGuestLibraries;};
-    dependencyProfile = "activation-crucible-tests";
-    rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
-    analysisTargets = ["//crates/activation/aos-activation-crucible:unit"];
-  };
+  aosBazelActivationCrucibleWorkspace =
+    (import ../../../tests/build/_bazel-activation-crucible.nix {
+      inherit pkgs;
+      sourceInventory = null;
+    }).workspace;
+  aosBazelActivationCrucibleEditorWorkspace =
+    (import ../../../tests/build/_bazel-activation-crucible.nix {
+      inherit pkgs;
+      sourceInventory = null;
+    }).editorWorkspace;
   aosBazelActivationSystemdWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["crates/activation" "crates/modules/aos-module-format" "crates/core" "crates/artifacts" "crates/linux" "crates/nix" "crates/transfer" "tools/bazel" "third_party/rust"];
@@ -1212,6 +1214,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelActivationCrucibleWorkspace;
+    }).launcher;
+  aosBazelActivationCrucibleEditorLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelActivationCrucibleEditorWorkspace;
     }).launcher;
   aosBazelActivationSystemdLauncher =
     (import ./development.nix {

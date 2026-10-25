@@ -193,6 +193,7 @@ aos_dev_bazel() (
       project_options+=(--rust-project-package crates/cli/aos-nix-docs)
     elif [[ $launcher_attribute == pkgs.aosBazelActivationCrucibleLauncher ]]; then
       project_options+=(--rust-project-package crates/activation/aos-activation-crucible)
+      launcher_attribute=pkgs.aosBazelActivationCrucibleEditorLauncher
     elif [[ $launcher_attribute == pkgs.aosBazelActivationSystemdLauncher ]]; then
       project_options+=(--rust-project-package crates/activation/aos-activation-systemd)
     elif [[ $launcher_attribute == pkgs.aosBazelActivationStorageLauncher ]]; then

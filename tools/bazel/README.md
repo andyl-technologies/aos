@@ -2097,6 +2097,17 @@ format, editor and production logs retain 1,102 uncached Linux sandbox actions.
 Ordinary development launcher enrollment, complete production compiler
 comparison, foreign targets and performance acceptance remain separate work.
 
+The [development launcher qualification](tests/evidence/activation-crucible-development-native-profiles.json)
+enrolls ordinary adapter builds and `rust-project` exports in the qualified
+release and editor profiles. The required packaged-launcher check executes
+both libtest targets and the empty doctest, comparing all nine cases and
+resolved features with Cargo without ignored cases. It authenticates all seven
+editor macro artifacts, both selected roots and the native cfg values for
+119 configured crates. Existing family and static-runtime outputs retain their
+identities and are reused. Private batch output bases qualify this route on
+immutable snapshots; persistent editor lifecycle, shared-cache behavior and
+production cutover remain separate.
+
 Editor comparison reports zero selected or unattributed diagnostics. The Bazel
 model has complete inference for the selected roots; Cargo retains incomplete
 inference and 2,806 diagnostics outside the selection. Both models' statistics
