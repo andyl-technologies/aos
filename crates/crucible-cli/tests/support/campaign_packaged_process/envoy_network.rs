@@ -356,7 +356,12 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     )?;
     let followup_disruption_id = json_string(&followup_disruption["attempt"], "id")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
-    assert_hot_fork_tier(&fixture, &service, &materialization, &followup_disruption_id)?;
+    assert_hot_fork_tier(
+        &fixture,
+        &service,
+        &materialization,
+        &followup_disruption_id,
+    )?;
     require_hot_fork_root_row(
         &service,
         ANCHOR_DIAGNOSTIC_PREFIX,
