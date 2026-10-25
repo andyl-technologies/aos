@@ -1066,6 +1066,17 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(helper, owner, "unix_stream_socket", permission)
                     )
 
+    def test_normal_policy_readback_withholds_policy_administration(self) -> None:
+        for domain in ("aos_sandbox_controller_t", "aos_sandbox_policy_authority_t"):
+            with self.subTest(domain=domain):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access(domain, "security_t", "security", "read_policy")
+                )
+                for permission in ("load_policy", "setenforce", "setbool", "setsecparam"):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(domain, "security_t", "security", permission)
+                    )
+
     def test_offline_policy_readback_withholds_policy_administration(self) -> None:
         owner = effective_policy.owner_policy
         self.assert_missing_allow_rejected(

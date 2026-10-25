@@ -249,6 +249,8 @@ def matrix(Access, Transition, accesses, ordinary_domains):
             Access(domain, "proc_t", "filesystem", "getattr"),
             Access(domain, "security_t", "filesystem", "getattr"),
         ))
+        if role in ("controller", "policy_authority"):
+            positive.append(Access(domain, "security_t", "security", "read_policy"))
         positive.extend(accesses(
             domain, "null_device_t", "chr_file", ("getattr", "open", "read", "write"),
         ))
