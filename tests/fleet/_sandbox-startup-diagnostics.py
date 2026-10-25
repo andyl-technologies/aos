@@ -18,6 +18,9 @@ def startup_diagnostics(machine, *units):
             "tail -c 65536 /var/log/audit/audit.log",
             f"journalctl --boot=0 {selected_units} --lines={journal_lines} --no-pager",
             "systemctl --failed --no-pager",
+            # A pending oneshot can hold boot without entering failed state.
+            "systemctl list-jobs --no-pager",
+            "ps -eo pid,ppid,stat,wchan:24,comm | head -n 120",
         )
 
         for command in commands:
