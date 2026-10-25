@@ -41,22 +41,20 @@ in {
 
     for role in (0, 1):
         state = f"/var/lib/method46-transport/endpoint-{role}"
-        if role == 0:
-            # Exercise the two-stage offline interface. These are transport
-            # component bytes; installed hooks must supply the canonical cut
-            # from their actual authenticated journal and provisioned scope.
-            seed = f"{state}.initial-cut"
-            vm.succeed(f"${command} prepare {role} {state}")
-            vm.succeed(f"cp {state} {state}.unwritten")
-            vm.fail(f"${command} read {role} {state}")
-            vm.succeed(f"printf short > {seed}")
-            vm.fail(f"${command} initialize {role} {state} {seed}")
-            vm.succeed(f"printf 0123456789abcdef0123456789abcdef > {seed}")
-            vm.succeed(f"${command} initialize {role} {state} {seed}")
-            vm.fail(f"${command} initialize {role} {state} {seed}")
-            vm.fail(f"${command} initialize {role} {state}.unwritten {seed}")
-        else:
-            vm.succeed(f"${command} provision {role} {state}")
+        # Exercise both endpoints' two-stage offline interface, including the
+        # production encrypted initial Extend and authenticated WRITTEN Name.
+        # These are transport component bytes; installed hooks must supply the
+        # canonical cut from their actual journal and provisioned scope.
+        seed = f"{state}.initial-cut"
+        vm.succeed(f"${command} prepare {role} {state}")
+        vm.succeed(f"cp {state} {state}.unwritten")
+        vm.fail(f"${command} read {role} {state}")
+        vm.succeed(f"printf short > {seed}")
+        vm.fail(f"${command} initialize {role} {state} {seed}")
+        vm.succeed(f"printf 0123456789abcdef0123456789abcdef > {seed}")
+        vm.succeed(f"${command} initialize {role} {state} {seed}")
+        vm.fail(f"${command} initialize {role} {state} {seed}")
+        vm.fail(f"${command} initialize {role} {state}.unwritten {seed}")
         vm.fail(f"${command} provision {role} {state}")
         vm.fail(f"${command} provision {role} {state}.occupied")
         vm.succeed(f"test ! -e {state}.occupied")

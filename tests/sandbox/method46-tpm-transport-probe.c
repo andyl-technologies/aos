@@ -179,9 +179,12 @@ int main(int argc, char **argv)
             "authenticate prepared salt and index");
 
         TPM2B_NV_PUBLIC *public = NULL;
-        require(Esys_NV_ReadPublic(context.esys, context.index, ESYS_TR_NONE,
-            ESYS_TR_NONE, ESYS_TR_NONE, &public, NULL) == TSS2_RC_SUCCESS
-            && public != NULL && public->nvPublic.nvIndex == context.index_handle
+        TPM2B_NAME *unwritten_name = NULL;
+        require(session_attributes(&context, TPMA_SESSION_ENCRYPT) == TSS2_RC_SUCCESS
+            && Esys_NV_ReadPublic(context.esys, context.index, context.session,
+                ESYS_TR_NONE, ESYS_TR_NONE, &public, &unwritten_name) == TSS2_RC_SUCCESS
+            && public != NULL && unwritten_name != NULL && unwritten_name->size == 34
+            && public->nvPublic.nvIndex == context.index_handle
             && public->nvPublic.nameAlg == TPM2_ALG_SHA256
             && public->nvPublic.attributes == UINT32_C(0x00040044)
             && public->nvPublic.authPolicy.size == 0 && public->nvPublic.dataSize == 32,
@@ -197,7 +200,23 @@ int main(int argc, char **argv)
             && fgetc(input) == EOF && !ferror(input), "exact initial cut input");
         require(fclose(input) == 0 && nonzero(seed, sizeof(seed)),
             "nonzero initial cut input");
-        initialize_index(&context, &fixture, seed);
+        /* Use the production salted HMAC/encrypted Extend, not the external
+         * provisioner's password-authorized command. The first write changes
+         * the NV Name, so authenticate its WRITTEN public area and value before
+         * publishing the fixture checkpoint. This remains transport evidence;
+         * the installed producer must retain its actual paid journal cut. */
+        require(extend_index(&context, seed) == 0,
+            "production encrypted initial NV extend");
+        uint8_t digest_input[64] = {0};
+        memcpy(digest_input + 32, seed, sizeof(seed));
+        require(EVP_Digest(digest_input, sizeof(digest_input), fixture.checkpoint,
+            NULL, EVP_sha256(), NULL) == 1, "calculate initial checkpoint");
+        uint8_t observation[RESPONSE_BYTES] = {0};
+        require(read_observation(&context, observation) == 0
+            && memcmp(observation + 52, unwritten_name->name, 34) != 0
+            && memcmp(observation + 96, fixture.checkpoint, 32) == 0,
+            "authenticate changed written Name and exact initial value");
+        Esys_Free(unwritten_name);
         save_fixture(argv[3], &fixture);
         close_context(&context);
         erase(&fixture, sizeof(fixture));
