@@ -27,6 +27,7 @@
   openssh,
   buildPackages,
   controllerOnly ? false,
+  debugGatewayPackage ? null,
 }: let
   version = "0.1.0";
   platformSupport = {
@@ -465,7 +466,13 @@
   # socket. Keep its independent executable outside the gateway's link graph.
   qemuTestOracle = callPackage ./_qemu-test-oracle.nix {};
 
-  debugGateway = mkCargoPackage {
+  # The explicit package parameter lets migration checks qualify a replacement
+  # gateway with the complete suite before changing the production default.
+  debugGateway =
+    if debugGatewayPackage == null
+    then cargoDebugGateway
+    else debugGatewayPackage;
+  cargoDebugGateway = mkCargoPackage {
     pname = "crucible-debug-gateway";
     inherit version src;
 
@@ -725,7 +732,7 @@
       }
     ];
     passthru = {
-      inherit controller;
+      inherit controller cargoDebugGateway;
       debugGateway = debugGateway;
       debugger = gdb;
       qemu = qemu-crucible;

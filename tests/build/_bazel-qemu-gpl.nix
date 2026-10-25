@@ -4,7 +4,7 @@
   sourceInventory ? ../../tools/bazel/metadata/qemu-gpl-production-inventory.json,
   cargoInstalled ? {
     plugin = pkgs.crucible-qemu-plugin;
-    gateway = pkgs.crucible.passthru.debugGateway;
+    gateway = pkgs.crucible.passthru.cargoDebugGateway;
   },
 }: let
   packages = {
@@ -85,7 +85,32 @@ in rec {
     targets = ["${plugin}format" "${gateway}format"];
   };
   cargo = import ./_bazel-qemu-gpl-cargo.nix {inherit pkgs;};
+  cargo-execution-trace = import ./_bazel-qemu-gpl-cargo.nix {
+    inherit pkgs;
+    retainExecutionTrace = true;
+  };
+  cargo-execution-inspection = import ./_bazel-compiler-execution.nix {
+    inherit pkgs;
+    cargo = cargo-execution-trace;
+    pname = "aos-bazel-qemu-gpl-compiler-execution-inspection";
+  };
   installed = import ./_bazel-qemu-gpl-installed.nix {inherit pkgs build;};
+  suite = pkgs.callPackage ../../pkgs/tools/crucible/crucible.nix {
+    crucible-qemu-plugin = installed.plugin;
+    debugGatewayPackage = installed.gateway;
+  };
+  suite-release-manifest = import ../crucible/phase7-crucible-release-manifest.nix {
+    inherit pkgs;
+    inherit (pkgs) lib;
+    attrPath = "checks.build.bazel.qemu-gpl.suite-release-manifest";
+    cruciblePackage = suite;
+  };
+  suite-source-retention = import ./_bazel-qemu-gpl-suite.nix {
+    inherit pkgs suite installed;
+  };
+  suite-publication = import ./_bazel-qemu-gpl-publication.nix {
+    inherit pkgs suite installed;
+  };
   runtime-closure = import ./_bazel-runtime-closure-parity.nix {
     inherit pkgs;
     pname = "aos-bazel-qemu-gpl-runtime-closure-parity";
@@ -100,6 +125,11 @@ in rec {
     pkgs = pkgs // {crucible-qemu-plugin = installed.plugin;};
     inherit (pkgs) lib;
     attrPath = "checks.build.bazel.qemu-gpl.live-whitebox";
+  };
+  production-plugin-flight = import ../crucible/phase7-production-rust-plugin-flight.nix {
+    pkgs = pkgs // {crucible-qemu-plugin = installed.plugin;};
+    inherit (pkgs) lib;
+    attrPath = "checks.build.bazel.qemu-gpl.production-plugin-flight";
   };
   installed-inspection =
     pkgs.runCommand "aos-bazel-qemu-gpl-installed-inspection" {

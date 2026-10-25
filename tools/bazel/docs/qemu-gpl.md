@@ -11,12 +11,16 @@ Run the current qualification checks with:
 ```text
 nix-build -A checks.build.bazel.qemu-gpl.build --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.parity --no-out-link
+nix-build -A checks.build.bazel.qemu-gpl.cargo-execution-inspection --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.developer-build --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.format --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.installed-inspection --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.runtime-closure --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.gateway-tests.all --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.plugin-tests.all --no-out-link
+nix-build -A checks.build.bazel.qemu-gpl.suite-release-manifest --no-out-link
+nix-build -A checks.build.bazel.qemu-gpl.suite-source-retention --no-out-link
+nix-build -A checks.build.bazel.qemu-gpl.suite-publication --no-out-link
 ```
 
 `parity` builds an independent offline Cargo release baseline and retains three
@@ -25,6 +29,19 @@ upstream feature selections. `compiler.json` reconstructs five first-party
 compiler invocations from digest-checked Bazel wrapper inputs and compares
 their cfg and edition arguments. It retains other options without claiming
 complete compiler semantic equivalence.
+
+`cargo-execution-inspection` builds a separate Cargo oracle under the
+source-built `strace` inside the Nix sandbox. Its parser reassembles concurrent
+exec calls, rejects incomplete or abbreviated records, and requires every
+requested compiler invocation to reach the declared unwrapped Rust compiler.
+Only direct compiler version queries may appear in addition to those requests.
+The check retains actual GCC/linker commands, tool executable hashes, and the
+realized toolchain closure. It omits environment values and does not expand
+native linker response files or establish compiler-default equivalence.
+The [execution qualification](../tests/evidence/master-gpl-execution-qualification.json)
+records 58 requested invocations, seven direct version queries, five
+first-party compilation units, and 36 native compiler/linker executions. All
+six parser and negative-control tests pass in the sandbox.
 
 `elf.json` compares both artifacts' ELF identities, dynamic dependency names,
 and executable interpreters. It checks the plugin's exported symbol names and
@@ -64,10 +81,47 @@ production selector changes; comparing a package with itself is not migration
 evidence. Matching corresponding-source retention remains a separate release
 requirement.
 
+The `suite` qualification package selects both installed Bazel components in
+the ordinary Crucible aggregate. Its explicit `debugGatewayPackage` parameter
+keeps the legacy gateway available as `passthru.cargoDebugGateway` for independent
+comparisons. The release-manifest check runs the existing suite assertions.
+The source-retention check authenticates the realized aggregate's direct
+references, selected component paths, matching QEMU/source identity, and retained
+Bazel build inputs. The source export includes the root module, lock, native
+inputs, and third-party source specifications; qualification reports and Python
+bytecode are excluded because they are generated outputs.
+
+`suite-publication` invokes the installed Bazel-built `apr` against a private
+local registry and a Nix database populated from the actual realized closure.
+Publication preview must accept the aggregate and reject raw QEMU, a raw plugin,
+an unmarked wrapper, and an aggregate paired with the wrong source identity.
+Every preview must leave the fixture registry unchanged. This exercises the
+production validator without publishing artifacts or starting a service.
+
+To execute a distinct uncached build using only an exported source tree:
+
+```text
+nix-build tools/bazel/tests/corresponding-source.nix \
+  --argstr sourceArtifact /nix/store/<qemu-crucible-source-output> \
+  -A installed.plugin -A installed.gateway --no-out-link
+```
+
+The source-built toolchain and fixed-output source dependencies must already be
+available for offline use. This entry point imports the exported repository,
+uses a separate build derivation, and disables shared action caching. It does
+not replace the named normative ABI and license gates or foreign-host tests.
+
+The [retained offline rebuild](../tests/evidence/master-gpl-offline-source-rebuild.json)
+executes 107 actions in `linux-sandbox`, with zero action-cache hits and no
+shared disk cache. Both installed binaries match the qualified checkout build
+byte for byte. This uses previously realized toolchain and source dependencies;
+it does not claim a cold bootstrap or qualify another host architecture.
+
 The live white-box gate runs unchanged against `installed.plugin`:
 
 ```text
 nix-build -A checks.build.bazel.qemu-gpl.live-whitebox --no-out-link
+nix-build -A checks.build.bazel.qemu-gpl.production-plugin-flight --no-out-link
 ```
 
 It boots an AOS VM and performs nine plugin-launch scenarios with the matching
@@ -77,6 +131,16 @@ ticks, application-random replies and branch reconstruction, and reserved-port
 collision rejection. This executes the native x86 plugin with both x86 and
 AArch64 guests; it does not qualify an AArch64 host/plugin build. Its host test
 drivers still use the existing source-built Cargo harness.
+
+`production-plugin-flight` selects the Bazel plugin in the unchanged diskless
+reference/preemption comparison and block-recovery VM flight. Its exact timer,
+idle/wake, and state-fingerprint comparisons remain enforced. A failure is a
+migration gate; the white-box scenarios alone do not replace this flight.
+The retained execution qualification records a passing selected-plugin flight,
+including exact idle/wake evidence, block recovery, and parallel lifecycle
+checks. This single success does not diagnose the earlier two-instruction timer
+failure recorded in the boundary-gate evidence; the named normative gates and
+their intermittent behavior still need qualification.
 
 The gateway's `gateway-tests` checks compare all 36 Cargo and Bazel cases:
 six library unit tests, 26 executable unit tests, and four lifecycle tests.

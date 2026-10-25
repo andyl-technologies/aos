@@ -1,12 +1,20 @@
 ##! Retains an independent offline Cargo baseline until GPL qualification completes.
-{pkgs}: let
+{
+  pkgs,
+  retainExecutionTrace ? false,
+}: let
   root = ../..;
+  traceCommand = pkgs.lib.optionalString retainExecutionTrace ''
+    ${pkgs.strace}/bin/strace -qq -f -s 16777216 \
+      -e trace=execve,execveat -e signal=none \
+      -o "$out/compiler-exec.log" \
+  '';
 in
   pkgs.mkDerivation {
-    pname = "aos-bazel-qemu-gpl-production-cargo";
+    pname = "aos-bazel-qemu-gpl-production-cargo" + pkgs.lib.optionalString retainExecutionTrace "-exec-trace";
     version = "1";
     src = import (root + "/pkgs/tools/crucible/_cargo-source.nix") {inherit (pkgs) lib;};
-    buildDeps = [pkgs.rust pkgs.python3 pkgs.sed];
+    buildDeps = [pkgs.rust pkgs.python3 pkgs.sed] ++ pkgs.lib.optional retainExecutionTrace pkgs.strace;
     sharedBuildCache = false;
     dontStrip = true;
     dontPatchELF = true;
@@ -29,7 +37,7 @@ in
           cat ${root + "/tools/bazel/tests/trace_cargo_rustc.py"} >> "$TMPDIR/rustc-wrapper"
           chmod +x "$TMPDIR/rustc-wrapper"
           export RUSTC_WRAPPER="$TMPDIR/rustc-wrapper" AOS_CARGO_RUSTC_TRACE="$out/compiler-arguments.jsonl"
-          cargo build --release --frozen --offline --manifest-path crates/Cargo.toml \
+          ${traceCommand}cargo build --release --frozen --offline --manifest-path crates/Cargo.toml \
             -p crucible-qemu-plugin -p crucible-qemu-debug-gateway --jobs "$NIX_BUILD_CORES" \
             --message-format=json > "$out/cargo-messages.jsonl"
           cp "$CARGO_TARGET_DIR/release/libcrucible_qemu_plugin.so" \

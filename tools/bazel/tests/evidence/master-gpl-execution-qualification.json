@@ -1,0 +1,235 @@
+{
+  "checkpoint": "5b7a01cb7a8795574f4db4e8d3352d9f4ccd9a96",
+  "compiler_execution": {
+    "command": "nix-build default.nix -A checks.build.bazel.qemu-gpl.cargo-execution-inspection --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+    "execution": {
+      "compiler_invocations": 65,
+      "direct_version_queries": [
+        {
+          "arguments": [
+            "--verbose",
+            "--version"
+          ],
+          "count": 1
+        },
+        {
+          "arguments": [
+            "--version"
+          ],
+          "count": 6
+        }
+      ],
+      "executable_counts": {
+        "/build/rustc-wrapper": 58,
+        "/build/target/release/build/blake3-7a3541954c68409e/build-script-build": 1,
+        "/build/target/release/build/generic-array-27e7782903fd08bb/build-script-build": 1,
+        "/build/target/release/build/libc-66bb925b1b7a8268/build-script-build": 1,
+        "/build/target/release/build/proc-macro2-f035024c329023dd/build-script-build": 1,
+        "/build/target/release/build/quote-822e49d6f085f045/build-script-build": 1,
+        "/build/target/release/build/serde-f032e8fb7d28e12e/build-script-build": 1,
+        "/build/target/release/build/serde_core-0330912eecc91771/build-script-build": 1,
+        "/build/target/release/build/serde_json-f7a9b469afd8cd54/build-script-build": 1,
+        "/build/target/release/build/thiserror-9e9970074171b3e1/build-script-build": 1,
+        "/build/target/release/build/zmij-fcb180f35b120131/build-script-build": 1,
+        "/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin/as": 2,
+        "/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin/ld": 14,
+        "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/cargo": 1,
+        "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/cargo.unwrapped": 1,
+        "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc": 65,
+        "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc.unwrapped": 65,
+        "/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/bin/gcc": 22,
+        "/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/libexec/gcc/x86_64-unknown-linux-gnu/16.2.0/cc1": 5,
+        "/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/libexec/gcc/x86_64-unknown-linux-gnu/16.2.0/collect2": 14,
+        "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc": 14,
+        "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/gcc": 8
+      },
+      "failed_exec_attempts": 194,
+      "inputs_sha256": {
+        "execution": "bc58a3a19e7564812e9272d59d0dfaba6c4909ad321570268a46ae420b5ec876",
+        "requested": "2daa480778624d90b5662ee7bd18e16cd8a5c9debffc0a2d21759eb7d16d3b70"
+      },
+      "limits": [
+        "This records Cargo compiler and native linker execution, not compiler defaults or Bazel/Cargo semantic equivalence.",
+        "The requested and unwrapped compiler arguments must match apart from argv[0]; future wrapper expansion requires an explicit mapping.",
+        "Environment values and native linker response-file contents are not expanded here.",
+        "This parser accepts the observed execve format; other syscall formats fail closed."
+      ],
+      "requested_invocations": 58,
+      "schema_version": 1,
+      "status": "PASS: requested compiler invocations reached the declared unwrapped compiler",
+      "tools": {
+        "gcc": {
+          "path": "/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/bin/gcc",
+          "sha256": "d7d793895b15c5cba1436b8e34c2aac2ad5ff89a6034b4e17a1f79133d3711d6"
+        },
+        "linker": {
+          "path": "/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin/ld",
+          "sha256": "89ecdaac9a369130518e247132bc3b657d63ef163638e13c90c5a9051e3003bc"
+        },
+        "rustc": {
+          "path": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc.unwrapped",
+          "sha256": "8fbfdfc47bb905e34ec4bfb5139ac1408f83afeded0537f8c71a6ec45b8c48de"
+        }
+      }
+    },
+    "exit_code": 0,
+    "first_party_units": [
+      {
+        "directory": "/build/source/crates",
+        "source": "crates/crucible/crucible-qemu-protocol/src/lib.rs"
+      },
+      {
+        "directory": "/build/source/crates",
+        "source": "crates/crucible/crucible-qemu-debug-gateway/src/lib.rs"
+      },
+      {
+        "directory": "/build/source/crates",
+        "source": "crates/crucible/crucible-qemu-shmem/src/lib.rs"
+      },
+      {
+        "directory": "/build/source/crates",
+        "source": "crates/crucible/crucible-qemu-debug-gateway/src/main.rs"
+      },
+      {
+        "directory": "/build/source/crates",
+        "source": "crates/crucible/crucible-qemu-plugin/src/lib.rs"
+      }
+    ],
+    "inputs": {
+      "cargo": "/nix/store/y8f1jj7pikq6hr43cng9pl6qg1p8xxa6-aos-bazel-qemu-gpl-production-cargo-exec-trace-1",
+      "gcc": "/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/bin/gcc",
+      "linker": "/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin/ld",
+      "rustc": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc.unwrapped",
+      "schema_version": 1,
+      "toolchain_closure": "/nix/store/9dizm1lf8k53vq8h8047smhwwhy7s8p6-aos-bazel-qemu-gpl-compiler-execution-inspection-toolchain-closure-1"
+    },
+    "native_executions": 36,
+    "output": "/nix/store/y0mfxv45vqw8v540a5c7kg9sxa6m35dg-aos-bazel-qemu-gpl-compiler-execution-inspection",
+    "parser_tests": "test_extra_compilation_or_version_flags_are_rejected (test_compiler_execution.CompilerInspectionTests.test_extra_compilation_or_version_flags_are_rejected) ... ok\ntest_missing_compiler_or_linker_is_rejected (test_compiler_execution.CompilerInspectionTests.test_missing_compiler_or_linker_is_rejected) ... ok\ntest_only_observed_noncompiling_direct_queries_are_admitted (test_compiler_execution.CompilerInspectionTests.test_only_observed_noncompiling_direct_queries_are_admitted) ... ok\ntest_concurrent_resumption_preserves_process_and_arguments (test_compiler_execution.ExecutionTraceTests.test_concurrent_resumption_preserves_process_and_arguments) ... ok\ntest_failed_path_lookup_is_not_successful_execution (test_compiler_execution.ExecutionTraceTests.test_failed_path_lookup_is_not_successful_execution) ... ok\ntest_partial_abbreviated_and_unknown_records_fail_closed (test_compiler_execution.ExecutionTraceTests.test_partial_abbreviated_and_unknown_records_fail_closed) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.005s\n\nOK\n",
+    "reports_sha256": {
+      "execution.json": "45af737cb9bda16c3abf0e9d1e0539f6d013154c51068163fcc407e81f16eaff",
+      "parser-tests.log": "97520269c0c4fdfc4129db83ed0043bc6b24c027135dae7b9a788a07a24c2856",
+      "toolchain-closure.json": "fd0718f770be91f08f29fc87447a6a8c2cd0375dd7bb4a7900fffa6f96fc5142"
+    },
+    "toolchain_closure_paths": 17
+  },
+  "limits": [
+    "The compiler execution report records observed Cargo commands and declared toolchain closure, not complete Bazel/Cargo compiler or linker semantic equivalence.",
+    "This VM flight executes the x86 host/plugin with the existing Cargo-built harness; it does not qualify a foreign host or eliminate the harness Cargo dependency.",
+    "The unchanged comparators passed this run. An earlier Cargo-plugin flight failed by two raw timer instructions; this success does not diagnose or repair that intermittent failure.",
+    "Suite publication and source-retention checks, named normative ABI/license gates, and repeated performance acceptance remain separately required."
+  ],
+  "production_plugin_flight": {
+    "command": "nix-build default.nix -A checks.build.bazel.qemu-gpl.production-plugin-flight --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+    "derivation": "/nix/store/xyiyvjpsmbq36zacr0rfq1006x9zdrqc-aos-vm-test-crucible-production-rust-plugin-flight-0.drv",
+    "exit_code": 0,
+    "observed_fields": {
+      "actual_virtual_timer_fire_authenticated": "true",
+      "all_vcpus_halted_observed": "true",
+      "block_recovery_hot_fork_subflight": "true",
+      "block_recovery_nanos": "5000000000",
+      "block_recovery_pause_logical_icount": "10553133153750",
+      "block_recovery_pause_raw_icount": "5878272899",
+      "block_recovery_start_tick": "3999791475800",
+      "block_recovery_write_completed": "true",
+      "bounded_scheduler_preemption_applied": "true",
+      "component_failures": "0",
+      "diskless_multiboot_runs": "2",
+      "exact_timer_deadline_observed": "true",
+      "fingerprint_flight_variants": "reference,host-preempted",
+      "fractional_phase_fingerprint_changed": "true",
+      "fractional_phase_no_retirement": "true",
+      "fractional_phase_timer_projection_changed": "true",
+      "fractional_phase_window_lower_picoseconds": "2000000",
+      "fractional_phase_window_upper_picoseconds": "2000001",
+      "gate": "gate:production-rust-plugin-flight",
+      "hot_fork_preparation_order": "block-recovery-settled,draining,prepared",
+      "hot_fork_template_draining": "true",
+      "hot_fork_template_generation": "1",
+      "hot_fork_template_prepared": "true",
+      "idle_wake_stream_restart_identical": "true",
+      "instruction_exact_changed_components": "sample_icount,rr_position_in_quantum,ram_digest,device_state_digest,vcpu[0].register_digest",
+      "instruction_exact_fingerprint_changed": "true",
+      "instruction_exact_first_differing_state_component": "ram_digest",
+      "instruction_exact_localization": "one-instruction-window",
+      "instruction_exact_lower_rr_position": "3136",
+      "instruction_exact_lower_rr_vcpu": "0",
+      "instruction_exact_owning_vcpu_state_projection": "vcpu[0].register_digest",
+      "instruction_exact_raw_retirement_successor": "true",
+      "instruction_exact_rr_successor": "true",
+      "instruction_exact_state_projection_changed": "true",
+      "instruction_exact_upper_rr_position": "3137",
+      "instruction_exact_upper_rr_vcpu": "0",
+      "instruction_exact_window_lower_picoseconds": "2000001",
+      "instruction_exact_window_upper_picoseconds": "2000051",
+      "instruction_exact_window_width_picoseconds": "50",
+      "on_demand_boundary_stream_bit_identical": "true",
+      "on_demand_worker_acknowledgements": "14",
+      "pending_quantum_preemption_certified": "true",
+      "per_vcpu_register_files_present": "true",
+      "production_host_parallel_authenticated_exact_recovery": "true",
+      "production_host_parallel_canonical_log_identity": "true",
+      "production_host_parallel_commit_order": "curl,io-probe",
+      "production_host_parallel_failure_healthy_peer_advanced": "true",
+      "production_host_parallel_failure_logical_state_uncommitted": "true",
+      "production_host_parallel_failure_retry_poisoned": "true",
+      "production_host_parallel_maximum_workers": "2",
+      "production_host_parallel_realized_parallelism": "2",
+      "production_host_parallel_requested_runs": "2",
+      "production_host_parallel_state_identity": "true",
+      "production_host_parallel_time_identity": "true",
+      "production_host_parallel_worker_count_absent_from_checkpoint": "true",
+      "production_vm_lifecycle_path": "true",
+      "queued_idle_wake_reached_exact_deadline": "true",
+      "readiness_setup_marker_authenticated": "true",
+      "readiness_setup_marker_icount": "740925198850",
+      "reference_runtime_trace_bytes": "955273",
+      "reference_runtime_trace_sha256": "eea3587b95c4bef341f2e2508847759c23c64cedf5da71cc938a5bd257b0e574",
+      "rr_switch_quantum": "4096",
+      "rust_plugin_loaded": "true",
+      "sample_count": "5",
+      "sample_logical_picoseconds_equal_target": "true",
+      "sample_stream_restart_identical": "true",
+      "sample_target_picoseconds": "2000000,2000001,2000051,4000000,8000000",
+      "scheduler_interrupt_applied": "true",
+      "scheduler_preemption_mailbox_decisions": "2",
+      "scheduler_vcpu_switch_applied": "true",
+      "timer_witness_armed_deadline_ps": "741120474050",
+      "timer_witness_armed_deadline_tick": "741120474050",
+      "timer_witness_armed_raw_icount": "9488604109",
+      "timer_witness_completed": "1",
+      "timer_witness_fired_expire_ps": "741120474050",
+      "timer_witness_fired_raw_icount": "9488604109",
+      "timer_witness_fired_virtual_ps": "741120474050",
+      "timer_witness_generation": "1290",
+      "timer_witness_post_wake_tick": "741120474050",
+      "timer_witness_published_wake_tick": "741120474050",
+      "timer_witness_reserved": "0",
+      "timer_witness_retirement_step_ps": "50",
+      "timer_witness_ticks_per_instruction": "50",
+      "vcpu_count": "4"
+    },
+    "output": "/nix/store/r835m1kd0nmq7h4vkiicm4jzql81kskr-aos-vm-test-crucible-production-rust-plugin-flight-0",
+    "reports_sha256": {
+      "fc.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "result": "c26de83abdc9496cd1301470918ec39ecca1cf389ef0ae1c6504da1800d1c431",
+      "serial.log": "ff6e5ab009cd9c0205c423ed63449ea6a88bde23517bd2618a6efaa0ad099b7f"
+    },
+    "result": "PASS",
+    "selected_plugin": "/nix/store/pjshlnzjv2g4wd302jyab4fmlp45nfac-crucible-qemu-plugin-0.1.0",
+    "selected_plugin_derivation": "/nix/store/0q3zhh7819xqs3rc2548iwn7fpy82f8s-crucible-qemu-plugin-0.1.0.drv"
+  },
+  "schema_version": 1,
+  "source_sha256": {
+    "crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs": "f53158456954707fc0d5398e6307e814f9294662df241d23327086060af7e882",
+    "crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight/tests.rs": "de3ede6e9d9119a78e2e312cc9e5821605dc4b09e79ca26cbdbf54c1e969b93a",
+    "pkgs/tools/crucible/crucible.nix": "0706f5da7f922b81079e0181320e1478e3595dd810e3d63ec47f73aeb4ecbeda",
+    "tests/build/_bazel-compiler-execution.nix": "83f415e2991e98d0d8f927fb64d06c8850ded6ea31a259407259e877ef75acce",
+    "tests/build/_bazel-qemu-gpl-cargo.nix": "339762c4cdb34ea7b66a3568148bfd9cfbfb0998a0bb811249dcef83da7cb02a",
+    "tests/build/_bazel-qemu-gpl.nix": "d99cb6cffdc957a0b48186b3f2f1f7e44948dab474c1e6e0b1cbd6aadcd9f056",
+    "tests/crucible/phase7-production-rust-plugin-flight.nix": "bfefce328506823b515915f463e9c81f7ad711e82d3889a4f891efc6e6773dc3",
+    "tools/bazel/tests/inspect_compiler_execution.py": "c60e7bc11db6b388ed15efb406512e0149c74d889210f71c9e2a1044c4aadb48",
+    "tools/bazel/tests/test_compiler_execution.py": "29efcd9af683edd47749cbcc1b0b46638f8a20efca8d9c60fd355718a61710f2"
+  },
+  "status": "PASS: observed compiler execution and selected Bazel plugin VM flight"
+}
