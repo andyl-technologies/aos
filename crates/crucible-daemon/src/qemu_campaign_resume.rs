@@ -303,6 +303,8 @@ pub(crate) enum QemuProductionExactResumeExecutionRunnerError<F, D> {
     CheckpointCapture(SchedulerError),
     /// Exact terminal execution fingerprint capture failed before teardown.
     TerminalFingerprintCapture(SchedulerError),
+    /// The resolved-effect trace could not be captured before teardown.
+    ResolvedEffectTraceCapture(SchedulerError),
     /// Durable root-before-write handoff for a later checkpoint failed.
     CheckpointHandoff(CheckpointHandoffFailure),
     /// Final drain or lifecycle cleanup failed.
@@ -356,6 +358,9 @@ impl<F, D> std::fmt::Display for QemuProductionExactResumeExecutionRunnerError<F
             Self::TerminalFingerprintCapture(error) => {
                 write!(formatter, "capture resumed terminal fingerprints: {error}")
             }
+            Self::ResolvedEffectTraceCapture(error) => {
+                write!(formatter, "capture resumed resolved-effect trace: {error}")
+            }
             Self::CheckpointHandoff(error) => {
                 write!(formatter, "handoff resumed production checkpoint: {error}")
             }
@@ -384,6 +389,7 @@ where
             Self::Driver(error) => Some(error),
             Self::CheckpointCapture(error)
             | Self::TerminalFingerprintCapture(error)
+            | Self::ResolvedEffectTraceCapture(error)
             | Self::Cleanup(error) => Some(error),
             Self::CheckpointHandoff(error) => Some(error),
             Self::EventLog(error) => Some(error),
@@ -594,6 +600,13 @@ where
                 .map(|()| pending)
                 .map_err(map_resume_terminal_fingerprint_capture_failure)
         });
+        // The interceptor's campaign records live in the restored child;
+        // read the trace before shutdown, exactly as a fresh execution does.
+        let captured_trace = if matches!(&driven, Ok(ResumeRunnerResult::Observation(_))) {
+            lifecycle.resolved_effect_trace()
+        } else {
+            Ok(None)
+        };
         let cleanup = lifecycle.shutdown();
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
@@ -617,10 +630,15 @@ where
                 ));
             }
         };
+        let resolved_effect_trace = captured_trace.map_err(|error| {
+            AttemptWorkerFailure::Terminal(
+                QemuProductionExactResumeExecutionRunnerError::ResolvedEffectTraceCapture(error),
+            )
+        })?;
         let product = match pending {
             ResumeRunnerResult::Observation(pending) => self
                 .driver
-                .seal(pending, final_events)
+                .seal_with_trace(pending, final_events, resolved_effect_trace)
                 .map_err(map_resume_driver_failure)?,
             ResumeRunnerResult::Checkpoint(checkpoint) => {
                 AttemptExecutionProduct::exact_checkpoint(checkpoint)

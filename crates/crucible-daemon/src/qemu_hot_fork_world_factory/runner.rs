@@ -71,6 +71,8 @@ pub enum QemuHotForkWorldExecutionRunnerError<F, D> {
     CheckpointCapture(SchedulerError),
     /// Exact terminal execution fingerprint capture failed before teardown.
     TerminalFingerprintCapture(SchedulerError),
+    /// The resolved-effect trace could not be captured before teardown.
+    ResolvedEffectTraceCapture(SchedulerError),
     /// Durable checkpoint handoff failed.
     CheckpointHandoff(CheckpointHandoffFailure),
     /// Final drain or adopted-node cleanup failed.
@@ -132,6 +134,12 @@ impl<F: std::fmt::Display, D: std::fmt::Display> std::fmt::Display
                     "capture production hot-fork terminal fingerprints: {error}"
                 )
             }
+            Self::ResolvedEffectTraceCapture(error) => {
+                write!(
+                    formatter,
+                    "capture production hot-fork resolved-effect trace: {error}"
+                )
+            }
             Self::CheckpointHandoff(error) => {
                 write!(formatter, "handoff production hot-fork checkpoint: {error}")
             }
@@ -167,6 +175,7 @@ where
             Self::Start(error)
             | Self::CheckpointCapture(error)
             | Self::TerminalFingerprintCapture(error)
+            | Self::ResolvedEffectTraceCapture(error)
             | Self::Cleanup(error) => Some(error),
             Self::Driver(error) => Some(error),
             Self::CheckpointHandoff(error) => Some(error),
@@ -321,6 +330,14 @@ where
                 .map(|()| pending)
                 .map_err(map_hot_fork_terminal_fingerprint_capture_failure)
         });
+        // The interceptor's campaign records live in the child; read the
+        // trace before shutdown so an observation carries its applied
+        // effects, exactly as a fresh execution does.
+        let captured_trace = if matches!(&driven, Ok(HotForkRunnerResult::Observation(_))) {
+            lifecycle.resolved_effect_trace()
+        } else {
+            Ok(None)
+        };
         let cleanup = lifecycle.shutdown();
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
@@ -344,9 +361,21 @@ where
                 ));
             }
         };
+        let resolved_effect_trace = match captured_trace {
+            Ok(trace) => trace,
+            Err(error) => {
+                self.factory.quarantine(lifecycle);
+                return Err(AttemptWorkerFailure::Terminal(
+                    QemuHotForkWorldExecutionRunnerError::ResolvedEffectTraceCapture(error),
+                ));
+            }
+        };
         let product = match pending {
             HotForkRunnerResult::Observation(pending) => {
-                match self.driver.seal(pending, final_events) {
+                match self
+                    .driver
+                    .seal_with_trace(pending, final_events, resolved_effect_trace)
+                {
                     Ok(product) => product,
                     Err(failure) => {
                         self.factory.quarantine(lifecycle);

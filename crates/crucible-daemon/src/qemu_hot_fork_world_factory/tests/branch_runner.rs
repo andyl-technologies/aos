@@ -136,6 +136,16 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
     let (_repository, _store, _lineage, _attempt, result, _scenario) =
         repository_execution_fixture();
     let observations = BranchReplayObservations::new();
+    // The child's applied effects, restored from the source and extended by
+    // this attempt, must reach the sealed observation.
+    let effect_trace = crucible::model::ResolvedEffectTrace::empty(
+        crucible::model::FaultReplayMode::RecomputedCause,
+    )
+    .expect("empty resolved-effect trace");
+    *observations
+        .effect_trace
+        .lock()
+        .expect("branch replay effect trace") = Some(effect_trace.clone());
     let factory = BranchReplayLifecycleFactory {
         observations: observations.clone(),
     };
@@ -227,6 +237,13 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
         1
     );
     assert_eq!(observations.shutdowns.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *observations
+            .sealed_traces
+            .lock()
+            .expect("branch replay sealed traces"),
+        [Some(effect_trace)]
+    );
 
     let expected_nodes = input
         .scenario()

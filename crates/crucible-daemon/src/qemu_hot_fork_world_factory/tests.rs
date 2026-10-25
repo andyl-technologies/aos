@@ -477,6 +477,10 @@ struct BranchReplayObservations {
     recoveries: Arc<AtomicUsize>,
     recovery_failures_remaining: Arc<AtomicUsize>,
     quarantines: Arc<AtomicUsize>,
+    /// Trace the scripted lifecycle exports for the attempt's applied effects.
+    effect_trace: Arc<Mutex<Option<crucible::model::ResolvedEffectTrace>>>,
+    /// Trace each seal received, in order.
+    sealed_traces: Arc<Mutex<Vec<Option<crucible::model::ResolvedEffectTrace>>>>,
 }
 
 impl BranchReplayObservations {
@@ -490,6 +494,8 @@ impl BranchReplayObservations {
             recoveries: Arc::new(AtomicUsize::new(0)),
             recovery_failures_remaining: Arc::new(AtomicUsize::new(0)),
             quarantines: Arc::new(AtomicUsize::new(0)),
+            effect_trace: Arc::new(Mutex::new(None)),
+            sealed_traces: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -653,7 +659,12 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
     fn resolved_effect_trace(
         &self,
     ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
-        Ok(None)
+        Ok(self
+            .observations
+            .effect_trace
+            .lock()
+            .expect("branch replay effect trace")
+            .clone())
     }
 
     fn shutdown(
@@ -1033,6 +1044,20 @@ impl QemuFreshAttemptDriver for BranchReplayDriver {
         Ok(AttemptExecutionProduct::prepared_semantic(
             self.result.clone(),
         ))
+    }
+
+    fn seal_with_trace(
+        &mut self,
+        candidate: Self::Pending,
+        final_events: Vec<crucible::SchedulerEventLogEntry>,
+        resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        self.observations
+            .sealed_traces
+            .lock()
+            .expect("branch replay sealed traces")
+            .push(resolved_effect_trace);
+        self.seal(candidate, final_events)
     }
 }
 

@@ -168,7 +168,7 @@ impl QemuFreshAttemptLifecycleOwner for FakeResumeLifecycle {
     fn resolved_effect_trace(
         &self,
     ) -> Result<Option<crucible::model::ResolvedEffectTrace>, SchedulerError> {
-        Ok(None)
+        Ok(Some(resume_effect_trace()))
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -232,12 +232,19 @@ struct FakeResumeDriver {
     observed: Arc<Mutex<Option<ObservedResume>>>,
 }
 
+/// Returns the applied-effect trace the restored child reports at its stop.
+fn resume_effect_trace() -> crucible::model::ResolvedEffectTrace {
+    crucible::model::ResolvedEffectTrace::empty(crucible::model::FaultReplayMode::RecomputedCause)
+        .expect("empty resolved-effect trace")
+}
+
 struct ObservedResume {
     events: Vec<SchedulerEventLogEntry>,
     completed_quanta: u64,
     frontier: VirtualTime,
     quiescence: Option<SchedulerQuiescence>,
     final_events: Vec<SchedulerEventLogEntry>,
+    resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
     attempt_event_count: usize,
 }
 
@@ -262,6 +269,7 @@ impl QemuFreshAttemptDriver for FakeResumeDriver {
             frontier,
             quiescence,
             final_events: Vec::new(),
+            resolved_effect_trace: None,
             attempt_event_count,
         });
         Ok(QemuFreshDriveOutcome::Observation(()))
@@ -280,6 +288,22 @@ impl QemuFreshAttemptDriver for FakeResumeDriver {
             .expect("driver must observe materialization before sealing")
             .final_events = final_events;
         Ok(test_checkpoint_product())
+    }
+
+    fn seal_with_trace(
+        &mut self,
+        pending: Self::Pending,
+        final_events: Vec<SchedulerEventLogEntry>,
+        resolved_effect_trace: Option<crucible::model::ResolvedEffectTrace>,
+    ) -> Result<AttemptExecutionProduct, AttemptWorkerFailure<Self::Error>> {
+        let product = self.seal(pending, final_events)?;
+        self.observed
+            .lock()
+            .expect("resume observation")
+            .as_mut()
+            .expect("driver must observe materialization before sealing")
+            .resolved_effect_trace = resolved_effect_trace;
+        Ok(product)
     }
 }
 
@@ -400,6 +424,8 @@ fn resume_runner_preserves_exact_event_prefix_and_final_drain() {
     assert_eq!(observed.frontier, VirtualTime { ticks: 17 });
     assert_eq!(observed.quiescence, Some(SchedulerQuiescence::default()));
     assert_eq!(observed.final_events, final_events);
+    // The restored child's applied effects must reach the sealed observation.
+    assert_eq!(observed.resolved_effect_trace, Some(resume_effect_trace()));
     assert_eq!(observed.attempt_event_count, 0);
     assert_eq!(calls.starts.load(Ordering::SeqCst), 1);
     assert_eq!(calls.drives.load(Ordering::SeqCst), 1);
