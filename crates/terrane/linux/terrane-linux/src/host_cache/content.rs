@@ -6,6 +6,7 @@
 //! substitutes for a native source. This host-local adapter grants no ref writes
 //! or guest authorization; callers apply their repository guard separately.
 
+mod cold;
 mod driver;
 mod object;
 mod prepared;

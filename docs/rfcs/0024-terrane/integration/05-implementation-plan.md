@@ -189,6 +189,31 @@ requires both preparations to refuse, and compares durable policy before and
 after. Source setup remains concurrent and actor deadlines are unchanged. The
 closed inventories and native-boundary qualification remain pending.
 
+The cold-file component now accepts an original scoped SDK preparation, checks
+its signed erasure and reassembly requirements and physical domain before
+content I/O, then warms bounded inline or canonical manifest/chunk inputs.
+Read-through success alone never proves native custody: strict manifest
+admission and actual native publication must independently verify the original
+sources, CDC positions, total length and whole-file hashes. Its finite total
+fetch budget includes consumer release grace, an actual sweep and sealing.
+The returned producer object remains private until the same original selection
+finishes through the ordinary backing bridge. Existing sealed files continue
+through that bridge directly. Accepted physical work remains owned on failure
+or cancellation; producer funding alone does not claim completed cache handoff.
+
+The configured native guest fixture uses the actual configured CDC seed and
+explicit `always` policy to prepare signed inline and multi-chunk files. It
+checks the original sealed inode before closing Read, completed cache handoff,
+and warm grants with unchanged inode and no lower content traffic. Negative
+controls require incompatible signed reassembly to refuse before I/O or durable
+mutation, and an oversized malformed lower body to return Capacity before
+decoding or native admission. Lower encoded and decoded input bounds now apply
+to both ordinary content and one-hop dictionaries. Strict all-feature/all-target
+Clippy passes; native qualification and required workspace compilation are
+pending. The fixture retains the existing actor and VM deadlines. Production
+worker cold dispatch, retained fetch lifetime after open expiry and cancellation,
+and exposure/drain composition are still required before accepting T-FUSE-2.
+
 The structural-index requirements audit distinguishes the qualified component
 from the remaining open-path composition:
 

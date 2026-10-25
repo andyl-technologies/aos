@@ -39,6 +39,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
             &inputs.domain,
             &source_parent,
             vec![("wipe".into(), zero)],
+            [0; 32],
         )),
     )?;
     eprintln!("SURFACE_SCOPED_STAGE source-commit");

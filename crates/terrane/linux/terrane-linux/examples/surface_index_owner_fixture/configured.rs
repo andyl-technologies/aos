@@ -1,7 +1,7 @@
 //! Checks configured index policy against genuine enrolled and recovered caches.
 //!
 //! The native supervisor supplies existing portable buckets and the original
-//! publisher/quota services. This actor opens no repository signing authority.
+//! publisher/quota services. Signed source fixtures remain outside the cache.
 
 use super::{CompiledIndex, File, MetadataExt, Result, fs, require_empty_capabilities, tree};
 use std::{
@@ -14,6 +14,9 @@ use terrane_sdk::config::Config;
 
 #[path = "configured/recovery.rs"]
 mod recovery;
+
+#[path = "configured/cold.rs"]
+mod cold;
 
 /// Runs the fresh actor without adding its async frame to the other selectors.
 ///
@@ -64,7 +67,7 @@ async fn verify(
         return Box::pin(recovery::verify(plan, host, confinement, source_parent)).await;
     }
 
-    let caches = plan.open(confinement).await?;
+    let mut caches = plan.open(confinement).await?;
     let cache = caches
         .get("public")
         .ok_or("missing genuine configured cache")?;
@@ -126,5 +129,11 @@ async fn verify(
     println!(
         "PASS configured funded surface policy reaches actual recovered owner and warm reuse retains original sealed inode"
     );
+    drop(reused);
+    drop(admitted);
+    let cache = caches
+        .remove("public")
+        .ok_or("missing original configured cache")?;
+    Box::pin(cold::verify(cache, source_parent)).await?;
     Ok(())
 }

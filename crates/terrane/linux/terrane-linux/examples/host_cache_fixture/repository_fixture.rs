@@ -49,10 +49,16 @@ impl RepositoryFixture {
     /// # Errors
     /// Preserves filesystem, signing, domain and repository initialization failures.
     pub(super) async fn new_in(domain: &str, parent: &Path) -> FixtureResult<Self> {
-        Box::pin(Self::new_with_properties(domain, parent, Vec::new())).await
+        Box::pin(Self::new_with_properties(
+            domain,
+            parent,
+            Vec::new(),
+            [0; 32],
+        ))
+        .await
     }
 
-    /// Initializes signed source custody with explicit root requirements.
+    /// Initializes signed source custody with explicit root requirements and seed.
     ///
     /// # Errors
     /// Preserves source, property, signing and repository initialization failures.
@@ -60,6 +66,7 @@ impl RepositoryFixture {
         domain: &str,
         parent: &Path,
         bootstrap_properties: Vec<(String, Vec<u8>)>,
+        chunk_seed: [u8; 32],
     ) -> FixtureResult<Self> {
         let entropy = TokioLocalFs.random_bytes(16).await?;
         let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -110,7 +117,7 @@ impl RepositoryFixture {
                 bootstrap_properties,
             },
             MAIN,
-            [0; 32],
+            chunk_seed,
             TokioLocalFs,
             TokioClock,
         ))

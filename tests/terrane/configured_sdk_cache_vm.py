@@ -375,7 +375,7 @@ def run_surface(driver, image, surface_image):
     original = 'role = "serve"\nstore = ' + json.dumps(store) + "\n"
 
     for mode in ["disabled", "bound", "admit", "recover-draining"]:
-        text = original + host_configuration(driver)
+        text = original + host_configuration(driver, mode="always" if mode == "admit" else "never")
         if mode != "disabled":
             node_bytes = 32 if mode == "bound" else 65536
             text += f"""
@@ -396,7 +396,11 @@ future_hold_bytes = 327680
             witness = "PASS configured funded surface policy reaches actual recovered owner and warm reuse retains original sealed inode"
         else:
             witness = f"PASS configured surface {mode} policy refuses before durable mutation"
-        driver.require(stdout.decode().splitlines() == [witness],
+        witnesses = [witness]
+        if mode == "admit":
+            witnesses.append("PASS signed cold inline and multi-chunk preparations seal original native backing before closing Read; warm grants preserve inode without lower content traffic")
+            witnesses.append("PASS oversized lower body refuses before decoding and native policy mutation; incompatible signed reassembly refuses before content traffic")
+        driver.require(stdout.decode().splitlines() == witnesses,
                        "configured surface control lacks its exact native witness: " + mode)
 
     runpy.run_path(str(surface_image / "share/surface_index_owner_vm.py"))["verify_surface"](

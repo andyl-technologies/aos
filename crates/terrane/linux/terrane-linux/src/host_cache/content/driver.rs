@@ -186,6 +186,9 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
 
     async fn fetch_verified(&self, identity: &Identity) -> Result<Fetched, StoreFailure> {
         let encoded = self.lower.get(identity, None).await?;
+        if encoded.len() > self.native.max_allocation_bytes {
+            return Err(StoreFailure::new(StoreErrorKind::Capacity));
+        }
         if identity.kind() != IdentityKind::Chunk {
             FetchRequirement::Metadata { identity }.verify(&encoded, &self.native.validator)?;
             return Ok(Fetched {
@@ -197,6 +200,9 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
         let profile = self.native.ready.layout().layout().chunk_profile();
         let length = terrane_sdk::codec::encoded_plaintext_len(&encoded, profile.maximum())
             .map_err(|error| corrupt(identity, error))?;
+        if length > self.native.max_allocation_bytes {
+            return Err(StoreFailure::new(StoreErrorKind::Capacity));
+        }
         let envelope = parse_envelope(&encoded).map_err(|error| corrupt(identity, error))?;
         let dictionary = if let Codec::ZstdDictionary(digest) = envelope.codec {
             let id = TERRANE_V1
@@ -210,8 +216,14 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
                 Err(error) if retryable(&error) => self.lower.get(&id, None).await?,
                 Err(error) => return Err(error),
             };
+            if bytes.len() > self.native.max_allocation_bytes {
+                return Err(StoreFailure::new(StoreErrorKind::Capacity));
+            }
             let size = terrane_sdk::codec::encoded_plaintext_len(&bytes, profile.maximum())
                 .map_err(|error| corrupt(&id, error))?;
+            if size > self.native.max_allocation_bytes {
+                return Err(StoreFailure::new(StoreErrorKind::Capacity));
+            }
             let plaintext =
                 terrane_sdk::codec::decode_verified(&bytes, size, profile, true, &id, None)
                     .map_err(|error| corrupt(&id, error))?
