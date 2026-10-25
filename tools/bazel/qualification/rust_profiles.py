@@ -79,6 +79,41 @@ def require_matching_strip(actual, expected):
         raise ValueError("compiler strip settings differ: " + str((actual_setting, expected_setting)))
 
 
+def bind_native_defaults(receipt, actions, events):
+    """Binds native default probes to every executed Bazel compiler binary."""
+    if receipt.get("schema_version") != 1 or receipt.get("status") != "PASS":
+        raise ValueError("native default conformance did not pass")
+    host = receipt["native_target"]
+    compiler = receipt["compiler"]["unwrapped"]
+    digest = receipt["tools_sha256"][compiler]
+    paths = {action["arguments"][0] for action in actions}
+    observed = set()
+    for event in events:
+        if event["mnemonic"] != "Rustc":
+            continue
+        inputs = [item for item in event["inputs"] if item["path"] in paths]
+        if len(inputs) != 1:
+            raise ValueError("native default probe cannot identify the executed compiler input")
+        item = inputs[0]
+        if item["digest"].get("hashFunctionName") != "SHA-256" or item["digest"].get("hash") != digest:
+            raise ValueError("native default probe compiler differs from the executed compiler")
+        observed.add(item["path"])
+    if not observed or observed != paths:
+        raise ValueError("native default probe omitted an executed compiler")
+    for action in actions:
+        if compiler_options(action["arguments"])["target"] not in {None, host}:
+            raise ValueError("native default probe does not qualify a foreign compiler target")
+    return {
+        "status": "PASS", "native_target": host, "compiler_sha256": digest,
+        "executed_compiler_paths": sorted(observed), "actions": len(actions),
+        "limits": [
+            "The probe compiler digest matches each executed Bazel Rust compiler input; selected native target spellings are checked.",
+            "Native Cargo traces do not retain executable digests; their compiler provenance still depends on the separately retained Nix derivations.",
+            "This binding does not qualify incremental codegen, complete compiler options, linker/ABI, application bytes, or runtime closure.",
+        ],
+    }
+
+
 def macro_key(package, version, arguments):
     """Identifies a macro without losing versions or configured feature units."""
     if not package or not version or option(arguments, "--crate-type") != "proc-macro":
@@ -194,7 +229,7 @@ def match_macros(actions, reports, native, compare_strip=False):
     ]
 
 
-def verify(build, cargo, compare_strip=False, external_repository_prefix=None):
+def verify(build, cargo, compare_strip=False, external_repository_prefix=None, native_defaults=None):
     """Audits every first-party compiler unit and configured procedural macro."""
     evidence = build / "evidence"
     events = execution_events(build)
@@ -208,6 +243,7 @@ def verify(build, cargo, compare_strip=False, external_repository_prefix=None):
         json.loads((evidence / "actions.json").read_text()), events,
         json.loads((evidence / "compiler-inputs.json").read_text()),
     )["actions"]
+    defaults_binding = bind_native_defaults(native_defaults, actions, events) if native_defaults is not None else None
     paired = audit(build, cargo)
     messages = [
         json.loads(line)
@@ -250,6 +286,7 @@ def verify(build, cargo, compare_strip=False, external_repository_prefix=None):
         "schema_version": 1, "status": "PASS", "build": str(build), "cargo": str(cargo),
         "first_party_units": first_party, "procedural_macros": macros,
         "strip_compared": compare_strip, "external": external,
+        "native_defaults": defaults_binding,
         "evidence_sha256": {name: hashlib.sha256((evidence / name).read_bytes()).hexdigest()
                             for name in ["actions.json", "execution.json", "compiler-inputs.json"]},
         "native_trace_sha256": hashlib.sha256(trace.read_bytes()).hexdigest(),
@@ -269,8 +306,10 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--compare-strip", action="store_true")
     parser.add_argument("--external-repository-prefix")
+    parser.add_argument("--native-defaults", type=Path)
     options = parser.parse_args()
-    report = verify(options.build, options.cargo, options.compare_strip, options.external_repository_prefix)
+    defaults = json.loads(options.native_defaults.read_text()) if options.native_defaults else None
+    report = verify(options.build, options.cargo, options.compare_strip, options.external_repository_prefix, defaults)
     options.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 
 

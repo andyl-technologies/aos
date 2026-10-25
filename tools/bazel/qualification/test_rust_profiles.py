@@ -2,7 +2,7 @@
 
 import unittest
 
-from rust_profiles import generator_sources, macro_key, match_macros, native_macros, option, profile
+from rust_profiles import bind_native_defaults, generator_sources, macro_key, match_macros, native_macros, option, profile
 
 
 class RustProfileTests(unittest.TestCase):
@@ -111,6 +111,59 @@ class RustProfileTests(unittest.TestCase):
         message = {"reason": "compiler-artifact", "manifest_path": "/nix/store/vendor/upstream/Cargo.toml",
                    "target": {"kind": ["custom-build"], "src_path": "/nix/store/vendor/upstream/build.rs"}}
         self.assertFalse(generator_sources([message]))
+
+
+class NativeDefaultBindingTests(unittest.TestCase):
+    def fixture(self):
+        compiler = "bazel-out/native/rust/bin/rustc"
+        digest = "a" * 64
+        receipt = {"schema_version": 1, "status": "PASS", "native_target": "x86_64-unknown-linux-gnu",
+                   "compiler": {"unwrapped": "/nix/store/compiler/bin/rustc.unwrapped"},
+                   "tools_sha256": {"/nix/store/compiler/bin/rustc.unwrapped": digest}}
+        actions = [{"arguments": [compiler, "--target=x86_64-unknown-linux-gnu"]}]
+        events = [{"mnemonic": "Rustc", "inputs": [
+            {"path": compiler, "digest": {"hash": digest, "hashFunctionName": "SHA-256"}},
+        ]}]
+        return receipt, actions, events
+
+    def test_matches_executed_binary_digest_and_native_target(self):
+        receipt, actions, events = self.fixture()
+        result = bind_native_defaults(receipt, actions, events)
+        self.assertEqual(result["actions"], 1)
+        self.assertEqual(result["compiler_sha256"], "a" * 64)
+        actions[0]["arguments"] = actions[0]["arguments"][:1]
+        self.assertEqual(bind_native_defaults(receipt, actions, events)["status"], "PASS")
+
+    def test_other_compilers_and_digest_algorithms_cannot_reuse_probes(self):
+        for changed in [{"hash": "b" * 64}, {"hashFunctionName": "SHA-1"}]:
+            receipt, actions, events = self.fixture()
+            events[0]["inputs"][0]["digest"].update(changed)
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "differs"):
+                bind_native_defaults(receipt, actions, events)
+
+    def test_missing_ambiguous_and_unexecuted_compilers_are_rejected(self):
+        for mode in ["missing", "duplicate", "unexecuted", "empty"]:
+            receipt, actions, events = self.fixture()
+            if mode == "missing":
+                events[0]["inputs"] = []
+            elif mode == "duplicate":
+                events[0]["inputs"] *= 2
+            elif mode == "unexecuted":
+                actions.append({"arguments": ["other/rustc"]})
+            else:
+                events = []
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                bind_native_defaults(receipt, actions, events)
+
+    def test_failed_probes_and_foreign_targets_are_rejected(self):
+        receipt, actions, events = self.fixture()
+        actions[0]["arguments"][-1] = "--target=wasm32-unknown-unknown"
+        with self.assertRaisesRegex(ValueError, "foreign"):
+            bind_native_defaults(receipt, actions, events)
+
+        receipt["status"] = "FAIL"
+        with self.assertRaisesRegex(ValueError, "did not pass"):
+            bind_native_defaults(receipt, actions, events)
 
 
 if __name__ == "__main__":

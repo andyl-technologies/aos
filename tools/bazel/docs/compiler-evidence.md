@@ -274,3 +274,27 @@ implicit and explicit controls have identical bytes; debug stripping removes
 DWARF while retaining ordinary symbols and program behavior. This establishes
 the specific normalization used by the profile verifier, without normalizing
 application artifacts or qualifying other compiler defaults.
+
+CLI gates additionally require `qualification/profile-semantics.nix`. Thirteen
+runtime variants test unoptimized and size-optimized assertion/overflow defaults,
+boolean aliases, last scalar overrides, and positive and negative controls.
+Every variant produces identical bytes through the source-built wrapped and
+unwrapped compiler. Five isolated flag comparisons require identical fixture
+binaries. Omitted and explicit zero debug information produce identical bytes;
+DWARF checks inspect the fixture source's entries because linked standard-library
+objects can contribute their own debug information. A debug-enabled control must
+retain the fixture's entries. Implicit and explicit native targets also have
+identical compiler cfg inventories.
+
+The profile verifier binds the conformance compiler's SHA-256 to each actual
+Bazel Rust compiler input and rejects targets outside the probed native target.
+Four rejection tests cover compiler/digest drift, missing or ambiguous inputs,
+unexecuted compilers, failed probes, and foreign targets. Cargo traces do not
+record executable digests, so their provenance still depends on the separately
+retained Nix derivations. The [native-default receipt](../tests/evidence/cli-native-profile-defaults.json)
+retains all probe results and bindings for 635 ordinary and 641 fleet Rust
+compiler actions, reusing the prior application test artifacts and native
+baselines. These checks support the selected profile default
+interpretations; incremental compilation, codegen-unit defaults, procedural-macro
+linking, complete application artifact/ABI/runtime equivalence, and other
+platforms remain separate acceptance work.

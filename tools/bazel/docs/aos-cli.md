@@ -82,7 +82,8 @@ explicit flags. Remaining compiler-option differences stay visible; full
 compiler defaults, native C/C++ and linker settings, ABI/runtime behavior,
 editor/release/foreign profiles, cache behavior, and performance require their
 own qualification. `test-parity` exposes the case comparison separately;
-`oracle` retains `parity.json`, `execution-profiles.json`, and `strip-semantics.json`.
+`oracle` retains `parity.json`, `execution-profiles.json`, `strip-semantics.json`,
+and `profile-semantics.json`.
 
 The ordinary and fleet profile gates also require complete external unit
 inventories, matched by package, version, crate name, Rust library kind,
@@ -101,6 +102,16 @@ old target `strip=none` setting. A mandatory native compiler probe establishes
 that implicit stripping matches explicit `none` byte for byte, and that
 `strip=debuginfo` removes linked C debug information with Rust debug emission
 disabled. All five probe programs retain their behavior and ordinary symbols.
+The selected default interpretations also require a native compiler probe:
+13 runtime variants exercise omitted flags, boolean aliases, scalar overrides,
+and positive and negative assertion/overflow controls. Each variant compiles
+through both the wrapped and unwrapped compiler with identical binary bytes.
+Five isolated comparisons require identical binaries, including implicit versus
+explicit native targets. The gate binds the probed unwrapped compiler's SHA-256
+to every Bazel Rust execution's compiler input and rejects foreign targets.
+Native Cargo traces lack executable digests; their provenance remains bound
+through the retained Nix derivations. These fixture comparisons do not qualify
+incremental codegen or complete application/linker equivalence.
 The [compiler evidence guide](compiler-evidence.md) describes this bounded
 conformance check. Complete remaining compiler options, native C/linker and
 ABI/runtime/editor/platform/performance qualification remain separate work.
