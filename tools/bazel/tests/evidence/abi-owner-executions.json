@@ -1,0 +1,394 @@
+{
+  "canonical_selection": {
+    "canonical_gate_sha256": "bf64bc5200f1c17537919aff94b3d46f66435bf1c62281e01315c84ea695666e",
+    "qualification": "Owner execution comparison only; the named ABI gate remains authoritative.",
+    "schema_version": 1,
+    "selections": {
+      "api": {
+        "canonical": "rpc_abi_conformance_runs_named_checks",
+        "count": 6,
+        "filter": null,
+        "target": "//crates/crucible/crucible-control-api:gate_abi_conformance"
+      },
+      "engine": {
+        "canonical": "gate_abi_conformance_engine_aggregates_boundary_abi_owners",
+        "count": 2,
+        "filter": null,
+        "target": "//crates/crucible/crucible-engine:gate_abi_conformance_test_double"
+      },
+      "guest": {
+        "canonical": "guest_cli_verbs_encode_shared_marker_payloads",
+        "count": 5,
+        "filter": null,
+        "target": "//crates/crucible/crucible-guest:gate_abi_conformance"
+      },
+      "harness": {
+        "canonical": "gate_abi_conformance_is_implemented_in_catalog_and_targets",
+        "count": 4,
+        "filter": null,
+        "target": "//crates/crucible/crucible-test-support:gate_abi_conformance"
+      },
+      "plugin-doorbell": {
+        "canonical": "whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box",
+        "count": 54,
+        "filter": "whitebox_doorbell",
+        "target": "//crates/crucible/crucible-qemu-plugin:unit"
+      },
+      "plugin-io-wire": {
+        "canonical": "io_wire_fuzz::tests::io_wire_regression_corpus_exercises_block_and_9p_wire_cases",
+        "count": 8,
+        "filter": "io_wire_fuzz",
+        "target": "//crates/crucible/crucible-qemu-plugin:unit"
+      },
+      "plugin-owner": {
+        "canonical": "gate_abi_conformance_covers_plugin_io_wire_fuzzing",
+        "count": 2,
+        "filter": null,
+        "target": "//crates/crucible/crucible-qemu-plugin:gate_abi_conformance"
+      },
+      "protocol": {
+        "canonical": "protocol_abi_conformance_runs_named_checks",
+        "count": 18,
+        "filter": null,
+        "target": "//crates/crucible/crucible-qemu-protocol:gate_abi_conformance"
+      },
+      "protocol-doorbell": {
+        "canonical": "doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64",
+        "count": 3,
+        "filter": "doorbell_abi",
+        "target": "//crates/crucible/crucible-qemu-protocol:unit"
+      },
+      "protocol-golden": {
+        "canonical": "golden_vectors_match_canonical_codec_bytes",
+        "count": 7,
+        "filter": null,
+        "target": "//crates/crucible/crucible-qemu-protocol:golden_vectors"
+      },
+      "shmem": {
+        "canonical": "gate_cases::gate_abi_conformance_checks_generated_header_and_golden_vectors",
+        "count": 5,
+        "filter": null,
+        "target": "//crates/crucible/crucible-qemu-shmem:gate_abi_conformance"
+      }
+    }
+  },
+  "comparison_evidence_sha256": "4230c3e78cbeb8fcc083641b921e9b5c184407825a5f04748dd1568f483c4eec",
+  "comparison_output": "/nix/store/109w7r3ax1arqx8naf3dg6yfqqsnjzlz-aos-bazel-abi-owner-comparisons",
+  "declaration_refresh": {
+    "changed_declaration": "crates/crucible/crucible-test-support/BUILD.bazel",
+    "inventories": [
+      "crucible-cli-inventory.json",
+      "engine-inventory.json"
+    ],
+    "method": "Re-export existing configured reports; assert only this declaration hash changed. The new target is qualified by a separate actual Bazel execution, not by these retained reports.",
+    "sha256": "5c2f6a2cf3407ed0d85c617c6dca936a4ba669e30a8e9c0ef882a859f63d30f5"
+  },
+  "executed_cases": 114,
+  "limits": [
+    "Owner comparisons do not satisfy the named ABI gate's prerequisites or source audits.",
+    "The canonical driver still uses Cargo; no production selector was changed.",
+    "Only the new harness declaration hash changed in the two existing inventories; retained configured reports and source selections were unchanged. The harness target was compiled and executed separately."
+  ],
+  "owners": {
+    "api": {
+      "arguments": [
+        "--expected-count=6",
+        "--require-case=rpc_abi_conformance_runs_named_checks",
+        "--jobs=1"
+      ],
+      "build": "/nix/store/kkm0jc93n5m17vs4gwhwjc0s2dwla6zh-aos-bazel-abi-owner-api-1",
+      "cases": [
+        "rpc_abi_conformance_runs_named_checks",
+        "rpc_golden_vector_negative_control_detects_wire_drift",
+        "rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds",
+        "rpc_golden_vectors_freeze_literal_wire_bytes",
+        "rpc_golden_vectors_match_live_encoder",
+        "rpc_protocol_version_is_exact_and_rejects_all_drift"
+      ],
+      "execution_sha256": "11442d9384833633a264f0d54d296147bdd18fea8e7af45b6e44a30d2e0a6805",
+      "junit_sha256": "e0b45bc29e0c22387640a6deeab0478f5d3b0c43fc38a1716ad3d1da1240b75e",
+      "runner": "linux-sandbox",
+      "target": "//crates/crucible/crucible-control-api:gate_abi_conformance"
+    },
+    "engine": {
+      "arguments": [
+        "--expected-count=2",
+        "--require-case=gate_abi_conformance_engine_aggregates_boundary_abi_owners",
+        "--jobs=1"
+      ],
+      "build": "/nix/store/pacybl459gm7g1cr7lzsqd94bqdb3vb9-aos-bazel-abi-owner-engine-1",
+      "cases": [
+        "gate_abi_conformance_engine_aggregates_boundary_abi_owners",
+        "whitebox_marker_payloads_map_to_engine_event_semantics"
+      ],
+      "execution_sha256": "86969c56ae031a523f53a141e5849a70106761ae1c85538e011421319397d5dc",
+      "junit_sha256": "e2752f695a97698362e22695637a91e2c9e48ddcc7b51632e25e3cfd64feddcc",
+      "runner": "linux-sandbox",
+      "target": "//crates/crucible/crucible-engine:gate_abi_conformance_test_double"
+    },
+    "guest": {
+      "arguments": [
+        "--expected-count=5",
+        "--require-case=guest_cli_verbs_encode_shared_marker_payloads",
+        "--jobs=1"
+      ],
+      "build": "/nix/store/cz5z4bkvckq6b8gla1wfqh133g0yyrd3-aos-bazel-abi-owner-guest-1",
+      "cases": [
+        "guest_cli_rejects_malformed_inputs",
+        "guest_cli_verbs_encode_shared_marker_payloads",
+        "guest_emitter_uses_single_source_doorbell_abi_table",
+        "guest_get_random_round_trip_reads_reply_from_payload_range",
+        "guest_static_build_contract_is_declared_for_aos_package"
+      ],
+      "execution_sha256": "71e3f1480794cea5e37ee989303b2e003f0352d725df90a3566bf2cb220ff4ed",
+      "junit_sha256": "5f2a29979452210f8f68c442cf92b0471a2cc1871f6237bd93b1b677e5566a49",
+      "runner": "linux-sandbox",
+      "target": "//crates/crucible/crucible-guest:gate_abi_conformance"
+    },
+    "harness": {
+      "arguments": [
+        "--expected-count=4",
+        "--require-case=gate_abi_conformance_is_implemented_in_catalog_and_targets",
+        "--jobs=1"
+      ],
+      "build": "/nix/store/qqyn222ar68yw4484lkxvbs789cqv9fc-aos-bazel-abi-owner-harness-1",
+      "cases": [
+        "gate_abi_conformance_is_implemented_in_catalog_and_targets",
+        "golden_vector_runner_accepts_matching_vectors",
+        "golden_vector_runner_rejects_byte_drift",
+        "golden_vector_runner_rejects_version_and_byte_drift"
+      ],
+      "execution_sha256": "eca53e44830dd6a8b181c0d42c786163c5dd958ae77c17bc2ac1519d88ce1f7d",
+      "junit_sha256": "2141e437a3e4e6cd7c58996eea0f739177a455151b0dc12c7124c5d6840660ac",
+      "runner": "linux-sandbox",
+      "target": "//crates/crucible/crucible-test-support:gate_abi_conformance"
+    },
+    "plugin-doorbell": {
+      "arguments": [
+        "--expected-count=54",
+        "--require-case=whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box",
+        "--jobs=1",
+        "--filter=whitebox_doorbell"
+      ],
+      "build": "/nix/store/kkag31cwqhgyywi2g54z163b0whgbnlz-aos-bazel-abi-owner-plugin-doorbell-1",
+      "cases": [
+        "whitebox_doorbell::selectable::catalog::tests::canonical_plan_round_trip_restores_exact_state_with_fresh_token",
+        "whitebox_doorbell::selectable::catalog::tests::catalog_limits_are_nonzero_ordered_and_hard_bounded",
+        "whitebox_doorbell::selectable::catalog::tests::combined_service_retains_failed_decision_and_retries_without_readmission",
+        "whitebox_doorbell::selectable::catalog::tests::completed_request_sequences_and_all_request_limits_fail_closed",
+        "whitebox_doorbell::selectable::catalog::tests::expectation_rejects_duplicate_and_over_limit_entries",
+        "whitebox_doorbell::selectable::catalog::tests::freeze_requires_required_entries_and_accepts_absent_optional",
+        "whitebox_doorbell::selectable::catalog::tests::launch_pair_shares_declaration_bytes_but_not_request_incarnations",
+        "whitebox_doorbell::selectable::catalog::tests::pending_request_requires_the_exact_guest_virtual_reservation",
+        "whitebox_doorbell::selectable::catalog::tests::pending_stop_seal_rejects_a_trap_coordinate_that_cannot_advance",
+        "whitebox_doorbell::selectable::catalog::tests::pending_stop_seal_retains_the_trap_and_rejects_a_changed_boundary",
+        "whitebox_doorbell::selectable::catalog::tests::pending_token_is_bound_to_one_catalog_incarnation",
+        "whitebox_doorbell::selectable::catalog::tests::request_is_frozen_catalog_bound_and_retained_until_exact_reply",
+        "whitebox_doorbell::selectable::catalog::tests::setup_registration_requires_expected_exact_contract_and_sequence",
+        "whitebox_doorbell::selectable::tests::callback_rejects_guest_reply_stale_service_reply_and_oversized_value",
+        "whitebox_doorbell::selectable::tests::pending_request_keeps_the_zero_filled_guest_reservation_untouched",
+        "whitebox_doorbell::selectable::tests::registration_is_observational_and_keeps_exact_coordinate",
+        "whitebox_doorbell::selectable::tests::request_writes_one_sequence_bound_zero_padded_reply_at_trap",
+        "whitebox_doorbell::tests::whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8",
+        "whitebox_doorbell::tests::whitebox_app_random_drops_bad_magic_version_len_and_kind_without_side_effects",
+        "whitebox_doorbell::tests::whitebox_app_random_drops_malformed_request_without_decision_or_reply",
+        "whitebox_doorbell::tests::whitebox_app_random_rejects_request_id_mismatch_without_reply",
+        "whitebox_doorbell::tests::whitebox_app_random_rejects_unmasked_decision_value_without_reply",
+        "whitebox_doorbell::tests::whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount",
+        "whitebox_doorbell::tests::whitebox_app_random_zero_requests_leave_no_decisions_or_replies",
+        "whitebox_doorbell::tests::whitebox_channel_safety_ignores_producer_timing_before_delivery_icount",
+        "whitebox_doorbell::tests::whitebox_channel_safety_injects_host_to_guest_only_at_delivery_icount",
+        "whitebox_doorbell::tests::whitebox_channel_safety_reads_payload_snapshot_at_exact_trap_icount",
+        "whitebox_doorbell::tests::whitebox_doorbell_aarch64_golden_vector_freezes_inert_hint",
+        "whitebox_doorbell::tests::whitebox_doorbell_abi_vectors_cover_x86_64_and_aarch64",
+        "whitebox_doorbell::tests::whitebox_doorbell_payload_source_is_shared_page_or_register_pointer_length",
+        "whitebox_doorbell::tests::whitebox_doorbell_read_failure_records_no_marker",
+        "whitebox_doorbell::tests::whitebox_doorbell_reads_guest_memory_via_api_and_stamps_current_icount",
+        "whitebox_doorbell::tests::whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink",
+        "whitebox_doorbell::tests::whitebox_doorbell_records_unknown_kind_decode_diagnostic_without_marker",
+        "whitebox_doorbell::tests::whitebox_doorbell_registration_uses_single_source_abi_trap",
+        "whitebox_doorbell::tests::whitebox_doorbell_rejects_malformed_frame_without_marker",
+        "whitebox_doorbell::tests::whitebox_doorbell_rejects_oversized_payload_before_guest_memory_read",
+        "whitebox_doorbell::tests::whitebox_doorbell_rejects_random_request_on_observational_marker_path",
+        "whitebox_doorbell::tests::whitebox_doorbell_trap_while_disabled_is_loud",
+        "whitebox_doorbell::tests::whitebox_doorbell_x86_64_golden_vector_freezes_out_imm8_al",
+        "whitebox_doorbell::tests::whitebox_guest_input_is_not_visible_before_delivery_icount",
+        "whitebox_doorbell::tests::whitebox_guest_input_rejects_late_delivery",
+        "whitebox_doorbell::tests::whitebox_guest_input_rejects_oversized_payload_before_guest_memory_write",
+        "whitebox_doorbell::tests::whitebox_guest_input_requires_qemu_guest_memory_write_capability",
+        "whitebox_doorbell::tests::whitebox_guest_input_while_disabled_is_loud",
+        "whitebox_doorbell::tests::whitebox_guest_input_writes_at_exact_delivery_icount_only",
+        "whitebox_doorbell::tests::whitebox_guest_memory_addressing_app_random_reply_range_tracks_payload_resolution",
+        "whitebox_doorbell::tests::whitebox_guest_memory_addressing_rejects_non_s5_evidence",
+        "whitebox_doorbell::tests::whitebox_guest_memory_addressing_unresolved_default_is_physical_shared_page",
+        "whitebox_doorbell::tests::whitebox_guest_memory_addressing_uses_supplied_s5_virtual_pointer_length_evidence",
+        "whitebox_doorbell::tests::whitebox_registration_off_mode_bypasses_whitebox_payload_validation",
+        "whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box",
+        "whitebox_doorbell::tests::whitebox_registration_on_mode_requires_setup_collision_validation",
+        "whitebox_doorbell::tests::whitebox_registration_on_mode_requires_trap_and_memory_read_capabilities"
+      ],
+      "execution_sha256": "b537aec12ea988c9c8a78c0cda15eb74da14ec508f5bc305a50cdfd1194519fb",
+      "junit_sha256": "539d59f7e0c3979198b6fb71507a4ff230dc3a04c669c4abdf62fc3417c5285f",
+      "runner": "linux-sandbox",
+      "target": "//crates/crucible/crucible-qemu-plugin:unit"
+    },
+    "plugin-io-wire": {
+      "arguments": [
+        "--expected-count=8",
+        "--require-case=io_wire_fuzz::tests::io_wire_regression_corpus_exercises_block_and_9p_wire_cases",
+        "--jobs=1",
+        "--filter=io_wire_fuzz"
+      ],
+      "build": "/nix/store/nwarm9l08nxyp28jilh47k1hgm7ishkx-aos-bazel-abi-owner-plugin-io-wire-1",
+      "cases": [
+        "io_wire_fuzz::tests::block_request_wire_messages_round_trip",
+        "io_wire_fuzz::tests::block_response_wire_messages_round_trip",
+        "io_wire_fuzz::tests::generated_truncations_and_trailing_bytes_stay_typed",
+        "io_wire_fuzz::tests::io_wire_fuzz_target_never_panics_on_regression_corpus",
+        "io_wire_fuzz::tests::io_wire_regression_corpus_exercises_block_and_9p_wire_cases",
+        "io_wire_fuzz::tests::ninep_wire_messages_round_trip_and_msize_is_enforced",
+        "io_wire_fuzz::tests::structure_aware_malformed_wire_frames_never_panic",
+        "io_wire_fuzz::tests::wire_fuzz_target_reports_deterministic_decode_results"
+      ],
+      "execution_sha256": "abdbdbbb9e31dd0c47cef8855de7b2d01e62cb47f2875b5a0653c487ed8d7c1c",
+      "junit_sha256": "501f259a705a6c2340dfe8f054fdb7b7cf904c12259eec854ead4d1a1bd36c42",
+      "runner": "linux-sandbox",
+      "target": "//crates/crucible/crucible-qemu-plugin:unit"
+    },
+    "plugin-owner": {
+      "arguments": [
+        "--expected-count=2",
+        "--require-case=gate_abi_conformance_covers_plugin_io_wire_fuzzing",
+        "--jobs=1"
+      ],
+      "build": "/nix/store/j87jf6s7gwaw0vxf3fh3l32ky3gzf1pb-aos-bazel-abi-owner-plugin-owner-1",
+      "cases": [
+        "gate_abi_conformance_covers_plugin_io_wire_fuzzing",
+        "gate_abi_conformance_covers_whitebox_doorbell_instruction_abi"
+      ],
+      "execution_sha256": "e6069e9efcadb5b096baa483058f508d6518b0304e38c5df5c40b6a874aafb86",
+      "junit_sha256": "eb3ccb95e75a72ac92b4de71eba67e68b906d1d1aeaf1f17ea49454af66525ff",
+      "runner": "linux-sandbox",
+      "target": "//crates/crucible/crucible-qemu-plugin:gate_abi_conformance"
+    },
+    "protocol": {
+      "arguments": [
+        "--expected-count=18",
+        "--require-case=protocol_abi_conformance_runs_named_checks",
+        "--jobs=1"
+      ],
+      "build": "/nix/store/22x21lah05glysrmavvwn8v1a8rxkc2b-aos-bazel-abi-owner-protocol-1",
+      "cases": [
+        "guest_selectable_catalog_plan_v4_golden_vector_matches_live_codec",
+        "guest_selectable_current_schemas_are_registered_exactly",
+        "guest_selectable_pending_transport_v2_golden_vector_matches_live_codec",
+        "guest_selectable_v1_golden_vectors_match_live_codec_bytes",
+        "measurement_marker_codec_rejects_noncanonical_and_oversized_values",
+        "plugin_setup_plan_v2_golden_vector_matches_live_codec",
+        "protocol_abi_conformance_runs_named_checks",
+        "protocol_codec_fuzz_regression_corpus_is_clean_and_deterministic",
+        "protocol_doorbell_decoder_fuzz_corpus_is_clean_and_bounded",
+        "protocol_doorbell_frame_golden_vectors_match_live_codec_bytes",
+        "protocol_doorbell_marker_kind_vocabulary_is_closed_and_versioned",
+        "protocol_doorbell_marker_payload_golden_vectors_match_live_codec_bytes",
+        "protocol_doorbell_marker_subvocabularies_are_closed_and_versioned",
+        "protocol_golden_vector_versions_are_explicit",
+        "protocol_golden_vectors_cover_required_control_frames",
+        "protocol_golden_vectors_freeze_literal_frame_bytes",
+        "protocol_golden_vectors_match_live_codec_bytes",
+        "protocol_rejects_an_unsupported_doorbell_version"
+      ],
+      "execution_sha256": "cd60c9c56fd7943c7c025cf2aad675beefedcf129783aa1a5e2819e03587563f",
+      "junit_sha256": "68ac16b4cbafe477b73dc9c97f5925cf078b11a278a2a0c25c24fa9d907c6bbc",
+      "runner": "linux-sandbox",
+      "target": "//crates/crucible/crucible-qemu-protocol:gate_abi_conformance"
+    },
+    "protocol-doorbell": {
+      "arguments": [
+        "--expected-count=3",
+        "--require-case=doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64",
+        "--jobs=1",
+        "--filter=doorbell_abi"
+      ],
+      "build": "/nix/store/vp9hdhk61lhzr5lqxdfl0ap02rad95ph-aos-bazel-abi-owner-protocol-doorbell-1",
+      "cases": [
+        "doorbell_abi::tests::doorbell_abi_aarch64_vector_freezes_inert_hint",
+        "doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64",
+        "doorbell_abi::tests::doorbell_abi_x86_64_vector_freezes_out_imm8_al"
+      ],
+      "execution_sha256": "da629a69d5353d0c234fc442ca889d2590b8763bde87b6f9be1481b528638493",
+      "junit_sha256": "5f3912d263d5492e7df7ed0d97ce20eac2d129b199d88a0dc7d073459063b29c",
+      "runner": "linux-sandbox",
+      "target": "//crates/crucible/crucible-qemu-protocol:unit"
+    },
+    "protocol-golden": {
+      "arguments": [
+        "--expected-count=7",
+        "--require-case=golden_vectors_match_canonical_codec_bytes",
+        "--jobs=1"
+      ],
+      "build": "/nix/store/yyhvlv99x5syv2jp1jfrp8rs03djip6n-aos-bazel-abi-owner-protocol-golden-1",
+      "cases": [
+        "doorbell_frame_golden_vectors_match_canonical_codec_bytes",
+        "golden_vector_protocol_version_matches_current_protocol_version",
+        "golden_vectors_cover_required_protocol_messages_in_stable_order",
+        "golden_vectors_freeze_literal_wire_bytes",
+        "golden_vectors_match_canonical_codec_bytes",
+        "marker_payload_golden_vectors_match_canonical_codec_bytes",
+        "setup_vector_freezes_payload_without_descriptor_sidecar"
+      ],
+      "execution_sha256": "88b09f4b263ee5b93d6bb0c1ff19de3ec22aa9d2452e9611a9d03339412e10f5",
+      "junit_sha256": "dd42d0ecfb3eaf50953e3b0ec65057c3b19fbef99ace7b6199812f7bd23189da",
+      "runner": "linux-sandbox",
+      "target": "//crates/crucible/crucible-qemu-protocol:golden_vectors"
+    },
+    "shmem": {
+      "arguments": [
+        "--expected-count=5",
+        "--require-case=gate_cases::gate_abi_conformance_checks_generated_header_and_golden_vectors",
+        "--jobs=1"
+      ],
+      "build": "/nix/store/qzgv2aka4i56hs8yc9cdh9gcijxfsg6j-aos-bazel-abi-owner-shmem-1",
+      "cases": [
+        "gate_cases::gate_abi_conformance_checks_generated_header_and_golden_vectors",
+        "gate_cases::generated_header_carries_static_asserts_for_every_shared_struct",
+        "gate_cases::generated_header_matches_committed_copy",
+        "gate_cases::golden_vector_negative_control_detects_layout_drift",
+        "gate_cases::rust_golden_vector_round_trip_matches_fixture"
+      ],
+      "execution_sha256": "8813e5238b46d79679d8d9c2ef16ba556eadbd2391856149502a8224b6db0470",
+      "junit_sha256": "e979e78202ac6775e159307f7ea6368fd792c798a9856371dc1718ce0f37ede4",
+      "runner": "linux-sandbox",
+      "target": "//crates/crucible/crucible-qemu-shmem:gate_abi_conformance"
+    }
+  },
+  "policy": {
+    "log_sha256": "1e34e7872d05d588dbc1ce5b09993de1eb560ffa240eb88a6ee8ec6fb14bdf87",
+    "output": "/nix/store/axq0a3swv9szy30r4cg6pmcxi9rhadmj-aos-bazel-policy-checks",
+    "tests_passed": 310
+  },
+  "schema_version": 1,
+  "source_catalog": {
+    "output": "/nix/store/gbaqnylrrgs8vmf9gslphsm8r8h25a4i-aos-bazel-source-catalog-checks",
+    "report": {
+      "crates": {
+        "packages": 78,
+        "sources": 3753
+      },
+      "external_build_actions": 0,
+      "repository": {
+        "packages": 80,
+        "sources": 3773
+      },
+      "schema_version": 1
+    }
+  },
+  "source_sha256": {
+    "crates/crucible/crucible-test-support/BUILD.bazel": "5c2f6a2cf3407ed0d85c617c6dca936a4ba669e30a8e9c0ef882a859f63d30f5",
+    "tests/build/_bazel-abi-owners.nix": "4dbf262855248e36b0751d53255eae9d6a820457db012e2feee27923b394cc91",
+    "tools/bazel/testing/runner.py": "46b5c3a8baa65f9c2634bd5061a34e7db3ece3be16dc3ec966db06cfa02cf066",
+    "tools/bazel/tests/test_abi_owners.py": "7c6cc51e022b09f058d6ed18b73a556e5e5f948b6e64872a6523a3e2ab19ac56",
+    "tools/bazel/tests/verify_abi_owners.py": "541cf96500e41b2cc077e2a222ccec0dc165e16268b55dff198c2a0cd32b8992"
+  },
+  "status": "PASS"
+}

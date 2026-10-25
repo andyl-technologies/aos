@@ -145,6 +145,7 @@ in
     control = import ./_bazel-control.nix {inherit pkgs;};
     qemu-host = import ./_bazel-qemu-host.nix {inherit pkgs;};
     qemu-gpl = import ./_bazel-qemu-gpl.nix {inherit pkgs;};
+    abi-owners = import ./_bazel-abi-owners.nix {inherit pkgs;};
     store-s3 = import ./_bazel-store-s3.nix {inherit pkgs;};
     daemon = import ./_bazel-daemon.nix {inherit pkgs;};
     crucible-cli = import ./_bazel-crucible-cli.nix {inherit pkgs;};

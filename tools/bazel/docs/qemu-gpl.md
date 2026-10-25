@@ -127,6 +127,23 @@ passed the named license wrapper and its 18 owner cases. The ABI chain failed
 in the production VM-flight prerequisite: reference and hostile runs differed
 at timer 5 by two retired instructions. The rootfs derivation directly selects
 the Bazel plugin. This remains unresolved, and the ABI gate is unqualified.
+
+Run the separate Bazel ABI owner comparison with:
+
+```text
+nix-build -A checks.build.bazel.abi-owners.all --no-out-link
+```
+
+It executes the eleven canonical owner selections (114 cases), including the
+harness, control API, protocol and shared-memory vectors, plugin wire and
+doorbell cases, guest, and engine aggregate. Every selection lists its full
+case inventory before execution and enforces the canonical count, owner name,
+and serial scheduling. The comparison verifies the exact selections against
+the canonical driver's declarations and authenticates their sandbox execution
+logs and passing JUnit inventories. This supports driver migration; it does
+not satisfy the named gate's VM prerequisites or replace its source audits.
+The [retained owner execution](../tests/evidence/abi-owner-executions.json)
+passed all 114 cases, the 310 policy tests, and the source-catalog check.
 Its output retains both gate outputs and `selections.json` with the exact
 component identities. The existing gate drivers still invoke Cargo; migrating
 those drivers remains a separate requirement. System fixtures created through

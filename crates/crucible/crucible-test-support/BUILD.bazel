@@ -1,6 +1,7 @@
 load("//tools/bazel/rules:compile.bzl", "rust_library")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
 
 RUST_PACKAGE = aos_rust_package(
     name = "crucible-test-support",
@@ -28,6 +29,15 @@ rust_library(
 exports_files(
     ["tests/support/workspace.rs"],
     visibility = ["//crates/crucible/crucible-engine:__pkg__"],
+)
+
+aos_rust_test(
+    name = "gate_abi_conformance",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/gate_abi_conformance.rs",
+    srcs = ["tests/gate_abi_conformance.rs"],
+    deps = [":lib"],
 )
 
 aos_source_package(
