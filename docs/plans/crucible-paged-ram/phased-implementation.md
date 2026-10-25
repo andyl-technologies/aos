@@ -156,6 +156,28 @@ content-bound responsibility review includes this output ownership check. All
 pass after the repair. Production client admission is unchanged, and no Native
 authority is issued.
 
+#### Current-toolchain logical component checks
+
+The merged production toolchain has rebuilt from source through Rust 1.98.1.
+Both final Rust outputs are registered against the expected derivation. Using
+that toolchain, the format, Merkle and dirty-epoch component gates pass all
+35 selected cases:
+
+| Component | Cases | Registered output |
+| --- | ---: | --- |
+| Format | 16 | `hcwk54xc24fzbl9hz4m0maj3l99c0q24-crucible-gate-ram-format-0` |
+| Merkle | 13 | `vfwyxjgp2la474wkywpdsgxfl3svd15g-crucible-gate-ram-merkle-oracle-0` |
+| Dirty epochs | 6 | `vc3624rrfy5mrz45d857a9nifki00jiw-crucible-gate-ram-dirty-epochs-0` |
+
+Independent output checks verify registration, expected derivations, component
+result records, exact case listings and successful retained execution summaries.
+All 5,462 tracked Rust/TOML inputs, the complete lockfile and six protocol
+fixtures match revision `2630bfadd1cb214db97c8e2df41cf655625b5185` in the
+immutable source used by these gates. These checks advertise no capabilities
+and exercise logical RAM components without Native activation or VM execution.
+Mandatory application compilation, Store and ABI execution, and the complete
+Nix evaluation aggregate remain pending. Full RFC qualification remains open.
+
 #### Isolated patched-libc build support
 
 The shared hermetic libc builder now applies an ordered list of explicit source
