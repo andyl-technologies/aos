@@ -169,6 +169,24 @@ where
         self.collection.begin_cycle(cycle).await
     }
 
+    /// Selects bounded recurring hints under this collection's original session.
+    ///
+    /// Permanent owners remain discoverable after completed passes. Current
+    /// exclusions and copied visibility are lookup candidates only; native
+    /// producers independently decide every effect. Legacy deletion intents
+    /// require separate recovery discovery.
+    ///
+    /// # Errors
+    /// Rejects invalid bounds, lost ownership, incomplete catalogs and changed
+    /// observations. Actual failure or cancellation stops the original session.
+    pub async fn maintenance_hints(
+        &mut self,
+        cursor: &mut crate::gc::runner::maintenance::MaintenanceCursor,
+        maximum: usize,
+    ) -> Result<Vec<crate::gc::runner::maintenance::MaintenanceHint>, CollectionError> {
+        self.collection.maintenance_hints(cursor, maximum).await
+    }
+
     /// Retires at most one eligible pack through the original coordinator.
     ///
     /// # Errors

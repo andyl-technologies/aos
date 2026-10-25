@@ -17,6 +17,10 @@ CASES = [
     PREFIX + "faults::permanent_local_cancelled_waiter_before_open_retains_exclusion_through_worker_completion",
 ]
 
+HINT_CASES = [
+    PREFIX + "recovery::permanent_local_empty_pass_keeps_owner_and_reclaims_late_same_key_residue",
+]
+
 
 def verify_image(source, image):
     """Binds the actual retained Cargo test image to every immutable crate input."""
@@ -65,6 +69,14 @@ def main():
     source = Path(os.environ["src"])
     image = Path(os.environ["TERRANE_COLLECTION_TEST_IMAGE"])
     evidence = Path(os.environ["TERRANE_COLLECTION_EVIDENCE"])
+    suite = os.environ.get("TERRANE_COLLECTION_SUITE", "collection-reconciliation")
+    if suite == "collection-reconciliation":
+        cases = CASES
+    elif suite == "maintenance-owner-hints":
+        cases = HINT_CASES
+    else:
+        raise ValueError("unknown native collection qualification suite")
+
     os.chdir(source / "crates")
     binary_hash = verify_image(source, image)
     binary = image / "bin/terrane-native-sdk-tests"
@@ -74,8 +86,8 @@ def main():
         subprocess.run([str(binary), "--list"], stdout=output, stderr=subprocess.STDOUT,
                        check=True, timeout=5)
     subprocess.run([sys.executable, str(checker), "inventory", str(inventory),
-                    json.dumps(CASES)], check=True, timeout=5)
-    for case in CASES:
+                    json.dumps(cases)], check=True, timeout=5)
+    for case in cases:
         log = evidence / (case.rsplit("::", 1)[-1] + ".log")
         with log.open("wb") as output:
             completed = subprocess.run([str(binary), case, "--exact", "--test-threads=1"],
@@ -87,12 +99,16 @@ def main():
                        stdout=subprocess.DEVNULL)
     assert verify_image(source, image) == binary_hash
     print("LOCAL_COLLECTION_RECONCILIATION_PROOF " + json.dumps({
-        "source": str(source), "image": str(image), "cases": CASES,
+        "source": str(source), "image": str(image), "cases": cases,
         "uid": os.getuid(), "capabilities": 0, "no_new_privileges": True,
         "binary_sha256": binary_hash, "configured_gc_runtime": False,
     }, sort_keys=True), flush=True)
-    print("PASS original collection session reconciles actual permanent residues and retains "
-          "marking; recovery lease, hardlink and cancellation controls pass", flush=True)
+    if suite == "collection-reconciliation":
+        print("PASS original collection session reconciles actual permanent residues and retains "
+              "marking; recovery lease, hardlink and cancellation controls pass", flush=True)
+    else:
+        print("PASS actual owner discovery survives completed empty passes and reclaims late residue",
+              flush=True)
 
 
 if __name__ == "__main__":

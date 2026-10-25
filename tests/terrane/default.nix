@@ -519,6 +519,11 @@ in {
     inherit pkgs lib;
     image = nativeSdkTestImage;
   };
+  integration.native-local-maintenance-hints = import ./local-collection-reconciliation.nix {
+    inherit pkgs lib;
+    image = nativeSdkTestImage;
+    suite = "maintenance-owner-hints";
+  };
   integration.native-local-gc-conformance = localGcConformance;
   integration.native-collector-clock = import ./native-collector-clock.nix {sourceGate = nativeSdkGate;};
   integration.native-cold-fork-source = nativeForkPrerequisites.coldSource;

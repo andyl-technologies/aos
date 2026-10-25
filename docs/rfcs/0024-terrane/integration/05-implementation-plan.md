@@ -242,7 +242,9 @@ installed hashes. Each of the seven exact cases executes once on ext4 as
 UID/GID 840 with empty capabilities and no-new-privileges; the checker prints
 a second copy of each retained case log. Configured public-file reopening,
 unchanged Serve behavior and the installed-Guard/unsafe-file refusal controls
-are qualified. Mandatory workspace compilation remains pending; configured GC
+are qualified. Mandatory workspace compilation at this commit passes in
+1,528.353 seconds; independent review verifies all 8,208 immutable source files,
+190 test executables and 59 packages, as compilation only. Configured GC
 service execution and process confinement remain unimplemented.
 
 Mandatory application-target compilation at `c83791dad3` passes in 698.845
@@ -356,8 +358,43 @@ unchanged holder/epoch, exact same-holder `LeaseLost` acquisition refusal, cycle
 reuse refusal and further marking across a third cycle. Strict all-target
 Clippy passes under both supported Tokio profiles; std-only library Clippy and
 the final exact-refusal target check pass. Python syntax and PLAN-2 ownership
-checks pass. Native execution and mandatory workspace compilation remain
-pending; the full configured GC service is still outstanding.
+checks pass. The eight-case native guest at `819ffc247d` passes in 337.514
+seconds. Independent review verifies all 8,209 immutable source files, five
+retained Cargo test executables and all eight actual cases on ext4 as UID/GID
+840 with empty capabilities and no-new-privileges. Mandatory workspace
+compilation remains pending; the full configured GC service is outstanding.
+
+Mandatory application-target compilation at `79cc9b7f8e` passes in 939.756
+seconds. Independent review verifies 8,208 immutable source files, 190 test
+executables and 59 packages. Its native mounted-manifest diagnosis remains
+pending; compilation does not qualify the failing mounted read.
+
+The normative GC audit preserves the RFC's explicit protocol distinction:
+ordinary local D-78-v1 keeps its native `ContainersConfirmed`, trash cleanup
+and `Done` progression. Additional D-82 remote/copy-v2 permanent owners must
+be revisited indefinitely. Full local GC integration does not require changing
+ordinary local deletion into permanent ownership.
+
+`MaintenanceCursor` now selects bounded recurring lookup hints through the
+original mutable `Collection` or standalone `Recovery` session. Each call
+renews the same whole lease, checks its exact held selection and requires a
+complete current catalog and burn-owner inventory. Two independent cursors
+alternate burned families and nonburned active exclusions. Copied visibility
+remains distinct from selected permanent ownership. Completed passes never
+remove a permanent owner from discovery. Returned hints grant no effect
+permission; each native consumer still independently qualifies its current
+operation. Cursor advancement commits only after actual observation
+revalidation, and invalid bounds leave both cursor and lease unchanged.
+
+The result cap is 256 hints without allocating a second complete inventory.
+Stable finite inventories receive recurring fair visits; this does not claim
+fairness under unbounded concurrent growth. Legacy local deletion-intent
+discovery and full service dispatch remain outstanding. Native regression
+assertions require invalid-bound refusal and unchanged marking during an empty
+current query, plus rediscovery of an actual owner after completed empty passes.
+All three supported strict Clippy profiles pass. Four inert scheduling tests
+are pending; native query execution and mandatory workspace compilation remain
+pending. No task acceptance changes.
 
 The complete `fuse-index-roundtrip` owning gate at `91abbf8445` passes in
 1,567.153 seconds. Independent review verifies all six retained prerequisite

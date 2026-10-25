@@ -72,6 +72,30 @@ where
         self.session.lease()
     }
 
+    /// Selects recurring hints under this recovery holder's original session.
+    ///
+    /// Completed or empty passes remain discoverable for late residue. These
+    /// hints do not enumerate legacy deletion intents or grant effect authority.
+    ///
+    /// # Errors
+    /// Rejects bounds outside `1..=MAX_HINTS`, lost leases, incomplete catalogs
+    /// and changed observations. Actual failure or cancellation stops the session;
+    /// invalid bounds perform no effects and leave the cursor unchanged.
+    pub async fn maintenance_hints(
+        &mut self,
+        cursor: &mut super::maintenance::MaintenanceCursor,
+        maximum: usize,
+    ) -> Result<Vec<super::maintenance::MaintenanceHint>, CollectionError> {
+        super::maintenance::observe(
+            self.guard,
+            self.authority,
+            &mut self.session,
+            cursor,
+            maximum,
+        )
+        .await
+    }
+
     /// Restores verified owned source content through a fresh secure placement.
     ///
     /// The permanent family remains burned and owned. Extraction is collector-only;

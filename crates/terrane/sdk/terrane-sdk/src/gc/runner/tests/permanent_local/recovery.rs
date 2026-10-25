@@ -2,6 +2,7 @@
 
 use super::support::*;
 use crate::gc::runner::copied_retirement_tests::support::{CopiedFixture, Residue};
+use crate::gc::runner::maintenance::{MaintenanceCursor, MaintenanceHint};
 use crate::gc::runner::permanent_local::Recovery;
 use crate::store::{Clock, RefStore};
 use terrane_format::gc::retirement::{ObservationState, PassCoverage, PassPhase};
@@ -218,6 +219,15 @@ async fn permanent_local_empty_pass_keeps_owner_and_reclaims_late_same_key_resid
     let before = image(&fixture).await;
     let key = before.owner_key.as_deref().unwrap();
     let mut recovery = takeover(&fixture, "recurring-empty-and-late").await;
+    let mut cursor = MaintenanceCursor::default();
+    let hints = recovery.maintenance_hints(&mut cursor, 1).await.unwrap();
+    assert_eq!(
+        hints,
+        [MaintenanceHint::PermanentOwner {
+            pack: fixture.pack,
+            operation_key: key.to_owned(),
+        }]
+    );
     let initial_lease = recovery.lease().clone();
     let mut acknowledgments = fixture.guard().store().fs().observe_lease_completions();
     recovery.reconcile(key, 64).await.unwrap();
@@ -240,6 +250,11 @@ async fn permanent_local_empty_pass_keeps_owner_and_reclaims_late_same_key_resid
         first.pass.as_ref().unwrap().pass + 1
     );
     assert_owner_retained(&before, &second);
+
+    assert_eq!(
+        recovery.maintenance_hints(&mut cursor, 1).await.unwrap(),
+        hints
+    );
 
     let path = fixture.guard().store().root().join(fixture.pack.pack_key());
     tokio::fs::create_dir_all(path.parent().unwrap())

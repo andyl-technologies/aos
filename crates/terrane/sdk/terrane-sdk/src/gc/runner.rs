@@ -33,6 +33,10 @@ pub mod copied_retirement;
 #[path = "permanent_local.rs"]
 pub mod permanent_local;
 
+/// Selects bounded recurring lookup hints without granting effect authority.
+#[path = "maintenance.rs"]
+pub mod maintenance;
+
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) mod fixture;
 #[cfg(all(test, feature = "tokio", unix))]

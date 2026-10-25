@@ -2,13 +2,21 @@
   pkgs,
   lib,
   image,
-}: let
+  suite ? "collection-reconciliation",
+}:
+assert builtins.elem suite ["collection-reconciliation" "maintenance-owner-hints"]; let
   testing = import ../../lib/testing {inherit pkgs lib;};
 in
   testing.mkVMTest {
-    name = "terrane-local-collection-reconciliation";
+    name =
+      if suite == "collection-reconciliation"
+      then "terrane-local-collection-reconciliation"
+      else "terrane-local-maintenance-hints";
     memory = 1024;
-    timeout = 1020;
+    timeout =
+      if suite == "collection-reconciliation"
+      then 1020
+      else 240;
     rootfsDeps = [image pkgs.terrane.src pkgs.python3 pkgs.coreutils pkgs.diffutils pkgs.util-linux];
     testScript = ''
       set -euo pipefail
@@ -25,6 +33,7 @@ in
       export src=${pkgs.terrane.src}
       export TERRANE_COLLECTION_TEST_IMAGE=${image}
       export TERRANE_COLLECTION_EVIDENCE="$fixture_root/evidence"
+      export TERRANE_COLLECTION_SUITE=${suite}
       export TMPDIR="$fixture_root/storage"
       setpriv --reuid=840 --regid=840 --clear-groups --bounding-set=-all \
         --inh-caps=-all --ambient-caps=-all --no-new-privs \
