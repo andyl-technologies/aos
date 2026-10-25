@@ -86,9 +86,16 @@ Recent committed startup fixes close narrower prerequisites:
   source-built `sandbox-funded-startup-backing` check verifies the selected
   recipes and compiles the actual parent enclosure. Installed startup is still
   open. The offline rerun with the regular D-Bus context file reaches the bus,
-  but native activation fails because `org.freedesktop.systemd1` has no owner
-  and the bus service never completes startup. That observation does not yet
-  identify a policy change or qualify offline preparation.
+  but its readiness notification lacks permission and native activation fails
+  because `org.freedesktop.systemd1` has no owner. `ca39008246` adds only the
+  bus domain's write to the fixed notify socket and datagram send to PID 1.
+  The isolated production policy passes 175 unit tests, its linked guard and
+  negative fixtures. With that patch, the enforcing Host candidate passes bus
+  startup and native activation, then stops at an intentionally denied test
+  observer directory listing before Host starts. Its pending Host, SwitchRoot,
+  networkd and offline-cleanup dependencies remain explicit. Corrected Host,
+  Source and offline preparation runs are pending; this is not full boot,
+  Host custody, floor initialization or public lifecycle qualification.
 
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
