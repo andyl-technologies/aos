@@ -904,6 +904,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         self.completed_boundary
     }
 
+    fn coordinated_pause_requested(&self) -> Option<bool> {
+        Some(self.region.header().pause_requested())
+    }
+
     fn checkpoint_device_io_is_quiescent(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {
         Ok(self
             .try_node_snapshot()?

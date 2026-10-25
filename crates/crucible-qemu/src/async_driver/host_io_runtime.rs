@@ -223,6 +223,15 @@ pub trait QemuHostIoRuntime: Send {
         None
     }
 
+    /// Reports whether the region's coordinated pause flag is set.
+    ///
+    /// Stall reports read this because a set flag makes every node
+    /// publication a quiesced pause. Providers without a mapped region report
+    /// `None`.
+    fn coordinated_pause_requested(&self) -> Option<bool> {
+        None
+    }
+
     /// Reports whether QEMU owns no in-flight device coroutine at this boundary.
     ///
     /// Runtimes without a live external executor are always quiescent. A live

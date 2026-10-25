@@ -2067,11 +2067,12 @@ impl QemuNode {
                 ("hot-fork", self.hot_fork_resume_pending),
                 ("campaign-marker", self.campaign_marker_resume_pending),
             ],
+            self.host_io_runtime.coordinated_pause_requested(),
             self.pending_network_outputs.len(),
             self.last_campaign_markers.clone(),
             self.unproven_campaign_marker.clone(),
             self.last_step_completed_boundary
-                .map(crate::QemuCompletedQuantumBoundary::stall_boundary),
+                .map(crate::QemuCompletedQuantumBoundary::stall_boundaries),
         )
     }
 
