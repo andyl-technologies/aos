@@ -12,6 +12,12 @@ import shlex
 import time
 
 
+# Setup, the 90-minute concurrent publication horizon, and later fault/cutoff
+# cases share one reviewed authority. This bounds the whole fixture sequence;
+# the issuer's separate short lease lifetime and expiry checks remain intact.
+MAX_FIXTURE_AUTHORITY_ATTESTATION_SECONDS = 3 * 60 * 60
+
+
 def direct_root_browser_token(client, curl, python, private_command, reuse_session=False,
                               *, origin="https://aos.fleet.test",
                               evidence_root="/var/lib/hybrid-client/browser-session"):
@@ -429,7 +435,8 @@ def admit_external_fixture_authority(controls, org_slug, binding, sql_pins, revi
     if set(reviewed) != fields:
         raise ValueError("independent authority selection differs from the closed fixture schema")
     lifetime = reviewed["attestationLifetimeSeconds"]
-    if type(lifetime) is not int or not 1 <= lifetime <= 3600:
+    if (type(lifetime) is not int
+            or not 1 <= lifetime <= MAX_FIXTURE_AUTHORITY_ATTESTATION_SECONDS):
         raise ValueError("independently selected attestation exceeds the fixture run bound")
     if type(observed_native_time) is not int or observed_native_time <= 0:
         raise ValueError("actual Native clock observation is unavailable")

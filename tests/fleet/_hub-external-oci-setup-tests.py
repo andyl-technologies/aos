@@ -79,15 +79,22 @@ class SetupTests(unittest.TestCase):
                     raise error_type(private_input)
 
                 machine = types.SimpleNamespace(agent=types.SimpleNamespace(request=request))
-                with patch.object(operator.time, "monotonic", side_effect=[1.0, 1.25]), \
-                        self.assertRaises(RuntimeError) as raised:
-                    operator.private_guest_command(machine, private_input)
+                with tempfile.TemporaryDirectory() as scratch:
+                    diagnostics = Path(scratch) / "private-diagnostics"
+                    diagnostics.mkdir(mode=0o700)
+                    with patch.object(operator.tempfile, "mkdtemp", return_value=str(diagnostics)), \
+                            patch.object(operator.time, "monotonic", side_effect=[1.0, 1.25]), \
+                            self.assertRaises(RuntimeError) as raised:
+                        operator.private_guest_command(machine, private_input)
 
-                self.assertEqual(str(raised.exception),
-                    "private operator fixture command failed in transport "
-                    f"(category={category}, elapsed_ms=250)")
-                self.assertNotIn(private_input, str(raised.exception))
-                self.assertTrue(raised.exception.__suppress_context__)
+                    self.assertEqual(str(raised.exception),
+                        "private operator fixture command failed in transport "
+                        f"(category={category}, elapsed_ms=250); "
+                        "private diagnostics: private-diagnostics")
+                    self.assertNotIn(private_input, str(raised.exception))
+                    self.assertTrue(raised.exception.__suppress_context__)
+                    self.assertEqual((diagnostics / "error").read_text(), private_input)
+                    self.assertEqual((diagnostics / "error").stat().st_mode & 0o777, 0o600)
 
     def test_origins_database_and_roots_cannot_alias_main_or_another_run(self):
         value = coordinates()
@@ -352,6 +359,54 @@ class SetupTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             setup.bootstrap_external_oci_binding(controls, None, {}, coord, selected, None, "database")
         self.assertEqual(calls, [])
+
+    def test_reviewed_attestation_covers_full_fleet_sequence_without_implicit_extension(self):
+        calls, decisions = [], []
+        binding = {"stableId": "selected", "resourceVersion": "2", "spec": {"name": "objects",
+            "s3": {"bucket": "selected", "prefix": ".aos-direct-qualification/selected",
+                "endpoint": {"dnsName": "selected.test", "port": 443}}}}
+        pins = {"bindingId": "7", "bindingStableId": "selected", "bindingResourceVersion": "2",
+            "bindingPrefix": binding["spec"]["s3"]["prefix"], "currentWriteRevision": "3",
+            "credentials": [{"purpose": "write", "generation": "4",
+                "secretVersionRef": "secret://selected/write", "credentialFingerprint": "a" * 64}]}
+        selected = {key: "controlled-" + key for key in ("authorityId", "aliasId", "associationId",
+            "attestationId", "guardNamespaceId", "physicalResourceEvidenceDigest", "qualificationDigest",
+            "equivalenceEvidenceDigest", "providerPolicyEvidenceDigest", "executorIdentity")}
+        selected["qualifiedManagedPrefix"] = binding["spec"]["s3"]["prefix"]
+
+        def call(service, method, request):
+            calls.append(method)
+            if method == "GetAuthority":
+                return {"resourceVersion": "1"}
+            return {"revision": {"bindingId": "selected", "revision": "3",
+                "writeCredentialGeneration": "4", "writeCredentialVersionRef": "secret://selected/write",
+                "validationState": "valid", "writesSupported": True}}
+
+        controls = types.SimpleNamespace(call=call, authority_decision=lambda decision, version, label:
+            decisions.append(decision))
+
+        # Setup, the 90-minute concurrent publication horizon, and later fault
+        # cases share this authority. Shorter independent selections stay exact.
+        for lifetime in (300, 5400, 10_800):
+            with self.subTest(lifetime=lifetime):
+                calls.clear()
+                decisions.clear()
+                selected["attestationLifetimeSeconds"] = lifetime
+                authority_controls.admit_external_fixture_authority(
+                    controls, "selected-org", binding, pins, selected, 100)
+                self.assertEqual(decisions[-2]["attest"]["validUntil"], str(100 + lifetime))
+                self.assertIn("setAdmission", decisions[-1])
+
+        for lifetime in (True, 0, -1, 10_801):
+            with self.subTest(lifetime=lifetime):
+                calls.clear()
+                decisions.clear()
+                selected["attestationLifetimeSeconds"] = lifetime
+                with self.assertRaises(ValueError):
+                    authority_controls.admit_external_fixture_authority(
+                        controls, "selected-org", binding, pins, selected, 100)
+                self.assertEqual(calls, [])
+                self.assertEqual(decisions, [])
 
     def test_paired_authority_attests_both_actual_bindings_before_admission(self):
         decisions = []
