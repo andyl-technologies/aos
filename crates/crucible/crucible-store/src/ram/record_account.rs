@@ -3,16 +3,19 @@
 //! One genuine original-child scratch loan funds the exact bounded codec phase.
 //! Partition receipts share that loan; they do not request another grant.
 //! Generic decoders and backend I/O retain their original accounting.
+//! Construction refusals retain the explicit caller through final error close.
 
 use std::alloc::Layout;
 use std::sync::{Arc, Mutex};
 
 use crate::content_envelope::ContentChild;
 use crate::content_store::StoreError;
-use crate::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority, DecodeScratch};
+use crate::owned_decode::{
+    DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority, DecodeScratch,
+};
 
 use super::RamStoreError;
-use super::codec_ownership::{admission, encoded_source_bytes};
+use super::codec_ownership::encoded_source_bytes;
 
 /// Bounds allocations before the first owned closed-record codec value is created.
 pub(super) struct RecordAllocationPlan {
@@ -156,7 +159,9 @@ impl RecordAuthority {
         let total = partition
             .checked_add(control)
             .ok_or(RamStoreError::Limit("prepaid RAM allocation extent"))?;
-        let loan = original.reserve_scratch_bytes(total).map_err(admission)?;
+        let loan = original
+            .reserve_scratch_bytes(total)
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         let owner = crate::owned_decode::ResourceLoan::new(loan);
 
         Ok(Arc::new(Self {
@@ -202,7 +207,9 @@ impl RecordAccount {
     ) -> Result<Self, RamStoreError> {
         // A newly refused record poisons only this disposable original child.
         // Preexisting parent failure/max still propagate through child().
-        let original = original.child().map_err(admission)?;
+        let original = original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         Self::phase(&original, plan)
     }
 
@@ -218,7 +225,8 @@ impl RecordAccount {
         // the same paid loan until that failed authority's shared control has
         // actually closed; a successful account retains its own existing loans.
         let construction_credit = authority.owner.clone();
-        let codec = DecodeBudget::new(authority, plan.partition).map_err(admission)?;
+        let codec = DecodeBudget::new(authority, plan.partition)
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         drop(construction_credit);
         Ok(Self {
             codec,
@@ -250,6 +258,7 @@ mod tests {
         calls: AtomicUsize,
         verifications: AtomicUsize,
         closed: AtomicBool,
+        close_after_reservation: AtomicBool,
     }
 
     impl Original {
@@ -259,6 +268,7 @@ mod tests {
                 calls: AtomicUsize::new(0),
                 verifications: AtomicUsize::new(0),
                 closed: AtomicBool::new(false),
+                close_after_reservation: AtomicBool::new(false),
             })
         }
 
@@ -279,10 +289,90 @@ mod tests {
         fn reserve(&self, bytes: u64) -> Result<ResourceLoan, DecodeAdmissionError> {
             self.verify_live()?;
             self.calls.fetch_add(1, Ordering::SeqCst);
-            self.resources
+            let loan = self
+                .resources
                 .reserve(0, bytes)
-                .map_err(DecodeAdmissionError::new)
+                .map_err(DecodeAdmissionError::new)?;
+            if self.close_after_reservation.swap(false, Ordering::SeqCst) {
+                self.closed.store(true, Ordering::SeqCst);
+            }
+            Ok(loan)
         }
+    }
+
+    fn check_constructor_refusal_custody(
+        construct: impl FnOnce(&DecodeBudget) -> Result<RecordAccount, RamStoreError>,
+        close_after_reservation: bool,
+    ) {
+        let original = Original::new();
+        let budget = DecodeBudget::new(original.clone(), MAXIMUM).unwrap();
+        budget.charge_bytes(4099).unwrap();
+        let retained_bytes = original.used();
+        let original_calls = original.calls.load(Ordering::SeqCst);
+        original
+            .closed
+            .store(!close_after_reservation, Ordering::SeqCst);
+        original
+            .close_after_reservation
+            .store(close_after_reservation, Ordering::SeqCst);
+
+        let unrelated = Original::new();
+        let unrelated_budget = DecodeBudget::new(unrelated.clone(), MAXIMUM).unwrap();
+        let unrelated_calls = unrelated.calls.load(Ordering::SeqCst);
+        let unrelated_checks = unrelated.verifications.load(Ordering::SeqCst);
+        let scope = unrelated_budget.enter();
+
+        let error = construct(&budget).err().unwrap();
+
+        let mut cause = Some(&error as &(dyn Error + 'static));
+        let mut original_refusal = false;
+        while let Some(current) = cause {
+            original_refusal |= current.is::<OriginalClosed>();
+            cause = current.source();
+        }
+        assert!(original_refusal);
+        assert_eq!(
+            original.calls.load(Ordering::SeqCst),
+            original_calls + usize::from(close_after_reservation)
+        );
+        assert_eq!(unrelated.calls.load(Ordering::SeqCst), unrelated_calls);
+        assert_eq!(
+            unrelated.verifications.load(Ordering::SeqCst),
+            unrelated_checks
+        );
+
+        drop(scope);
+        drop(unrelated_budget);
+        drop(budget);
+        let before_error_close = (original.used(), unrelated.used());
+        drop(error);
+
+        assert_eq!((original.used(), unrelated.used()), (0, 0));
+        assert_eq!(before_error_close, (retained_bytes, 0));
+    }
+
+    #[test]
+    fn refused_record_child_keeps_explicit_original_until_error_close() {
+        check_constructor_refusal_custody(
+            |original| RecordAccount::new(original, RecordAllocationPlan::read(4179, 0).unwrap()),
+            false,
+        );
+    }
+
+    #[test]
+    fn refused_record_partition_keeps_explicit_original_until_error_close() {
+        check_constructor_refusal_custody(
+            |original| RecordAccount::phase(original, RecordAllocationPlan::read(4179, 0).unwrap()),
+            false,
+        );
+    }
+
+    #[test]
+    fn refused_record_codec_keeps_explicit_original_until_error_close() {
+        check_constructor_refusal_custody(
+            |original| RecordAccount::phase(original, RecordAllocationPlan::read(4179, 0).unwrap()),
+            true,
+        );
     }
 
     #[test]
