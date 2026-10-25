@@ -127,6 +127,17 @@ Recent committed startup fixes close narrower prerequisites:
   correctly refuses a replacement original delivery. Host startup remains
   unqualified; the read-only boot-ID follow-up below addresses this policy gap.
 
+  A further phase-0 fix constructs the inline boot-preparation owner only after
+  the paid enclosing capture reaches its existing Box. Outlined construction
+  separates the large native frames without adding an allocation, changing
+  limits or moving the before/owed-after gates. The release binary builds, and
+  unwind-frame inspection confirms the constructors no longer nest. Complete
+  application Rust unit and integration targets compile successfully
+  (`/nix/store/a5rg84477w4l0xd1zkvs67dz70p20871-aos-test-targets-0.1.0`).
+  That combined candidate also contains temporary offline startup diagnostics;
+  the target check compiles tests without running them. The enforcing Host
+  rerun remains pending, so this is not installed startup qualification.
+
 - Host authentication may now traverse `sysctl_kernel_t` directories and read
   their files to obtain its fixed kernel boot UUID. The SELinux grant is
   type-wide; the native reader selects `boot_id`. Mutation, executable access

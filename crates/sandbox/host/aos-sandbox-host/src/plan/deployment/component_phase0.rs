@@ -56,7 +56,7 @@ struct Phase0CaptureV2 {
     policy: [RetainedLiveSelinuxPolicyReadbackV1; 3],
     target: HostShiftedTargetOriginalV2,
     hardening: ServicePropertiesReadOriginalV2,
-    boot_preparation: HostBootPreparationOriginalV1,
+    boot_preparation: Option<HostBootPreparationOriginalV1>,
     boot_entered: bool,
     boot_body_failure_selected: bool,
     boot_after: Option<std::result::Result<(), BootPreparationClosedV1>>,
@@ -83,7 +83,7 @@ impl Phase0CaptureV2 {
             policy: std::array::from_fn(|_| RetainedLiveSelinuxPolicyReadbackV1::new()),
             target: HostShiftedTargetOriginalV2::new(),
             hardening: ServicePropertiesReadOriginalV2::new(),
-            boot_preparation: HostBootPreparationOriginalV1::new(),
+            boot_preparation: None,
             boot_entered: false,
             boot_body_failure_selected: false,
             boot_after: None,
@@ -100,6 +100,18 @@ impl Phase0CaptureV2 {
             aliases: None,
             draft_claim: None,
         }
+    }
+
+    // The whole capture is boxed before this separately outlined constructor
+    // enters. Its large boot-file temporaries must not overlap the enclosing
+    // capture constructor on the unchanged installed process stack.
+    #[inline(never)]
+    fn initialize_boot_preparation_once(&mut self) -> Result<()> {
+        if self.boot_preparation.is_some() {
+            return Err(closed());
+        }
+        self.boot_preparation = Some(HostBootPreparationOriginalV1::new());
+        Ok(())
     }
 
     async fn observe_body(
@@ -138,6 +150,8 @@ impl Phase0CaptureV2 {
         let hostd = loan.component_host_executable_path_v2()?;
         self.boot_entered = true;
         self.boot_preparation
+            .as_mut()
+            .ok_or_else(closed)?
             .observe_before_once_v1(systemd, credentials, &self.hardening, nspawn, hostd, policy)
             .await
             .map_err(|_| closed())?;
@@ -151,7 +165,12 @@ impl Phase0CaptureV2 {
             .map_err(|_| closed())?;
         let facts = self.facts[0].facts_v2().copied();
         self.load[0]
-            .load_with_boot_preparation_once_v1(credentials, state, nspawn, &self.boot_preparation)
+            .load_with_boot_preparation_once_v1(
+                credentials,
+                state,
+                nspawn,
+                self.boot_preparation.as_ref().ok_or_else(closed)?,
+            )
             .map_err(|_| closed())?;
         let Some(readiness) = self.load[0].evidence_v2()? else {
             // An optional report remains independently checked even before a
@@ -207,7 +226,12 @@ impl Phase0CaptureV2 {
 
         let publisher_generation = readiness.publisher_generation();
         self.load[1]
-            .load_with_boot_preparation_once_v1(credentials, state, nspawn, &self.boot_preparation)
+            .load_with_boot_preparation_once_v1(
+                credentials,
+                state,
+                nspawn,
+                self.boot_preparation.as_ref().ok_or_else(closed)?,
+            )
             .map_err(|_| closed())?;
         let final_readiness = self.load[1].evidence_v2()?.ok_or_else(closed)?;
         self.package[3]
@@ -258,7 +282,11 @@ impl Phase0CaptureV2 {
             .or_else(|| self.hardening.failure().map(|error| error as _))
             .or_else(|| {
                 self.boot_body_failure_selected
-                    .then(|| self.boot_preparation.failure())
+                    .then(|| {
+                        self.boot_preparation
+                            .as_ref()
+                            .and_then(|original| original.failure())
+                    })
                     .flatten()
             })
             .or_else(|| self.facts[0].failure_v2())
@@ -420,6 +448,7 @@ impl HostComponentPhase0OriginalV2 {
             std::process::abort();
         };
         capture.preparation = Some((|| {
+            capture.initialize_boot_preparation_once()?;
             capture.manager = Some(Arc::clone(loan.component_manager_original_v2()?));
             Ok(())
         })());
@@ -439,17 +468,18 @@ impl HostComponentPhase0OriginalV2 {
             if !matches!(capture.body, Some(Ok(()))) {
                 // Snapshot selection before the independent Boot post can
                 // acquire a later cause on the same retained owner.
-                capture.boot_body_failure_selected = capture.boot_preparation.failure().is_some();
+                capture.boot_body_failure_selected = capture
+                    .boot_preparation
+                    .as_ref()
+                    .is_some_and(|original| original.failure().is_some());
                 self.first.get_or_insert(First::Body);
             }
         }
         if capture.boot_entered {
-            capture.boot_after = Some(
-                capture
-                    .boot_preparation
-                    .observe_after_once_v1(systemd)
-                    .await,
-            );
+            capture.boot_after = Some(match capture.boot_preparation.as_mut() {
+                Some(original) => original.observe_after_once_v1(systemd).await,
+                None => Err(BootPreparationClosedV1),
+            });
             if !matches!(capture.boot_after, Some(Ok(()))) {
                 self.first.get_or_insert(First::BootAfter);
             }
@@ -468,7 +498,8 @@ impl HostComponentPhase0OriginalV2 {
             let boot_retired = !capture.boot_entered
                 || capture
                     .boot_preparation
-                    .retire_completed_native_aliases_v1();
+                    .as_mut()
+                    .is_some_and(|original| original.retire_completed_native_aliases_v1());
             capture.aliases = Some(if target_retired && hardening_retired && boot_retired {
                 Ok(())
             } else {
@@ -563,7 +594,7 @@ impl HostComponentPhase0OriginalV2 {
                 .err()
                 .map(|e| e as _),
             First::Body => self.capture.as_ref()?.body_failure(),
-            First::BootAfter => self.capture.as_ref()?.boot_preparation.failure(),
+            First::BootAfter => self.capture.as_ref()?.boot_preparation.as_ref()?.failure(),
             First::After => self
                 .capture
                 .as_ref()?
