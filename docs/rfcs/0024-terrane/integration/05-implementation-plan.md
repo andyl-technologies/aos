@@ -100,6 +100,39 @@ T-TOPO-2 on B-topology. The trunk's HOST-24 periodic lease-expiry obligation
 remains with the original physical worker; it is not replaced by that optional
 collection work.
 
+Configured host-maintenance assembly now binds one protected listener per
+funded native domain before the original Serve process reports readiness. The
+GC CLI selects this explicit host-only configuration, installs confinement
+before its executor, authenticates each original owner and performs a single
+bounded reconciliation pass. It opens no repository or private owner state;
+all domains share the pass deadline, and interruption closes transport while
+accepted physical work stays with Serve. Missing funding, domain coverage,
+colliding identities, overlapping endpoints and unsupported feature profiles
+refuse before startup effects. Local repository collection remains a separate
+explicit composition; selecting both is rejected. This reconciles draining
+exposures and does not implement optional host-tier collection.
+
+The new `integration.native-configured-maintenance` scenario runs the actual
+retained CLI with original two-domain native owners, protected listener inodes,
+two fresh empty-capability UID 843 GC processes, foreign-UID refusal, private
+state denial and stopped-owner refusal. Original SDK snapshot, signed-publication,
+owner-lock and SIGTERM controls remain. The scenario is prepared, not yet
+qualified. Nine pure configuration tests, strict all-target linting of all
+three SDK profiles, both Linux profiles and the CLI, Python syntax checks,
+Nix formatting and evaluation of the new guest derivation pass. Module
+rendering and managed listener-directory lifecycle remain open. These changes
+do not accept a trunk task.
+
+The full structural-index owning gate at `32727e80b3` passes in 1,433.832
+seconds. Complete review checks all 8,229 immutable source files, 82 pure
+selectors, retained codec ELF, two native images, six native Cargo artifacts,
+all prerequisite output links and all eight guest serial results. The
+[requirement audit](acceptance/fuse-index.md) identifies a remaining FUSE-11
+manifest-open evidence gap: the current scoped file oracle explicitly rejects
+manifests. T-FUSE-1 remains open until the owning gate includes an authenticated
+manifest-file open and backing handoff. The current aggregate alone does not
+satisfy the complete requirement range.
+
 The actual configured GC CLI at `32727e80b3` passes its native guest in
 650.063 seconds; the separate collector component passes in 638.421 seconds.
 Both complete reviews verify all 8,229 immutable source files, 5,479 bound
@@ -166,7 +199,7 @@ The main Linux CLI now dispatches configured `gc` invocations to the checked
 local collector. It performs complete preflight before confinement, executor
 creation or repository/public-key reopening. The readiness line is emitted
 only after the first durable sweep checkpoint; SIGINT/SIGTERM retain the
-existing cancellation and joined-shutdown behavior. Unsupported host-tier,
+existing cancellation and joined-shutdown behavior. Unsupported
 remote/composite, exposure and instance/workload-credential compositions still
 fail explicitly. This does not implement the existing host-local GC timer or
 change its service model, and does not establish full GC-role acceptance.
@@ -12271,7 +12304,8 @@ conformance tests passing over Terrane.
 - [ ] **T-FUSE-1** Structural index compiler and mmap reader. — satisfies
   FUSE-7 to FUSE-12; `checks.terrane.gates.fuse-index-roundtrip`.
   The [requirement audit](acceptance/fuse-index.md) records the inspected
-  implementation and complete owning-gate evidence still required for acceptance.
+  implementation, reviewed owning-gate result and remaining manifest-open
+  evidence required for acceptance.
 - [ ] **T-FUSE-2** FUSE worker: passthrough, fallback, inode policy,
   attributes, open path, coalescing, mount options, leases, drain. —
   satisfies FUSE-1 to FUSE-6, FUSE-13 to FUSE-31, FUSE-43 to FUSE-50,

@@ -332,6 +332,10 @@ def install(helper_path):
             cache_wrapper = output / "bin" / f"configured-sdk-cache-{kind}"
             cache_wrapper.write_text(wrapper.read_text().replace(" launch ", " launch-cache "))
             cache_wrapper.chmod(0o755)
+        if kind == "cli":
+            maintenance_wrapper = output / "bin/configured-sdk-maintenance-cli"
+            maintenance_wrapper.write_text(wrapper.read_text().replace(" launch ", " launch-maintenance "))
+            maintenance_wrapper.chmod(0o755)
         for path in [event_path, temporary / f"configured-sdk-{kind}-launch.json",
                      temporary / f"configured-sdk-{kind}-runner",
                      temporary / f"configured-sdk-{kind}-discovery.log"]:
@@ -347,7 +351,7 @@ def install(helper_path):
     _verify_before_platform_metadata(output, source)
 
 
-def launch(image, kind, arguments, native_cache=False):
+def launch(image, kind, arguments, native_cache=False, maintenance=False):
     """Verifies the final image before replacing this process with its artifact."""
     identity = json.loads((image / "share/identity.json").read_text())
     verify(image, pathlib.Path(identity["source"]))
@@ -355,8 +359,13 @@ def launch(image, kind, arguments, native_cache=False):
     if kind in ["example", "cli", "gc"]:
         status = dict(line.split(":", 1) for line in
                       pathlib.Path("/proc/self/status").read_text().splitlines() if ":" in line)
-        require(os.getuid() == os.geteuid() == 840 and os.getgid() == os.getegid() == 840
-                and os.getgroups() == ([844, 845] if native_cache else [])
+        uid = os.geteuid() if maintenance else 840
+        if maintenance:
+            require(kind == "cli" and uid in [842, 843] and len(arguments) == 4
+                    and arguments[0] == "--config" and arguments[2:] == ["--role", "gc"],
+                    "maintenance proof requires the explicit GC CLI or foreign-identity control")
+        require(os.getuid() == os.geteuid() == uid and os.getgid() == os.getegid() == uid
+                and os.getgroups() == ([844] if maintenance else [844, 845] if native_cache else [])
                 and status["NoNewPrivs"].strip() == "1"
                 and all(int(status[name].strip(), 16) == 0
                         for name in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]),
@@ -403,6 +412,8 @@ def main():
     elif command == "launch-cache":
         require(arguments[1] in ["example", "cli"], "native cache requires an explicit actor")
         launch(pathlib.Path(arguments[0]), arguments[1], arguments[2:], native_cache=True)
+    elif command == "launch-maintenance":
+        launch(pathlib.Path(arguments[0]), arguments[1], arguments[2:], maintenance=True)
     elif command == "unit":
         unit(pathlib.Path(arguments[0]), pathlib.Path(arguments[1]))
     else:

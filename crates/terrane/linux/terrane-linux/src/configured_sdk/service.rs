@@ -5,7 +5,7 @@
 
 use super::{CompletedSnapshot, Error, FailureKind};
 use crate::{host_cache::NativeMetadataOwner, quota_confinement::Installed};
-use std::{io, time::Duration};
+use std::{collections::BTreeMap, io, time::Duration};
 use tokio::{
     signal::unix::{SignalKind, signal},
     time::{MissedTickBehavior, interval, timeout},
@@ -22,7 +22,8 @@ pub(super) async fn maintain(
     notification: Option<Ready>,
     installed: &Installed,
     snapshots: &[CompletedSnapshot],
-    owners: &[&NativeMetadataOwner],
+    owners: &BTreeMap<&str, &NativeMetadataOwner>,
+    #[cfg(feature = "surface-fuse")] maintenance: Option<crate::configured_maintenance::Plan>,
 ) -> Result<(), Error> {
     let Some(notification) = notification else {
         return Ok(());
@@ -30,6 +31,20 @@ pub(super) async fn maintain(
     let mut terminate = signal(SignalKind::terminate()).map_err(failed)?;
     let mut interrupt = signal(SignalKind::interrupt()).map_err(failed)?;
     check_owners(installed, owners).await?;
+    #[cfg(feature = "surface-fuse")]
+    let bindings = maintenance
+        .as_ref()
+        .map(|plan| plan.bind(owners))
+        .transpose()
+        .map_err(failed)?;
+    let maintenance = async {
+        #[cfg(feature = "surface-fuse")]
+        if let Some(bindings) = &bindings {
+            return bindings.serve(owners).await;
+        }
+        std::future::pending::<io::Result<()>>().await
+    };
+    tokio::pin!(maintenance);
     notification(snapshots).map_err(failed)?;
 
     let mut health = interval(Duration::from_secs(1));
@@ -39,15 +54,19 @@ pub(super) async fn maintain(
             biased;
             received = terminate.recv() => return received.ok_or_else(disconnected),
             received = interrupt.recv() => return received.ok_or_else(disconnected),
+            result = &mut maintenance => return result.map_err(failed),
             _ = health.tick() => check_owners(installed, owners).await?,
         }
     }
 }
 
-async fn check_owners(installed: &Installed, owners: &[&NativeMetadataOwner]) -> Result<(), Error> {
+async fn check_owners(
+    installed: &Installed,
+    owners: &BTreeMap<&str, &NativeMetadataOwner>,
+) -> Result<(), Error> {
     installed.check_current().map_err(failed)?;
     timeout(Duration::from_secs(5), async {
-        for owner in owners {
+        for owner in owners.values() {
             owner.check_running().await?;
         }
         Ok::<_, io::Error>(())

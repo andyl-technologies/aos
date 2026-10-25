@@ -168,3 +168,146 @@ fn native_surface_index_refuses_incomplete_unfunded_and_overflowing_bounds() {
         );
     }
 }
+
+const MAINTENANCE: &str = r#"
+[host_tier.publisher]
+socket_path = "/run/terrane-publish/publisher.sock"
+serve_uid = 840
+publish_uid = 841
+content_uid = 840
+content_gid = 842
+max_connections = 8
+[host_tier.maintenance]
+gc_uid = 843
+max_connections = 8
+max_requests = 1
+connection_timeout_ms = 30000
+request_timeout_ms = 20000
+[host_tier.maintenance.sockets]
+public = "/run/terrane-maintenance/public.sock"
+"#;
+
+#[test]
+fn maintenance_preserves_explicit_bounds_and_requires_complete_inputs()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert!(Config::parse(&format!("{CONFIG}{MAINTENANCE}")).is_err());
+    let text = format!("{CONFIG}{SURFACE_INDEX}{MAINTENANCE}");
+    let config = Config::parse(&text)?;
+    let settings = config
+        .host_tier()
+        .and_then(|host| host.maintenance.as_ref())
+        .ok_or("missing explicit maintenance settings")?;
+
+    assert_eq!(settings.gc_uid, 843);
+    assert_eq!(settings.request_timeout_ms, 20000);
+    assert_eq!(
+        settings.sockets["public"],
+        "/run/terrane-maintenance/public.sock"
+    );
+    for field in [
+        "gc_uid = 843\n",
+        "max_connections = 8\n",
+        "max_requests = 1\n",
+        "connection_timeout_ms = 30000\n",
+        "request_timeout_ms = 20000\n",
+        "public = \"/run/terrane-maintenance/public.sock\"\n",
+    ] {
+        assert!(Config::parse(&text.replace(field, "")).is_err(), "{field}");
+    }
+    Ok(())
+}
+
+#[test]
+fn maintenance_refuses_colliding_roles_unbounded_transport_and_unknown_fields() {
+    let text = format!("{CONFIG}{SURFACE_INDEX}{MAINTENANCE}");
+    for (field, replacement) in [
+        ("gc_uid = 843", "gc_uid = 840"),
+        ("gc_uid = 843", "gc_uid = 841"),
+        ("gc_uid = 843", "gc_uid = 4294967295"),
+        ("max_connections = 8", "max_connections = 0"),
+        ("max_connections = 8", "max_connections = 1025"),
+        ("max_requests = 1", "max_requests = 0"),
+        ("max_requests = 1", "max_requests = 4097"),
+        (
+            "connection_timeout_ms = 30000",
+            "connection_timeout_ms = 300001",
+        ),
+        ("request_timeout_ms = 20000", "request_timeout_ms = 0"),
+        ("request_timeout_ms = 20000", "request_timeout_ms = 30001"),
+        ("gc_uid", "unknown_gc_uid"),
+    ] {
+        assert!(
+            Config::parse(&text.replace(field, replacement)).is_err(),
+            "{replacement}"
+        );
+    }
+}
+
+#[test]
+fn maintenance_refuses_ambiguous_endpoints_and_incomplete_native_inventory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let text = format!("{CONFIG}{SURFACE_INDEX}{MAINTENANCE}");
+    for path in [
+        "/",
+        "relative.sock",
+        "/run//maintenance.sock",
+        "/run/./maintenance.sock",
+        "/run/../maintenance.sock",
+        "/var/lib/terrane/public/maintenance.sock",
+        "/var/lib",
+        "/run/terrane-publish/publisher.sock",
+        "/run/terrane-publish/publisher.sock/child",
+    ] {
+        assert!(
+            Config::parse(&text.replace("/run/terrane-maintenance/public.sock", path)).is_err(),
+            "{path}"
+        );
+    }
+    let long_path = format!("/run/{}", "x".repeat(108));
+    assert!(
+        Config::parse(&text.replace("/run/terrane-maintenance/public.sock", &long_path)).is_err()
+    );
+    assert!(
+        Config::parse(&text.replace(
+            "public = \"/run/terrane-maintenance/public.sock\"",
+            "unknown = \"/run/terrane-maintenance/public.sock\""
+        ))
+        .is_err()
+    );
+
+    let mut host = Config::parse(&text)?
+        .host_tier()
+        .ok_or("missing host")?
+        .clone();
+    let settings = host.maintenance.clone().ok_or("missing maintenance")?;
+    host.publisher = None;
+    assert!(settings.validate(&host).is_err());
+    host = Config::parse(&text)?
+        .host_tier()
+        .ok_or("missing host")?
+        .clone();
+    host.domains
+        .get_mut("public")
+        .ok_or("missing domain")?
+        .cache = None;
+    assert!(settings.validate(&host).is_err());
+
+    host = Config::parse(&text)?
+        .host_tier()
+        .ok_or("missing host")?
+        .clone();
+    let mut settings = settings;
+    let private = host.domains["public"].clone();
+    host.domains.insert("private:operator".into(), private);
+    assert!(settings.validate(&host).is_err());
+    for duplicate in [
+        "/run/terrane-maintenance/public.sock",
+        "/run/terrane-maintenance/public.sock/child",
+    ] {
+        settings
+            .sockets
+            .insert("private:operator".into(), duplicate.into());
+        assert!(settings.validate(&host).is_err());
+    }
+    Ok(())
+}

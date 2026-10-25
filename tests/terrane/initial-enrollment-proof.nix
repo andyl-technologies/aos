@@ -69,6 +69,8 @@
         then "terrane-native-configured-mounted-worker-ext4"
         else if scenario == "worker"
         then "terrane-native-configured-worker-ext4"
+        else if scenario == "maintenance"
+        then "terrane-native-configured-maintenance-ext4"
         else if scenario == "sdk-refusals"
         then "terrane-native-sdk-refusals-ext4"
         else if scenario == "sdk-wipe"
@@ -77,7 +79,7 @@
       memory = 1024;
       rootfsDeps =
         [image verified pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3 pkgs.binutils]
-        ++ lib.optional (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest"]) configuredSdkProof.image
+        ++ lib.optional (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "maintenance" "surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest"]) configuredSdkProof.image
         ++ lib.optional (builtins.elem scenario ["surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest"]) surfaceImage;
       testScript = ''
         set -eu
@@ -124,7 +126,7 @@
         chmod 700 "$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TMPDIR="$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TERRANE_INITIAL_VM_IMAGE="$proof_disk"
-        ${lib.optionalString (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest"]) ''
+        ${lib.optionalString (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "maintenance" "surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest"]) ''
           export TERRANE_CONFIGURED_SDK_IMAGE=${configuredSdkProof.image}
         ''}
         ${lib.optionalString (builtins.elem scenario ["surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest"]) ''
@@ -181,6 +183,7 @@ in {
     ];
   };
   sdkWipe = nativeFor "sdk-wipe";
+  maintenance = nativeFor "maintenance";
   surface = nativeFor "surface";
   worker = nativeFor "worker";
   mountedWorker = nativeFor "worker-mounted";

@@ -14,7 +14,7 @@ clap.workspace = true
 tokio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-terrane-linux = { workspace = true, features = ["tokio"] }
+terrane-linux = { workspace = true, features = ["tokio", "surface-fuse"] }
 
 [lints]
 workspace = true

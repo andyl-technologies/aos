@@ -136,14 +136,14 @@ def manifest_payload():
 
 
 def actor(driver, image, label, arguments, success=True, mount_policy=None, maintained=False,
-          launcher=False):
+          launcher=False, on_ready=None):
     """Runs one fresh source-bound actor under the original supervisor's bounds."""
     with contextlib.ExitStack() as stack:
         command = namespace_actor(driver, image, arguments, mount_policy, stack, launcher)
-        return run_actor(driver, label, command, success, mount_policy, maintained)
+        return run_actor(driver, label, command, success, mount_policy, maintained, on_ready)
 
 
-def run_actor(driver, label, command, success, mount_policy, maintained):
+def run_actor(driver, label, command, success, mount_policy, maintained, on_ready=None):
     """Collects bounded actor output and retains every namespace observation."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=True)
@@ -165,6 +165,9 @@ def run_actor(driver, label, command, success, mount_policy, maintained):
                                    "native cache exited at SDK completion: " + label)
                     if stop_at is None:
                         state_inodes = verify_owner_locks(driver, True)
+                        if on_ready is not None:
+                            on_ready()
+                            verify_owner_locks(driver, True, state_inodes)
                         stop_at = time.monotonic() + 2
                     if time.monotonic() >= stop_at:
                         verify_owner_locks(driver, True, state_inodes)
@@ -303,6 +306,121 @@ failure_threshold = 3
 probe_interval_ms = 5000
 """
     return text
+
+
+def maintenance_gc_actor(executable, config, private_paths):
+    """Checks actual fresh GC credentials and denied private state before exec."""
+    status = dict(line.split(":", 1) for line in pathlib.Path("/proc/self/status").read_text().splitlines()
+                  if ":" in line)
+    if status["Uid"].split() != ["843"] * 4 or status["Gid"].split() != ["843"] * 4:
+        raise RuntimeError("maintenance GC credentials differ")
+    if status["NoNewPrivs"].strip() != "1" or any(
+            int(status[field], 16) for field in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]):
+        raise RuntimeError("maintenance GC retains capabilities or lacks NNP")
+    for path in private_paths:
+        try:
+            with open(path, "rb"):
+                pass
+        except PermissionError:
+            continue
+        raise RuntimeError("maintenance GC could open private owner state")
+    print("CONFIGURED_MAINTENANCE_GC_IDENTITY uid=843 gid=843 capabilities=0 nnp=1 private-state=denied", file=sys.stderr, flush=True)
+    os.execv(executable, [executable, "--config", config, "--role", "gc"])
+
+
+def maintenance_exchange(driver, image, config, label, success=True, foreign=False):
+    """Executes a fresh actual CLI; replies can originate only from retained Serve owners."""
+    command = ["setpriv", "--reuid", "842" if foreign else "843",
+               "--regid", "842" if foreign else "843", "--groups", "844",
+               "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs"]
+    executable = str(image / "bin/configured-sdk-maintenance-cli")
+    if foreign:
+        command += [executable, "--config", str(config), "--role", "gc"]
+    else:
+        private = [str(driver.ROOT / "positive" / domain / "state/cache/records.toml")
+                   for domain in ["public", "private"]]
+        command += [sys.executable, str(driver.IMAGE / "share/configured_sdk_cache_vm.py"),
+                    "--maintenance-gc-actor", executable, str(config), json.dumps(private)]
+    remaining = min(5, driver.DEADLINE - time.monotonic())
+    driver.require(remaining > 0, "configured maintenance whole-guest deadline")
+    started = time.monotonic()
+    result = subprocess.run(command, capture_output=True, timeout=remaining)
+    log = driver.ROOT / "proof-logs" / label
+    log.with_suffix(".stdout").write_bytes(result.stdout)
+    log.with_suffix(".stderr").write_bytes(result.stderr)
+    log.with_suffix(".timing.json").write_text(json.dumps({
+        "exit_status": result.returncode, "elapsed_seconds": time.monotonic() - started,
+        "whole_remaining_at_start": driver.DEADLINE - started, "deadline_seconds": remaining,
+    }, sort_keys=True) + "\n")
+    driver.require(len(result.stdout) + len(result.stderr) <= driver.MAX_OUTPUT,
+                   "configured maintenance output bound")
+    driver.require(result.returncode == (0 if success else 1), "configured GC CLI exit status differs")
+    if success:
+        expected = [f"domain {domain}: checked 0, completed 0, blocked 0 draining exposures"
+                    for domain in ["private:fixture", "public"]]
+        driver.require(result.stdout.decode().splitlines() == expected, "actual original-owner responses differ")
+        driver.require(result.stderr.decode().splitlines() == [
+            "CONFIGURED_MAINTENANCE_GC_IDENTITY uid=843 gid=843 capabilities=0 nnp=1 private-state=denied"],
+            "actual GC identity or private-state refusal witness differs")
+    else:
+        driver.require(not result.stdout, "refused GC synthesized successful responses")
+    return result
+
+
+def run_maintenance(driver, image):
+    """Checks configured listeners and GC dispatch without claiming exposure release."""
+    subprocess.run([sys.executable, str(image / "share/configured_sdk_proof.py"),
+                    "verify", str(image), str(driver.SOURCE)], check=True, timeout=30)
+    parent = pathlib.Path("/run/terrane-configured-maintenance")
+    parent.mkdir(mode=0o750)
+    os.chown(parent, 840, 844)
+    parent.chmod(0o2750)
+    repository_parent = driver.ROOT / "configured-maintenance"
+    repository_parent.mkdir(mode=0o700)
+    os.chown(repository_parent, 840, 840)
+    root = repository_parent / "repository"
+    config = driver.ROOT / "configured-maintenance.toml"
+    sockets = [parent / name for name in ["public.sock", "private.sock"]]
+    try:
+        actor(driver, image, "maintenance-setup", ["configured-sdk-cache-example", "setup-public", root, 840])
+        text = (root / "config.toml").read_text() + host_configuration(driver)
+        for domain in ["public", "private:fixture"]:
+            text += f'\n[host_tier.domains."{domain}".cache.surface_index]\nmax_entries=16\nmax_node_bytes=65536\nmax_index_bytes=65536\ncapacity_bytes=25165824\nfuture_hold_bytes=327680\n'
+        text += f'\n[host_tier.maintenance]\ngc_uid=843\nmax_connections=2\nmax_requests=1\nconnection_timeout_ms=3000\nrequest_timeout_ms=2000\n[host_tier.maintenance.sockets]\npublic="{sockets[0]}"\n"private:fixture"="{sockets[1]}"\n'
+        config.write_text(text)
+        original_inodes = []
+
+        def ready():
+            original_inodes.extend((path.stat().st_dev, path.stat().st_ino) for path in sockets)
+            for path in sockets:
+                metadata = path.lstat()
+                driver.require(stat.S_ISSOCK(metadata.st_mode) and metadata.st_uid == 840
+                               and metadata.st_gid == 844 and stat.S_IMODE(metadata.st_mode) == 0o660,
+                               "configured maintenance listener protection differs")
+            maintenance_exchange(driver, image, config, "maintenance-gc-foreign", success=False, foreign=True)
+            maintenance_exchange(driver, image, config, "maintenance-gc-first")
+            maintenance_exchange(driver, image, config, "maintenance-gc-second")
+            driver.require(original_inodes == [(path.stat().st_dev, path.stat().st_ino) for path in sockets],
+                           "GC replaced original listener inodes")
+            print("PASS configured Serve binds both protected domain listeners before readiness; two fresh confined GC CLI processes authenticate original owners while private state remains denied", flush=True)
+
+        stdout, stderr = actor(driver, image, "maintenance-serve",
+              ["configured-sdk-cache-cli", "--config", config, "--role", "serve"],
+              mount_policy="readonly", maintained=True, on_ready=ready)
+        maintenance_exchange(driver, image, config, "maintenance-gc-stopped", success=False)
+        driver.require(original_inodes == [(path.stat().st_dev, path.stat().st_ino) for path in sockets],
+                       "failed GC rebound stopped owner listeners")
+        actor(driver, image, "maintenance-publication",
+              ["configured-sdk-cache-example", "verify-reopen-publication", root, 840])
+        root.with_suffix(".stdout").write_bytes(stdout)
+        root.with_suffix(".stderr").write_bytes(stderr)
+        actor(driver, image, "maintenance-snapshots",
+              ["configured-sdk-cache-example", "verify-cli", root, 840])
+        print("PASS configured GC refuses stopped serving owners without rebinding listeners; original owner locks release after acknowledged SIGTERM and signed publication remains intact", flush=True)
+    finally:
+        for path in sockets:
+            path.unlink(missing_ok=True)
+        parent.rmdir()
 
 
 def cache_states(driver):
@@ -655,5 +773,7 @@ if __name__ == "__main__":
         verify_namespace(sys.argv[2], json.loads(sys.argv[3]), sys.argv[4:])
     elif len(sys.argv) == 5 and sys.argv[1] == "--configured-worker-launcher":
         configured_worker_launcher(sys.argv[2], json.loads(sys.argv[3]), json.loads(sys.argv[4]))
+    elif len(sys.argv) == 5 and sys.argv[1] == "--maintenance-gc-actor":
+        maintenance_gc_actor(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]))
     else:
         raise SystemExit("expected a privileged mount fixture or unprivileged namespace verifier")

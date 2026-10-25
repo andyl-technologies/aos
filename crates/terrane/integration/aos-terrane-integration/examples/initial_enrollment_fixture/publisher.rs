@@ -34,6 +34,7 @@ fn configuration(
     consumer_release_grace_seconds: u64,
 ) -> HostTier {
     HostTier {
+        maintenance: None,
         path: case.path.to_string_lossy().into_owned(),
         size_bytes: 2 * LIMIT,
         reassembly: Reassembly::Never,

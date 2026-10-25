@@ -17,6 +17,9 @@ compile_error!("terrane-linux requires Linux (CRATE-11)");
 pub mod configured;
 #[cfg(feature = "tokio")]
 pub mod configured_gc;
+/// Composes authenticated GC reconciliation with original serving cache owners.
+#[cfg(all(feature = "surface-fuse", feature = "tokio"))]
+pub mod configured_maintenance;
 #[cfg(feature = "tokio")]
 pub mod configured_sdk;
 #[cfg(feature = "surface-fuse")]

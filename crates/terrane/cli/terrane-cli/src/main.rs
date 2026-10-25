@@ -97,6 +97,22 @@ fn run(arguments: Arguments) -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(target_os = "linux")]
     if role == Role::Gc {
+        if let Some(host) = config.host_tier() {
+            if config.gc().is_some() {
+                return Err(
+                    "host maintenance cannot also select local repository collection".into(),
+                );
+            }
+            let responses = terrane_linux::configured_maintenance::run_configured_gc(host)?;
+            for response in responses {
+                let counts = response.reconciliation;
+                println!(
+                    "domain {}: checked {}, completed {}, blocked {} draining exposures",
+                    response.domain, counts.checked, counts.completed, counts.blocked,
+                );
+            }
+            return Ok(());
+        }
         // The library checks the complete supported local configuration before
         // installing confinement, creating its executor or reopening authority.
         terrane_linux::configured_gc::run_service(&config, role, report_collector_ready)?;

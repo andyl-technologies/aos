@@ -499,6 +499,7 @@ in {
   integration.native-sdk-maintained = initialEnrollmentProof.sdkMaintained;
   integration.native-sdk-refusals = initialEnrollmentProof.sdkRefusals;
   integration.native-sdk-wipe = initialEnrollmentProof.sdkWipe;
+  integration.native-configured-maintenance = initialEnrollmentProof.maintenance;
   integration.native-configured-surface-index = initialEnrollmentProof.surface;
   integration.native-configured-worker = initialEnrollmentProof.worker;
   integration.native-configured-mounted-worker = initialEnrollmentProof.mountedWorker;

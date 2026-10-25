@@ -584,6 +584,7 @@ mod tests {
         let publish_uid = rustix::process::geteuid().as_raw();
         let serve_uid = if publish_uid == 1001 { 1002 } else { 1001 };
         HostTier {
+            maintenance: None,
             path: "/var/lib/terrane".into(),
             size_bytes: 1 << 30,
             reassembly: Reassembly::Never,

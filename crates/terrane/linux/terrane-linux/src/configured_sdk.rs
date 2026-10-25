@@ -61,6 +61,8 @@ use crate::{
 /// credentials, opening repository state or starting any executor.
 pub struct ValidatedSdk<'config> {
     config: &'config Config,
+    #[cfg(feature = "surface-fuse")]
+    maintenance: Option<crate::configured_maintenance::Plan>,
     cache: Option<(
         NativeCachePlan,
         NativeReadPolicy,
@@ -85,6 +87,10 @@ impl ValidatedSdk<'_> {
     }
 
     fn start_with(self, notification: Option<service::Ready>) -> Result<CompletedSdk, Error> {
+        #[cfg(feature = "surface-fuse")]
+        if self.maintenance.is_some() && notification.is_none() {
+            return Err(Error::refused(FailureKind::NativeCacheConfiguration));
+        }
         if tokio::runtime::Handle::try_current().is_ok() {
             return Err(Error::refused(FailureKind::ExistingRuntime));
         }
@@ -105,6 +111,8 @@ impl ValidatedSdk<'_> {
             &installed,
             self.cache,
             notification,
+            #[cfg(feature = "surface-fuse")]
+            self.maintenance,
         ));
         // Runtime drop joins its blocking work while the real receipt remains
         // retained. No asynchronous filesystem action outlives this boundary.
@@ -244,6 +252,7 @@ async fn start_exposures(
         terrane_sdk::host::cache::ReassemblyMode,
     )>,
     notification: Option<service::Ready>,
+    #[cfg(feature = "surface-fuse")] maintenance: Option<crate::configured_maintenance::Plan>,
 ) -> Result<Vec<CompletedSnapshot>, Error> {
     installed
         .check_current()
@@ -289,12 +298,20 @@ async fn start_exposures(
         );
         let retained = retained.ok_or_else(|| Error::refused(FailureKind::NativeCacheOpen))?;
         let snapshots = present_prepared(config, &repository, prepared).await?;
-        let mut owners: Vec<_> = caches
-            .values()
-            .map(|cache| cache.content().ready().owner())
+        let mut owners: std::collections::BTreeMap<_, _> = caches
+            .iter()
+            .map(|(domain, cache)| (domain.as_str(), cache.content().ready().owner()))
             .collect();
-        owners.push(retained.native().ready().owner());
-        service::maintain(notification, installed, &snapshots, &owners).await?;
+        owners.insert(domain.as_str(), retained.native().ready().owner());
+        service::maintain(
+            notification,
+            installed,
+            &snapshots,
+            &owners,
+            #[cfg(feature = "surface-fuse")]
+            maintenance,
+        )
+        .await?;
 
         // These are the original owners, including domains without exposures.
         // Keep them alive through service shutdown and join before runtime drop.

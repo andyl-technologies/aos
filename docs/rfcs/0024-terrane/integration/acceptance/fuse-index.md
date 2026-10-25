@@ -1,9 +1,10 @@
 # T-FUSE-1 acceptance audit
 
 This audit covers the complete T-FUSE-1 requirement range, FUSE-7 through
-FUSE-12. The task remains **open**. The owning gate is being qualified from
-frozen checkpoint `32727e80b301da6733fee47fd7298e4384e655f8`; a started build
-and earlier component results do not establish acceptance.
+FUSE-12. The task remains **open**. The owning gate passes at frozen checkpoint
+`32727e80b301da6733fee47fd7298e4384e655f8`, with the complete evidence review
+recorded below. FUSE-11 still needs direct manifest-open evidence; a green
+aggregate does not establish that missing clause.
 
 The normative requirements are in
 [the structural-index specification](../../spec/27-surface-fuse.md#the-structural-index).
@@ -32,12 +33,23 @@ well as the pure codec execution. Native filesystem, device, confinement and
 cache-lifetime operations execute only inside those guests. Existing actor and
 guest deadlines remain authoritative.
 
-Before acceptance, inspect the terminal gate receipt and its immutable output
-links, every actual guest serial result, the original scenario assertions,
-retained Cargo artifacts and executable hashes, and all immutable source inputs.
-The receipt must bind unchanged before/after tracked source to the exact frozen
-checkpoint. Review the implementation and requirement rows above together with
-that evidence; a green aggregate or registry entry alone is insufficient.
+The complete gate passes in 1,433.832 seconds. Its immutable output is
+`/nix/store/mjzdmcfx0zpcahabnvr2sjvhwpqmnjwv-terrane-gate-fuse-index-roundtrip-0.1.0`.
+Review verifies unchanged before/after tracked inputs, every one of the 8,229
+immutable source files, all six prerequisite links, all 82 exact pure selectors,
+the retained pure-test ELF, both immutable native images and their six actual
+Cargo artifacts, and every original native scenario's final witness. All eight
+independent guests report PASS and successful Firecracker exit. The codec ELF's
+SHA-256 is `50fc69f67a6d17ffe18f2a1b721a472b2dfc128064d93536881536a144339e96`.
+
+The scoped worker's file oracle explicitly accepts inline content and rejects
+manifests. Typed manifest identity/size roundtrips establish index storage, but
+do not establish FUSE-11's serve-side manifest resolution at file-open time.
+The owning gate needs an actual authenticated manifest-file open and original
+backing handoff, with the manifest read deferred until that open and no chunk
+ranges embedded in the index. That proof must keep the complete existing gate
+as prerequisites. Until its native result and source/artifact review pass,
+T-FUSE-1 stays open despite the green current aggregate.
 
 This task does not establish complete FUSE-worker startup, passthrough, writable
 exposures, privileged broker registration or the four-role deployment. Their

@@ -105,6 +105,34 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
         None
     };
 
+    #[cfg(not(feature = "surface-fuse"))]
+    if config
+        .host_tier()
+        .is_some_and(|host| host.maintenance.is_some())
+    {
+        return Err(Error::refused(FailureKind::NativeCacheConfiguration));
+    }
+    #[cfg(feature = "surface-fuse")]
+    let maintenance = config
+        .host_tier()
+        .map(crate::configured_maintenance::Plan::from_host)
+        .transpose()
+        .map_err(|error| Error::io(FailureKind::NativeCacheConfiguration, error))?
+        .flatten();
+    let maintenance_paths = config
+        .host_tier()
+        .and_then(|host| host.maintenance.as_ref())
+        .into_iter()
+        .flat_map(|settings| settings.sockets.values())
+        .map(Path::new)
+        .collect::<Vec<_>>();
+    if maintenance_paths
+        .iter()
+        .any(|path| overlaps(path, &location.bucket) || overlaps(path, &location.authority))
+    {
+        return Err(Error::refused(FailureKind::NativeCacheConfiguration));
+    }
+
     if config.tokens().host_token.is_some() || !config.tokens().issuer_public_keys.is_empty() {
         return Err(Error::refused(FailureKind::InstanceCredentialsUnavailable));
     }
@@ -136,6 +164,9 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
         if overlaps(endpoint, &location.bucket)
             || overlaps(endpoint, &location.authority)
             || endpoints.iter().any(|other| overlaps(endpoint, other))
+            || maintenance_paths
+                .iter()
+                .any(|path| overlaps(endpoint, path))
             || config.host_tier().is_some_and(|host| {
                 host.domains.values().any(|directory| {
                     std::iter::once(directory.path.as_str())
@@ -150,7 +181,12 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
             .map_err(|_| Error::refused(FailureKind::UnsupportedCredentialReference))?;
         endpoints.push(endpoint);
     }
-    Ok(ValidatedSdk { config, cache })
+    Ok(ValidatedSdk {
+        config,
+        cache,
+        #[cfg(feature = "surface-fuse")]
+        maintenance,
+    })
 }
 
 pub(super) fn canonical_path(path: &Path) -> bool {

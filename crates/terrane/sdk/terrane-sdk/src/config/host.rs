@@ -11,6 +11,7 @@
 //! ```
 
 pub mod cache;
+pub mod maintenance;
 mod runtime;
 
 pub use runtime::{DomainPublisher, Publisher, Quota};
@@ -51,6 +52,8 @@ pub struct HostTier {
     pub publisher: Option<Publisher>,
     /// Optional native quota helper locator, required by native cache startup.
     pub quota: Option<Quota>,
+    /// Optional bounded GC reconciliation against the original serving owners.
+    pub maintenance: Option<maintenance::Maintenance>,
 }
 
 /// Selects trunk host-tier reassembly behavior.
@@ -163,6 +166,9 @@ impl HostTier {
                     "quota owner ID must be 1..256 UTF-8 bytes",
                 ));
             }
+        }
+        if let Some(maintenance) = &self.maintenance {
+            maintenance.validate(self)?;
         }
         Ok(())
     }
