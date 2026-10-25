@@ -332,7 +332,10 @@
   localGcPrerequisites = [
     (import ./native-local-first-ownership.nix {sourceGate = nativeSdkGate;})
     (import ./native-local-deletion.nix {sourceGate = nativeSdkGate;})
-    (import ./native-preownership-restore.nix {sourceGate = nativeSdkGate;})
+    (import ./native-preownership-restore.nix {
+      inherit pkgs lib;
+      image = nativeSdkTestImage;
+    })
     (import ./native-retirement-faults.nix {sourceGate = nativeSdkGate;})
     taskGates.gc-roots-complete
     taskGates.gc-mark-reachability
@@ -500,7 +503,10 @@ in {
   integration.algebra-format-vectors = algebraFormatVectors;
   integration.legacy-format-vectors = import ./legacy-vectors.nix {inherit sourceGate;};
   integration.local-factory-construction = import ./local-factory-construction.nix {inherit sourceGate;};
-  integration.native-preownership-restore = import ./native-preownership-restore.nix {sourceGate = nativeSdkGate;};
+  integration.native-preownership-restore = import ./native-preownership-restore.nix {
+    inherit pkgs lib;
+    image = nativeSdkTestImage;
+  };
   integration.native-retirement-faults = import ./native-retirement-faults.nix {sourceGate = nativeSdkGate;};
   integration.native-held-lease-renewal = import ./native-held-lease-renewal.nix {sourceGate = nativeSdkGate;};
   integration.native-lease-output-sync = import ./native-lease-output-sync.nix {sourceGate = nativeSdkGate;};

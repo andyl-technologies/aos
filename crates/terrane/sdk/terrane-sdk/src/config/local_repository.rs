@@ -141,7 +141,7 @@ fn head_reference(reference: &str) -> bool {
 
 impl LocalCommitTiming {
     #[cfg(feature = "std")]
-    fn validated(&self) -> Result<crate::ref_advance::CommitTiming, ConfigError> {
+    pub(super) fn validated(&self) -> Result<crate::ref_advance::CommitTiming, ConfigError> {
         use std::time::Duration;
         crate::ref_advance::CommitTiming::new(
             Duration::from_millis(self.maximum_ms),

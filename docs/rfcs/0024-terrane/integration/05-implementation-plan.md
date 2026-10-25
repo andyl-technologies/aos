@@ -94,6 +94,36 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+Mandatory workspace compilation at `144d310a76` and `5bb7e9db5b` passes in
+760.663 and 1,421.178 seconds respectively. Both full reviews verify all 8,215
+immutable source files, 190 test executables and 59 packages as compilation
+only. The shared-session copied-ownership native guest remains pending.
+
+Local collector settings now have an explicit `[gc]` vocabulary for lease,
+polling/cycle intervals, bounded marking/maintenance batches and the deletion
+window. Whole configuration validation requires trusted local repository timing.
+Window derivation first validates that enforced timing, rounds C and G upward,
+refuses loss of strict G > C, requires D >= G and raises the registered 90-day
+ordinary reflog default to G + C when necessary. Parsing performs no I/O and
+starts no service. Both supported Tokio all-target strict lint profiles and
+the std-only library profile pass. Six pure tests pass for conservative
+rounding, strict grace, deletion windows, poll/lease bounds, arithmetic and complete
+configuration composition. No-default-feature compilation passes with six
+dead-code warnings in unchanged Guard modules; the additional strict check for
+that profile fails on those warnings and is retained as a separate failure.
+Mandatory application-target compilation for these settings remains pending;
+the configured role runtime remains unavailable.
+
+The existing pre-ownership restoration gate now executes in the ext4 guest
+harness instead of executing native fixtures in the build sandbox. A source
+comparison verifies all ten original exact selectors remain in their original
+order, followed by the new fresh-cycle recovery case. Each case retains the
+guest harness's 180-second bound; the eleven-case guest has a 2,040-second
+whole-test bound. UID/GID 840, empty capabilities, no-new-privileges and the
+actual retained Cargo/source identity are checked before execution. Both the
+direct integration check and the two-phase gate prerequisite use this guest.
+Qualification remains pending; no previous host result supplies guest evidence.
+
 Fresh-cycle exclusion recovery is now exposed on `Collection` and the
 repository-retained `LocalCollection`. After completed marking, it restores an
 exact older binding through the existing native restoration producer, then
@@ -149,7 +179,7 @@ capabilities and no-new-privileges. The updated genuine case passes automatic
 startup, unchanged early-phase refusal, existing explicit-cycle and changed-root
 assertions, fourth-cycle selection under the original holder/epoch and exact
 byte preservation of previous checkpoint files. Mandatory application-target
-compilation remains pending; this does not qualify the complete configured GC
+compilation passes as recorded above; this does not qualify the complete configured GC
 runtime.
 
 Copied first ownership now accepts an existing original collector session.
@@ -169,8 +199,8 @@ whole-guest bound for its two cases, actual ext4, UID/GID 840, empty capabilitie
 no-new-privileges and retained Cargo/source verification. Its new case checks
 actual full-G/D elapsed time, retained holder/epoch, permanent-owner preservation,
 complete native recovery, empty rechecks and zero extra data-body reads while
-foreign Original remains unavailable. Native qualification and mandatory
-application-target compilation remain pending; both supported Tokio all-target
+foreign Original remains unavailable. Native qualification remains pending;
+mandatory application-target compilation passes as recorded above. Both supported Tokio all-target
 strict lint profiles and the std-only library profile pass. Touched Python syntax, Nix formatting, PLAN-2
 ownership and diff checks pass. Configured GC and original-root
 marking/reconciliation acceptance are unchanged.
@@ -190,7 +220,7 @@ The existing native fresh-cycle case now starts through this API, retains its
 original explicit-cycle/root-change/competitor assertions, and adds a fourth
 automatically selected cycle with unchanged holder/epoch and byte-preserved
 roots/state for all three earlier cycles. Native qualification passes as
-recorded above; mandatory application-target compilation remains pending.
+recorded above; mandatory application-target compilation also passes as recorded above.
 Both supported Tokio all-target
 strict lint profiles and the std-only library profile pass. Six pure tests pass
 for numeric ordering, copied reservations, Trash/deletion keys, retained absent

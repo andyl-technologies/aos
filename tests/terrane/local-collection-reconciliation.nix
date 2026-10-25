@@ -4,7 +4,7 @@
   image,
   suite ? "collection-reconciliation",
 }:
-assert builtins.elem suite ["collection-reconciliation" "maintenance-owner-hints" "local-deletion-hints" "copied-shared-session" "missing-trash-refresh"]; let
+assert builtins.elem suite ["collection-reconciliation" "maintenance-owner-hints" "local-deletion-hints" "copied-shared-session" "missing-trash-refresh" "preownership-restore"]; let
   testing = import ../../lib/testing {inherit pkgs lib;};
 in
   testing.mkVMTest {
@@ -17,11 +17,15 @@ in
       then "terrane-local-deletion-hints"
       else if suite == "copied-shared-session"
       then "terrane-copied-shared-session"
-      else "terrane-missing-trash-refresh";
+      else if suite == "missing-trash-refresh"
+      then "terrane-missing-trash-refresh"
+      else "terrane-preownership-restore";
     memory = 1024;
     timeout =
       if suite == "collection-reconciliation"
       then 1020
+      else if suite == "preownership-restore"
+      then 2040
       else if suite == "copied-shared-session"
       then 360
       else 240;

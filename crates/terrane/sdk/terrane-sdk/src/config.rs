@@ -18,6 +18,7 @@ use crate::role::{Role, RoleError};
 
 pub mod exposure;
 pub mod expression;
+pub mod gc;
 pub mod host;
 pub mod local_repository;
 pub mod token;
@@ -31,6 +32,7 @@ pub struct Config {
     locality: host::Locality,
     host_tier: Option<host::HostTier>,
     local_repository: Option<local_repository::TrustedLocalRepository>,
+    gc: Option<gc::LocalCollector>,
     tokens: token::Tokens,
     static_workload_issuers: std::collections::BTreeMap<String, workload::StaticWorkloadIssuer>,
     gcp_instance_issuers: std::collections::BTreeMap<String, workload::gcp::GcpInstanceIssuer>,
@@ -62,6 +64,12 @@ impl Config {
         if let Some(local) = &raw.local_repository {
             local.validate()?;
         }
+        if let Some(gc) = &raw.gc {
+            let local = raw.local_repository.as_ref().ok_or(ConfigError::Invalid(
+                "local collector settings require trusted local repository timing",
+            ))?;
+            gc.validate(&local.timing)?;
+        }
 
         Ok(Self {
             role: raw.role,
@@ -69,6 +77,7 @@ impl Config {
             locality: raw.locality,
             host_tier: raw.host_tier,
             local_repository: raw.local_repository,
+            gc: raw.gc,
             tokens: raw.tokens,
             static_workload_issuers: raw.static_workload_issuers,
             gcp_instance_issuers: raw.gcp_instance_issuers,
@@ -79,6 +88,11 @@ impl Config {
     /// Returns the sole process role selected by this invocation.
     pub const fn role(&self) -> Option<Role> {
         self.role
+    }
+
+    /// Borrows explicit local collector scheduling inputs without starting work.
+    pub fn gc(&self) -> Option<&gc::LocalCollector> {
+        self.gc.as_ref()
     }
 
     /// Validates an optional command-line role against the configured role.
@@ -159,6 +173,7 @@ struct RawConfig {
     locality: host::Locality,
     host_tier: Option<host::HostTier>,
     local_repository: Option<local_repository::TrustedLocalRepository>,
+    gc: Option<gc::LocalCollector>,
     #[serde(default)]
     tokens: token::Tokens,
     #[serde(default)]

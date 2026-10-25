@@ -41,6 +41,24 @@ MISSING_TRASH_CASES = [
 ]
 
 
+PREOWNERSHIP_CASES = [
+    "gc::runner::tests::restore::" + name
+    for name in [
+        "gc_restore_native_unknown_trash_age_restores_exact_generation",
+        "gc_restore_native_preserves_fresh_live_quarantine_and_selected_values",
+        "gc_restore_native_stale_and_unknown_incarnations_never_publish",
+        "gc_restore_native_missing_pair_never_advertises_old_placement",
+        "gc_restore_native_burn_owner_and_deleteowned_refuse",
+        "gc_restore_native_metadata_only_pair_handles_imported_unknown",
+        "gc_restore_native_each_handoff_rechecks_current_controls_and_pair",
+        "gc_restore_native_sync_and_noop_results_never_acknowledge",
+        "gc_restore_native_cancelled_worker_retains_exclusions",
+        "gc_restore_native_reopen_and_fresh_cycle_make_old_trash_stale",
+        "missing_trash::gc_refresh_native_missing_trash_uses_fresh_cycle_and_preserves_old_journal",
+    ]
+]
+
+
 def verify_image(source, image):
     """Binds the actual retained Cargo test image to every immutable crate input."""
     identity = json.loads((image / "share/identity.json").read_text())
@@ -99,6 +117,8 @@ def main():
         cases = COPIED_SHARED_CASES
     elif suite == "missing-trash-refresh":
         cases = MISSING_TRASH_CASES
+    elif suite == "preownership-restore":
+        cases = PREOWNERSHIP_CASES
     else:
         raise ValueError("unknown native collection qualification suite")
 
@@ -140,6 +160,9 @@ def main():
     elif suite == "missing-trash-refresh":
         print("PASS missing Trash recovery creates a fresh exclusion and preserves old journals; "
               "original restoration still passes", flush=True)
+    elif suite == "preownership-restore":
+        print("PASS all eleven pre-ownership restoration and fresh-cycle recovery cases in ext4 guest",
+              flush=True)
     else:
         print("PASS actual local-v1 intent discovery survives exact full-D deletion and durable Done",
               flush=True)
