@@ -159,8 +159,11 @@ impl ProductionFaultNetworkInterceptor {
             .map_or(&[][..], crucible::NetworkFaultCampaignReplayPlan::branches);
         if !kept.iter().eq(committed.iter().copied()) {
             return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "rebound network fault replay differs from the branches committed at the boundary",
+                message: format!(
+                    "rebound network fault replay differs from the branches committed at the boundary: kept=[{}] committed=[{}] boundary_decisions={}",
+                    describe_branches(kept.iter()),
+                    describe_branches(committed.iter().copied()),
+                    boundary.schedule.len(),
                 ),
             });
         }
@@ -366,4 +369,23 @@ impl ProductionFaultNetworkInterceptor {
         outages.dedup();
         Ok(outages)
     }
+}
+
+
+/// Names each branch's phase, anchor time, decision index and child.
+fn describe_branches<'a>(
+    branches: impl Iterator<Item = &'a crucible::NetworkFaultCampaignBranch>,
+) -> String {
+    branches
+        .map(|branch| {
+            format!(
+                "{:?}@{}:decision={}:child={}",
+                branch.phase(),
+                branch.at().ticks,
+                branch.parent().schedule.len(),
+                branch.selected().id().to_hex(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }

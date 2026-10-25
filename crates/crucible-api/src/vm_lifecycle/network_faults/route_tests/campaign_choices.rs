@@ -433,11 +433,14 @@ fn a_source_rebind_cannot_drop_a_branch_the_world_committed() -> Result<(), Camp
     let committed_boundary = branches[0].selected().clone();
 
     let mut adapter = adapter_selecting(&selected)?;
+    let refusal = adapter
+        .rebind_campaign_replay(None, &committed_boundary)
+        .err()
+        .map(|error| error.to_string());
     assert!(
-        adapter
-            .rebind_campaign_replay(None, &committed_boundary)
-            .is_err(),
-        "a committed branch must stay in the resume plan"
+        refusal.as_ref().is_some_and(|refusal| refusal.contains("kept=[] committed=[")
+            && refusal.contains(&format!("child={}", branches[0].selected().id().to_hex()))),
+        "a committed branch must stay in the resume plan, and the refusal names it: {refusal:?}"
     );
     assert_eq!(
         adapter.campaign_replay_identity(),

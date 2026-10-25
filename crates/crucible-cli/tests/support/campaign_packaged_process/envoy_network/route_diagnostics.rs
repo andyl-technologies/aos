@@ -139,6 +139,9 @@ pub(super) fn service_failure_rows(service: &CampaignServiceChild) -> String {
         ("CRUCIBLE-INBOUND-STALL-V1 ", 64),
         ("CRUCIBLE-IDLE-PLAN-RECENT-V1 ", 160),
         ("CRUCIBLE-ZERO-LENGTH-QUERY-V1 ", 16),
+        // A wake due at the node's own coordinate prints its cause here.
+        ("CRUCIBLE-CLOCK-DOMAIN-V1 ", 32),
+        ("CRUCIBLE-HOT-FORK-SOURCE-PREPARATION-V1 ", 8),
     ] {
         match service.stderr_recent_lines_with_prefix(prefix, maximum_lines, 1024) {
             Ok(lines) => rows.extend(lines),
