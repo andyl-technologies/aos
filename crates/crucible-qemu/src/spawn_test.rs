@@ -25,6 +25,7 @@ const PINNED_BLOCK_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PINNED_BLOCK_PROBE";
 const PDEATH_PARENT_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_PARENT_PROBE";
 const PDEATH_CHILD_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PROBE";
 const PDEATH_CHILD_PID_PREFIX: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PID=";
+const THREAD_EXIT_CHILD_ENV: &str = "CRUCIBLE_QEMU_SPAWN_THREAD_EXIT_CHILD_PROBE";
 const ENV_CLEAR_PARENT_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_PARENT_PROBE";
 const ENV_CLEAR_CHILD_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_CHILD_PROBE";
 const INHERITED_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_INHERITED_SENTINEL";
@@ -692,8 +693,7 @@ fn spawn_unpinned_test_process_with_resources(
         });
     }
 
-    command
-        .spawn()
+    process_parent::spawn_from_process_parent(command)
         .map_err(|source| QemuSpawnError::Io { operation, source })
 }
 
@@ -2112,6 +2112,50 @@ fn qemu_spawn_kills_child_when_parent_exits() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn qemu_spawn_child_survives_the_exit_of_its_launching_thread() -> Result<(), Box<dyn Error>> {
+    if env::var_os(THREAD_EXIT_CHILD_ENV).is_some() {
+        std::thread::sleep(Duration::from_secs(60));
+        return Ok(());
+    }
+
+    // Linux delivers the parent-death signal when the creating thread exits,
+    // not the process. Executor workers launch QEMU and may exit while the
+    // daemon still owns the node, so a node must outlive its launcher thread.
+    let launcher = std::thread::spawn(|| -> Result<std::process::Child, String> {
+        let (_host, child_resources) =
+            create_spawn_resources(4096).map_err(|error| error.to_string())?;
+        let current_exe = env::current_exe().map_err(|error| error.to_string())?;
+        let args = vec![
+            String::from("--exact"),
+            String::from(
+                "spawn::tests::qemu_spawn_child_survives_the_exit_of_its_launching_thread",
+            ),
+        ];
+        spawn_unpinned_test_process_with_resources(
+            &current_exe.to_string_lossy(),
+            &args,
+            child_resources,
+            &[(THREAD_EXIT_CHILD_ENV, "1")],
+            "spawn launcher-thread probe child",
+            None,
+        )
+        .map_err(|error| error.to_string())
+    });
+    let child = launcher
+        .join()
+        .map_err(|_panic| "launcher thread panicked")??;
+    let mut child = QemuNodeChild::new(child);
+
+    let early_exit = wait_for_child_exit(&mut child, Duration::from_millis(500))?;
+
+    assert!(
+        early_exit.is_none(),
+        "child exited after its launching thread ended: {early_exit:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn qemu_node_child_drop_kills_and_reaps_unreaped_child() -> Result<(), Box<dyn Error>> {
     if env::var_os("CRUCIBLE_QEMU_SPAWN_SLEEP_PROBE").is_some() {
         std::thread::sleep(std::time::Duration::from_secs(60));
@@ -2389,6 +2433,26 @@ fn assert_fd_closed(fd: RawFd) -> Result<(), Box<dyn Error>> {
         Ok(())
     } else {
         Err(Box::new(error))
+    }
+}
+
+// crucible-lint: allow clippy-disallowed-method -- test polling observes OS process exit only.
+#[allow(clippy::disallowed_methods)]
+fn wait_for_child_exit(
+    child: &mut QemuNodeChild,
+    timeout: Duration,
+) -> Result<Option<std::process::ExitStatus>, Box<dyn Error>> {
+    // Test-only host wait: it bounds how long a wrongly signalled child takes
+    // to become a zombie and never feeds Crucible scheduling state.
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait_natural_exit()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 

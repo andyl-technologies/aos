@@ -4,7 +4,9 @@
 //! T-QEMU-7. It creates the per-node control socket pair, shared-memory memfd,
 //! and wake eventfd before `exec`, maps the child descriptors to the fixed
 //! plugin fd numbers, clears the inherited host environment, and sets
-//! `PR_SET_PDEATHSIG=SIGKILL` in the child.
+//! `PR_SET_PDEATHSIG=SIGKILL` in the child. Children are spawned from one
+//! process-lifetime launcher thread, because Linux ties that signal to the
+//! creating thread rather than the supervisor process.
 
 use std::ffi::CString;
 use std::fs;
@@ -31,6 +33,7 @@ use crate::{
 mod control_delivery_trace;
 mod image_launch;
 mod materialization;
+mod process_parent;
 mod rr_trace_window;
 mod run_directory;
 
@@ -1197,7 +1200,7 @@ fn spawn_process_with_resources(
         });
     }
 
-    command.spawn().map_err(|source| QemuSpawnError::Io {
+    process_parent::spawn_from_process_parent(command).map_err(|source| QemuSpawnError::Io {
         operation: "spawn guarded QEMU child",
         source,
     })
@@ -1433,15 +1436,15 @@ fn run_guarded_qemu_setup_probe_inner(
         setup.root_overlay.map(AsRawFd::as_raw_fd),
     );
 
-    let mut child = command
-        .spawn()
-        .map_err(|source| QemuGuardedImagePreparationError {
+    let mut child = process_parent::spawn_from_process_parent(command).map_err(|source| {
+        QemuGuardedImagePreparationError {
             source: QemuSpawnError::Io {
                 operation: "spawn guarded QEMU setup probe",
                 source,
             },
             child: None,
-        })?;
+        }
+    })?;
     let child_stdin = match child.stdin.take() {
         Some(stdin) => stdin,
         None => {
@@ -1762,12 +1765,12 @@ fn run_guarded_image_tool_for_purpose(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     install_guarded_helper_authority(&mut command, run_directory, process_contract);
-    let child = command
-        .spawn()
-        .map_err(|source| QemuGuardedImagePreparationError {
+    let child = process_parent::spawn_from_process_parent(command).map_err(|source| {
+        QemuGuardedImagePreparationError {
             source: QemuSpawnError::Io { operation, source },
             child: None,
-        })?;
+        }
+    })?;
     let mut child = QemuNodeChild::new(child);
     let deadline = HostSupervisionDeadline::start(GUARDED_IMAGE_TOOL_TIMEOUT);
     loop {
