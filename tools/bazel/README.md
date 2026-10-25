@@ -647,6 +647,18 @@ static runtime inputs and closure, and the scoped editor comparison. The
 
 ## Engine conversion
 
+The [profile qualification](tests/evidence/engine-profile-qualification.json)
+passes 1,235 default and test-support cases and 1,298 test-double and combined
+cases, preserving the existing ignored case in each configuration. Six actual
+compiler actions verify the unit binary and all five macros against Cargo's
+ordinary test profiles. Clippy, documentation, formatting and the 126-root
+editor comparison pass; editor inference remains incomplete and its aggregate
+statistics and raw diagnostic multiplicity are not comparable to Cargo's wider
+model. All 3,333 retained actions execute in Linux sandboxes without cache hits.
+The frozen source audit predates the separate control-server lint repair; that
+one file difference is recorded explicitly. Ordinary `aos-dev` enrollment,
+current-tree requalification and production/performance acceptance remain open.
+
 `tools/bazel/tests/engine.nix` exposes the engine's default, `test-support`,
 `test-double`, and combined feature checks. Each configuration compares exact
 test cases, ignored cases, examples, doctests, and first-party and external

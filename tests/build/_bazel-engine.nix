@@ -68,9 +68,23 @@
     editorComparisonScope = "selected-packages";
     emptyTests = map (name: "${label}:${name}") emptyTests;
     editorRustcFlags = rustcFlags;
+    execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    # The editor oracle applies its global flags to host macros as well.
+    editorExecRustcFlags = rustcFlags;
+    retainTestActionGraph = true;
+    captureCompilerArguments = true;
     editorDiagnosticContext = true;
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.engine // {aos_native = pkgs.aosBazelStoreLibraries;};
     extraSourceDirectories = ["BUILD.bazel" "crates" "tests/crucible" "docs/rfcs/0014-signal-driven-fault-model" "docs/rfcs/0020-crucible-campaigns" "docs/users/crucible"];
+  };
+  execution-profiles = import ./_bazel-rust-test-profiles.nix {
+    inherit pkgs;
+    inherit (family) tests cargo;
+    pname = "aos-bazel-engine-execution-profiles";
+    firstPartyTests = {
+      "${label}:unit_binary" = "crucible_engine";
+    };
+    proceduralMacros = ["curve25519_dalek_derive" "serde_derive" "thiserror_impl" "tracing_attributes" "zerocopy_derive"];
   };
   variantTargets = suffix: features: let
     files = builtins.readDir (root + "/crates/crucible/crucible-engine/tests");
@@ -107,6 +121,7 @@
 in
   family
   // rec {
+    inherit execution-profiles;
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-engine-inventory";
       workspace = family.workspace;
@@ -137,12 +152,13 @@ in
     all-features = featureVariant "all_features" ["test-double" "test-support"];
     all =
       pkgs.runCommand "aos-bazel-engine-qualified-checks" {
-        buildDeps = [family.all family.editor-parity test-support test-double all-features sourceCatalog.all];
+        buildDeps = [family.all family.editor-parity test-support test-double all-features sourceCatalog.all execution-profiles];
       } ''
         mkdir -p "$out/variants" "$out/editor"
         cp -r ${family.all}/evidence "$out/evidence"
         cp ${family.all}/inventory.json "$out/inventory.json"
         cp ${family.oracle}/parity.json "$out/default.json"
+        cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
         cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
         cp -r ${family.editor} "$out/editor/bazel"
         cp -r ${family.editor-cargo-oracle} "$out/editor/cargo"
