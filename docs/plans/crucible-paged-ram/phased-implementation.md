@@ -66,6 +66,7 @@ failed attempts appear in the dated entries below.
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
 | Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Earlier legacy configuration and thirteen read-only Ninja queries pass; later target attempts retain generator, interpreter and unavailable-process refusals. The latest original invocation refuses during configure because a disappeared wrapper lacks original exit-observation custody; its complete signed result and diagnosis pass independent review. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
+| Native compiler correction | Signed atomic `cb9a5e825a` and conventional `0d49fac971` preserve the complete integration while correcting declarations, const projections and shadowed locals. Fresh configure, the POSIX thread object and source extraction pass. | The startup Source object still fails on its unchanged uncalled RR birth routine with all warnings retained. No whole QEMU build, Windows compilation, native execution or lifecycle qualification is established. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The subsequent daemon dependency check reports 622 host-library errors, predominantly large error carriers. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 662 bindings: 643 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
@@ -233,6 +234,47 @@ capture/archive/restore/repack, and depth-first repack read costs. Its complete
 result is 785 passes and the one poisoned-account fixture failure corrected
 above. The subsequent ordinary runs pass that corrected control. The large
 cases are results for that earlier source snapshot and storage components.
+
+#### Owning QEMU source compiler correction
+
+Signed conventional correction `0d49fac9715a97cac0a60d9984643bef278dba1b`
+starts from the complete `7b817c94baa67cd2537d4ca01643c604be4caf86`
+integration. Atomic successor `cb9a5e825acb35abb16218cbf414168e4e330e36`
+retains the same repaired tree, `6dff4b0801c57c70a000468db97c146f6c25d8b8`,
+with the original QEMU base as its sole parent. The patch and bundle retain the
+existing fixture, provider and isolation files; no QEMU file is added or removed.
+
+Hermetic repository verification passes at
+`3m31bgwnjz7n5adygb24gvir0h7823i7-crucible-qemu-atomic-patch-repository-0`.
+It applies the patch, authenticates the signed bundle, sole parent and DCO,
+regenerates the exact patch, rejects unsigned and two-parent controls, and
+reconstructs the complete source including 956 supplement files. Independent
+verification checks output registration, expected derivation, regenerated bytes,
+source-supplement hash and the actual commit signature. Core Nix evaluation also
+passes. Package/binary identity and complete release gates remain open.
+
+The correction keeps duplicate prototypes in their owning headers, makes the
+read-only thread and callback identity parameters const-correct, and renames
+shadowing locals without changing their comparisons. Affected source extraction
+digests follow the reviewed bytes. The typed opaque acquire, dormant RR birth
+body and activation refusals remain unchanged.
+
+Actual source-built GCC 16.2.0 configuration succeeds. The configured POSIX
+thread object compiles with the original warning set. The startup Source object
+still fails: the earlier 73 diagnostics reduce to the unchanged, uncalled
+`quantum_rr_actor_birth` under `-Werror=unused-function`. No warning is waived,
+and no dummy caller or provider is introduced. Source and cached-writer
+extraction succeed without executing the generated fixture programs. The
+Windows thread implementation receives source review only.
+
+The independently checked generated shared-memory header matches the current
+checked-in 102,098-byte header exactly. Initial configuration and compiler
+failures remain retained. The first attempt used the historical `ce0d15fb`
+checkout: its 352 Git-owned compiler inputs match the complete integration,
+but its build and test files differ. Fresh configuration and the repaired
+object requests use the complete integration instead. Neither a successful
+utility object nor a failed startup object establishes a complete QEMU build,
+native lifecycle execution, physical return or RFC qualification.
 
 #### Current-toolchain component checks
 

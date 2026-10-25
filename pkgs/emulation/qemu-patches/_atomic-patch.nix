@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "02fcfc2bd5cb0ddf5db14482afb7c9c421b5bd7c6e44d206afd10bdeb938547c";
-  subject = "crucible: preserve startup Source fixture provider ownership";
-  body = "Add the startup Source lifecycle owners, bounded physical histories and\nproduction-provider companion while preserving the registered fixture's\nscenarios and assertions. Keep ordinary and unissued-state companion\nobservations distinct from accepting lifecycle or profile qualification.\n\nGive the legacy fixture and its exact selected utility closure explicit\nprivate namespaces. Preserve genuine system providers and renamed real\nmain ownership, verify transformation metadata and relocation identities,\nand restrict private dynamic visibility to the existing worker lookups.\n\nLet Meson derive the private static fixture's PIE compilation from b_pie\ninstead of forcing and duplicating its compiler flag. Preserve pic:false,\nselected sources, dependencies, registrations, roots and assertions.\n\nVerify each dynamic fixture export against its canonical recorded type,\nbinding and visibility, preserving the two layout data objects and eleven\ncallback functions. Reject missing, duplicate, undefined or changed exports\nand retain the private-prefix locality and visibility requirements.";
-  commit = "7b817c94baa67cd2537d4ca01643c604be4caf86";
-  tree = "b26b7645af433ea531a7f341fa10baf072ccdf63";
+  sha256 = "e08a467088fb11753252686054cc5b6f27f320d6aa4adec68cb6580c565cce13";
+  subject = "crucible: preserve complete integration and repair owning declarations";
+  body = "Retain the complete Crucible integration source, fixture, provider and\nisolation inputs together with the typed opaque Boundary frame acquire.\nKeep fail-closed ownership checks and acquire ordering intact.\n\nUse canonical declarations and const read-only identity projections, rename\nshadowing locals, and update only affected source extraction digests. The\nconfigured POSIX thread object compiles; the Source object still fails on\nthe unchanged uncalled RR birth helper. Runtime behavior is unqualified.";
+  commit = "cb9a5e825acb35abb16218cbf414168e4e330e36";
+  tree = "6dff4b0801c57c70a000468db97c146f6c25d8b8";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/legacy-fixture-export-extent-atomic";
+  branchRef = "dplecki/quantum-integration-compiler-corrections";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "60f7da8f9fde6b06d093afc96c3a97a5833ed3094275836b5847fda47dda0b67";
+  bundleSha256 = "24121a16a6c48f76ea17b76b471fd68b1e8d52c9adcaeb28a154823a33f013ae";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

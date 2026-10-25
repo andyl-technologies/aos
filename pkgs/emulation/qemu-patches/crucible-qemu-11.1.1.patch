@@ -1,26 +1,17 @@
-From 7b817c94baa67cd2537d4ca01643c604be4caf86 Mon Sep 17 00:00:00 2001
+From cb9a5e825acb35abb16218cbf414168e4e330e36 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: preserve startup Source fixture provider ownership
+Subject: [PATCH] crucible: preserve complete integration and repair owning
+ declarations
 
-Add the startup Source lifecycle owners, bounded physical histories and
-production-provider companion while preserving the registered fixture's
-scenarios and assertions. Keep ordinary and unissued-state companion
-observations distinct from accepting lifecycle or profile qualification.
+Retain the complete Crucible integration source, fixture, provider and
+isolation inputs together with the typed opaque Boundary frame acquire.
+Keep fail-closed ownership checks and acquire ordering intact.
 
-Give the legacy fixture and its exact selected utility closure explicit
-private namespaces. Preserve genuine system providers and renamed real
-main ownership, verify transformation metadata and relocation identities,
-and restrict private dynamic visibility to the existing worker lookups.
-
-Let Meson derive the private static fixture's PIE compilation from b_pie
-instead of forcing and duplicating its compiler flag. Preserve pic:false,
-selected sources, dependencies, registrations, roots and assertions.
-
-Verify each dynamic fixture export against its canonical recorded type,
-binding and visibility, preserving the two layout data objects and eleven
-callback functions. Reject missing, duplicate, undefined or changed exports
-and retain the private-prefix locality and visibility requirements.
+Use canonical declarations and const read-only identity projections, rename
+shadowing locals, and update only affected source extraction digests. The
+configured POSIX thread object compiles; the Source object still fails on
+the unchanged uncalled RR birth helper. Runtime behavior is unqualified.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -93611,10 +93602,10 @@ index 0000000000000000000000000000000000000000..eb15179380434a8c66c29c3b0d7e7627
 +#endif
 diff --git a/include/qemu/crucible-native-invocation.h b/include/qemu/crucible-native-invocation.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6372a749c5c35f82d3fb946214521f4e0ed387ea
+index 0000000000000000000000000000000000000000..c88ca2e86b150952791363a79ef3b5091284b0a5
 --- /dev/null
 +++ b/include/qemu/crucible-native-invocation.h
-@@ -0,0 +1,812 @@
+@@ -0,0 +1,815 @@
 +/*
 + * Retained native callback provenance, private to QEMU.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -94168,14 +94159,17 @@ index 0000000000000000000000000000000000000000..6372a749c5c35f82d3fb946214521f4e
 +int qemu_plugin_crucible_native_advance_entry_current_v1(
 +    QemuCrucibleNativeInvocationTicket *main,
 +    QemuCrucibleNativeInvocationTicket *callback);
-+/* A Source-owned entered callback keeps its actual suppression receipt and
-+ * the same physical Main/control parents. This grants no operation authority. */
-+/* Main-only target preparation: Source selects the exact real ENTER interval
-+ * before Native inspects its retained tickets. No operation is issued here. */
++/* Main-only target preparation authenticates the retained ENTER interval
++ * after the genuine Module Enter returns. Source selects that exact interval
++ * before Native inspects its retained tickets. The Source-owned entered
++ * callback keeps its suppression receipt and the same Main/control parents.
++ * This calls no new Module callback and grants no operation authority. */
 +int qemu_crucible_native_outcome_prepare_current_v1(
 +    QemuCrucibleSourceAdvanceEntry *entry, uint64_t entry_epoch,
 +    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
 +
++/* Source-only coordinate observation for Native's independent registry check.
++ * No Core/Native/preexec/Module call is made by this leaf. */
 +int qemu_crucible_source_outcome_prepare_identity_v1(
 +    QemuCrucibleSourceAdvanceEntry *entry, uint64_t entry_epoch,
 +    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch,
@@ -94429,10 +94423,10 @@ index 0000000000000000000000000000000000000000..6372a749c5c35f82d3fb946214521f4e
 +#endif
 diff --git a/include/qemu/crucible-outcome-constructor-recipient.h b/include/qemu/crucible-outcome-constructor-recipient.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..3ddc9da1b6b1bda45949774780f43b376ca2de8b
+index 0000000000000000000000000000000000000000..74ebd7134a13ba4e244487664ed1b92cd6f7a71b
 --- /dev/null
 +++ b/include/qemu/crucible-outcome-constructor-recipient.h
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,96 @@
 +/*
 + * Retained physical recipient observations for one successful post-body owner.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -94441,6 +94435,8 @@ index 0000000000000000000000000000000000000000..3ddc9da1b6b1bda45949774780f43b37
 +#define QEMU_CRUCIBLE_OUTCOME_CONSTRUCTOR_RECIPIENT_H
 +
 +#include <stdint.h>
++
++#include "system/crucible-outcome-postbody.h"
 +
 +typedef struct QemuCruciblePublisherSessionLender QemuCruciblePublisherSessionLender;
 +typedef struct QemuCruciblePublisherRecipient QemuCruciblePublisherRecipient;
@@ -94504,10 +94500,6 @@ index 0000000000000000000000000000000000000000..3ddc9da1b6b1bda45949774780f43b37
 +    uint8_t finish_observed;
 +    uint8_t access_returned;
 +} QemuCrucibleOutcomeConstructorRecipientResult;
-+
-+int qemu_crucible_outcome_boundary_returned_v2(
-+    QemuCrucibleCoreQuantumBoundaryFrame *, uint64_t, uint32_t,
-+    QemuCrucibleCoreOutcomePostbodyChild *, uint64_t);
 +
 +QemuCrucibleOutcomeConstructorRecipientSourceView
 +qemu_crucible_source_outcome_constructor_recipient_invocation_v1(
@@ -98861,7 +98853,7 @@ index 758808b705e4b0bbbda1988c377f010ae179d3e1..05189a7919e528df30462e95a188795a
  
  /*
 diff --git a/include/qemu/thread.h b/include/qemu/thread.h
-index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..4b54105a5a92a2a38952fa5dda92d82480f04682 100644
+index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..fe944420499289aef69faa209eebc0b2eec336e0 100644
 --- a/include/qemu/thread.h
 +++ b/include/qemu/thread.h
 @@ -5,10 +5,15 @@
@@ -98919,7 +98911,13 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..4b54105a5a92a2a38952fa5dda92d824
  void qemu_rec_mutex_init(QemuRecMutex *mutex);
  void qemu_rec_mutex_destroy(QemuRecMutex *mutex);
  void qemu_rec_mutex_lock_impl(QemuRecMutex *mutex, const char *file, int line);
-@@ -218,6 +255,544 @@ G_NORETURN void qemu_thread_exit(void *retval);
+@@ -213,11 +250,549 @@ int qemu_thread_get_affinity(QemuThread *thread, unsigned long **host_cpus,
+                              unsigned long *nbits);
+ void *qemu_thread_join(QemuThread *thread);
+ void qemu_thread_get_self(QemuThread *thread);
+-bool qemu_thread_is_self(QemuThread *thread);
++bool qemu_thread_is_self(const QemuThread *thread);
+ G_NORETURN void qemu_thread_exit(void *retval);
  void qemu_thread_set_name(const char *name);
  const char *qemu_thread_get_name(void);
  
@@ -100588,10 +100586,10 @@ index 508444ccf1c30b215914743946066395f29db7c3..247f074c9beaf9d8f499d951e0af164c
  void cpu_synchronize_all_post_init(void);
 diff --git a/include/system/crucible-advance-outcome.h b/include/system/crucible-advance-outcome.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..dfd52c50f56e19f68940395a3cf968e01d59a64d
+index 0000000000000000000000000000000000000000..993d837a72a8b7d4a4dbf052e684170dd50cef67
 --- /dev/null
 +++ b/include/system/crucible-advance-outcome.h
-@@ -0,0 +1,270 @@
+@@ -0,0 +1,203 @@
 +/*
 + * Private persistent command-target Outcome owning sites.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -100601,6 +100599,8 @@ index 0000000000000000000000000000000000000000..dfd52c50f56e19f68940395a3cf968e0
 +
 +#include "plugins/qemu-plugin.h"
 +#include "qemu/crucible-native-invocation.h"
++#include "system/crucible-core-quantum.h"
++
 +/* Private owning-site surface. No caller-supplied target/count/status field
 + * can create an Outcome; the command comes from the retained receiver. */
 +typedef struct QemuCrucibleCoreQuantumAdvance QemuCrucibleCoreQuantumAdvance;
@@ -100692,18 +100692,6 @@ index 0000000000000000000000000000000000000000..dfd52c50f56e19f68940395a3cf968e0
 +int qemu_crucible_native_outcome_request_current_v1(
 +    QemuCrucibleSourceAdvanceEntry *entry, uint64_t entry_epoch,
 +    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
-+int qemu_crucible_core_quantum_outcome_target_identity_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **holder, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
-+
-+/* Genuine live Work permission, distinct from physical Boundary/Native facts.
-+ * Core calls Source's role projection outside its gate. Return and factual
-+ * final completion do not use this method. */
-+int qemu_crucible_core_quantum_outcome_work_current_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceOutcomeUse *use, uint64_t use_epoch);
 +
 +/* One-way exact pending live actor identity. No Core Current, Source Work
 + * projection, Native Current or callback is invoked by this factual leaf. */
@@ -100727,6 +100715,8 @@ index 0000000000000000000000000000000000000000..dfd52c50f56e19f68940395a3cf968e0
 +    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch,
 +    QemuCrucibleSourceAdvanceOutcomeUse *use, uint64_t use_epoch);
 +
++/* The Outcome owner supplies this one-way actual pending actor fact. It
++ * never calls Core/Native Current or the Work projection. */
 +int qemu_crucible_source_outcome_actor_identity_v1(
 +    QemuCrucibleCoreQuantumOperation *operation,
 +    QemuCrucibleCoreQuantumOperation **operation_holder, uint64_t operation_epoch,
@@ -100744,61 +100734,20 @@ index 0000000000000000000000000000000000000000..dfd52c50f56e19f68940395a3cf968e0
 +    void *frame, uint64_t frame_epoch, uint32_t boundary_kind);
 +size_t qemu_crucible_advance_outcome_storage_bytes_v1(void);
 +
-+/* Core authenticates the exact staged Source Target and then retains its
-+ * reciprocal before Module preparation. Both calls run outside Core gates. */
-+int qemu_crucible_source_outcome_target_attach_current_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
-+/* Distinct factual post of the same staged Target/retained ENTER actor. It
-+ * never calls Core while Core's attachment factory remains in progress. */
-+int qemu_crucible_source_outcome_target_attach_post_current_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
-+int qemu_crucible_source_outcome_target_closed_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
-+
 +/* Parent closure and common output exclusions are factual local leaves. */
 +bool qemu_crucible_advance_outcome_closed_v1(void);
 +bool qemu_crucible_advance_outcome_output_conflicts_v1(
 +    const void *output, size_t bytes, const void *exact_observation);
 +
-+/* Genuine Core counterpart. These declarations intentionally have no local
-+ * substitute: Core must inspect its retained nominal operation/target history,
-+ * not accept statuses or a populated observation as an issuer. */
-+int qemu_crucible_core_quantum_outcome_prepare_current_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **holder, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceEntry *entry, uint64_t entry_epoch);
-+int qemu_crucible_core_quantum_outcome_target_attach_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
-+
++/* This Core counterpart has no local substitute: Core must inspect its
++ * retained nominal operation/target history, not accept statuses or a
++ * populated observation as an issuer. */
 +int qemu_crucible_core_quantum_outcome_target_produced_v1(
 +    QemuCrucibleCoreQuantumAdvance *advance, uint64_t advance_epoch,
 +    QemuCrucibleSourceAdvanceOutcomeUse *use, uint64_t use_epoch,
 +    QemuCrucibleModuleAdvanceTarget **target_holder, uint64_t born_target_epoch,
 +    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch,
 +    uint32_t boundary_kind);
-+/* Permanent consumption history; negative retirement debt remains separate. */
-+int qemu_crucible_core_quantum_outcome_boundary_returned_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceOutcomeUse *use, uint64_t use_epoch);
-+int qemu_crucible_core_quantum_outcome_boundary_closed_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceOutcomeUse *use, uint64_t use_epoch);
-+
-+/* Source-only coordinate observation for Native's independent registry check.
-+ * No Core/Native/preexec/Module call is made by this leaf. */
-+int qemu_crucible_source_outcome_prepare_identity_v1(
-+    QemuCrucibleSourceAdvanceEntry *entry, uint64_t entry_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch,
-+    QemuCrucibleNativeInvocationTicket **main,
-+    QemuCrucibleNativeInvocationTicket **control,
-+    QemuCrucibleNativeInvocationTicket **mask);
 +
 +/* Each Source post selects an exact lifetime edge, not a callback/permission
 + * phase. Only PREPARE permits the frame-free profile. */
@@ -100824,24 +100773,6 @@ index 0000000000000000000000000000000000000000..dfd52c50f56e19f68940395a3cf968e0
 +    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch,
 +    QemuCrucibleSourceAdvanceOutcomeUse *use, uint64_t use_epoch,
 +    uint32_t post_kind);
-+
-+/* Core owns the Advance's actual Target reciprocal and external BoundaryUse
-+ * physical history. The nominal Target body/history lives in the Outcome cell.
-+ * Prepare is exactly NULL/0/NULL/0/0 for Use/frame/kind. Every other profile
-+ * requires the canonical retained Use and actual physical frame. */
-+int qemu_crucible_core_quantum_outcome_history_post_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch,
-+    QemuCrucibleSourceAdvanceOutcomeUse *use, uint64_t use_epoch,
-+    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch,
-+    uint32_t boundary_kind);
-+
-+/* Authentication of the still-retained actual Native ENTER interval, after
-+ * the genuine Module Enter returned. This never calls a new Module callback. */
-+int qemu_crucible_native_outcome_prepare_current_v1(
-+    QemuCrucibleSourceAdvanceEntry *entry, uint64_t entry_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
 +
 +/* Native authenticates the real Main preparation or retained RR callback
 + * frame. A masked arbitrary function is never enough to enter these phases. */
@@ -101324,10 +101255,10 @@ index 0000000000000000000000000000000000000000..cdb84b8356d37f6ef9105f17e2030124
 +#endif
 diff --git a/include/system/crucible-core-quantum.h b/include/system/crucible-core-quantum.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..27366730c08932e6bae0fafc8f02f0fc29dc4551
+index 0000000000000000000000000000000000000000..7d91c4a35fa4c3f8e96b0d370342135901a992df
 --- /dev/null
 +++ b/include/system/crucible-core-quantum.h
-@@ -0,0 +1,979 @@
+@@ -0,0 +1,988 @@
 +/*
 + * Canonical Core borrower of the Source command's actual operation loans.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -101896,7 +101827,9 @@ index 0000000000000000000000000000000000000000..27366730c08932e6bae0fafc8f02f0fc
 +    QemuCrucibleCoreQuantumAdvance **holder, uint64_t advance_epoch,
 +    QemuCrucibleSourceAdvanceEntry *entry, uint64_t entry_epoch);
 +
-+/* Live Work permission belongs to the distinct persistent Outcome actor. */
++/* Genuine live Work permission, distinct from physical Boundary/Native facts.
++ * Core calls Source's role projection outside its gate. Return and factual
++ * final completion do not use this method. */
 +int qemu_crucible_core_quantum_outcome_work_current_v1(
 +    QemuCrucibleCoreQuantumAdvance *advance,
 +    QemuCrucibleCoreQuantumAdvance **holder, uint64_t advance_epoch,
@@ -101960,11 +101893,14 @@ index 0000000000000000000000000000000000000000..27366730c08932e6bae0fafc8f02f0fc
 +    QemuCrucibleCoreQuantumAdvance **holder, uint64_t advance_epoch,
 +    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
 +
-+/* The Source actor producer and its independent post are distinct cuts. */
++/* Core authenticates the exact staged Source Target and then retains its
++ * reciprocal before Module preparation. Both calls run outside Core gates. */
 +int qemu_crucible_source_outcome_target_attach_current_v1(
 +    QemuCrucibleCoreQuantumAdvance *advance,
 +    QemuCrucibleCoreQuantumAdvance **holder, uint64_t advance_epoch,
 +    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
++/* Distinct factual post of the same staged Target/retained ENTER actor. It
++ * never calls Core while Core's attachment factory remains in progress. */
 +int qemu_crucible_source_outcome_target_attach_post_current_v1(
 +    QemuCrucibleCoreQuantumAdvance *advance,
 +    QemuCrucibleCoreQuantumAdvance **holder, uint64_t advance_epoch,
@@ -102022,6 +101958,10 @@ index 0000000000000000000000000000000000000000..27366730c08932e6bae0fafc8f02f0fc
 +    QemuCrucibleCoreQuantumAdvance *advance, uint64_t advance_epoch,
 +    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
 +
++/* Core owns the Advance's actual Target reciprocal and external BoundaryUse
++ * physical history. The nominal Target body/history lives in the Outcome cell.
++ * Prepare is exactly NULL/0/NULL/0/0 for Use/frame/kind. Every other profile
++ * requires the canonical retained Use and actual physical frame. */
 +int qemu_crucible_core_quantum_outcome_history_post_v1(
 +    QemuCrucibleCoreQuantumAdvance *advance,
 +    QemuCrucibleCoreQuantumAdvance **holder, uint64_t advance_epoch,
@@ -103929,10 +103869,10 @@ index 0000000000000000000000000000000000000000..8dae0edebf46bdd0a5e5acbeb7521882
 +#endif
 diff --git a/include/system/crucible-outcome-callback.h b/include/system/crucible-outcome-callback.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7f16bb75e222e827e6a8ba5689ee5179b4f3ecd
+index 0000000000000000000000000000000000000000..1e7f09c1a4d835c16c2162818e8b9821bfa6025b
 --- /dev/null
 +++ b/include/system/crucible-outcome-callback.h
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,252 @@
 +/*
 + * Private real Outcome callback child and immutable invocation coordinates.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -104021,17 +103961,6 @@ index 0000000000000000000000000000000000000000..a7f16bb75e222e827e6a8ba5689ee517
 +} QemuCrucibleCoreQuantumRequestCurrentResult;
 +#endif
 +
-+QemuCrucibleCoreQuantumRequestCurrentResult
-+qemu_crucible_core_quantum_outcome_request_prepare_current_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
-+QemuCrucibleCoreQuantumRequestCurrentResult
-+qemu_crucible_core_quantum_outcome_request_work_current_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
-+
 +/* Pure pending Main actor selection before Source reads nominated Work or
 + * Advance coordinates. The returned physical receipt is not Work permission. */
 +QemuCrucibleOutcomeCallbackView qemu_crucible_source_outcome_prepare_actor_v1(
@@ -104054,14 +103983,6 @@ index 0000000000000000000000000000000000000000..a7f16bb75e222e827e6a8ba5689ee517
 +    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch,
 +    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch,
 +    uint32_t boundary_kind);
-+
-+/* Distinct real semantic counterpart beneath the actual Main child; the old
-+ * pre-child ENTER method remains separate. Its owning Core definition is a
-+ * required composition input, never a pointer-membership fallback. */
-+int qemu_crucible_core_quantum_outcome_callback_prepare_current_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **holder, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
 +
 +typedef struct QemuCrucibleOutcomeHistoryView {
 +    QemuCrucibleSourceOutcomeCallback *callback;
@@ -104302,10 +104223,10 @@ index 0000000000000000000000000000000000000000..086c9d47b21f0a216bfafb02ab4da2fa
 +#endif
 diff --git a/include/system/crucible-outcome-prepare.h b/include/system/crucible-outcome-prepare.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..34a6c4589c860b3aceb81d3f432eb579da80ee2d
+index 0000000000000000000000000000000000000000..29f3424b5378baa64ec674ef52ec803da1bbd19d
 --- /dev/null
 +++ b/include/system/crucible-outcome-prepare.h
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,88 @@
 +/*
 + * Genuine nested Outcome PREPARE actor and independent Core observations.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -104376,6 +104297,9 @@ index 0000000000000000000000000000000000000000..34a6c4589c860b3aceb81d3f432eb579
 +    QemuCrucibleCoreQuantumAdvance *advance,
 +    QemuCrucibleCoreQuantumAdvance **holder, uint64_t advance_epoch,
 +    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
++/* Distinct real semantic counterpart beneath the actual Main child; the old
++ * pre-child ENTER method remains separate. Its owning Core definition is a
++ * required composition input, never a pointer-membership fallback. */
 +int qemu_crucible_core_quantum_outcome_callback_prepare_current_v1(
 +    QemuCrucibleCoreQuantumAdvance *advance,
 +    QemuCrucibleCoreQuantumAdvance **holder, uint64_t advance_epoch,
@@ -104585,10 +104509,10 @@ index 0000000000000000000000000000000000000000..3cfd6f85ff2035a46a07819b08677b6b
 +#endif
 diff --git a/include/system/crucible-quantum-execution.h b/include/system/crucible-quantum-execution.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6210c162e642d586f108eaedb4a45cfa270599fa
+index 0000000000000000000000000000000000000000..7dab777c2bf51bafd6a6c6b799c42b4ea786bef6
 --- /dev/null
 +++ b/include/system/crucible-quantum-execution.h
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,265 @@
 +/*
 + * Private RR CPU custody; observations do not issue Quantum authority.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -104740,9 +104664,6 @@ index 0000000000000000000000000000000000000000..6210c162e642d586f108eaedb4a45cfa
 +    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_serial,
 +    uint32_t boundary_kind, QemuCrucibleCoreBoundaryOutcomeCallback callback,
 +    int body_status);
-+int qemu_crucible_core_quantum_boundary_outcome_current_v1(
-+    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_serial,
-+    uint32_t boundary_kind);
 +QemuCrucibleCoreQuantumBoundaryLoanResult
 +qemu_crucible_core_quantum_boundary_outcome_retain_v1(
 +    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_serial,
@@ -126542,10 +126463,10 @@ index 0000000000000000000000000000000000000000..312c3ea033dd41ee5b00ac034a42c7eb
 +};
 diff --git a/plugins/crucible-advance-outcome-callback.inc.h b/plugins/crucible-advance-outcome-callback.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..7584b5c6e08956147bfbda5aa98c2bf326825d2b
+index 0000000000000000000000000000000000000000..c51b753824745b6e58a4040709fe0c1e9b00fc10
 --- /dev/null
 +++ b/plugins/crucible-advance-outcome-callback.inc.h
-@@ -0,0 +1,614 @@
+@@ -0,0 +1,615 @@
 +/*
 + * Source-owned callback children and genuine typed Native factory use.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -126641,7 +126562,8 @@ index 0000000000000000000000000000000000000000..7584b5c6e08956147bfbda5aa98c2bf3
 +    return !advance_outcome.callback_serial && !advance_outcome.active_callback;
 +}
 +
-+static bool advance_outcome_callback_known(QemuCrucibleSourceOutcomeCallback *candidate)
++static bool advance_outcome_callback_known(
++    const QemuCrucibleSourceOutcomeCallback *candidate)
 +{
 +    for (size_t index = 0; index < QEMU_CRUCIBLE_OUTCOME_CALLBACKS; index++) {
 +        if (candidate == &advance_outcome.callbacks_owned[index]) {
@@ -128792,10 +128714,10 @@ index 0000000000000000000000000000000000000000..397f6576f0f6e5873a5bb8758fc1f84c
 +#endif
 diff --git a/plugins/crucible-advance-outcome-construction.inc.h b/plugins/crucible-advance-outcome-construction.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c1b3caee566bf6f6f18445f5ddadd3bda78d87ba
+index 0000000000000000000000000000000000000000..3fb736d33536c17e5eab50a1bb4f618e3e1cd57f
 --- /dev/null
 +++ b/plugins/crucible-advance-outcome-construction.inc.h
-@@ -0,0 +1,1411 @@
+@@ -0,0 +1,1410 @@
 +/*
 + * Genuine opt-in fixed ModulePending birth inside MATCHED_CONSTRUCT.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -128946,7 +128868,6 @@ index 0000000000000000000000000000000000000000..c1b3caee566bf6f6f18445f5ddadd3bd
 +        !result->final_capture_status && result->physically_returned == 1 && result->finished == 1;
 +}
 +
-+static bool advance_outcome_construction_disposal_untouched_locked(void);
 +static bool advance_outcome_construction_unentered_untouched_locked(void);
 +
 +static void advance_outcome_construction_first(int status)
@@ -131298,10 +131219,10 @@ index 0000000000000000000000000000000000000000..d041205071fe0df3cd987f811a43d55c
 +}
 diff --git a/plugins/crucible-advance-outcome-finite.h b/plugins/crucible-advance-outcome-finite.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c48cd9deef3b7600743379ba00938cdda7320d45
+index 0000000000000000000000000000000000000000..c5848b8cff48de25c234a9caad788459cd4bbcaf
 --- /dev/null
 +++ b/plugins/crucible-advance-outcome-finite.h
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,119 @@
 +/*
 + * Exact compiled COMPLETED actor and distinct original-clock projection.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -131370,9 +131291,6 @@ index 0000000000000000000000000000000000000000..c48cd9deef3b7600743379ba00938cdd
 +qemu_crucible_source_outcome_descendant_actor_v1(
 +    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
 +
-+int qemu_crucible_source_outcome_target_children_returned_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
 +
 +#ifndef QEMU_CRUCIBLE_CORE_QUANTUM_DISPOSAL_PLAN_V1
 +#define QEMU_CRUCIBLE_CORE_QUANTUM_DISPOSAL_PLAN_V1
@@ -131397,22 +131315,6 @@ index 0000000000000000000000000000000000000000..c48cd9deef3b7600743379ba00938cdd
 +} QemuCrucibleCoreQuantumDisposalPlan;
 +#endif
 +
-+QemuCrucibleCoreQuantumDisposalPlan
-+qemu_crucible_core_quantum_outcome_disposal_plan_v1(
-+    QemuCrucibleCoreQuantumOperation *operation,
-+    QemuCrucibleCoreQuantumOperation **operation_holder, uint64_t operation_epoch,
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch,
-+    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch);
-+QemuCrucibleCoreQuantumReturnResult
-+qemu_crucible_core_quantum_advance_dispose_result_v1(
-+    QemuCrucibleCoreQuantumAdvance *advance, uint64_t epoch);
-+QemuCrucibleCoreQuantumReturnResult
-+qemu_crucible_core_quantum_cleanup_owner_dispose_result_v1(
-+    QemuCrucibleCoreQuantumCleanupOwner *cleanup, uint64_t epoch);
-+QemuCrucibleCoreQuantumReturnResult
-+qemu_crucible_core_quantum_work_dispose_result_v1(
-+    QemuCrucibleCoreQuantumOperation *operation, uint64_t epoch);
 +
 +/* Selects the known pending compiled callback before nominated parent keys.
 + * It performs no Native/Core/Work/Interval Current or external callback. */
@@ -143357,10 +143259,10 @@ index 0000000000000000000000000000000000000000..42d54dca7d2b2ec2e4a33ccba33ca0cc
 +#endif
 diff --git a/plugins/crucible-advance-receiver.inc.h b/plugins/crucible-advance-receiver.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..45b84e497837e8c46c21d5894b9e5756286010a0
+index 0000000000000000000000000000000000000000..2fd2132999e5d50e0abd2ae79d4b0556bc7386f9
 --- /dev/null
 +++ b/plugins/crucible-advance-receiver.inc.h
-@@ -0,0 +1,1158 @@
+@@ -0,0 +1,1161 @@
 +/*
 + * Separate retained receiver for an asynchronous scheduler command.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -143427,27 +143329,30 @@ index 0000000000000000000000000000000000000000..45b84e497837e8c46c21d5894b9e5756
 +        return false;
 +    }
 +    for (size_t index = 0; index < left->planned_count; index++) {
-+        const QemuCrucibleProducingActionRow *a = &left->rows[index];
-+        const QemuCrucibleProducingActionRow *b = &right->rows[index];
++        const QemuCrucibleProducingActionRow *left_row = &left->rows[index];
++        const QemuCrucibleProducingActionRow *right_row = &right->rows[index];
 +
-+        if (memcmp(a->lender_capability, b->lender_capability, 32) ||
-+            a->budget_owner != b->budget_owner || a->operation != b->operation ||
-+            a->producing_class != b->producing_class || a->state != b->state ||
-+            a->policy_revision != b->policy_revision ||
-+            a->outer_revision != b->outer_revision ||
-+            a->original_origin_ns != b->original_origin_ns ||
-+            a->original_start_ns != b->original_start_ns ||
-+            a->genuine_progress_ns != b->genuine_progress_ns ||
-+            a->total_end_ns != b->total_end_ns ||
-+            a->progress_end_ns != b->progress_end_ns ||
-+            a->outer_end_ns != b->outer_end_ns ||
-+            a->private_interval_end_ns != b->private_interval_end_ns ||
-+            a->poll_ns != b->poll_ns ||
-+            a->completed_required_units != b->completed_required_units ||
-+            a->required_units != b->required_units ||
-+            a->preparation_row_plus_one != b->preparation_row_plus_one ||
-+            a->role != b->role ||
-+            a->immutable_entry_revision != b->immutable_entry_revision) {
++        if (memcmp(left_row->lender_capability,
++                   right_row->lender_capability, 32) ||
++            left_row->budget_owner != right_row->budget_owner ||
++            left_row->operation != right_row->operation ||
++            left_row->producing_class != right_row->producing_class ||
++            left_row->state != right_row->state ||
++            left_row->policy_revision != right_row->policy_revision ||
++            left_row->outer_revision != right_row->outer_revision ||
++            left_row->original_origin_ns != right_row->original_origin_ns ||
++            left_row->original_start_ns != right_row->original_start_ns ||
++            left_row->genuine_progress_ns != right_row->genuine_progress_ns ||
++            left_row->total_end_ns != right_row->total_end_ns ||
++            left_row->progress_end_ns != right_row->progress_end_ns ||
++            left_row->outer_end_ns != right_row->outer_end_ns ||
++            left_row->private_interval_end_ns != right_row->private_interval_end_ns ||
++            left_row->poll_ns != right_row->poll_ns ||
++            left_row->completed_required_units != right_row->completed_required_units ||
++            left_row->required_units != right_row->required_units ||
++            left_row->preparation_row_plus_one != right_row->preparation_row_plus_one ||
++            left_row->role != right_row->role ||
++            left_row->immutable_entry_revision != right_row->immutable_entry_revision) {
 +            return false;
 +        }
 +    }
@@ -173103,10 +173008,10 @@ index 0000000000000000000000000000000000000000..b4360833956e8f20ea07d3ee7e9c2084
 +}
 diff --git a/plugins/crucible-deferred-cleanup-owner.h b/plugins/crucible-deferred-cleanup-owner.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d9078f2a50a9fc93d381a9c685e0b8257c972ee3
+index 0000000000000000000000000000000000000000..9d278c29780ca2bd4e1e65276cedb8c34f50fea1
 --- /dev/null
 +++ b/plugins/crucible-deferred-cleanup-owner.h
-@@ -0,0 +1,418 @@
+@@ -0,0 +1,398 @@
 +/*
 + * Source-fixed dormant Cleanup control and its nominal resource request.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -173122,6 +173027,7 @@ index 0000000000000000000000000000000000000000..d9078f2a50a9fc93d381a9c685e0b825
 +#include "qemu/crucible-metadata-partition.h"
 +#include "qemu/coroutine.h"
 +#include "qemu/thread.h"
++#include "crucible-application-account.h"
 +
 +typedef struct QemuCrucibleMachineConstructionFrame
 +    QemuCrucibleMachineConstructionFrame;
@@ -173399,20 +173305,6 @@ index 0000000000000000000000000000000000000000..d9078f2a50a9fc93d381a9c685e0b825
 +    QemuCrucibleObservationConstructionBinding *construction,
 +    QemuCrucibleDeferredCleanupIssuer *issuer, uint64_t issuer_epoch);
 +
-+int qemu_crucible_deferred_cleanup_producer_current_v1(
-+    QemuCrucibleApplicationCleanupProducer *producer);
-+
-+/* Implemented by Source's distinct application resource child. The nominal
-+ * producer above is unrelated to finite TCG-root requests. */
-+int qemu_crucible_source_application_cleanup_prepare_v1(
-+    QemuCrucibleApplicationCleanupProducer *producer);
-+
-+/* Source-private same-gate factual leaf. The caller holds the actual Source
-+ * partition gate; this method must acquire no gate or invoke any Current. */
-+int qemu_crucible_source_application_cleanup_custody_identity_locked_v1(
-+    QemuCrucibleApplicationCleanupProducer *producer,
-+    QemuCrucibleApplicationCleanupChild *child, uint64_t serial);
-+
 +/* This is a Source-owned true termination/refusal actor, not an assertion of
 + * Work success. It must not query Work Current or accept a null Work holder as
 + * proof that construction or execution never entered. */
@@ -173516,13 +173408,6 @@ index 0000000000000000000000000000000000000000..d9078f2a50a9fc93d381a9c685e0b825
 +    QemuCrucibleDeferredCleanupTail *tail, uint64_t tail_epoch,
 +    QemuCrucibleDeferredCleanupControl *control, uint64_t control_epoch,
 +    QemuCrucibleDeferredCleanupInterval *interval, uint64_t interval_epoch);
-+
-+/* Complete factual no-Interval inventory; the Source caller independently
-+ * proves the actual returned/captured Entry invocation. No temporal authority. */
-+int qemu_crucible_source_deferred_cleanup_interval_entry_unborn_identity_v1(
-+    QemuCrucibleDeferredCleanupControl *control, uint64_t control_epoch,
-+    QemuCrucibleSourceDeferredCleanupTermination *termination,
-+    uint64_t termination_epoch);
 +
 +#endif
 diff --git a/plugins/crucible-deferred-cleanup-owner.inc.h b/plugins/crucible-deferred-cleanup-owner.inc.h
@@ -225236,10 +225121,10 @@ index 0000000000000000000000000000000000000000..9e07b052b969cd9b36c718a4f8a3cb24
 +}
 diff --git a/plugins/crucible-matched-constructor-retirement.h b/plugins/crucible-matched-constructor-retirement.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..652e130022cc97cc2f0febda229a26a32396f900
+index 0000000000000000000000000000000000000000..67552b74f167dd061f76961743c8c8889a29a568
 --- /dev/null
 +++ b/plugins/crucible-matched-constructor-retirement.h
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,44 @@
 +/*
 + * Retained Main/CONTROL retirement after the class13 driver has returned.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -225282,17 +225167,6 @@ index 0000000000000000000000000000000000000000..652e130022cc97cc2f0febda229a26a3
 +    uint8_t strict_resource_captured;
 +    uint8_t finished;
 +} QemuCrucibleSourceConstructorRetirementResult;
-+
-+/* Called only inside the genuine once-only post-Driver Source operation.
-+ * First observes retained constructor/roles; post uses permanent consumption
-+ * history and canonical holder addresses. Neither calls an ended Work/Tail. */
-+int qemu_crucible_source_quantum_constructor_resource_disposal_current_v1(
-+    QemuCrucibleSourcePendingQuantumConstructor *constructor, uint64_t epoch,
-+    QemuCrucibleCoreQuantumResourceLoan *resource, uint64_t resource_epoch);
-+int qemu_crucible_source_quantum_constructor_role_children_consumed_v1(
-+    QemuCruciblePublisherSessionLender *lender,
-+    QemuCruciblePublisherRecipient *recipient,
-+    QemuCrucibleSourcePendingQuantumConstructor *constructor, uint64_t epoch);
 +
 +#endif
 diff --git a/plugins/crucible-matched-constructor-retirement.inc.h b/plugins/crucible-matched-constructor-retirement.inc.h
@@ -229710,19 +229584,15 @@ index 0000000000000000000000000000000000000000..73900d34852076fae41641ac9c49d0c6
 +}
 diff --git a/plugins/crucible-matched-quantum-entry.inc.h b/plugins/crucible-matched-quantum-entry.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..af3e8b5ca34be48d121856ea0a8f271862ac37f4
+index 0000000000000000000000000000000000000000..6cddd977ca44f74aa4053731a966be7b3c6055e8
 --- /dev/null
 +++ b/plugins/crucible-matched-quantum-entry.inc.h
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,267 @@
 +/*
 + * Actual Main Entry reciprocal for the matched typed Core Advance.
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
 +
-+int qemu_crucible_source_outcome_entry_prepare_v1(
-+    QemuCrucibleSourceAdvanceEntry *entry, uint64_t entry_epoch,
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch);
 +
 +#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
 +static bool matched_quantum_entry_core_untouched(
@@ -246973,10 +246843,10 @@ index 0000000000000000000000000000000000000000..9a34fefe578203b1a0c5a557e65260da
 +#endif
 diff --git a/plugins/crucible-outcome-constructor-retirement.inc.h b/plugins/crucible-outcome-constructor-retirement.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..06a41e7709fcd04aaa172ec1c1453f0d26559dda
+index 0000000000000000000000000000000000000000..23f248d8b05c1a2ff97cfa678ead30b83fba95b5
 --- /dev/null
 +++ b/plugins/crucible-outcome-constructor-retirement.inc.h
-@@ -0,0 +1,1060 @@
+@@ -0,0 +1,1061 @@
 +/*
 + * Actual successful constructor disposition under the retained post-body child.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -247430,10 +247300,11 @@ index 0000000000000000000000000000000000000000..06a41e7709fcd04aaa172ec1c1453f0d
 +        }
 +    }
 +    for (size_t index = 0; index < G_N_ELEMENTS(owner->actor_observed); index++) {
-+        const QemuCrucibleOutcomePostbodyActorView *actor = &owner->actor_observed[index];
++        const QemuCrucibleOutcomePostbodyActorView *observed_actor =
++            &owner->actor_observed[index];
 +
 +        if (owner->actor_observed_ready[index] ||
-+            !outcome_constructor_actor_untouched(actor)) {
++            !outcome_constructor_actor_untouched(observed_actor)) {
 +            return false;
 +        }
 +    }
@@ -290580,10 +290451,10 @@ index 0000000000000000000000000000000000000000..bbdead2c4c989eb5bc3e390af5b5aa86
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..80129264185df5e6d337bc5377b2cc57a5a8fe54
+index 0000000000000000000000000000000000000000..53fd3f1c33ad664eb1fa23377d8115ed6e40a129
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,5212 @@
+@@ -0,0 +1,5184 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -290605,6 +290476,7 @@ index 0000000000000000000000000000000000000000..80129264185df5e6d337bc5377b2cc57
 +#include "qemu/crucible-publisher-protocol.h"
 +#include "qemu/crucible-shared-region-layout.h"
 +#include "qemu/crucible-native-invocation.h"
++#include "system/crucible-advance-outcome.h"
 +#include "qemu/plugin.h"
 +#include "qemu/thread.h"
 +#include "system/crucible-hot-fork-coordinator.h"
@@ -295745,29 +295617,16 @@ index 0000000000000000000000000000000000000000..80129264185df5e6d337bc5377b2cc57
 +    QemuCrucibleSourceMatchedQuantumCleanupTail *tail, uint64_t tail_epoch,
 +    QemuCruciblePublisherSessionLender *lender,
 +    QemuCruciblePublisherRecipient *recipient);
-+int qemu_crucible_source_quantum_role_children_closed_v1(
-+    QemuCrucibleSourceMatchedQuantumCleanupTail *tail, uint64_t tail_epoch,
-+    QemuCruciblePublisherSessionLender *lender,
-+    QemuCruciblePublisherRecipient *recipient);
 +
 +/* A physical child only. CPU admission still requires actual matched Module
 + * execution and separately entered terminal ownership before effects. */
 +/* The actual matched RR callback factory; it issues no CPU/profile admission. */
 +int qemu_crucible_source_matched_advance_current_v1(
 +    QemuCrucibleSourceMatchedQuantumRRExecution *parent, uint64_t parent_epoch);
-+QemuCrucibleMatchedRRReturnResult qemu_crucible_source_matched_rr_return_v1(
-+    QemuCrucibleSourceMatchedQuantumRRExecution *actor, uint64_t actor_epoch);
-+int qemu_crucible_source_matched_rr_reference_returned_v1(
-+    QemuCrucibleSourceMatchedQuantumRRExecution *actor, uint64_t actor_epoch);
-+int qemu_crucible_source_matched_rr_keeper_returned_v1(
-+    QemuCrucibleSourceMatchedQuantumRRExecution *actor, uint64_t actor_epoch);
-+int qemu_crucible_source_matched_rr_closed_v1(
-+    QemuCrucibleSourceMatchedQuantumRRExecution *actor, uint64_t actor_epoch);
 +
 +int qemu_crucible_source_matched_rr_begin_v1(
 +    struct CPUState *cpu, struct QemuCrucibleCoreQuantumFrame *frame,
 +    struct QemuCrucibleQuantumCpuExecution **execution_holder, uint64_t frame_epoch);
-+
 +
 +#ifndef QEMU_CRUCIBLE_SOURCE_OUTCOME_ACTOR_PHYSICAL_VIEW_DEFINED
 +#define QEMU_CRUCIBLE_SOURCE_OUTCOME_ACTOR_PHYSICAL_VIEW_DEFINED
@@ -295779,22 +295638,6 @@ index 0000000000000000000000000000000000000000..80129264185df5e6d337bc5377b2cc57
 +} QemuCrucibleSourceOutcomeActorPhysicalView;
 +#endif
 +
-+QemuCrucibleSourceOutcomeActorPhysicalView
-+qemu_crucible_source_outcome_actor_physical_v1(
-+    QemuCrucibleCoreQuantumOperation *operation,
-+    QemuCrucibleCoreQuantumOperation **operation_holder, uint64_t operation_epoch,
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch,
-+    struct QemuCrucibleSourceAdvanceOutcomeUse *use, uint64_t use_epoch);
-+
-+/* The Outcome owner supplies this one-way actual pending actor fact. It
-+ * never calls Core/Native Current or the Work projection below. */
-+int qemu_crucible_source_outcome_actor_identity_v1(
-+    QemuCrucibleCoreQuantumOperation *operation,
-+    QemuCrucibleCoreQuantumOperation **operation_holder, uint64_t operation_epoch,
-+    QemuCrucibleCoreQuantumAdvance *advance,
-+    QemuCrucibleCoreQuantumAdvance **advance_holder, uint64_t advance_epoch,
-+    struct QemuCrucibleSourceAdvanceOutcomeUse *use, uint64_t use_epoch);
 +#endif /* CRUCIBLE_STARTUP_SOURCE_H */
 diff --git a/plugins/crucible-stop-context.h b/plugins/crucible-stop-context.h
 new file mode 100644
@@ -308735,7 +308578,7 @@ index 0000000000000000000000000000000000000000..82bfae83900383ac30006bc4ca9201f9
 +    main()
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c0e6baba6373f781da5d537079a73ea7a16a55e
+index 0000000000000000000000000000000000000000..24b6833c9315f148b3b135ddee8168788d7f3cf5
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,184 @@
@@ -308748,7 +308591,7 @@ index 0000000000000000000000000000000000000000..6c0e6baba6373f781da5d537079a73ea
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
-+    'include/qemu/crucible-outcome-constructor-recipient.h': '7218a9c5ec444025da7cd70184cc197de76dd91b3cc08d1ea16982eee73a7438',
++    'include/qemu/crucible-outcome-constructor-recipient.h': 'a71cc64e2eaa9c7b4d0db5f0c7cb8b9177b6041225b1bcb98f9e000b297cf4bf',
 +    'system/crucible-preexec-publisher-constructor-recipient.inc.h': '3edb16e9c5303f06d071aefc26099aba70b498a252a7859d532b76f0a6aaf114',
 +    'system/crucible-preexec-publisher-matched-prepare.inc.h':
 +        '35280296d4f4c5e6915da24f5cb914e7344ef611867e7addbf5b4b4c65e53c6b',
@@ -308807,7 +308650,7 @@ index 0000000000000000000000000000000000000000..6c0e6baba6373f781da5d537079a73ea
 +    'include/plugins/qemu-plugin.h':
 +        '98dffedb987540b27b5725b202fb65deaec3c9b1bedf0f80c7fcf6fcda499fe4',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '38e8d9bf388d6caf6ae1b1b512a21add956d4333ea45ec7ae844e058be95385f',
++        '27720608087741543c46fbfc6416d7564d53139bc2303896f8d70f1050b664ab',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +}
@@ -397192,7 +397035,7 @@ index 0000000000000000000000000000000000000000..f517993ed29c5a6611a6d10ad6a2a612
 +#endif /* TESTS_CRUCIBLE_TIMER_STREAM_H */
 diff --git a/tests/unit/extract-crucible-cached-writer.py b/tests/unit/extract-crucible-cached-writer.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..267e313f943977d178885522eee437689c7a9450
+index 0000000000000000000000000000000000000000..9e7a2046ed061d1f4066249bd15c7ee5fc367268
 --- /dev/null
 +++ b/tests/unit/extract-crucible-cached-writer.py
 @@ -0,0 +1,361 @@
@@ -397213,11 +397056,11 @@ index 0000000000000000000000000000000000000000..267e313f943977d178885522eee43768
 +
 +SOURCE_HASHES = {
 +    'util/qemu-thread-posix.c':
-+        'b1a1d910dbe6a6dee75684c0c8bf9e534f7f3323bd7df24ce9ecedff1ee7323b',
++        '65fe40ad4d4254af2579a045d5a336e6795fa0ba131a570b30f0070359b8224d',
 +    'util/oslib-posix.c':
 +        '3844eb962eac164dd29f0eb9ca7e48ec830d8aaf8281c2b2a0915d041eaaac38',
 +    'include/qemu/thread.h':
-+        'e06f95e53c3ce56b532e4481c2810c9cf9ef9c0e84f5fcddefa5309c58ebf0ab',
++        '0903b45bf8f4cc8371ce77e514b0d9581fa9000367da9417aec42988af644c59',
 +    'include/qemu/thread-posix.h':
 +        '72d5cf709bbe89ccbc621c0bb0de9d56df2eb3c11210e9abd58fcf6e65c3baaa',
 +    'include/system/memory_cached.h':
@@ -397559,7 +397402,7 @@ index 0000000000000000000000000000000000000000..267e313f943977d178885522eee43768
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..76bf8f9e1cd3d6680f3e0733071f2fac64ef08f8
+index 0000000000000000000000000000000000000000..dcaa59065040242aa507f29a6bee5f09b8fde664
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -397577,7 +397420,7 @@ index 0000000000000000000000000000000000000000..76bf8f9e1cd3d6680f3e0733071f2fac
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '38e8d9bf388d6caf6ae1b1b512a21add956d4333ea45ec7ae844e058be95385f',
++        '27720608087741543c46fbfc6416d7564d53139bc2303896f8d70f1050b664ab',
 +}
 +
 +FUNCTIONS = (
@@ -397665,7 +397508,7 @@ index 0000000000000000000000000000000000000000..76bf8f9e1cd3d6680f3e0733071f2fac
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..cfb45a93d371b2715b7e1f2dc7ac31433fd8d74c
+index 0000000000000000000000000000000000000000..e0440d6065c0252b0c9f6d63a17233cfd2cb0896
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -397688,7 +397531,7 @@ index 0000000000000000000000000000000000000000..cfb45a93d371b2715b7e1f2dc7ac3143
 +    'plugins/crucible-startup-source.c':
 +        'f0745f6aeba9c66711f41aa5ef511f270f580a598ff6836861406f47bd69efc9',
 +    'plugins/crucible-startup-source.h':
-+        'dfdf89e5da62bbfe5308449ba86b91c2182063eba78b7d7a800344bb48e817d9',
++        '4d82e7f7d5849d906d6e788a99b030a9dd388db1a886cec98632fdb8887b4bf6',
 +    'include/plugins/qemu-plugin.h':
 +        '98dffedb987540b27b5725b202fb65deaec3c9b1bedf0f80c7fcf6fcda499fe4',
 +    'system/crucible-hot-fork-coordinator.c':
@@ -397696,7 +397539,7 @@ index 0000000000000000000000000000000000000000..cfb45a93d371b2715b7e1f2dc7ac3143
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '38e8d9bf388d6caf6ae1b1b512a21add956d4333ea45ec7ae844e058be95385f',
++        '27720608087741543c46fbfc6416d7564d53139bc2303896f8d70f1050b664ab',
 +}
 +
 +FUNCTIONS = (
@@ -397912,7 +397755,7 @@ index 0000000000000000000000000000000000000000..cfb45a93d371b2715b7e1f2dc7ac3143
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..cee0d5d690b379d36027b65096d9b0b6e8ae6c85
+index 0000000000000000000000000000000000000000..871a9d68842df9c262ebb9739c5c02e0d4b6d3c4
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -397936,7 +397779,7 @@ index 0000000000000000000000000000000000000000..cee0d5d690b379d36027b65096d9b0b6
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '38e8d9bf388d6caf6ae1b1b512a21add956d4333ea45ec7ae844e058be95385f',
++        '27720608087741543c46fbfc6416d7564d53139bc2303896f8d70f1050b664ab',
 +}
 +
 +FUNCTIONS = (
@@ -398030,7 +397873,7 @@ index 0000000000000000000000000000000000000000..cee0d5d690b379d36027b65096d9b0b6
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..0a536daf6996c1cd47b3c0ca9b5b92443f08c0d1
+index 0000000000000000000000000000000000000000..55297a058f353c52bdc7008a3fce7d52bb918056
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,795 @@
@@ -398046,7 +397889,7 @@ index 0000000000000000000000000000000000000000..0a536daf6996c1cd47b3c0ca9b5b9244
 +import sys
 +
 +SOURCE_HASHES = {
-+    'include/qemu/crucible-outcome-constructor-recipient.h': '7218a9c5ec444025da7cd70184cc197de76dd91b3cc08d1ea16982eee73a7438',
++    'include/qemu/crucible-outcome-constructor-recipient.h': 'a71cc64e2eaa9c7b4d0db5f0c7cb8b9177b6041225b1bcb98f9e000b297cf4bf',
 +    'system/crucible-preexec-publisher-constructor-recipient.inc.h': '3edb16e9c5303f06d071aefc26099aba70b498a252a7859d532b76f0a6aaf114',
 +    'system/crucible-preexec-publisher-outcome-history.inc.h': '332c36e4efeeb62285590796b1a09bec450743783bceabc4a8f8a9da5127716e',
 +    'system/crucible-preexec-publisher-matched-request.inc.h': '32ea908ba27ecb99fb0a13f66b0162757dbdf056249e45728797d373d5b89054',
@@ -398116,9 +397959,9 @@ index 0000000000000000000000000000000000000000..0a536daf6996c1cd47b3c0ca9b5b9244
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '38e8d9bf388d6caf6ae1b1b512a21add956d4333ea45ec7ae844e058be95385f',
++        '27720608087741543c46fbfc6416d7564d53139bc2303896f8d70f1050b664ab',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '01493ce3f8e16edb721e01304a11cabb6f93a3422c9f6ec85487be8f1dfed9ec',
++        '9f227fefacb1c30b659ccaf286f10038d964b2e16ab9c1b8469b22bc5eabb93e',
 +    'meson.build':
 +        'd60f3d0a573e006c42c93c08720d825da552ccd45b6a9d276a68839968d59be7',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -398831,7 +398674,7 @@ index 0000000000000000000000000000000000000000..0a536daf6996c1cd47b3c0ca9b5b9244
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63a97b1ebc
+index 0000000000000000000000000000000000000000..12e88daffbbf070533aa85f2bfd6f4af07424786
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,2029 @@
@@ -398850,10 +398693,10 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'plugins/crucible-outcome-constructor-recipient.inc.h': 'ac65d6514f68e70d1665594d2b3c36fcd270ba45135da9d49d697f7c5c1043a9',
 +    'plugins/crucible-outcome-constructor-retirement.h': '649d46fd263199a7b1ddc803f1223a07bfe6d1930c05fdfea6c050caf65ab100',
 +    'plugins/crucible-outcome-constructor-retirement-owner.h': '5ccf679a4fd9a68d2475b1380a0238801123a42b40dd37f7a4f6cfb958dfa7dd',
-+    'plugins/crucible-outcome-constructor-retirement.inc.h': 'fc7d83c6a62b9f44a3adf8a845a5331ae89da9069b094b2f6d6eff6381aa5536',
++    'plugins/crucible-outcome-constructor-retirement.inc.h': 'bf149d7bab20999120c202f200fe39511927966a43ea888f7f2385874c804a8e',
 +    'plugins/crucible-advance-outcome-postbody.h': 'be939cea440b9eeb27a7b2abc83949cd00407e5264d48410febc711da0fa52d7',
 +
-+    'include/qemu/crucible-outcome-constructor-recipient.h': '7218a9c5ec444025da7cd70184cc197de76dd91b3cc08d1ea16982eee73a7438',
++    'include/qemu/crucible-outcome-constructor-recipient.h': 'a71cc64e2eaa9c7b4d0db5f0c7cb8b9177b6041225b1bcb98f9e000b297cf4bf',
 +    'system/crucible-preexec-publisher-constructor-recipient.inc.h': '3edb16e9c5303f06d071aefc26099aba70b498a252a7859d532b76f0a6aaf114',
 +
 +    'plugins/crucible-source-invocation.inc.h': '22465b4c98c8dc2c2242c8b067069ebcec782a7f7660cada642f76fcb0e597e7',
@@ -398864,7 +398707,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'system/crucible-preexec-publisher-matched-request.inc.h': '32ea908ba27ecb99fb0a13f66b0162757dbdf056249e45728797d373d5b89054',
 +    'plugins/crucible-advance-outcome-construction-types.inc.h': '310f1ada3302a8200358fed8635a63ef3765736bbbc9579d5930999beb45f841',
 +    'plugins/crucible-advance-outcome-construction-unentered.inc.h': 'adfdff9b466d5777dbce294d1bedaa93bc95be72407417b2da7efbbadb63567b',
-+    'plugins/crucible-advance-outcome-construction.inc.h': '1c757cd57c2e63d1d92cba92a192c413ab2aea407e4e3a08372bcc9aaf4a2d35',
++    'plugins/crucible-advance-outcome-construction.inc.h': 'da0b3b1759bbf09d5a59f64d5f240316ab4e8cd4e2ca8abc51a17fcde6a86135',
 +    'plugins/crucible-advance-outcome-installed-enter.inc.h': '7d8042df5a5d8a32d88186f3b1af35f3b635a081504b51eb3107b514d86c5388',
 +    'plugins/crucible-advance-outcome-installed-last-use-checks.h': '223ea110890b44cfe815ecdad470a11ee9677707e4792b8b0ae5c9a880b22d3a',
 +    'plugins/crucible-advance-outcome-installed-last-use.inc.h': 'f57d6681bb5e5c2f5b29ab8c3fa27cbbaeb0a2e6c2effa95365d7c0d8151687f',
@@ -398885,7 +398728,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'plugins/crucible-deferred-cleanup-success-module-return.inc.h': '9d3345c9d94dfe054aa017b65a868501ae6c97875dc341bb7c7b62ca7fd03e9b',
 +    'plugins/crucible-advance-outcome-success-module.h': 'f3733a20d49ef67879f4a4e1d6d99b20df3abfd8e095efd5ae231d013b3aa64c',
 +    'plugins/crucible-deferred-cleanup-moved-original-return.inc.h': '325496d9305634efef994340df6e6298235101e8a65d8394280c31f0bef821b1',
-+    'plugins/crucible-matched-constructor-retirement.h': '3cf5d77ad525561cf2da5374903e0549ade29f6b4a7573fd4796725746b422d3',
++    'plugins/crucible-matched-constructor-retirement.h': '51028cb73d0480e6b34594b40c70bf1c4cc8bf4dbae06a372a64dcdd34f41f1c',
 +    'plugins/crucible-matched-constructor-retirement.inc.h': '7cbd5ca1f6eac73ece2988737df00bcb8244bc82acea9418774db4b3bf430ac4',
 +    'include/system/crucible-constructor-retirement.h': '80d65114b608897f0fd60d7991bfb825ad75bb3e1d5e1a20740c89a0d42a50a4',
 +    'include/qemu/crucible-constructor-roles.h': '8d201dcbba21cb177929d8534d32f1369fde8d634d24bdda9121cb6e09781141',
@@ -398917,7 +398760,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +        '08a7d6c2f320213f967a38f88cd0656eac62a84047eb9435a6d4002c73ede788',
 +
 +    'include/system/crucible-outcome-prepare.h':
-+        '115e96213319b697e22c75c39e39b5ffc21763d14a69506260e0ca786f0fb702',
++        '96336973d2e0410834b43a95b1d3faa4f42e6f3682680ab5d36f8007c1179173',
 +    'system/crucible-preexec-publisher-matched-prepare.inc.h':
 +        '35280296d4f4c5e6915da24f5cb914e7344ef611867e7addbf5b4b4c65e53c6b',
 +    'plugins/crucible-matched-quantum-prepare-work.inc.h':
@@ -398925,7 +398768,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'plugins/crucible-advance-outcome-callback-types.inc.h':
 +        'b26f92349a1e12b264a97696f01213144999566dcf51ee95431150861ee5a09a',
 +    'plugins/crucible-advance-outcome-callback.inc.h':
-+        'f1b52845f99200b0e2166af664f7bdc3a4fc9f15b86a6704d772f43b8fd5bb33',
++        '79f5eb363fd284a3537555b440dabbbecbb665a7e56fb56ef9f576d30fd9b82c',
 +    'plugins/crucible-advance-outcome-command-request.inc.h':
 +        '117fd62e7ea0d42e954f22665065659d2677cca920fb2ccc14c3efed1aad5b09',
 +    'plugins/crucible-advance-outcome-descendants.inc.h':
@@ -398955,7 +398798,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'plugins/crucible-deferred-cleanup-descendant-return.inc.h':
 +        '45302f8cb8f0df58a598c5a6e69e36bf4d85d11162499c2a83f8cb95c3c5e66c',
 +    'include/system/crucible-outcome-prepare.h':
-+        '115e96213319b697e22c75c39e39b5ffc21763d14a69506260e0ca786f0fb702',
++        '96336973d2e0410834b43a95b1d3faa4f42e6f3682680ab5d36f8007c1179173',
 +    'plugins/crucible-core-quantum-advance-dispose.inc.h':
 +        'cfa1623e5e18289c4934462a27dc841661333b06d948db8dc911490088e0bd6f',
 +    'plugins/crucible-core-quantum-callback-prepare.inc.h':
@@ -398999,7 +398842,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'plugins/crucible-deferred-cleanup-completed-current.inc.h':
 +        '4fab7ef98441145080586536cad0eab3e32c41ffc7c196b0105112741a89dd09',
 +    'plugins/crucible-advance-outcome-finite.h':
-+        '0b8854ef9a89e8ff2ff9c2f644b26f338f7d8dae1c4d9ed67f74ab251e722bbd',
++        '202c4a287be08057fb54afe3a095421474bc59104aac0f0209dfacdf19dc35ea',
 +    'plugins/crucible-deferred-cleanup-driver.h':
 +        'dee3cd05058c19dbfa10ae76b342563d918b2b587851354c040846d5b649a84c',
 +    'plugins/crucible-deferred-cleanup-driver-owner.h':
@@ -399019,7 +398862,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'plugins/crucible-deferred-cleanup-owner.inc.h':
 +        '3b591edcded9aa067d34b2d480888641122580f1081c9389156ad7e5cdd6812e',
 +    'plugins/crucible-deferred-cleanup-owner.h':
-+        'edf49be8c9593b8827546ee4939db9d3706ece13c471306d5919d684861c7901',
++        'b0901655c17255df851c983b2896c1c2d72c325e61f14e5db68b0f1b860c7000',
 +    'plugins/crucible-deferred-cleanup-entry-unborn.inc.h':
 +        '19bdd92ba003d0ca275913466794c508623346e55395b0f77907f1a3f40c7ba7',
 +    'plugins/crucible-deferred-cleanup-interval-return.inc.h':
@@ -399035,7 +398878,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'include/system/crucible-work-termination.h':
 +        '8a32cb7991a3482d124200ace27447b13e831341a466dd375ec923271f6bd7cb',
 +    'include/system/crucible-outcome-callback.h':
-+        'ed566567bce7e3ed9eff8c489eb987fcf8664c49989d017869903c8a487e202c',
++        '247219844f99929cd39752257cb52d70834e381ac5c870e2173927b3bc5c54bd',
 +    'include/qemu/crucible-deferred-cleanup.h':
 +        'e95a4cb144c4db576e3bac7ef1b5682b917b9c704c89c66abcc4669ec7309478',
 +    'include/qemu/crucible-deferred-cleanup-owner.h':
@@ -399075,7 +398918,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'plugins/crucible-advance-outcome-attach.inc.h':
 +        '606d3bc7a1e4098cc91b36defdaf5d184cb5859e78f52e17dd5a856d3cc24f12',
 +    'include/system/crucible-advance-outcome.h':
-+        '7156f523612ee438baa5c22129421b7767b53b37b7d5a45c6840ce50c973a785',
++        'bc7cc1782955829447b025de2494b37f0d46a366d9a9e80c03c2591a0583750b',
 +    'plugins/crucible-core-quantum-target.inc.h':
 +        '86d8cc0698a2eaa9ecdd84f25b99615db3d1d74d2b382e602da7f6491a9a5e98',
 +    'system/runstate.c':
@@ -399135,7 +398978,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'plugins/crucible-core-quantum.inc.h':
 +        '89675f611ff79ea83afbd696727179dd22a486b1dd31315ec81f7dbbe8ded08b',
 +    'include/system/crucible-core-quantum.h':
-+        '7ea04ed874fc1fbf8f83f6606f14d5d0da547d123f12908b1e64af53aff1a028',
++        '06290a52d597f703f0dc510fcd25401e80871f65e75e5586f79017397f7d162a',
 +    'plugins/crucible-native-matched-main-finish.inc.h':
 +        'f11724b69471dbc7c5fbf7a9446da7374f12ae928fadd80f5b17bb7b6fc838b5',
 +    'plugins/crucible-matched-quantum-main-finish.inc.h':
@@ -399161,7 +399004,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'plugins/crucible-matched-quantum-core.inc.h':
 +        '006395690902345379f40f954ef6f1e1b1318908dd0a0c24dc0329572d642814',
 +    'plugins/crucible-matched-quantum-entry.inc.h':
-+        '2e06192651b857f8df8a38a9f789897cc634bfcd485ab8a738b71322b8ea9664',
++        'ede60d81705a1c952d782edc0bafe7ab3504939b0bba534a32a61feefe776455',
 +    'tests/unit/test-crucible-quantum-installing-service.py':
 +        'e517c2d371b8861bca005b33285fd23a8c7df64c9574f45099ebc53859d0fd87',
 +    'tests/unit/crucible-quantum-installing-service-fixture.inc.h':
@@ -399405,7 +399248,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'util/qemu-timer.c':
 +        '7688924d0642e40da474d76b757e34d562f54a50dd33953cec68dda1f0eda8ff',
 +    'include/system/crucible-quantum-execution.h':
-+        'f9a4fe73b7a1d7b16f152f6e0f4cb3dfa256980c13dc17841e2c822408079c77',
++        '548fa40f5b9385ccfce38304efd784ccb70e0756e287f6e6a4ed0f9844498ee0',
 +    'accel/tcg/crucible-outcome-boundary.inc.h':
 +        '9fec1d2bfed6b2327da5b6522ce0bdb734effaac836e24e70ce5ccdbda8785d5',
 +    'accel/tcg/crucible-outcome-postbody.inc.h':
@@ -399585,7 +399428,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'plugins/crucible-startup-source.c':
 +        'f0745f6aeba9c66711f41aa5ef511f270f580a598ff6836861406f47bd69efc9',
 +    'plugins/crucible-startup-source.h':
-+        'dfdf89e5da62bbfe5308449ba86b91c2182063eba78b7d7a800344bb48e817d9',
++        '4d82e7f7d5849d906d6e788a99b030a9dd388db1a886cec98632fdb8887b4bf6',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
@@ -399613,7 +399456,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'include/qemu/crucible-shared-region-layout.h':
 +        '9ad3be4a8b3aa0e0c10ab0f12908b0e827e219ec93e91d3939c90606383f54b5',
 +    'include/qemu/crucible-native-invocation.h':
-+        '9e61cb40498b9dba2d241fe345eddeb8434f3fa7067dfc966e1876ba3207b2e0',
++        '170272e25c559ca057536d307f23afe49460cc2996355fe98df2b9ada74f45f8',
 +    'plugins/crucible-native-invocation.c':
 +        '73b23dd306f7ff5e29064646717cd8c1eafabe0196e41f10b38b741279190473',
 +    'cpu-common.c':
@@ -399665,9 +399508,9 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'include/qemu/thread.h':
-+        'e06f95e53c3ce56b532e4481c2810c9cf9ef9c0e84f5fcddefa5309c58ebf0ab',
++        '0903b45bf8f4cc8371ce77e514b0d9581fa9000367da9417aec42988af644c59',
 +    'util/qemu-thread-posix.c':
-+        'b1a1d910dbe6a6dee75684c0c8bf9e534f7f3323bd7df24ce9ecedff1ee7323b',
++        '65fe40ad4d4254af2579a045d5a336e6795fa0ba131a570b30f0070359b8224d',
 +    'include/qemu/crucible-process-purpose.h':
 +        '19c016e6edd3c49488f983032042c8bc1dbb14e4c2f0e2d19c65b4409d505f72',
 +    'include/qemu/crucible-paged-ram.h':
@@ -399719,7 +399562,7 @@ index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +    'plugins/crucible-advance-receiver.inc.h':
-+        '00173c1e20635f052766fdbb68b57707ac031feedb27b2291b45868f3d154e75',
++        '97d8e4a70f79700201e186a86867b56dbe04204f6ee877a127669040ed8da1cf',
 +    'tests/unit/test-crucible-advance-registration.py':
 +        'e9d9f845bacab68c09314fc37ce2da393a6614b69ffe83f329fc9eb6066a6ff9',
 +    'tests/unit/test-crucible-advance-recipient-leaves.py':
@@ -500537,7 +500380,7 @@ index 4773755fd582e82436159cba2e114e047aae7478..74516a1c97422b317868dfb54686c357
          }
          break;
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..5818995ce4175fc0fbcfc91877c951a14bdaf32a 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf25591a7b77d 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -22,6 +22,138 @@
@@ -501430,7 +501273,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..5818995ce4175fc0fbcfc91877c951a1
      if (err && err != ETIMEDOUT) {
          error_exit(err, __func__);
      }
-@@ -379,20 +1162,2250 @@ typedef struct {
+@@ -379,20 +1162,2249 @@ typedef struct {
      void *(*start_routine)(void *);
      void *arg;
      char *name;
@@ -502015,8 +501858,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..5818995ce4175fc0fbcfc91877c951a1
 +    if (!owner || ram_cpu_construction_owner != owner) {
 +        return -ESTALE;
 +    }
-+    /* qemu_thread_is_self takes a mutable view, but observes only pthread_t.
-+     * Copy that exact creator identity without casting away owner's const. */
++    /* Snapshot the exact retained creator identity for this read-only check. */
 +    creator = owner->thread;
 +    return owner->active &&
 +        owner->generation == ram_cpu_construction_generation &&
@@ -503692,7 +503534,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..5818995ce4175fc0fbcfc91877c951a1
      g_free(qemu_thread_args);
  
      /*
-@@ -410,13 +3423,39 @@ static void *qemu_thread_start(void *args)
+@@ -410,13 +3422,39 @@ static void *qemu_thread_start(void *args)
  #pragma GCC diagnostic ignored "-Wstringop-overflow"
  #endif
  
@@ -503733,7 +503575,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..5818995ce4175fc0fbcfc91877c951a1
  }
  
  void qemu_thread_create(QemuThread *thread, const char *name,
-@@ -450,18 +3489,998 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+@@ -450,18 +3488,998 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      qemu_thread_args->name = g_strdup(name);
      qemu_thread_args->start_routine = start_routine;
      qemu_thread_args->arg = arg;
@@ -504733,6 +504575,28 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..5818995ce4175fc0fbcfc91877c951a1
  int qemu_thread_set_affinity(QemuThread *thread, unsigned long *host_cpus,
                               unsigned long nbits)
  {
+@@ -536,7 +4554,7 @@ void qemu_thread_get_self(QemuThread *thread)
+     thread->thread = pthread_self();
+ }
+ 
+-bool qemu_thread_is_self(QemuThread *thread)
++bool qemu_thread_is_self(const QemuThread *thread)
+ {
+    return pthread_equal(pthread_self(), thread->thread);
+ }
+diff --git a/util/qemu-thread-win32.c b/util/qemu-thread-win32.c
+index 3037732a6fed3b77bf5cf75c8d77afc710d697f2..7bbc76cf5edd5046fa13f1d1dc44ed73c0ab324e 100644
+--- a/util/qemu-thread-win32.c
++++ b/util/qemu-thread-win32.c
+@@ -413,7 +413,7 @@ HANDLE qemu_thread_get_handle(QemuThread *thread)
+     return handle;
+ }
+ 
+-bool qemu_thread_is_self(QemuThread *thread)
++bool qemu_thread_is_self(const QemuThread *thread)
+ {
+     return GetCurrentThreadId() == thread->tid;
+ }
 diff --git a/util/qemu-timer.c b/util/qemu-timer.c
 index d93a020064fe2a82602c5739f4cb39a930d64a0e..7dabb1701dca64ca7901d6572a76ce459c212ed5 100644
 --- a/util/qemu-timer.c
