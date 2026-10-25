@@ -442,14 +442,16 @@
     rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
     analysisTargets = ["//crates/crucible/crucible-guest:unit"];
   };
-  aosBazelQuotaWorkspace = mkAosBazelWorkspace {
-    root = ../../..;
-    sourceDirectories = ["tools/bazel" "third_party/rust" "crates/linux/aos-linux-project-quota"];
-    repositories = aosBazelRepositories // aosBazelRustRepositories.quota;
-    dependencyProfile = "quota";
-    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/linux/aos-linux-project-quota:unit"];
-  };
+  aosBazelQuotaWorkspace =
+    (import ../../../tests/build/_bazel-quota.nix {
+      inherit pkgs;
+      sourceInventory = null;
+    }).workspace;
+  aosBazelQuotaEditorWorkspace =
+    (import ../../../tests/build/_bazel-quota.nix {
+      inherit pkgs;
+      sourceInventory = null;
+    }).editorWorkspace;
   aosBazelEngineWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["BUILD.bazel" "crates" "native" "tools/bazel" "third_party/rust" "tests/crucible" "docs/rfcs/0014-signal-driven-fault-model" "docs/rfcs/0020-crucible-campaigns" "docs/users/crucible"];
@@ -1043,6 +1045,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelQuotaWorkspace;
+    }).launcher;
+  aosBazelQuotaEditorLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelQuotaEditorWorkspace;
     }).launcher;
   aosBazelEngineLauncher =
     (import ./development.nix {

@@ -53,6 +53,7 @@ case " $* " in
   *' -A pkgs.aosBazelEngineLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelGuestLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelQuotaLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelQuotaEditorLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelSessionLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelControlLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelDaemonLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
@@ -229,6 +230,7 @@ test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:quota>"
 grep -Fq -- '-A pkgs.aosBazelQuotaLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family quota rust-project //example:quota
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/linux/aos-linux-project-quota><--><build><//example:quota>"
+grep -Fq -- '-A pkgs.aosBazelQuotaEditorLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family session build //example:session
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:session>"
 grep -Fq -- '-A pkgs.aosBazelSessionLauncher ' "$AOS_DEV_TEST_LOG"

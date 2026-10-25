@@ -6,6 +6,7 @@
     "aosBazelGuestLauncher"
     "aosBazelEngineLauncher"
     "aosBazelQuotaLauncher"
+    "aosBazelQuotaEditorLauncher"
     "aosBazelSessionLauncher"
     "aosBazelControlLauncher"
     "aosBazelQemuHostLauncher"

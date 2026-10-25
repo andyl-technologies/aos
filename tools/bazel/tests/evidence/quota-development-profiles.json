@@ -1,0 +1,234 @@
+{
+  "aggregate": "/nix/store/mj28m1w5i077i9fw8r2vvjpj1m89mx8c-aos-bazel-quota-qualified-checks",
+  "aggregate_command": "nix-build default.nix -A checks.build.bazel.quota.all --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "checkout_parent": "b02388f31259ccc6af1414dccd6f4fdbcd18e152",
+  "cli_dispatch_check": "/nix/store/fkp5kil98kfqs62jx8262k02rwpv3fvq-aos-dev-cli-check-0",
+  "command": "nix-build default.nix -A checks.build.aos-dev-cli -A checks.eval -A checks.build.bazel.quota.development --no-out-link --keep-going --max-jobs 2 --cores 4 --option substitute false",
+  "compiler_profile_actions_and_arguments_identical": true,
+  "configuration_paths_identical_to_qualified_profiles": true,
+  "core_evaluation": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0",
+  "development": "/nix/store/kkvkih98sq5kjklfif4q4hxb6pbri8bl-aos-bazel-quota-development",
+  "evidence_sha256": "f824bad4182cff71730828ae5c5636e05dc892debc340703ca92a70446724556",
+  "execution_profiles": {
+    "actions": {
+      "//crates/linux/aos-linux-project-quota:unit_binary": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2927581445",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "s",
+          "overflow-checks": "yes",
+          "strip": "none"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_quota_crates__thiserror-impl-2.0.18//:thiserror_impl": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2165323272",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "yes",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      }
+    },
+    "build": "/nix/store/nf2rbnlpllffkbsk6f2xbkfjxkwspq4n-aos-bazel-quota-tests-1",
+    "cargo": "/nix/store/yyardb7sh1qxbz0gbggp77rxld1lka8r-aos-bazel-quota-cargo-oracle-1",
+    "cargo_actions": {
+      "aos_linux_project_quota": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "aos_linux_project_quota",
+          "--edition=2024",
+          "linux/aos-linux-project-quota/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--emit=dep-info,link",
+          "-C",
+          "opt-level=s",
+          "-C",
+          "embed-bitcode=no",
+          "--deny=clippy::unwrap_used",
+          "--deny=clippy::float_arithmetic",
+          "--deny=clippy::expect_used",
+          "--deny=clippy::disallowed_types",
+          "--deny=clippy::disallowed_methods",
+          "--deny=clippy::all",
+          "-C",
+          "debug-assertions=on",
+          "--test",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=7e5046629a6b35b6",
+          "-C",
+          "extra-filename=-5c9414e7f9547cd3",
+          "--out-dir",
+          "/build/target/debug/deps",
+          "-C",
+          "incremental=/build/target/debug/incremental",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/debug/deps",
+          "--extern",
+          "libc=/build/target/debug/deps/liblibc-ccd9cfd7b3a04a24.rlib",
+          "--extern",
+          "rustix=/build/target/debug/deps/librustix-6217a4194f504ad2.rlib",
+          "--extern",
+          "thiserror=/build/target/debug/deps/libthiserror-2858908bc9777945.rlib"
+        ],
+        "compiler_options": {
+          "debug-assertions": "on",
+          "embed-bitcode": "no",
+          "extra-filename": "-5c9414e7f9547cd3",
+          "incremental": "/build/target/debug/incremental",
+          "opt-level": "s",
+          "strip": "debuginfo"
+        }
+      },
+      "thiserror_impl": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "thiserror_impl",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/thiserror-impl-2.0.18/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=62eac5bb1334cab3",
+          "-C",
+          "extra-filename=-e8cf5e400c92e407",
+          "--out-dir",
+          "/build/target/debug/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/debug/deps",
+          "--extern",
+          "proc_macro2=/build/target/debug/deps/libproc_macro2-dd78d7fcf2329066.rlib",
+          "--extern",
+          "quote=/build/target/debug/deps/libquote-99ec1feb57c81716.rlib",
+          "--extern",
+          "syn=/build/target/debug/deps/libsyn-3847ff59bf282c9c.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "embed-bitcode": "no",
+          "extra-filename": "-e8cf5e400c92e407",
+          "strip": "debuginfo"
+        }
+      }
+    },
+    "cargo_trace_sha256": "fa6031b006f874175ee3c63a79090d935462482e8c1314375debbc911c8ad6ee",
+    "evidence_sha256": {
+      "actions.json": "e9878a0f42a903be31b2c0801a4e7838e4cb4c7a9d51d9b679cae05feeabd83c",
+      "compiler-inputs.json": "4db862968817e665bf925bdb0b318b13180fd0a4851099fd9b4a30a47d9af07a",
+      "execution.json": "fae8ca6cd5cd6ce180e3ab2b3e4579ce4d994d457f652c6cd3c30192aba0f229"
+    },
+    "limits": [
+      "Checks selected target and macro profiles, not complete compiler/default, native ABI, linker, editor, production, or performance equivalence."
+    ],
+    "schema_version": 1,
+    "status": "PASS"
+  },
+  "limits": [
+    "The CLI harness verifies dispatch with stubbed Nix and checks actual exported launcher derivations. The separate sandbox gate executes those real packaged launchers.",
+    "The editor export checks roots, features and exact native macro bytes. Full native analyzer diagnostics and ext4 VM enforcement remain recorded in their separate passing reports.",
+    "These private batch output bases use no shared action cache. Persistent editor lifecycle, current shared-cache restoration, foreign privileged execution, production cutover and performance acceptance remain separate."
+  ],
+  "proof": {
+    "editor_configuration": "/nix/store/8ipiykf08kpnlfl6cn5af2w3bz4n60mj-aos-bazel-configuration.json",
+    "editor_launcher": "/nix/store/ycmx031p1q5bp07ik2q8008axzl1ng9i-aos-bazel",
+    "graph": {
+      "crate_count": 12,
+      "proc_macros": [
+        "thiserror_impl"
+      ],
+      "roots": {
+        "crates/linux/aos-linux-project-quota/examples/project-quota-flight.rs": [],
+        "crates/linux/aos-linux-project-quota/src/lib.rs": []
+      }
+    },
+    "limits": [
+      "Runs packaged launchers on immutable development snapshots with private batch output bases and no shared action cache.",
+      "Eight ordinary unit cases run. Exported editor roots, features and macro bytes are authenticated; full analyzer diagnostics are qualified separately.",
+      "The exported project names temporary sandbox paths and is retained as evidence, not a persistent editor configuration."
+    ],
+    "macro_sha256": {
+      "thiserror_impl": "46248ca30ce0b19d88a9ec1f993d0fd6841ac73dd34cb661837ab174233dbbf4"
+    },
+    "qualified_editor": "/nix/store/gfgydw0cg0b2si5i33c3mj6h7zgiigxs-aos-bazel-quota-editor",
+    "runs": {
+      "editor": {
+        "actions": 40,
+        "execution_sha256": "2bb315d495de880192a56c5ee8fa1248f5e1c89e02c623b9903b1334786180de",
+        "mnemonics": {
+          "CargoBuildScriptRun": 5,
+          "ExtractCargoTomlEnvVars": 13,
+          "Rustc": 22
+        }
+      },
+      "tests": {
+        "actions": 39,
+        "execution_sha256": "8b9f0d5620ef24ebecd1cce07dc472ddf89dc5565f154cde325646da04c43c57",
+        "mnemonics": {
+          "CargoBuildScriptRun": 5,
+          "ExtractCargoTomlEnvVars": 13,
+          "Rustc": 20,
+          "TestRunner": 1
+        }
+      }
+    },
+    "schema_version": 1,
+    "status": "PASS",
+    "test_configuration": "/nix/store/4bwwzgpb3kqzak901gcn2aaglsnp0cbk-aos-bazel-configuration.json",
+    "test_launcher": "/nix/store/lldkwijiyb515kn32d7cdwwb82k36qn0-aos-bazel"
+  },
+  "schema_version": 1,
+  "source_sha256": {
+    "pkgs/build-support/_bazel/default.nix": "3d6f7abcb8c62d605822c928d1c77ad03c946931e5faef42cd1b9c31a2042fc6",
+    "pkgs/default.nix": "e7213e01ff89a70a217f3b6b684a352b5e6a56f92bf00e90b81750437df0ef05",
+    "tests/build/_bazel-quota-development.nix": "489b7ea6038a7f4fc75c76ad8b0290cbd2007ae0d08c8f039eddd6e42b2959cd",
+    "tests/build/_bazel-quota.nix": "0c0140ffbb220fed16eacf534b81cc13f5c30b74f24911709a6db9f9044ee389",
+    "tests/build/aos-dev-cli.nix": "d7d6426f8563ccc18d43e159aeea94ce5cc019f5139ac5f9ec4cee0b2f7e9e78",
+    "tools/dev/lib/bazel.bash": "4681d072377bc7d09852c97292399d17f22b7f1ef76fdea32e192ec0032ea5ed",
+    "tools/dev/tests/cli.bash": "974a0a859123335c5773d0b1d4883eb2f8db0f99b7d5ef2c10d85e9049d18e7a"
+  },
+  "status": "PASS",
+  "unchanged_native_reports": [
+    "parity.json",
+    "inventory.json",
+    "editor-parity.json",
+    "installation.json",
+    "flight-package.json"
+  ]
+}

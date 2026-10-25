@@ -1233,8 +1233,19 @@ execute in Linux sandboxes without cache hits. Editor inference is complete
 with no diagnostics. Its optimized target cfg query is selected independently
 of unoptimized host macros. The [current ext4 VM check](tests/evidence/quota-profile-ext4-vm.json)
 also passes all four enforcement assertions with that installed Bazel flight
-in the existing x86_64 Firecracker/KVM guest. The ordinary `aos-dev` workspace,
-production cutover, and performance acceptance remain separate.
+in the existing x86_64 Firecracker/KVM guest.
+
+The [development-route qualification](tests/evidence/quota-development-profiles.json)
+also passes. Ordinary quota commands reuse the qualified test workspace, while
+`rust-project` selects its independent editor workspace. The CLI dispatch check
+and actual exported launchers pass: eight unit cases run, both editor roots and
+the exact `thiserror` macro bytes match, and all 79 actions execute in Linux
+sandboxes without cache hits. The aggregate requires this check and preserves
+the existing test, editor, installation and flight reports. Compiler profile
+actions and arguments match the prior qualification; its refreshed Cargo
+oracle identity and trace hash are retained separately. Persistent editor
+lifecycle, shared-cache restoration, production cutover and performance
+acceptance remain separate.
 
 The quota family owns `aos-linux-project-quota`, its unit tests and the
 `project-quota-flight` example. Its separate `quota` dependency profile retains

@@ -33,6 +33,10 @@ in
   family
   // rec {
     inherit execution-profiles;
+    development = import ./_bazel-quota-development.nix {
+      inherit pkgs;
+      inherit (family) editor tests;
+    };
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-quota-inventory";
       workspace = family.workspace;
@@ -90,7 +94,7 @@ in
       inherit (pkgs) lib;
       bazelProbe = flight;
     };
-    all = pkgs.runCommand "aos-bazel-quota-qualified-checks" {buildDeps = [family.all family.editor-parity flight installation execution-profiles];} ''
+    all = pkgs.runCommand "aos-bazel-quota-qualified-checks" {buildDeps = [family.all family.editor-parity flight installation execution-profiles development];} ''
       mkdir -p "$out/editor"
       cp -r ${family.all}/evidence "$out/evidence"
       cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
@@ -100,5 +104,6 @@ in
       cp ${flight}/nix-support/bazel-package.json "$out/flight-package.json"
       cp ${installation}/installation.json "$out/installation.json"
       cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
+      cp ${development}/evidence.json "$out/development.json"
     '';
   }

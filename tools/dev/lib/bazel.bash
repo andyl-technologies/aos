@@ -140,6 +140,7 @@ aos_dev_bazel() (
       project_options+=(--rust-project-package crates/crucible/crucible-guest)
     elif [[ $launcher_attribute == pkgs.aosBazelQuotaLauncher ]]; then
       project_options+=(--rust-project-package crates/linux/aos-linux-project-quota)
+      launcher_attribute=pkgs.aosBazelQuotaEditorLauncher
     elif [[ $launcher_attribute == pkgs.aosBazelHubWorker*Launcher ]]; then
       project_options+=(--rust-project-package crates/hub/aos-hub-worker)
     elif [[ $launcher_attribute == pkgs.aosBazelHubNativeLauncher ]]; then
