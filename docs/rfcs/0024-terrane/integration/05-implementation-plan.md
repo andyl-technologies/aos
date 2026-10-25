@@ -12344,6 +12344,10 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
 `checks.terrane.gates.surface-interface`,
 `checks.terrane.gates.role-selection`.
 
+The [T-HOST-1 clause audit](acceptance/host-tier.md) records source coverage,
+physical evidence and outstanding deployment limits for all 34 assigned
+requirements; it does not grant acceptance.
+
 - [ ] **T-HOST-1** `disk` tier layout, verify-before-admit, quarantine,
   reassembly modes `never` and `always`, S3-FIFO eviction, pins,
   reservations, exact quotas, `wipe=none` and configuration-time refusal of
