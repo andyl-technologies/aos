@@ -356,8 +356,13 @@ before FloorSeal, failed-Create CAS, or ACK can be enabled.
   through protected and physical owners, retains ambiguous in-process custody,
   and cold-reconciles released tombstones before completing. Resize and signal
   `ExecutionControl` dispatch through authenticated Host Apply/Query with exact
-  protected readback, but no production CreateExecution effect yet establishes
-  the required Host admission and RUNNING public projection. Attach verifies
+  protected readback. The internal execution-output continuation retains the
+  original C18 and Source custody through output reservation, Host argument
+  preparation and acceptance, specification admission, first observation and
+  completion. The public `create_execution` RPC still returns `Unavailable`
+  before admission. A genuine initial physical floor producer remains missing;
+  both installed journal hooks and the complete held continuation require
+  qualification before a public RUNNING projection can be advertised. Attach verifies
   the holder proof and queries Host readiness before reserving a pending
   operation. Public admission and OpenSSH route issuance require a signed Host
   install and matching physical route readback; the production route remains
@@ -398,9 +403,13 @@ before FloorSeal, failed-Create CAS, or ACK can be enabled.
   completion evidence; it publishes RUNNING or CANCELED control observations
   after signed success. An EXITED observation still needs authenticated
   terminal-result fields before it can satisfy the public Execution schema.
-  No production CreateExecution effect establishes the required Host admission
-  or RUNNING public projection. The packaged `aos-sandbox-guest-agent` already
-  claims a fixed inherited protected channel and runs concrete guest-local
+  The connected CreateExecution continuation in
+  `aos-sandbox-controller-runtime/src/controller_service/execution_output_effect.rs`
+  calls the Host authorization/observation bridge after retaining the actual
+  argument outcome and canonical specification. That source connection is not
+  installed completion evidence; the outer public RPC and method-46 installed
+  qualification guard remain closed. The packaged `aos-sandbox-guest-agent`
+  already claims a fixed inherited protected channel and runs concrete guest-local
   process effects with a durable ledger. Host production activation can launch
   and retain an authenticated agent session through Guardian, but the deployed
   CreateExecution effect does not yet use it to establish Host admission or a
