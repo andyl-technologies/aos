@@ -149,9 +149,11 @@ Recent committed startup fixes close narrower prerequisites:
   async observer's native release frame falls from about 2 MiB to 7 KiB;
   constructor staging stays in the synchronous helper. No allocation or limit
   is added. The final release build and incremental source verification pass.
-  Complete Rust targets and the enforcing installed retry are running. The
-  latter uses temporary fixed first-site exit statuses, excluded from the
-  production commit, and the pending policy dependencies remain explicit.
+  Complete Rust unit and integration targets compile for the exact current
+  Host sources (`/nix/store/nm87abry5c9anb224fj50183ihq3iajr-aos-test-targets-0.1.0`);
+  that check does not run tests. The enforcing installed retry remains pending.
+  It uses temporary fixed first-site exit statuses, excluded from the production
+  commit, and the pending policy dependencies remain explicit.
 
 - Host authentication may now traverse `sysctl_kernel_t` directories and read
   their files to obtain its fixed kernel boot UUID. The SELinux grant is
