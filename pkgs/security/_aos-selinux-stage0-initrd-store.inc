@@ -94,7 +94,7 @@ static void prepare_initial_store_state(void) {
             strcmp(entry->d_name, ".links") == 0) {
             continue;
         }
-        if (++count > 8192) {
+        if (++count > MAX_IMAGE_STORE_ROOTS) {
             fail_closed("initial immutable store exceeds its entry bound");
         }
         pin_initial_store_entry(dirfd(lower), entry->d_name);

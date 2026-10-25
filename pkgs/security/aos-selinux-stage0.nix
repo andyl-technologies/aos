@@ -194,6 +194,7 @@ in
           }
 
           cp ${./_aos-selinux-stage0-initrd-store.inc} ./_aos-selinux-stage0-initrd-store.inc
+          cp ${./_aos-selinux-stage0-image-store.inc} ./_aos-selinux-stage0-image-store.inc
           cp ${./_aos-selinux-stage0-runtime-parent.inc} ./_aos-selinux-stage0-runtime-parent.inc
 
           $CC -std=c17 -D_GNU_SOURCE -Wall -Wextra -Werror -I. \

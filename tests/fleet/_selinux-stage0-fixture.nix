@@ -25,6 +25,11 @@
   ];
 
   system.build.immutableSelinuxPolicy = pkgs.aos-selinux-production-policy;
+  # Native activation resolves unit labels through this exact installed policy.
+  environment.etc."selinux/config".text = ''
+    SELINUX=enforcing
+    SELINUXTYPE=aos
+  '';
   environment.etc."selinux/aos".source = "${pkgs.aos-selinux-production-policy}/etc/selinux/aos";
   environment.etc."ld.so.preload" = {
     text = "";

@@ -22,6 +22,16 @@
   glibcBasename = builtins.baseNameOf pkgs.glibc;
   libcapBasename = builtins.baseNameOf pkgs.libcap;
   dynamicLinker = pkgs.stdenv.hostPlatform.dynamicLinker;
+  dataContents = "AOS_AUTHENTICATED_HANDOFF_DATA\n";
+  dataFile = pkgs.writeTextFile {
+    name = "root-handoff-data-file";
+    text = dataContents;
+  };
+  dataDirectory = pkgs.writeTextFile {
+    name = "root-handoff-data-directory";
+    destination = "/profile.json";
+    text = dataContents;
+  };
 
   postPinAdversary = pkgs.mkDerivation {
     pname = "aos-root-handoff-post-pin-adversary";
@@ -119,6 +129,7 @@
       {
         aos.image.erofsCompressionLevel = 1;
         aos.image.rawCompressionLevel = 3;
+        aos.boot.kernelParams = ["audit_backlog_limit=8192"];
         # The enforcing policy and complete runtime produce an 822 MiB root at
         # the fixture's fast compression level. Keep the 1 GiB root partitions
         # and bound the additional signed image payload separately from the base.
@@ -130,6 +141,13 @@
           maxFirmwarePartitionMiB = 736;
           maxDownloadMiB = 1536;
         };
+        # Retain data outside PID 1's executable closure, including a regular
+        # store output. Startup profiles need the same physical mount custody.
+        environment.etc = {
+          "aos-handoff-data-file".source = toString dataFile;
+          "aos-handoff-data-directory".source = "${dataDirectory}/profile.json";
+        };
+        environment.systemPackages = [pkgs.python3];
 
         # The production hold remains declared and unchanged. This signed test
         # image selects the normal initrd target through its qualification-only
@@ -202,6 +220,8 @@
                     printf 'AOS_ATTACKER_LOADER\n' > /run/aos-shadow-loader
                     printf 'AOS_ATTACKER_DSO\n' > /run/aos-shadow-dso
                     printf '/run/aos-attacker-preload.so\n' > /run/aos-shadow-preload
+                    printf 'AOS_ATTACKER_DATA\n' > /sysroot${dataFile}
+                    printf 'AOS_ATTACKER_DATA\n' > /sysroot${dataDirectory}/profile.json
                     ${pkgs.coreutils}/bin/chmod 0555 \
                       /run/aos-shadow-systemd /run/aos-shadow-loader /run/aos-shadow-dso
 
@@ -309,7 +329,32 @@ in {
     # python
     ''
       import time
+      import shlex
       from pathlib import Path
+
+      def prove_data_store(machine):
+          check = r"""
+      import errno
+      import os
+      from pathlib import Path
+
+      for path in (Path('${dataFile}'), Path('${dataDirectory}/profile.json')):
+          physical = Path('/usr/lib/aos') / path.relative_to('/')
+          observed, original = path.stat(), physical.stat()
+          assert (observed.st_dev, observed.st_ino) == (original.st_dev, original.st_ino), path
+          assert path.read_text() == 'AOS_AUTHENTICATED_HANDOFF_DATA\n', path
+          flags = os.statvfs(path).f_flag
+          assert flags & os.ST_RDONLY and flags & os.ST_NOSUID and flags & os.ST_NODEV, (path, flags)
+          try:
+              descriptor = os.open(path, os.O_WRONLY)
+          except OSError as failure:
+              assert failure.errno == errno.EROFS, (path, failure)
+          else:
+              os.close(descriptor)
+              raise AssertionError(f'shipped data accepts a writable descriptor: {path}')
+      assert not os.statvfs('/nix/store').f_flag & os.ST_RDONLY
+      """
+          machine.succeed("${pkgs.python3}/bin/python3 -c " + shlex.quote(check))
 
       def await_serial(machine, marker):
           deadline = time.monotonic() + 180
@@ -337,22 +382,31 @@ in {
           machine.succeed("systemctl is-active aos-root-handoff-state.service")
           return before
 
+      def prove_audit_custody(machine):
+          audit = dict(line.split(maxsplit=1) for line in machine.succeed("auditctl -s").splitlines())
+          assert audit["lost"] == "0", audit
+          assert audit["backlog_limit"] == "8192", audit
+
       for machine in (clean, shadows):
           machine.wait_for_unit("multi-user.target")
+          prove_audit_custody(machine)
           marker = machine.succeed("cat /run/aos/selinux-root-handoff")
           assert "version=1" in marker
           assert "phase=switch-root" in marker
           assert "systemd=/usr/lib/aos/nix/store/" in marker
           assert "manifest_sha256=" in marker
           inode = prove_custody(machine)
+          prove_data_store(machine)
 
           machine.succeed("systemctl daemon-reexec")
           machine.wait_for_unit("multi-user.target")
           marker = machine.succeed("cat /run/aos/selinux-root-handoff")
           assert "phase=reexec" in marker
           assert prove_custody(machine) == inode
+          prove_data_store(machine)
 
       postPin.wait_for_unit("multi-user.target")
+      prove_audit_custody(postPin)
       postPin.succeed("test -s /run/aos/post-pin-switch-root.done")
       postPin.succeed(
           "! grep -q AOS_POST_PIN_ATTACKER_SYSTEMD "
@@ -416,7 +470,7 @@ in {
 
       pin_failure = await_serial(
           missingRuntimeRoot,
-          "is missing, whiteouted, or not a directory",
+          "is missing, whiteouted, or has a different inode kind",
       )
       assert "runtime root replaced by non-directory" in pin_failure
       assert "trying fallback" not in pin_failure

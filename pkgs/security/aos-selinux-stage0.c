@@ -71,6 +71,7 @@
 #define AOS_PHYSICAL_STORE_ROOT "/usr/lib/aos/nix/store"
 #define AOS_PHYSICAL_STORE_PREFIX AOS_PHYSICAL_STORE_ROOT "/"
 #define MAX_RUNTIME_ROOTS 1024U
+#define MAX_IMAGE_STORE_ROOTS 8192U
 
 #define SELINUX_ROOT "/sys/fs/selinux"
 #define EXPECTED_KERNEL_CONTEXT "system_u:system_r:kernel_t"
@@ -1235,7 +1236,7 @@ static void format_digest(const unsigned char digest[32], char hexadecimal[65]) 
 
 static int open_physical_runtime_root(int lower_store_fd, const char *basename) {
     struct open_how how = {
-        .flags = O_PATH | O_DIRECTORY | O_CLOEXEC,
+        .flags = O_PATH | O_CLOEXEC,
         .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS |
                    RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV,
     };
@@ -1270,15 +1271,16 @@ static void pin_runtime_root(int lower_store_fd, const char *basename, size_t le
     if (physical_fd < 0) {
         fail_closed("open physical runtime root %.*s: %s", (int)length, basename, strerror(errno));
     }
-    if (fstat(physical_fd, &physical_status) < 0 || !S_ISDIR(physical_status.st_mode) ||
+    if (fstat(physical_fd, &physical_status) < 0 ||
+        (!S_ISDIR(physical_status.st_mode) && !S_ISREG(physical_status.st_mode)) ||
         physical_status.st_uid != 0 || physical_status.st_gid != 0) {
         close(physical_fd);
-        fail_closed("physical runtime root %.*s is not a root-owned directory", (int)length, basename);
+        fail_closed("physical runtime root %.*s is not a root-owned file or directory", (int)length, basename);
     }
-    if (lstat(logical, &logical_status) < 0 || !S_ISDIR(logical_status.st_mode) ||
-        S_ISLNK(logical_status.st_mode)) {
+    if (lstat(logical, &logical_status) < 0 ||
+        (logical_status.st_mode & S_IFMT) != (physical_status.st_mode & S_IFMT)) {
         close(physical_fd);
-        fail_closed("logical runtime root %s is missing, whiteouted, or not a directory", logical);
+        fail_closed("logical runtime root %s is missing, whiteouted, or has a different inode kind", logical);
     }
     if (physical_status.st_dev == logical_status.st_dev &&
         physical_status.st_ino == logical_status.st_ino) {
@@ -1321,6 +1323,8 @@ static void pin_runtime_root(int lower_store_fd, const char *basename, size_t le
     close(physical_fd);
     require_filesystem(logical, EROFS_SUPER_MAGIC_V1, ST_RDONLY | ST_NOSUID | ST_NODEV, 0);
 }
+
+#include "_aos-selinux-stage0-image-store.inc"
 
 static void pin_empty_loader_preload(void) {
     struct stat source;
@@ -1498,6 +1502,7 @@ static void pin_runtime_closure(const char *phase, const char *handoff_systemd_p
     for (unsigned long index = 0; index < count; index++) {
         pin_runtime_root(lower_store_fd, basenames[index], basename_lengths[index]);
     }
+    pin_image_store(lower_store_fd);
     close(lower_store_fd);
 
     pin_empty_loader_preload();
