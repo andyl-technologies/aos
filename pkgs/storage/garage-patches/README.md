@@ -1,10 +1,34 @@
-# Garage fixture refusal disposal
+# Garage patches
 
-The patch and `fixture-refusal-drain.rs` modify Garage 2.3.0 under its
-AGPL-3.0 license. They are used only by the separately named
+## SQLite writer transactions
+
+`0002-sqlite-writer-transactions.patch` and `sqlite-writer-transactions.rs`
+modify Garage 2.3.0 under its AGPL-3.0 license. The ordinary package and its
+fleet variant both apply this patch.
+
+The SQLite adapter already serializes transactions as writers within one
+adapter instance. Starting an immediate SQLite transaction also reserves the
+database writer before any reads. A deferred transaction can read a snapshot,
+allow another connection to commit, and then fail its write upgrade with
+`SQLITE_BUSY_SNAPSHOT`; waiting longer cannot repair that snapshot. This patch
+changes transaction entry without retrying the transaction body or changing
+busy timeouts, durability, package features, or the database backend.
+
+The `integration.garage-sqlite-transactions` check runs the upstream database
+library tests, including a deterministic regression. After the adapter reads,
+a separate connection attempts a write with a zero test-only busy timeout.
+The regression requires the adapter to hold the writer reservation, commit
+its own update, and release the reservation so the other connection can write.
+The original deferred transaction fails this regression.
+
+## Fixture refusal disposal
+
+`0001-fixture-refusal-drain.patch` and `fixture-refusal-drain.rs` modify Garage
+2.3.0 under its AGPL-3.0 license. They are used only by the separately named
 `garage-fleet-refusal-drain` derivation in
-`tests/fleet/_hub-garage-refusal-drain.nix`. The ordinary Garage derivation,
-features, service module, and configuration remain unchanged.
+`tests/fleet/_hub-garage-refusal-drain.nix`. The refusal-disposal changes do not
+alter the ordinary Garage derivation,
+features, service module, or configuration.
 
 The patched variant also defaults to the ordinary behavior. Its S3 setting is:
 
