@@ -1,0 +1,44 @@
+{
+  "build_log_sha256": "926f55d5459ac96ebf4d8905ed0402c14ee7e6e959b20c1e3ec02a939b6d0d50",
+  "checkpoint": "9a1e9186f526eb8f34b5c758f153e81148335966",
+  "command": "nix-build default.nix -A checks.crucible.phase1.gates.licenseBoundary -A checks.crucible.phase2.gates.abiConformance --no-out-link --max-jobs 4 --cores 4 --option substitute false --keep-going",
+  "failures": {
+    "license-metadata": {
+      "diagnostic": "crates/bindings/libssh2-sys/Cargo.toml: expected explicit license `Apache-2.0`, found Some(\"MIT OR Apache-2.0\")",
+      "focused_requalification": {
+        "executed": 18,
+        "failed": 0,
+        "ignored": 0,
+        "output": "/nix/store/8zz46szsiaacbvlplm2hlg2v6psmql7s-aos-bazel-license-metadata-requalification-1",
+        "test_log_sha256": "f13856c7016c8f9d81f1e54c86c314ed044f604bdeb4b5da7b2c58de692006ac"
+      },
+      "repair": "Preserve the native binding's explicit upstream MIT OR Apache-2.0 license in the expected metadata inventory; all GPL and process-boundary checks remain enforced."
+    },
+    "production-plugin-flight": {
+      "derivation": "/nix/store/x0qr7i2ayi8ldb1dr5xcrq8z6d2fl57r-aos-vm-test-crucible-production-rust-plugin-flight-0.drv",
+      "diagnostic": "Loaded-plugin idle/wake evidence changed across flight variants",
+      "first_split": {
+        "hostile_expire_ps": 268892161950,
+        "hostile_raw_icount": 5377843238,
+        "owner": "rr",
+        "reference_expire_ps": 268892162050,
+        "reference_raw_icount": 5377843240,
+        "scope": "global",
+        "timer": 5
+      },
+      "localization": "baselines=[reference=calibration=Ok(QemuLogicalTimeCalibration { logical_icount: 8000000, raw_icount: 159999 }),idle_state=Ok(QemuNodeIdleState { current_icount: Icount { retired: 8000000 }, next_deadline: None }),timer_witness=Ok(None),rr_current_vcpu=0,rr_position_in_quantum=1695; hostile=calibration=Ok(QemuLogicalTimeCalibration { logical_icount: 8000000, raw_icount: 159999 }),idle_state=Ok(QemuNodeIdleState { current_icount: Icount { retired: 8000000 }, next_deadline: None }),timer_witness=Ok(None),rr_current_vcpu=0,rr_position_in_quantum=1695]; first_split=reference/hostile index=248 reference_rows=4985 candidate_rows=5009 reference_sha256=793125af2f25318b23dd2da0138c03ad4d493870857d3b02af46eaea6a7d8d19 candidate_sha256=1c361a292e70995c158462f34c882752dc3f2fde21bfef8eb4873d90365d004e preceding=[(\"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=265120474050 current_ps=265120474050 raw=5302409480\", \"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=265120474050 current_ps=265120474050 raw=5302409480\"), (\"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=265891359150 current_ps=265891359150 raw=5317827182\", \"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=265891359150 current_ps=265891359150 raw=5317827182\"), (\"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=266120474050 current_ps=266120474050 raw=5322409480\", \"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=266120474050 current_ps=266120474050 raw=5322409480\"), (\"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=266891375150 current_ps=266891375150 raw=5337827502\", \"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=266891375150 current_ps=266891375150 raw=5337827502\"), (\"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=267120474050 current_ps=267120474050 raw=5342409480\", \"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=267120474050 current_ps=267120474050 raw=5342409480\"), (\"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=267891391150 current_ps=267891391150 raw=5357827822\", \"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=267891391150 current_ps=267891391150 raw=5357827822\"), (\"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=268120474050 current_ps=268120474050 raw=5362409480\", \"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=268120474050 current_ps=268120474050 raw=5362409480\"), (\"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=268891407150 current_ps=268891407150 raw=5377828142\", \"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=268891407150 current_ps=268891407150 raw=5377828142\")] differing=(\"crucible_sim_determinism_timer seq=0 timer=5 list=6 scope=global owner=rr expire_ps=268892162050 current_ps=268892162050 raw=5377843240\", \"crucible_sim_determinism_timer seq=0 timer=5 list=6 scope=global owner=rr expire_ps=268892161950 current_ps=268892161950 raw=5377843238\") following=[(\"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=269120474050 current_ps=269120474050 raw=5382409480\", \"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=269120474050 current_ps=269120474050 raw=5382409480\"), (\"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=269891423150 current_ps=269891423150 raw=5397828462\", \"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=269891423150 current_ps=269891423150 raw=5397828462\"), (\"crucible_sim_determinism_timer seq=0 timer=5 list=6 scope=global owner=rr expire_ps=269892178050 current_ps=269892178050 raw=5397843560\", \"crucible_sim_determinism_timer seq=0 timer=5 list=6 scope=global owner=rr expire_ps=269892177950 current_ps=269892177950 raw=5397843558\"), (\"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=270120474050 current_ps=270120474050 raw=5402409480\", \"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=270120474050 current_ps=270120474050 raw=5402409480\"), (\"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=270891439150 current_ps=270891439150 raw=5417828782\", \"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=270891439150 current_ps=270891439150 raw=5417828782\"), (\"crucible_sim_determinism_timer seq=0 timer=5 list=6 scope=global owner=rr expire_ps=270892194050 current_ps=270892194050 raw=5417843880\", \"crucible_sim_determinism_timer seq=0 timer=5 list=6 scope=global owner=rr expire_ps=270892193950 current_ps=270892193950 raw=5417843878\"), (\"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=271120474050 current_ps=271120474050 raw=5422409480\", \"crucible_sim_determinism_timer seq=0 timer=15 list=6 scope=global owner=rr expire_ps=271120474050 current_ps=271120474050 raw=5422409480\"), (\"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=271891455150 current_ps=271891455150 raw=5437829102\", \"crucible_sim_determinism_timer seq=0 timer=4 list=6 scope=global owner=rr expire_ps=271891455150 current_ps=271891455150 raw=5437829102\")]",
+      "status": "Unresolved; no comparator or timer normalization added"
+    }
+  },
+  "limits": [
+    "The focused audit does not satisfy the named gates or their complete dependency graph.",
+    "Production cutover remains gated by the unresolved VM determinism failure."
+  ],
+  "schema_version": 1,
+  "source_sha256": {
+    "crates/bindings/libssh2-sys/Cargo.toml": "01ab35767b179c4bc6ff58938937126a12abd2544ac472b3612328fc36d585cd",
+    "crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs": "f53158456954707fc0d5398e6307e814f9294662df241d23327086060af7e882",
+    "crates/crucible/crucible-test-support/tests/gate_license_boundary.rs": "81b8ae29db27b5ec411ac297f390bac75b875fa4a002afaba0cc195d4d73de4e"
+  },
+  "status": "Named normative gates remain failed; focused license metadata audit repaired"
+}

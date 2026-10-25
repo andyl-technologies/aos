@@ -510,6 +510,8 @@ fn expected_license(package: &str) -> &'static str {
     match package {
         PLUGIN_PACKAGE | DEBUG_GATEWAY_PACKAGE => PLUGIN_LICENSE,
         "crucible-qemu-protocol" | "crucible-qemu-shmem" => BOUNDARY_LICENSE,
+        // Preserve the upstream license of the workspace's native binding.
+        "libssh2-sys" => "MIT OR Apache-2.0",
         _ => APACHE_LICENSE,
     }
 }
