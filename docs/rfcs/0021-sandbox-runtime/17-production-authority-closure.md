@@ -182,16 +182,26 @@ Terminal state requires authenticated result and capture disposition.
 
 For a public `ExecutionResult`, `exited_at` is the Controller's first durably
 published verification time, not the Guest kernel's process-exit time. The
-current signed Guest Observe carries an exit-status i32 (`-1` means no code)
-or cancellation marker but no wall-clock timestamp or signal identity. An
-exited stream/PTY execution with a nonnegative signed exit code has no
-detached capture to settle, so it may publish `EXIT_CODE` plus that durable
-observation time. A negative or unknown exit code cannot be relabeled as a
-signal, and detached capture cannot be published until its physical Storage
-disposition is verified. Neither case may synthesize a public terminal result
-from an inferred status. The signed cancellation marker likewise does not
-supply a portable termination kind or exact process status, so public
-`CANCELED` projection remains closed for this slice.
+legacy signed `AOSGER01` Guest Observe carries an exit-status i32 (`-1` means
+no code) or cancellation marker without exact signal identity. Its nonnegative
+exit code can project `EXIT_CODE`; a negative code cannot become a signal, and
+its cancellation marker alone cannot project public `CANCELED`.
+
+The versioned `AOSGER02` producer retains the original Linux leader waitstatus,
+including the exact signal number and core bit, and whether recursive
+execution-tree cancellation completed. Host recovers the original signed Guest
+packet under the same protected Observe operation and checks its observation
+sequence, commitment, phase and completion status before forwarding that result.
+For stream/PTY executions with no detached capture, the Controller can project
+the exact exit or signal result and can project `CANCELED` from the matching
+completed-cancellation result. Durable replay preserves that classification
+and the first published verification time. An inferred shell status, relay
+exit or legacy cancellation marker cannot substitute for this evidence.
+
+Detached capture still requires its verified physical Storage disposition
+before public terminal publication. The distinct `AOSGER03` timeout result
+requires an authenticated Failed response with the matching permanent-failure
+completion; it cannot be relabeled as a successful exit or cancellation.
 
 This projection rule does not activate Create, Host launch, Observe scheduling,
 public `RUNNING`, or the attach route.
