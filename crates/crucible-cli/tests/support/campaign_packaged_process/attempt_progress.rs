@@ -175,7 +175,7 @@ fn qemu_thread_report(service_pid: u32) -> String {
         })
         .filter(|(delta, _thread)| *delta > 0)
         .collect::<Vec<_>>();
-    busy.sort_by(|left, right| right.0.cmp(&left.0));
+    busy.sort_by_key(|(delta, _thread)| std::cmp::Reverse(*delta));
 
     let rows = busy
         .iter()

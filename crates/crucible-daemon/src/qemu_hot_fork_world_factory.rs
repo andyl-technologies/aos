@@ -739,10 +739,6 @@ where
     assembly: crate::qemu_hot_fork_world::QemuHotForkWorldAssemblyToken,
 }
 
-// Native acceptance records this operational duration only in cfg(test); it
-// never selects or mutates modeled execution.
-// crucible-lint: allow clippy-disallowed-method -- test-only monotonic timing cannot influence modeled state.
-#[cfg_attr(test, allow(clippy::disallowed_methods))]
 /// Names why a whole-world hot fork declined an attempt.
 ///
 /// A decline is not a failure: the router falls back to an anchored or thin
@@ -767,6 +763,10 @@ pub(crate) fn note_hot_fork_decline_with(reason: &'static str, detail: impl std:
     note_hot_fork_decline(crate::HotForkRefusal::with_detail(reason, detail));
 }
 
+// Native acceptance records this operational duration only in cfg(test); it
+// never selects or mutates modeled execution.
+// crucible-lint: allow clippy-disallowed-method -- test-only monotonic timing cannot influence modeled state.
+#[cfg_attr(test, allow(clippy::disallowed_methods))]
 fn launch_concurrent_node<G>(
     source: QemuNodeSetPreparedHotForkSource<'_>,
     launch: ConcurrentNodeLaunch<G>,
