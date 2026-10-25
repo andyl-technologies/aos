@@ -357,6 +357,7 @@ def source_unit_inventory(workspace):
     gated = [
         ("structural_index", "lib.rs", "pub mod structural_index;"),
         ("inode_policy", "lib.rs", "pub mod inode_policy;"),
+        ("fuse_backing", "lib.rs", "pub mod fuse_backing;"),
         ("fuse_open", "lib.rs", "pub mod fuse_open;"),
         ("fuse_lifetime", "lib.rs", "pub mod fuse_lifetime;"),
         ("fuse_dispatch", "lib.rs", "pub mod fuse_dispatch;"),
