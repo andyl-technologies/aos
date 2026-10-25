@@ -175,6 +175,28 @@ selected; release `allChecks` includes infrastructure checks and recovery tests
 using a disposable cache.
 `tests/cache-proof.nix` also accepts a unique `trial` and sandbox `cacheDir`
 for new measurements without substituting a completed qualification output.
+
+The [current default-toolchain cache qualification](tests/evidence/master-local-cache-qualification.json)
+repeats cross-derivation reuse, concurrent builds, all thirteen invalidation
+cases, native/AArch64 target separation, and recovery from missing, corrupt,
+evicted, and interrupted cache writes. The concurrent builds overlap by 4.53
+seconds. Its additional Git-worktree trial builds two real detached checkouts
+at the same commit, with private Rust and C++ application edits in the second.
+Six unchanged action groups restore from disk; the edited applications rebuild
+and match a fresh uncached build byte for byte. All three executions have
+distinct output-base inodes and sandbox namespaces, and start without a Bazel
+server. No cache service is used. Single-run timing and memory records are
+diagnostics; repeated performance acceptance remains a separate requirement.
+
+To repeat the Git-worktree trial, use `tests/worktree-cache.nix` with an
+absolute `checkoutPath`, a sandbox `cacheDir`, and a new `trial`. Start with an
+empty dedicated trial namespace. Build the producer, apply the retained fixture
+patch in the second worktree, then build that consumer with the same cache.
+Build the edited checkout again with `--arg sharedBuildCache false` and no
+shared-cache mount. Pass the three resulting store paths as `--argstr producer`,
+`--argstr consumer`, and `--argstr uncached` to
+`nix-build tools/bazel/tests/worktree-cache-proof.nix --no-out-link`.
+
 `cache.invalidation.all` tests Rust/C++ implementation edits, headers, generated
 input, generator environment, Rust features/flags, C++ linker flags, and an actual
 compiler executable/closure change with unchanged logical compiler labels. Every case has a separate cold
