@@ -56,9 +56,38 @@ def durable_unlink(path):
     synchronize_directory(path.parent)
 
 
+def _selinux_policy_loaded(
+    enforce=Path("/sys/fs/selinux/enforce"),
+    kernel_context=Path("/sys/fs/selinux/initial_contexts/kernel"),
+):
+    """Requires labeling for loaded policies, including permissive ones."""
+    try:
+        enforce.stat()
+    except FileNotFoundError:
+        return False
+
+    # selinuxfs can be mounted before any policy exists. Only the kernel's
+    # literal initial SID proves that state; failed reads never disable labels.
+    with kernel_context.open("rb") as source:
+        contents = source.read(4097)
+    if len(contents) > 4096:
+        raise ValueError("SELinux initial kernel context exceeds limit")
+    context = contents.rstrip(b"\0\n").decode("utf-8")
+    if context == "kernel":
+        return False
+    parts = context.split(":")
+    if (
+        len(parts) < 3
+        or not all(parts[:3])
+        or any(character.isspace() or character == "\0" for character in context)
+    ):
+        raise ValueError("SELinux initial kernel context is invalid")
+    return True
+
+
 def label_systemd_unit(path, name, matchpathcon, setfilecon):
     """Labels a staged unit from its canonical vendor path before publication."""
-    if not os.path.exists("/sys/fs/selinux/enforce"):
+    if not _selinux_policy_loaded():
         return
     if not name or name in {".", ".."} or Path(name).name != name:
         raise ValueError("systemd unit label requires a single unit name")

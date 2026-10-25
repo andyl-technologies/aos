@@ -5,7 +5,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path};
 use std::process::Stdio;
@@ -16,6 +16,42 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 const OUTPUT_LIMIT: u64 = 4096;
+const KERNEL_CONTEXT_LIMIT: u64 = 4096;
+
+/// Distinguishes an unloaded SELinux kernel from a loaded, possibly permissive policy.
+fn policy_loaded(enforce: &Path, kernel_context: &Path) -> Result<bool> {
+    if !enforce.try_exists().context("inspect SELinux mount")? {
+        return Ok(false);
+    }
+
+    // selinuxfs exists before policy load. Its initial kernel SID remains the
+    // literal "kernel" until a loaded policy supplies its security context.
+    // Missing or unreadable evidence must not disable labeling on a loaded host.
+    let mut bytes = Vec::new();
+    fs::File::open(kernel_context)
+        .context("open SELinux initial kernel context")?
+        .take(KERNEL_CONTEXT_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .context("read SELinux initial kernel context")?;
+    ensure!(
+        bytes.len() <= KERNEL_CONTEXT_LIMIT as usize,
+        "SELinux initial kernel context exceeds limit"
+    );
+    let context = std::str::from_utf8(&bytes)?.trim_end_matches(['\0', '\n']);
+    if context == "kernel" {
+        return Ok(false);
+    }
+    let mut fields = context.split(':');
+    let valid_identity = (0..3).all(|_| fields.next().is_some_and(|field| !field.is_empty()));
+    ensure!(
+        valid_identity
+            && !context
+                .chars()
+                .any(|character| character.is_whitespace() || character == '\0'),
+        "SELinux initial kernel context is invalid"
+    );
+    Ok(true)
+}
 
 trait LabelRunner {
     async fn run(&mut self, executable: &Path, arguments: &[&OsStr]) -> Result<Vec<u8>>;
@@ -63,8 +99,9 @@ impl LabelRunner for NativeLabelRunner {
 /// Publishes a canonically labeled unit without replacing another file.
 ///
 /// # Errors
-/// Returns an error for invalid names or tools, policy lookup or labeling
-/// failures, and staging, synchronization or no-replacement publication errors.
+/// Returns an error for unavailable SELinux state, invalid names or tools,
+/// policy lookup or labeling failures, and staging, synchronization or
+/// no-replacement publication errors.
 pub(super) async fn publish(
     directory: &Path,
     name: &str,
@@ -75,7 +112,10 @@ pub(super) async fn publish(
         directory,
         name,
         text,
-        Path::new("/sys/fs/selinux/enforce").exists(),
+        policy_loaded(
+            Path::new("/sys/fs/selinux/enforce"),
+            Path::new("/sys/fs/selinux/initial_contexts/kernel"),
+        )?,
         tools,
         &mut NativeLabelRunner,
     )
@@ -155,6 +195,66 @@ async fn publish_with_runner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_selinux_mount_needs_no_context() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(
+            !policy_loaded(
+                &directory.path().join("enforce"),
+                &directory.path().join("kernel"),
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn mounted_unloaded_selinux_needs_no_labels() {
+        let directory = tempfile::tempdir().unwrap();
+        let enforce = directory.path().join("enforce");
+        let context = directory.path().join("kernel");
+        fs::write(&enforce, "1").unwrap();
+
+        for contents in [b"kernel".as_slice(), b"kernel\0", b"kernel\n"] {
+            fs::write(&context, contents).unwrap();
+            assert!(!policy_loaded(&enforce, &context).unwrap());
+        }
+    }
+
+    #[test]
+    fn permissive_loaded_policy_still_requires_labels() {
+        let directory = tempfile::tempdir().unwrap();
+        let enforce = directory.path().join("enforce");
+        let context = directory.path().join("kernel");
+        fs::write(&enforce, "0").unwrap();
+        fs::write(&context, b"system_u:system_r:kernel_t:s0\0").unwrap();
+
+        assert!(policy_loaded(&enforce, &context).unwrap());
+    }
+
+    #[test]
+    fn unavailable_or_invalid_kernel_context_never_disables_labels() {
+        let directory = tempfile::tempdir().unwrap();
+        let enforce = directory.path().join("enforce");
+        let context = directory.path().join("kernel");
+        fs::write(&enforce, "1").unwrap();
+
+        assert!(policy_loaded(&enforce, &context).is_err());
+        assert!(policy_loaded(&enforce, directory.path()).is_err());
+        for contents in [
+            b"".as_slice(),
+            b"unrecognized",
+            b"system_u::kernel_t:s0",
+            b"system_u:system_r:kernel_t extra",
+            b"kernel\0extra",
+            b"\xff",
+        ] {
+            fs::write(&context, contents).unwrap();
+            assert!(policy_loaded(&enforce, &context).is_err());
+        }
+        fs::write(&context, vec![b'k'; KERNEL_CONTEXT_LIMIT as usize + 1]).unwrap();
+        assert!(policy_loaded(&enforce, &context).is_err());
+    }
 
     const TOOLS: Option<(&str, &str)> = Some((
         "/nix/store/00000000000000000000000000000000-labels/sbin/matchpathcon",

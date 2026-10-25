@@ -93,9 +93,55 @@ def readonly_image():
 
 
 class UnitLabelTests(unittest.TestCase):
+    def test_absent_selinux_mount_needs_no_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertFalse(resources._selinux_policy_loaded(root / "enforce", root / "kernel"))
+
+    def test_mounted_unloaded_selinux_needs_no_labels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            enforce, context = root / "enforce", root / "kernel"
+            enforce.write_text("1")
+
+            for contents in (b"kernel", b"kernel\0", b"kernel\n"):
+                with self.subTest(contents=contents):
+                    context.write_bytes(contents)
+                    self.assertFalse(resources._selinux_policy_loaded(enforce, context))
+
+    def test_permissive_loaded_policy_still_requires_labels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            enforce, context = root / "enforce", root / "kernel"
+            enforce.write_text("0")
+            context.write_bytes(b"system_u:system_r:kernel_t:s0\0")
+
+            self.assertTrue(resources._selinux_policy_loaded(enforce, context))
+
+    def test_unavailable_or_invalid_kernel_context_never_disables_labels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            enforce, context = root / "enforce", root / "kernel"
+            enforce.write_text("1")
+
+            with self.assertRaises(FileNotFoundError):
+                resources._selinux_policy_loaded(enforce, context)
+            with self.assertRaises(IsADirectoryError):
+                resources._selinux_policy_loaded(enforce, root)
+            invalid = (
+                b"", b"unrecognized", b"system_u::kernel_t:s0",
+                b"system_u:system_r:kernel_t extra", b"kernel\0extra",
+                b"\xff", b"k" * 4097,
+            )
+            for contents in invalid:
+                with self.subTest(contents=contents[:80]):
+                    context.write_bytes(contents)
+                    with self.assertRaises(ValueError):
+                        resources._selinux_policy_loaded(enforce, context)
+
     def test_disabled_selinux_never_invokes_policy_tools(self):
         with (
-            patch.object(resources.os.path, "exists", return_value=False),
+            patch.object(resources, "_selinux_policy_loaded", return_value=False),
             patch.object(resources.subprocess, "run") as run,
         ):
             resources.label_systemd_unit("unused", "example.service", None, None)
@@ -105,7 +151,6 @@ class UnitLabelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "example.service"
             target.write_bytes(b"old unit")
-            exists = os.path.exists
 
             def run(argv, **kwargs):
                 self.assertEqual(target.read_bytes(), b"old unit")
@@ -118,7 +163,7 @@ class UnitLabelTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, "", "")
 
             with (
-                patch.object(resources.os.path, "exists", side_effect=lambda path: path == "/sys/fs/selinux/enforce" or exists(path)),
+                patch.object(resources, "_selinux_policy_loaded", return_value=True),
                 patch.object(resources.subprocess, "run", side_effect=run) as tool,
             ):
                 resources.durable_write(
@@ -135,7 +180,6 @@ class UnitLabelTests(unittest.TestCase):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 target = Path(directory) / "example.service"
                 target.write_bytes(b"old unit")
-                exists = os.path.exists
 
                 def run(argv, **kwargs):
                     lookup_failed = failure == "lookup" and argv[0] == "matchpathcon"
@@ -146,7 +190,7 @@ class UnitLabelTests(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 0, context, "")
 
                 with (
-                    patch.object(resources.os.path, "exists", side_effect=lambda path: path == "/sys/fs/selinux/enforce" or exists(path)),
+                    patch.object(resources, "_selinux_policy_loaded", return_value=True),
                     patch.object(resources.subprocess, "run", side_effect=run),
                 ):
                     with self.assertRaises((ValueError, subprocess.CalledProcessError)):

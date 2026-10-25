@@ -38,6 +38,8 @@
     };
 
     testScript =
+      builtins.readFile ./_sandbox-startup-diagnostics.py
+      +
       # python
       ''
         SB_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
@@ -53,10 +55,14 @@
             diagnostics = enroller.succeed(f"journalctl -b -u {unit} --no-pager -o cat")
             assert "Refusing job resource admission" in diagnostics, diagnostics
 
-        enroller.wait_until_succeeds(
-            "systemctl is-active multi-user.target",
-            timeout=300,
-        )
+        def wait_for_normal_startup():
+            with startup_diagnostics(enroller, "aos-activate.service"):
+                enroller.wait_until_succeeds(
+                    "systemctl is-active multi-user.target",
+                    timeout=300,
+                )
+
+        wait_for_normal_startup()
         root_options = enroller.succeed("findmnt -n -o OPTIONS /").strip().split(",")
         assert "ro" in root_options and "nodev" in root_options, root_options
         refuse_unfunded_sandbox()
@@ -74,10 +80,7 @@
 
         assert efivar_byte("SetupMode") == 0, "PK enrollment must exit Setup Mode"
         enroller.reboot()
-        enroller.wait_until_succeeds(
-            "systemctl is-active multi-user.target",
-            timeout=300,
-        )
+        wait_for_normal_startup()
 
         assert efivar_byte("SetupMode") == 0, "reboot must remain in User Mode"
         assert efivar_byte("SecureBoot") == 1, "Secure Boot must enforce after reboot"
