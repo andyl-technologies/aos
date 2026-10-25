@@ -203,13 +203,18 @@ source-operation commitment, and exact `AOSEXE01` authorization receipt. An
 ambiguous append must cold-reopen; replay must match that record before a Host
 Observe grant. The receipt is accepted only with the typed Create binding
 minted by signed Host Authorize classification; its prefix alone is not proof.
-Reservation replay also rejects a later Operation or Effect ledger claim on
-the derived Observe ID until an exact reconciler operation/effect protocol is
-implemented.
-The reservation is not an Observe completion or dispatch authority. Production
-Controller operation dispatch still has no already-authorized Observe caller;
-the Create cross-owner handoff and durable effect replay must be completed
-before the reservation can be consumed.
+Reservation replay rejects Operation or Effect claims on an unadopted derived
+Observe ID. An adopted child must retain the exact private adoption state and
+matching idempotency replay; an unrelated ledger claim cannot become its owner.
+The reservation is not an Observe completion or dispatch authority. The
+configured Controller effect executor now calls `authorize_and_observe_v2`
+through its retained execution original. Its periodic observation hook calls
+`observe_periodic_v4`, which requires the complete original first-Observe
+companion and obtains fresh signed Host and Storage observations under the
+current paid Source interval. These internal callers do not qualify the public
+path: public execution Create remains unconditionally unavailable pending the
+funded initial TPM-floor producer, both installed method-46 hooks, and connected
+cross-owner lifecycle and recovery qualification.
 
 ## Storage execution-output reserve authority
 
