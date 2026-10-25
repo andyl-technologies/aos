@@ -148,6 +148,8 @@ in {
   };
 
   testScript =
+    builtins.readFile ./_sandbox-startup-diagnostics.py
+    +
     # python
     ''
       import base64
@@ -249,164 +251,168 @@ in {
           vm.succeed(f"printf '%b\\n' '{contents}' > {OVERRIDE}")
           vm.succeed("systemctl daemon-reload")
 
-      vm.wait_for_unit("multi-user.target", timeout=180)
-      vm.succeed("test -f /sys/fs/selinux/enforce")
-      assert vm.succeed("cat /sys/fs/selinux/enforce").strip() == "1"
-      assert "[confidentiality]" in vm.succeed("cat /sys/kernel/security/lockdown")
-      assert int(vm.succeed("nproc --all").strip()) == 16
-      memory_kib = int(vm.succeed("awk '/^MemTotal:/ {print $2}' /proc/meminfo").strip())
-      assert memory_kib * 1024 >= ${toString fundedPolicy.capacity.memory-bytes}
-      available_storage = int(vm.succeed("df -B1 --output=avail /var | tail -n 1").strip())
-      assert available_storage >= ${toString fundedPolicy.capacity.storage-bytes}
+      @startup_diagnostics(vm, HOST, TARGET, INSPECTOR, "systemd-nsresourced.service")
+      def check_host_readiness():
+          vm.wait_for_unit("multi-user.target", timeout=180)
+          vm.succeed("test -f /sys/fs/selinux/enforce")
+          assert vm.succeed("cat /sys/fs/selinux/enforce").strip() == "1"
+          assert "[confidentiality]" in vm.succeed("cat /sys/kernel/security/lockdown")
+          assert int(vm.succeed("nproc --all").strip()) == 16
+          memory_kib = int(vm.succeed("awk '/^MemTotal:/ {print $2}' /proc/meminfo").strip())
+          assert memory_kib * 1024 >= ${toString fundedPolicy.capacity.memory-bytes}
+          available_storage = int(vm.succeed("df -B1 --output=avail /var | tail -n 1").strip())
+          assert available_storage >= ${toString fundedPolicy.capacity.storage-bytes}
 
-      # Data deduplication must not turn the nested Guest copy into a Host
-      # inode alias, change immutable ownership/modes, or replace its label.
-      # Inspect the library inode behind the versioned library symlink.
-      outer_library = "${pkgs.openssl}/lib/libcrypto.so.4"
-      guest_library = "${pkgs.aos-sandbox-guest-root-template}/root${pkgs.openssl}/lib/libcrypto.so.4"
-      vm.succeed(f"${pkgs.diffutils}/bin/cmp {outer_library} {guest_library}")
-      identities = vm.succeed(f"stat -L -c '%d:%i' {outer_library} {guest_library}").splitlines()
-      assert len(identities) == 2 and identities[0] != identities[1], identities
-      metadata = vm.succeed(f"stat -L -c '%a %u %g' {outer_library} {guest_library}").splitlines()
-      assert metadata == ["555 0 0", "555 0 0"], metadata
-      # Read the physical raw labels independently of stat's optional
-      # libselinux support. getfattr follows these DSO symlinks by default.
-      contexts = [
+          # Data deduplication must not turn the nested Guest copy into a Host
+          # inode alias, change immutable ownership/modes, or replace its label.
+          # Inspect the library inode behind the versioned library symlink.
+          outer_library = "${pkgs.openssl}/lib/libcrypto.so.4"
+          guest_library = "${pkgs.aos-sandbox-guest-root-template}/root${pkgs.openssl}/lib/libcrypto.so.4"
+          vm.succeed(f"${pkgs.diffutils}/bin/cmp {outer_library} {guest_library}")
+          identities = vm.succeed(f"stat -L -c '%d:%i' {outer_library} {guest_library}").splitlines()
+          assert len(identities) == 2 and identities[0] != identities[1], identities
+          metadata = vm.succeed(f"stat -L -c '%a %u %g' {outer_library} {guest_library}").splitlines()
+          assert metadata == ["555 0 0", "555 0 0"], metadata
+          # Read the physical raw labels independently of stat's optional
+          # libselinux support. getfattr follows these DSO symlinks by default.
+          contexts = [
+              vm.succeed(
+                  f"${pkgs.attr}/bin/getfattr --only-values --absolute-names "
+                  f"--name=security.selinux {library}"
+              ).rstrip("\0\n")
+              for library in (outer_library, guest_library)
+          ]
+          assert contexts == ["system_u:object_r:lib_t", "system_u:object_r:lib_t"], contexts
+
+          vm.succeed("test -s /run/credentials/@system/phase0-test-seed")
+          vm.succeed("test -s /run/credentials/@system/phase0-test-public")
+          vm.fail("systemctl is-active --quiet aos-sandbox-hostd.service")
+          install_host_credentials()
+
+          start_inspector(True)
+          encoded = vm.succeed(f"base64 -w0 {REPORT}").strip()
+          signed = base64.b64decode(encoded)
+          assert len(signed) == 304 and signed[:8] == b"AOSHPB02", signed[:8]
+
+          # Verify the deployed report's actual Ed25519 signature, not merely its
+          # presence. The public key is the independently loaded test pin.
+          vm.succeed(f"head -c 240 {REPORT} > /run/phase0-message")
+          vm.succeed(f"tail -c 64 {REPORT} > /run/phase0-signature")
           vm.succeed(
-              f"${pkgs.attr}/bin/getfattr --only-values --absolute-names "
-              f"--name=security.selinux {library}"
-          ).rstrip("\0\n")
-          for library in (outer_library, guest_library)
-      ]
-      assert contexts == ["system_u:object_r:lib_t", "system_u:object_r:lib_t"], contexts
+              "${pkgs.openssl}/bin/openssl pkeyutl -verify -pubin "
+              "-inkey ${testPublicPem} -rawin -in /run/phase0-message "
+              "-sigfile /run/phase0-signature"
+          )
+          assert signed[8:24] == bytes.fromhex(vm.succeed("cat /proc/sys/kernel/random/boot_id").strip().replace("-", ""))
+          for offset, path in (
+              (24, "${nspawn}"),
+              (56, "${hostd}"),
+              (88, "${inspector}"),
+              (120, "${policy}"),
+          ):
+              digest = vm.succeed(f"sha256sum {path}").split()[0]
+              assert signed[offset:offset + 32] == bytes.fromhex(digest), (offset, digest)
 
-      vm.succeed("test -s /run/credentials/@system/phase0-test-seed")
-      vm.succeed("test -s /run/credentials/@system/phase0-test-public")
-      vm.fail("systemctl is-active --quiet aos-sandbox-hostd.service")
-      install_host_credentials()
+          target_pid = struct.unpack_from(">I", signed, 152)[0]
+          assert target_pid > 1
+          assert target_pid == int(vm.succeed(f"systemctl show {TARGET} -p MainPID --value"))
+          assert vm.succeed(f"readlink /proc/{target_pid}/exe").strip() == "${inspector}"
+          target_userns = vm.succeed(f"readlink /proc/{target_pid}/ns/user").strip()
+          assert target_userns.startswith("user:[") and target_userns.endswith("]"), target_userns
+          target_userns_inode = int(target_userns[6:-1])
+          uid_map = vm.succeed(f"cat /proc/{target_pid}/uid_map").split()
+          gid_map = vm.succeed(f"cat /proc/{target_pid}/gid_map").split()
+          assert uid_map[0] == gid_map[0] == "0", (uid_map, gid_map)
+          assert int(uid_map[1]) > 0 and int(gid_map[1]) > 0, (uid_map, gid_map)
+          assert int(uid_map[2]) >= 65536 and int(gid_map[2]) >= 65536
+          for property, expected in (
+              ("NoNewPrivileges", "yes"),
+              ("PrivateNetwork", "yes"),
+              ("PrivateDevices", "yes"),
+              ("ProtectSystem", "strict"),
+          ):
+              observed = vm.succeed(f"systemctl show {TARGET} -p {property} --value").strip()
+              assert observed == expected, (property, observed)
 
-      start_inspector(True)
-      encoded = vm.succeed(f"base64 -w0 {REPORT}").strip()
-      signed = base64.b64decode(encoded)
-      assert len(signed) == 304 and signed[:8] == b"AOSHPB02", signed[:8]
+          start_host(True)
+          first_report = vm.succeed(f"base64 -w0 {REPORT}").strip()
+          vm.succeed(f"systemctl stop {TARGET}")
+          vm.wait_until_fails(f"systemctl is-active --quiet {INSPECTOR}", timeout=15)
+          vm.wait_until_fails(f"systemctl is-active --quiet {HOST}", timeout=15)
+          retirement_message = (
+              f"Got BPF ring buffer notification that user namespace {target_userns_inode} is now dead."
+          )
+          vm.wait_until_succeeds(
+              "journalctl -b -u systemd-nsresourced.service --no-pager -o cat "
+              f"| grep -F '{retirement_message}'",
+              timeout=30,
+          )
+          start_host(True)
+          renewed_report = vm.succeed(f"base64 -w0 {REPORT}").strip()
+          assert renewed_report != first_report
+          assert int(vm.succeed(f"systemctl show {TARGET} -p MainPID --value")) != target_pid
 
-      # Verify the deployed report's actual Ed25519 signature, not merely its
-      # presence. The public key is the independently loaded test pin.
-      vm.succeed(f"head -c 240 {REPORT} > /run/phase0-message")
-      vm.succeed(f"tail -c 64 {REPORT} > /run/phase0-signature")
-      vm.succeed(
-          "${pkgs.openssl}/bin/openssl pkeyutl -verify -pubin "
-          "-inkey ${testPublicPem} -rawin -in /run/phase0-message "
-          "-sigfile /run/phase0-signature"
-      )
-      assert signed[8:24] == bytes.fromhex(vm.succeed("cat /proc/sys/kernel/random/boot_id").strip().replace("-", ""))
-      for offset, path in (
-          (24, "${nspawn}"),
-          (56, "${hostd}"),
-          (88, "${inspector}"),
-          (120, "${policy}"),
-      ):
-          digest = vm.succeed(f"sha256sum {path}").split()[0]
-          assert signed[offset:offset + 32] == bytes.fromhex(digest), (offset, digest)
+          vm.succeed(f"systemctl stop {HOST}")
+          vm.succeed(f"mkdir -p /run/systemd/system/{HOST}.d")
+          vm.succeed(f"printf '%b\\n' '[Service]\\nRestart=no' > {HOST_OVERRIDE}")
+          vm.succeed("systemctl daemon-reload")
 
-      target_pid = struct.unpack_from(">I", signed, 152)[0]
-      assert target_pid > 1
-      assert target_pid == int(vm.succeed(f"systemctl show {TARGET} -p MainPID --value"))
-      assert vm.succeed(f"readlink /proc/{target_pid}/exe").strip() == "${inspector}"
-      target_userns = vm.succeed(f"readlink /proc/{target_pid}/ns/user").strip()
-      assert target_userns.startswith("user:[") and target_userns.endswith("]"), target_userns
-      target_userns_inode = int(target_userns[6:-1])
-      uid_map = vm.succeed(f"cat /proc/{target_pid}/uid_map").split()
-      gid_map = vm.succeed(f"cat /proc/{target_pid}/gid_map").split()
-      assert uid_map[0] == gid_map[0] == "0", (uid_map, gid_map)
-      assert int(uid_map[1]) > 0 and int(gid_map[1]) > 0, (uid_map, gid_map)
-      assert int(uid_map[2]) >= 65536 and int(gid_map[2]) >= 65536
-      for property, expected in (
-          ("NoNewPrivileges", "yes"),
-          ("PrivateNetwork", "yes"),
-          ("PrivateDevices", "yes"),
-          ("ProtectSystem", "strict"),
-      ):
-          observed = vm.succeed(f"systemctl show {TARGET} -p {property} --value").strip()
-          assert observed == expected, (property, observed)
+          # Replay old, validly signed bytes after the normal dependency chain
+          # replaces the target. Host must reject that stale PID independently.
+          vm.succeed(f"install -m 0400 {REPORT} {STALE_REPORT}")
+          stale_report = vm.succeed(f"base64 -w0 {STALE_REPORT}").strip()
+          stale_pid = struct.unpack_from(">I", base64.b64decode(stale_report), 152)[0]
+          start_inspector(True)
+          current_pid = int(vm.succeed(f"systemctl show {TARGET} -p MainPID --value"))
+          assert current_pid != stale_pid
+          vm.succeed(f"install -m 0400 {STALE_REPORT} {REPORT}")
+          assert vm.succeed(f"base64 -w0 {REPORT}").strip() == stale_report
+          vm.succeed(f"systemctl is-active --quiet {INSPECTOR}")
+          start_host(False, "shifted target PID differs from the signed probe")
+          vm.succeed(f"rm {STALE_REPORT}")
+          start_inspector(True)
 
-      start_host(True)
-      first_report = vm.succeed(f"base64 -w0 {REPORT}").strip()
-      vm.succeed(f"systemctl stop {TARGET}")
-      vm.wait_until_fails(f"systemctl is-active --quiet {INSPECTOR}", timeout=15)
-      vm.wait_until_fails(f"systemctl is-active --quiet {HOST}", timeout=15)
-      retirement_message = (
-          f"Got BPF ring buffer notification that user namespace {target_userns_inode} is now dead."
-      )
-      vm.wait_until_succeeds(
-          "journalctl -b -u systemd-nsresourced.service --no-pager -o cat "
-          f"| grep -F '{retirement_message}'",
-          timeout=30,
-      )
-      start_host(True)
-      renewed_report = vm.succeed(f"base64 -w0 {REPORT}").strip()
-      assert renewed_report != first_report
-      assert int(vm.succeed(f"systemctl show {TARGET} -p MainPID --value")) != target_pid
+          # PID 1's current service policy is re-read by Host, not inferred from
+          # the inspector's earlier signed report.
+          override_target("[Service]\\nProtectSystem=full")
+          assert vm.succeed(f"systemctl show {TARGET} -p ProtectSystem --value").strip() == "full"
+          start_host(False, "shifted target filesystem policy is not strict")
+          vm.succeed(f"rm {OVERRIDE}")
+          vm.succeed("systemctl daemon-reload")
+          start_inspector(True)
 
-      vm.succeed(f"systemctl stop {HOST}")
-      vm.succeed(f"mkdir -p /run/systemd/system/{HOST}.d")
-      vm.succeed(f"printf '%b\\n' '[Service]\\nRestart=no' > {HOST_OVERRIDE}")
-      vm.succeed("systemctl daemon-reload")
+          vm.succeed(
+              f"printf '%b\\n' '[Service]\\nRestart=no\\nSystemCallFilter=\\nSystemCallFilter=${widenedHostFilter}' > {HOST_OVERRIDE}"
+          )
+          vm.succeed("systemctl daemon-reload")
+          widened_filter = vm.succeed(f"systemctl show {HOST} -p SystemCallFilter --value")
+          assert "ptrace" in widened_filter.split(), widened_filter
+          start_host(False, "PID 1 Host seccomp policy differs from the fixed profile")
+          vm.succeed(
+              f"printf '%b\\n' '[Service]\\nRestart=no\\nSystemCallErrorNumber=ENOSYS' > {HOST_OVERRIDE}"
+          )
+          vm.succeed("systemctl daemon-reload")
+          start_host(False, "PID 1 Host seccomp policy differs from the fixed profile")
+          vm.succeed(f"rm {HOST_OVERRIDE}")
+          vm.succeed("systemctl daemon-reload")
+          start_inspector(True)
+          start_host(True)
+          vm.succeed(f"systemctl stop {HOST}")
 
-      # Replay old, validly signed bytes after the normal dependency chain
-      # replaces the target. Host must reject that stale PID independently.
-      vm.succeed(f"install -m 0400 {REPORT} {STALE_REPORT}")
-      stale_report = vm.succeed(f"base64 -w0 {STALE_REPORT}").strip()
-      stale_pid = struct.unpack_from(">I", base64.b64decode(stale_report), 152)[0]
-      start_inspector(True)
-      current_pid = int(vm.succeed(f"systemctl show {TARGET} -p MainPID --value"))
-      assert current_pid != stale_pid
-      vm.succeed(f"install -m 0400 {STALE_REPORT} {REPORT}")
-      assert vm.succeed(f"base64 -w0 {REPORT}").strip() == stale_report
-      vm.succeed(f"systemctl is-active --quiet {INSPECTOR}")
-      start_host(False, "shifted target PID differs from the signed probe")
-      vm.succeed(f"rm {STALE_REPORT}")
-      start_inspector(True)
+          override_target("[Service]\\nExecStart=\\nExecStart=${pkgs.coreutils}/bin/sleep 60")
+          start_inspector(False, "shifted target does not run the packaged inspector executable")
 
-      # PID 1's current service policy is re-read by Host, not inferred from
-      # the inspector's earlier signed report.
-      override_target("[Service]\\nProtectSystem=full")
-      assert vm.succeed(f"systemctl show {TARGET} -p ProtectSystem --value").strip() == "full"
-      start_host(False, "shifted target filesystem policy is not strict")
-      vm.succeed(f"rm {OVERRIDE}")
-      vm.succeed("systemctl daemon-reload")
-      start_inspector(True)
+          override_target("[Service]\\nCapabilityBoundingSet=CAP_CHOWN")
+          start_inspector(False, "shifted target capability or namespace policy is not closed")
 
-      vm.succeed(
-          f"printf '%b\\n' '[Service]\\nRestart=no\\nSystemCallFilter=\\nSystemCallFilter=${widenedHostFilter}' > {HOST_OVERRIDE}"
-      )
-      vm.succeed("systemctl daemon-reload")
-      widened_filter = vm.succeed(f"systemctl show {HOST} -p SystemCallFilter --value")
-      assert "ptrace" in widened_filter.split(), widened_filter
-      start_host(False, "PID 1 Host seccomp policy differs from the fixed profile")
-      vm.succeed(
-          f"printf '%b\\n' '[Service]\\nRestart=no\\nSystemCallErrorNumber=ENOSYS' > {HOST_OVERRIDE}"
-      )
-      vm.succeed("systemctl daemon-reload")
-      start_host(False, "PID 1 Host seccomp policy differs from the fixed profile")
-      vm.succeed(f"rm {HOST_OVERRIDE}")
-      vm.succeed("systemctl daemon-reload")
-      start_inspector(True)
-      start_host(True)
-      vm.succeed(f"systemctl stop {HOST}")
+          override_target("[Service]\\nRestrictNamespaces=no")
+          start_inspector(False, "shifted target capability or namespace policy is not closed")
 
-      override_target("[Service]\\nExecStart=\\nExecStart=${pkgs.coreutils}/bin/sleep 60")
-      start_inspector(False, "shifted target does not run the packaged inspector executable")
+          vm.succeed(f"rm {OVERRIDE}")
+          vm.succeed("systemctl daemon-reload")
+          start_inspector(True)
+          vm.fail("systemctl is-active --quiet aos-sandbox-hostd.service")
 
-      override_target("[Service]\\nCapabilityBoundingSet=CAP_CHOWN")
-      start_inspector(False, "shifted target capability or namespace policy is not closed")
-
-      override_target("[Service]\\nRestrictNamespaces=no")
-      start_inspector(False, "shifted target capability or namespace policy is not closed")
-
-      vm.succeed(f"rm {OVERRIDE}")
-      vm.succeed("systemctl daemon-reload")
-      start_inspector(True)
-      vm.fail("systemctl is-active --quiet aos-sandbox-hostd.service")
+      check_host_readiness()
     '';
 }
