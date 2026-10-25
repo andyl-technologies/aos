@@ -11724,3 +11724,15 @@ Boot enforcement, and refuses the unfunded sandbox unit on both boots. The
 pending production policy change remains uncommitted. Host, Root, offline
 provisioning and lifecycle-enclosure results remain separate; this receipt does
 not qualify their startup, a physical floor producer or public lifecycle.
+
+The subsequent enforcing images stopped in the initrd because D-Bus could not
+open the selected policy's canonical `contexts/dbus_contexts`. Commit
+`39bfc0e97a` retains that existing policy input during native initrd replay;
+the pure-evaluation check passes. Its isolated Host retry, still carrying the
+uncommitted networkd patch, starts D-Bus and reaches Switch Root. It then
+fails systemd's `SwitchRoot` SELinux check for
+`init_t -> init_t:system reboot` in
+`/nix/store/7g6v9mpyd5h9ry1706v70f1bwf1g8jlb-aos-fleet-test-sandbox-host-phase0-readiness-0.drv`.
+The agent and Host assertions never run. The older Root, offline-provisioning
+and lifecycle-enclosure build batch was canceled after this shared boot
+blocker was identified; it supplies no qualification result.
