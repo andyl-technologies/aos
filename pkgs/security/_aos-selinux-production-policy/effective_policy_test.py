@@ -1210,6 +1210,33 @@ class EffectivePolicyTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_offline_unit_readback_requires_traversal_without_mutation(self) -> None:
+        prepare = effective_policy.owner_policy.OFFLINE_PREPARE
+        for object_class, permission in (
+            ("dir", "search"),
+            *(("file", permission) for permission in ("getattr", "open", "read")),
+        ):
+            with self.subTest(required=(object_class, permission)):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access(prepare, "systemd_unit_t", object_class, permission)
+                )
+
+        for object_class, permissions in (
+            ("dir", (
+                "add_name", "create", "remove_name", "rename", "rmdir", "setattr",
+                "write", "open", "read", "mounton", "relabelfrom", "relabelto",
+            )),
+            ("file", (
+                "append", "create", "ioctl", "link", "lock", "rename", "setattr", "unlink",
+                "write", "execute", "execute_no_trans", "map", "relabelfrom", "relabelto",
+            )),
+        ):
+            for permission in permissions:
+                with self.subTest(forbidden=(object_class, permission)):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(prepare, "systemd_unit_t", object_class, permission)
+                    )
+
     def test_source_observer_requires_status_and_exact_socket_targets(self) -> None:
         source = "aos_sandbox_source_signer_t"
         for target, object_class, permission in (

@@ -474,6 +474,7 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         Access(OFFLINE_PREPARE, "init_t", "fd", "use"),
         Access(OFFLINE_PREPARE, "init_t", "system", "status"),
         Access(OFFLINE_PREPARE, "systemd_unit_t", "service", "status"),
+        Access(OFFLINE_PREPARE, "systemd_unit_t", "dir", "search"),
         Access(OFFLINE_PREPARE, "fs_t", "filesystem", "getattr"),
         Access(OFFLINE_PREPARE, "cgroup_t", "filesystem", "getattr"),
         Access(OFFLINE_PREPARE, "security_t", "security", "read_policy"),
@@ -543,6 +544,14 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         positive.extend(accesses("init_t", OFFLINE_PREPARE, object_class, permissions))
     for target in ("security_t", "cgroup_t", "sysctl_kernel_t", "usr_t", "systemd_unit_t"):
         positive.extend(accesses(OFFLINE_PREPARE, target, "file", file_read))
+    negative.extend(accesses(
+        OFFLINE_PREPARE, "systemd_unit_t", "dir",
+        (*dir_mutate, "open", "read", "mounton", "relabelfrom", "relabelto"),
+    ))
+    negative.extend(accesses(
+        OFFLINE_PREPARE, "systemd_unit_t", "file",
+        (*file_mutate, "execute", "execute_no_trans", "ioctl", "map", "relabelfrom", "relabelto"),
+    ))
     for permission in ("start", "stop", "reload", "enable", "disable"):
         negative.append(Access(OFFLINE_PREPARE, "*", "service", permission))
     for permission in ("start", "stop", "reload", "reboot", "halt"):

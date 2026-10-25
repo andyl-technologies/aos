@@ -158,9 +158,19 @@ Recent committed startup fixes close narrower prerequisites:
   compile. The enforcing offline-preparation VM explicitly runs all three
   mandatory kernel xattr cases and passes live `/etc/systemd` label comparisons.
   The actual preparer then refuses traversal of the correctly labeled
-  `systemd_unit_t` directory; its separate read-only policy fix remains open.
+  `systemd_unit_t` directory, addressed by the separate traversal fix below.
   The whole offline test fails at that later boundary. No generic `tmpfs_t`
   access or relabel permission is added, and preparation is not qualified.
+
+- Offline Nix preparation may now search `systemd_unit_t` directories to reach
+  the immutable unit files it already reads. Directory listing, mutation,
+  mounting and relabeling, and unit-file execution, mapping, ioctls and mutation
+  remain forbidden. The isolated committed-base candidate passes all 176 policy
+  unit tests, the linked-policy guard and negative fixtures
+  (`/nix/store/hfdjpajb01k0449jpw25v6c110vz98c8-aos-selinux-production-policy-1`).
+  The combined startup candidate passes 183 policy unit tests. Installed key
+  preparation and the later recovery cases remain pending; this grant supplies
+  no TPM initialization or method-46 admission authority.
 
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending

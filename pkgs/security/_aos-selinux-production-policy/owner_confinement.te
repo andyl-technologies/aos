@@ -100,6 +100,8 @@ allow aos_nix_offline_prepare_t cgroup_t:file { getattr open read };
 allow aos_nix_offline_prepare_t sysctl_t:dir search;
 allow aos_nix_offline_prepare_t sysctl_kernel_t:dir search;
 allow aos_nix_offline_prepare_t sysctl_kernel_t:file { getattr open read };
+# Immutable unit readback traverses the correctly labeled configuration overlay.
+allow aos_nix_offline_prepare_t systemd_unit_t:dir search;
 allow aos_nix_offline_prepare_t systemd_unit_t:file { getattr open read };
 allow aos_nix_offline_prepare_t tmpfs_t:filesystem getattr;
 # Immutable input readback checks the installed overlay's mount attributes.
