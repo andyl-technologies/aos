@@ -1,0 +1,49 @@
+{
+  "checkpoint": "d1b0e3db2a18af27edd5046dff5ab23752e37dba",
+  "command": "nix-build /tmp/aos-bazel-722/gpl-suite-source-audit-diagnostics.nix --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "exit_code": 0,
+  "limits": [
+    "The full 5576-case controller qualification was cancelled after these failures and restarted after repair; these focused passes are not a complete suite or publication result."
+  ],
+  "output": "/nix/store/ski2k4razph2bwqd185cwwbg27m2pkvw-aos-bazel-suite-source-audit-diagnostics-1",
+  "repairs": [
+    "Refresh three existing content-bound review hashes and section counts, and add the required 1100-line control-server test responsibility review.",
+    "Retain all legacy line caps and all responsibility/cohesion thresholds. The server implementation rationale covers authenticated admission and bounded request collection at its existing HTTP/2 boundary.",
+    "Refresh only the stale RFC checklist digest from rfc0010-checklist-v1:1f04dbe817c09642 to the independently reported rfc0010-checklist-v1:9adf0d7ebb2a2ad2; task text, order, coverage and gate references remain unchanged."
+  ],
+  "reproduction": "Offline Cargo test of crucible-test-support --test engineering_hygiene --test rfc_consistency --no-fail-fast, using the ordinary Crucible source export and AOS Rust.",
+  "reviewed_sources": {
+    "crates/crucible/crucible-cli/src/tests/surface.rs": {
+      "change": "The earlier Bazel conversion makes only the private impersonation fixture writable before mutation.",
+      "lines": 3480,
+      "role": "tests",
+      "sha256": "6039905f92d125c41be743779edd7702acfc724366fdb8ecad2cf68a77ef746d"
+    },
+    "crates/crucible/crucible-cli/tests/campaign_store_process.rs": {
+      "change": "The earlier conversion resolves the executable through declared runfiles while preserving the VM override.",
+      "lines": 1694,
+      "role": "tests",
+      "sha256": "2629c43b5589ac120f156f33991c8d8510593505207990a81e781303d644a0e3"
+    },
+    "crates/crucible/crucible-control-server/src/server.rs": {
+      "change": "Existing master TLS admission and bounded HTTP/2 request handling; no source edit in this checkpoint.",
+      "lines": 2424,
+      "role": "implementation",
+      "sha256": "520a673ce660709ebf648c954539a1d088e368b879ca5e91ec71afebd44e5136"
+    },
+    "crates/crucible/crucible-control-server/src/server/tests.rs": {
+      "change": "Existing master admission, deadline, byte-budget, resume and read-only dispatch regressions; no source edit.",
+      "lines": 1100,
+      "role": "tests",
+      "sha256": "0ca8452fd83cfc86c4868f870991ceac87eb94e8913425d7095a18515ff72705"
+    }
+  },
+  "schema_version": 1,
+  "source_sha256": {
+    "docs/rfcs/0010-crucible/32-implementation-plan.md": "22333adaf6336660e71e18cdf22fcc14271d8ac4fefb34872e69abb98227c884",
+    "tests/crucible/engineering-hygiene-baseline.txt": "a186db2786f1f1c9945ad7c8f47cf69b129ad2743706871caf4cc075487e8e9e"
+  },
+  "status": "PASS: focused engineering and RFC source audits",
+  "tests_log": "   Compiling proc-macro2 v1.0.106\n   Compiling quote v1.0.46\n   Compiling unicode-ident v1.0.24\n   Compiling serde_core v1.0.228\n   Compiling version_check v0.9.5\n   Compiling serde v1.0.228\n   Compiling generic-array v0.14.7\n   Compiling typenum v1.20.1\n   Compiling libc v0.2.186\n   Compiling syn v2.0.118\n   Compiling cfg-if v1.0.4\n   Compiling equivalent v1.0.2\n   Compiling hashbrown v0.17.1\n   Compiling rustix v1.1.4\n   Compiling zmij v1.0.21\n   Compiling getrandom v0.4.2\n   Compiling indexmap v2.14.0\n   Compiling block-buffer v0.10.4\n   Compiling crypto-common v0.1.7\n   Compiling winnow v0.7.15\n   Compiling bitflags v2.13.0\n   Compiling toml_write v0.1.2\n   Compiling serde_derive v1.0.228\n   Compiling serde_json v1.0.150\n   Compiling linux-raw-sys v0.12.1\n   Compiling digest v0.10.7\n   Compiling itoa v1.0.18\n   Compiling cpufeatures v0.2.17\n   Compiling once_cell v1.21.4\n   Compiling fastrand v2.4.1\n   Compiling memchr v2.8.2\n   Compiling sha2 v0.10.9\n   Compiling tempfile v3.27.0\n   Compiling toml_datetime v0.6.11\n   Compiling serde_spanned v0.6.9\n   Compiling toml_edit v0.22.27\n   Compiling crucible-test-support v0.1.0 (/build/source/crates/crucible/crucible-test-support)\n   Compiling toml v0.8.23\n    Finished `test` profile [optimized] target(s) in 15.88s\n     Running tests/engineering_hygiene.rs (/build/target/debug/deps/engineering_hygiene-54954e36ea7f5a1f)\n\nrunning 4 tests\ntest engineering_hygiene_policy_is_wired_and_documented ... ok\ntest engineering_hygiene_rules_reject_shape_and_boundary_drift ... ok\ntest non_qemu_crates_do_not_define_against_qemu_specific_boundaries ... ok\ntest crucible_source_modules_follow_size_and_header_limits ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.90s\n\n     Running tests/rfc_consistency.rs (/build/target/debug/deps/rfc_consistency-a423e6b33eed68cb)\n\nrunning 7 tests\ntest banned_name_scan_rejects_configured_terms ... ok\ntest checklist_sync_rules_reject_order_and_text_drift ... ok\ntest phase_plan_parser_expands_main_ranges_without_promoting_subset_mentions ... ok\ntest rfc_consistency_rules_reject_coverage_reference_and_plan_drift ... ok\ntest rfc_consistency_rules_reject_undefined_and_unreferenced_gates ... ok\ntest rfc_consistency_rules_reject_duplicate_requirements ... ok\ntest rfc_0010_consistency_lint_is_clean ... ok\n\ntest result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s\n\n",
+  "tests_log_sha256": "9ce2ad19f718d4656d3e26540b097ea6ac8ba4ce1de553962b45482c46eefaaa"
+}
