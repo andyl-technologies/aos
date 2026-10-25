@@ -406,6 +406,7 @@ pub(super) async fn restore_meta_at_startup() {
 async fn restore_meta_reopened(startup: bool) {
     let fixture = Fixture::new().await;
     let (id, upper, node) = orphan_meta(&fixture).await;
+    let node_body = fixture.guard().store().get(&node, None).await.unwrap();
     let mut collection = completed(&fixture, upper + windows().grace() + 1, windows()).await;
     let trash = collection
         .retire_one(fixture.repository.coordinator())
@@ -413,6 +414,18 @@ async fn restore_meta_reopened(startup: bool) {
         .unwrap()
         .unwrap();
     assert_eq!(trash.pack, *id.as_bytes());
+    // Isolate the replacement node before committing its new root. The writer
+    // batches new metadata with the signed Commit; losing that whole batch
+    // would also lose the Commit, which the old node pack cannot restore.
+    let admitted = fixture
+        .guard()
+        .store()
+        .put(ContentUpload::Meta(
+            crate::store::MetaUpload::new(IdentityKind::Node, &node_body).unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(admitted, node);
     let replacement = fixture.publish_derived().await;
     assert_ne!(replacement.commit, fixture.head.commit);
     let commit_identity = TERRANE_V1
@@ -456,6 +469,12 @@ async fn restore_meta_reopened(startup: bool) {
     assert_eq!(row.state, crate::pack::RecordState::Live as u8);
     assert_ne!(row.pack, *id.as_bytes());
     let fresh = PackId::from_random_bytes(row.pack);
+    let fresh_index = tokio::fs::read(fixture.config.root.join(fresh.index_key()))
+        .await
+        .unwrap();
+    let fresh_index = PackIndexSnapshot::decode(&fresh_index, before.manifest.generation).unwrap();
+    assert_eq!(fresh_index.entries().len(), 1);
+    assert_eq!(fresh_index.entries()[0].hash(), &hash);
     tokio::fs::remove_file(fixture.config.root.join(fresh.pack_key()))
         .await
         .unwrap();

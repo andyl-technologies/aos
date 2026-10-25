@@ -113,8 +113,11 @@ takes 0.008 seconds. Genuine Done, fresh cycles and unchanged authenticated
 live content pass. The component independently reaches readiness in 7.130
 seconds, reclaims in 101.826 seconds and shuts down in 0.008 seconds. These
 results qualify the local CLI and component at that checkpoint; complete
-GC-role composition, host-local timer integration and later workspace
-compilation remain unproven. No task acceptance changes.
+GC-role composition and host-local timer integration remain unproven.
+Workspace test-target compilation at the same source passes in 974.538
+seconds; full review checks all 8,229 immutable files and 190 executables
+across 59 packages. This establishes compilation only. No task acceptance
+changes.
 
 Focused original-session qualification at `7f11415ca9` passes its three-case
 guest in 1,406.876 seconds. Complete review verifies all 8,228 immutable
@@ -136,9 +139,28 @@ artifacts. The original empty-capability UID/GID 840 ext4 actor reaches
 readiness in 7.432 seconds, reclaims after 100.976 seconds including full D,
 and acknowledges shutdown in 0.008 seconds. Protected Done, fresh cycles and
 the live authenticated read pass. This fixture starts without excluded Meta;
-the focused required-Meta, protected Done-observation and original-session
-handoff guests remain pending. It does not qualify the later CLI increment or
-change trunk acceptance.
+the focused startup guest fails in 1,432.152 seconds. Its original-session
+case passes, then required-Meta restoration succeeds but starting fresh marking
+returns corrupt publication evidence. The retained failed derivation is
+`jhlc9fqf16y6hzdxgayv1m9x118mkdf2-aos-vm-test-terrane-startup-restoration-0.drv`.
+The fixture deleted the fresh metadata batch containing both the replacement
+node and its signed Commit, although the old candidate can restore only the
+node. The corrected fixture admits the replacement node separately before
+publishing its Derived root, then requires the lost pack's detached index to
+contain exactly that node. All original restoration, old-checkpoint, same-lease,
+zero-data-body-read and fresh-marking assertions remain. Native qualification
+of that correction is pending; the failure is not counted as a pass.
+
+At the same `0c2fbb6668` source, the separate three-case restoration-session
+guest passes in 1,435.546 seconds, and the eleven-case preownership regression
+passes in 1,513.898 seconds. Both full reviews verify all 8,229 immutable
+files, 5,479 bound crate inputs and the actual retained SDK library-test
+executable (`ca4595c5d8104e6538bc1eca72c2dc7d6fcfee50e9ebdad4d847fbbcfba9fccb`).
+Every original selector runs once as UID/GID 840 on ext4 with empty
+capabilities and no-new-privileges. Mandatory application compilation passes
+in 1,449.197 seconds; its complete source review verifies 190 executables
+across 59 packages. These results do not qualify the failing startup scenario
+or change trunk acceptance.
 
 The main Linux CLI now dispatches configured `gc` invocations to the checked
 local collector. It performs complete preflight before confinement, executor
