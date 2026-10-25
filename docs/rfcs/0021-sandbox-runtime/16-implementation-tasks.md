@@ -21,6 +21,37 @@ Coordinator work is reserved for later; historical checked tasks below are
 component coverage records, not dependencies of local completion. Optional
 profile probes gate those profiles rather than all local implementation.
 
+### Current single-node closure
+
+The normal public Create → Ready → execute/observe → Stop → Delete path is
+still unqualified. Public execution creation remains unavailable. The funded
+initial method-46 TPM-floor producer, both installed journal hooks, and the
+connected lifecycle and recovery tests remain release gates. Terrane integration
+is deferred until its backend contract settles.
+
+Recent committed startup fixes close narrower prerequisites:
+
+- `134477b00e` transfers the idmapped mount helper's namespace descriptor over
+  its existing private child socket. The parent no longer needs to open another
+  process's namespace through procfs. Source-built checks exercise successful
+  transfer, denied procfs access, malformed ancillary messages, descriptor
+  cleanup, and failed mapping/acknowledgment with denied signal delivery. The
+  packaged view-preparer tool closure also passes. No `sys_ptrace` permission
+  is added. Installed enforcing view startup, restart and power-loss checks
+  remain separate.
+- `b8999b8817` transitions the fixed D-Bus executable from PID 1 into
+  `system_dbusd_t`, including the required nosuid transition. The linked
+  production policy passes 172 unit tests and its negative fixtures. This
+  avoids granting the offline provisioner access to an `init_t` bus socket;
+  it does not enable the broader refpolicy systemd configuration. Installed
+  offline preparation remains a separate check and cannot establish method-46
+  initialization or public readiness.
+
+Candidate Host credential-custody preparation and retained initrd wiring are
+not qualified by these commits. Installed results that include pending
+SwitchRoot or networkd policy changes must identify those dependencies; they
+cannot be reported as clean committed-branch qualification.
+
 - [x] **SBX-P0-01** Upgrade systemd to 259.8, rebase AOS patches, and pass its
   package and VM tests.
 - [x] **SBX-P0-02** Enable and test FUSE passthrough and fs-verity kernel
