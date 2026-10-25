@@ -67,7 +67,7 @@ pub(crate) fn run(scenario: Scenario) -> Result<()> {
     if arguments.next().is_some() {
         return Err("unexpected configured worker argument".into());
     }
-    let launched = if scenario == Scenario::Late {
+    let launched = if matches!(scenario, Scenario::Late | Scenario::Manifest) {
         scoped_worker::mounted::launch_late()?
     } else {
         scoped_worker::mounted::launch()?
@@ -275,7 +275,11 @@ async fn verify(
     phase(&mut service, receive(b"G")).await??;
     stage("original-lower-read-resumed");
     resume.notify_one();
-    phase(&mut service, receive(b"D")).await??;
+    if scenario == Scenario::Manifest {
+        phase(&mut service, finish_manifest_reads(&launched)).await??;
+    } else {
+        phase(&mut service, receive(b"D")).await??;
+    }
     stage("kernel-reads-complete");
 
     let before = snapshot().await?;
@@ -370,6 +374,9 @@ async fn verify(
     }
     if scenario == Scenario::Manifest {
         println!(
+            "PASS manifest open retries require exact waiter expiry while original preparation and lower fetch remain retained"
+        );
+        println!(
             "PASS actual kernel opens resolve original signed multi-chunk manifest only after metadata index compilation and retain one sealed backing through coalesced reads and drain"
         );
     }
@@ -381,6 +388,28 @@ async fn snapshot(path: &std::path::Path, limits: StateLimits) -> Result<CacheSt
     CacheState::load(&TokioLocalFs, path, limits)
         .await?
         .ok_or_else(|| "missing original mounted configured state".into())
+}
+
+/// Preserves producer work while reporting only genuine per-waiter deadline failures.
+async fn finish_manifest_reads(launched: &scoped_worker::Launched) -> Result<()> {
+    let mut expired = 0;
+    let mut coalesced = 0;
+    loop {
+        tokio::select! {
+            biased;
+            event = launched.receive_open_transition() => {
+                match event?.as_slice() {
+                    b"EXPIRED" if expired < 2 => {
+                        expired += 1;
+                        send(b"EXPIRED")?;
+                    }
+                    b"COALESCED" if coalesced < expired => coalesced += 1,
+                    _ => return Err("manifest exceeded its original two opens and one retry per waiter".into()),
+                }
+            }
+            result = receive(b"D") => return result,
+        }
+    }
 }
 
 async fn phase<T>(

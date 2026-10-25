@@ -230,6 +230,14 @@ impl Launched {
         mounted::receive_async(self.control.as_fd(), expected).await
     }
 
+    /// Receives only an actual waiter expiry or a coalesced retry observation.
+    ///
+    /// # Errors
+    /// Preserves the original bounded private-child control checks.
+    pub(super) async fn receive_open_transition(&self) -> Result<Vec<u8>> {
+        mounted::receive_one_of(self.control.as_fd(), &[b"EXPIRED", b"COALESCED"]).await
+    }
+
     /// Waits for the original child under the existing five-second exit bound.
     ///
     /// # Errors

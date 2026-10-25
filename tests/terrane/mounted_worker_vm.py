@@ -123,6 +123,20 @@ def run(support, executable, environment, source, owner_command=None,
                 second = first
             support.require(supervisor.send(b"G") == 1, "grant acknowledgement truncated")
             expected = (body[:1], body[1:], body[2:10], body[3:11])
+            if manifest:
+                # Each actual deadline may expire independently of retained
+                # preparation. Retry once only after the original child reports
+                # that exact deadline; another error or a failed retry still fails.
+                openings = [first, second]
+                for index, opening in enumerate(openings):
+                    try:
+                        opening.result(timeout=5)
+                    except OSError as error:
+                        support.require(error.errno == errno.EIO,
+                            "manifest open returned another errno")
+                        receive(b"EXPIRED")
+                        openings[index] = executor.submit(transport.read_file, target / "file")
+                first, second = openings
             support.require(first.result(timeout=5) == second.result(timeout=5) == expected,
                 "signed-root production reads changed the actual verified backing")
             retained = (target / "file").open("rb", buffering=0)
@@ -163,6 +177,7 @@ def run(support, executable, environment, source, owner_command=None,
             if expiry:
                 expected_witnesses.append("PASS actual durable exposure expiry autonomously drains retained service and disconnects idle mounted worker while preserving original kernel backing custody")
             if manifest:
+                expected_witnesses.append("PASS manifest open retries require exact waiter expiry while original preparation and lower fetch remain retained")
                 expected_witnesses.append("PASS actual kernel opens resolve original signed multi-chunk manifest only after metadata index compilation and retain one sealed backing through coalesced reads and drain")
             support.require(b"".join(output).decode().splitlines() == expected_witnesses,
                 "mounted owner omitted its original authority or custody checks")

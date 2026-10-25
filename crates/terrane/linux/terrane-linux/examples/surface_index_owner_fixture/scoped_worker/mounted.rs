@@ -146,38 +146,58 @@ pub(crate) async fn receive_async(
     channel: std::os::fd::BorrowedFd<'_>,
     expected: &[u8],
 ) -> Result<()> {
+    receive_one_of(channel, &[expected]).await?;
+    Ok(())
+}
+
+/// Receives one exact allowed fixture transition within the original phase bound.
+///
+/// # Errors
+/// Refuses unknown or truncated packets, I/O failure and the five-second deadline.
+pub(crate) async fn receive_one_of(
+    channel: std::os::fd::BorrowedFd<'_>,
+    expected: &[&[u8]],
+) -> Result<Vec<u8>> {
     let flags = rustix::fs::fcntl_getfl(channel)?;
     rustix::fs::fcntl_setfl(channel, flags | rustix::fs::OFlags::NONBLOCK)?;
     let channel = tokio::io::unix::AsyncFd::new(channel)?;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    let packet = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
+            // Read queued transitions before yielding. A completed kernel read
+            // can acknowledge D while an earlier child event is still awaiting
+            // reactor readiness; biased selection must drain that event first.
+            match receive_packet(*channel.get_ref(), expected) {
+                Ok(packet) => return Ok(packet),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error),
+            }
             let mut ready = channel.readable().await?;
-            match ready.try_io(|channel| {
-                // Retain the child's error packet while accepting only the
-                // same exact successful control value.
-                let mut bytes = [0; 1024];
-                let (length, received) = net::recv(
-                    channel.get_ref(),
-                    &mut bytes,
-                    net::RecvFlags::DONTWAIT | net::RecvFlags::TRUNC,
-                )?;
-                if received == length && bytes.get(..length) == Some(expected) {
-                    Ok(())
-                } else {
-                    Err(io::Error::other(format!(
-                        "unexpected mounted fixture control packet: expected {expected:?}, received {} of {received} bytes: {:?}",
-                        length,
-                        String::from_utf8_lossy(&bytes[..length.min(bytes.len())]),
-                    )))
-                }
-            }) {
+            match ready.try_io(|channel| receive_packet(*channel.get_ref(), expected)) {
                 Ok(result) => return result,
                 Err(_) => continue,
             }
         }
     })
     .await??;
-    Ok(())
+    Ok(packet)
+}
+
+fn receive_packet(channel: std::os::fd::BorrowedFd<'_>, expected: &[&[u8]]) -> io::Result<Vec<u8>> {
+    let mut bytes = [0; 1024];
+    let (length, received) = net::recv(
+        channel,
+        &mut bytes,
+        net::RecvFlags::DONTWAIT | net::RecvFlags::TRUNC,
+    )?;
+    if received == length && expected.contains(&&bytes[..length]) {
+        Ok(bytes[..length].to_vec())
+    } else {
+        Err(io::Error::other(format!(
+            "unexpected mounted fixture control packet: expected {expected:?}, received {} of {received} bytes: {:?}",
+            length,
+            String::from_utf8_lossy(&bytes[..length.min(bytes.len())]),
+        )))
+    }
 }
 
 /// Runs genuine owner preparation and disclosure while the guest drives the mount.
@@ -368,7 +388,7 @@ fn run_child(late: bool) -> Result<()> {
                     send(control.get_ref().as_fd(), b"COALESCED")
                 }
                 fuse_worker::Event::OpenQueued { .. } => Ok(()),
-                fuse_worker::Event::OpenFailed { .. } if late => {
+                fuse_worker::Event::OpenFailed { expired: true, .. } if late => {
                     send(control.get_ref().as_fd(), b"EXPIRED")
                 }
                 event => Err(io::Error::other(format!(

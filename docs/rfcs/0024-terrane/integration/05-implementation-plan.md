@@ -94,6 +94,44 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+The focused permanent-owner hint guest at `9eb645ff25` passes in 1,589.028
+seconds. Full review compares all 8,211 immutable source files, 5,463 crate inputs,
+the actual retained Cargo library-test executable and its installed hash. The
+original native recovery case executes once as UID/GID 840 on ext4 with empty
+capabilities and no-new-privileges. Actual discovery before and after completed
+empty passes retains the same owner, and original late same-key residue
+reclamation still passes. Mandatory application-target compilation at this
+commit passes in 1,563.488 seconds; full review verifies 8,211 source files,
+190 test executables and 59 packages, as compilation only.
+
+The file-stage mounted-manifest diagnosis at `5292dbe71f` fails in 1,168.980
+seconds. Both chunk warmings, strict manifest admission (228 ms), consumer sweep
+(7 ms), sealed-object preparation (1,486 ms) and cold-file preparation (4,402 ms)
+succeed. The worker reports an actual expired open and the fixture begins drain;
+closing Read then returns `Corrupt(RefName("publication"))` in 51 ms, while
+cache handoff succeeds in 1,971 ms. The original service terminates after
+8,841 ms. This locates the later error at closing Read after drain; it does not
+qualify a successful mounted manifest read or prove that closing Read would
+succeed without drain. The frozen failure and its original receipt remain.
+
+FUSE-28 bounds each open independently of FUSE-29's shared fetch. The manifest
+fixture now permits one retry per original open only after matching the actual
+child's `expired: true` observation. It still requires successful complete
+original bytes/ranges, exact lower chunk/manifest counts, backing custody,
+responsive metadata, repeated opens and durable drain. Other EIO causes and
+failed retries remain failures. The original five-second open and phase bounds,
+ten-second fetch bound, signed 2,097,153-byte input and whole guest bound remain
+unchanged. Ordinary inline and the explicitly withheld late-open scenario retain
+their existing flow. Both supported strict Linux all-target lint profiles,
+touched Python syntax and PLAN-2 ownership pass. New native qualification and
+mandatory application-target compilation remain pending;
+no production protocol behavior or task acceptance is changed by this fixture.
+
+Mandatory application-target compilation at `5292dbe71f` passes in 1,551.008
+seconds. Full review checks all 8,212 immutable source files, 190 test executables
+and 59 packages. This establishes compilation only; its mounted-manifest guest
+remains the failed diagnosis recorded above.
+
 Ordinary local deletion now has separate bounded lookup discovery through the
 original `Collection` and `LocalCollection` session. Protected native
 control files supply canonical key-bound local-v1 intents, including `Done` and
