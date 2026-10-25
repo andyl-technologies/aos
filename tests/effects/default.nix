@@ -114,6 +114,7 @@ in
             ${pkgs.python3}/bin/python3 ${../build/composefs-directory-source.py} ${../../pkgs/system/build-composefs-dump.py}
             ${pkgs.python3}/bin/python3 ${./host-store-seed-test.py} ${pkgs.bash}/bin/bash ${pkgs.coreutils} ${../../pkgs/boot/_aos-boot-preparations/aos-host-store-seed.sh} ${pkgs.nix}
             ${pkgs.python3}/bin/python3 ${./mount-var-test.py} ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-preparations/mount-var.sh}
+            ${pkgs.python3}/bin/python3 ${./mount-var-journal-test.py} ${pkgs.e2fsprogs}
             ${pkgs.python3}/bin/python3 ${./mount-transaction-storage-test.py} ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-storage/mount-transaction-storage.sh.in}
             ${pkgs.python3}/bin/python3 ${./seal-transaction-storage-test.py} ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-storage/seal-transaction-storage.sh.in}
             ${pkgs.python3}/bin/python3 ${./seed-profile-reconciliation.py} ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-preparations/aos-seed-profiles.sh} ${pkgs.coreutils}/bin ${pkgs.jq}/bin

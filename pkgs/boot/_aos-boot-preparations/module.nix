@@ -370,6 +370,10 @@
         if protectedSandboxRoots
         then "${dependencies.e2fsprogs.path}/sbin/debugfs"
         else "";
+      AOS_E2FSCK =
+        if protectedSandboxRoots
+        then "${dependencies.e2fsprogs.path}/sbin/e2fsck"
+        else "";
       AOS_ESP_DEVICE = cfg.espDevice;
       AOS_RECOVERY_ABI = builtins.toString cfg.recoveryAbi;
       AOS_RECOVERY_ENABLED =
