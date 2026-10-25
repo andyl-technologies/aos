@@ -108,6 +108,10 @@ Publication preview must accept the aggregate and reject raw QEMU, a raw plugin,
 an unmarked wrapper, and an aggregate paired with the wrong source identity.
 Every preview must leave the fixture registry unchanged. This exercises the
 production validator without publishing artifacts or starting a service.
+The merged-master qualification currently fails before that validator: ordinary
+publication rejects the fixture's manual metadata flags. The fixture must be
+updated for evaluated inventory publication before this check can qualify the
+suite; the existing preview contract is not evidence of a passing run.
 
 Run the canonical named ABI and license gates with the selected suite,
 controller, plugin, and gateway:
@@ -118,6 +122,11 @@ nix-build tools/bazel/tests/gpl-gates.nix -A all --no-out-link
 
 This entry point requests the existing green-before-advance wrappers and their
 prerequisites, preserving the canonical ABI owner counts and zero-match guards.
+The [selected-component gate run](../tests/evidence/selected-gpl-normative-gates.json)
+passed the named license wrapper and its 18 owner cases. The ABI chain failed
+in the production VM-flight prerequisite: reference and hostile runs differed
+at timer 5 by two retired instructions. The rootfs derivation directly selects
+the Bazel plugin. This remains unresolved, and the ABI gate is unqualified.
 Its output retains both gate outputs and `selections.json` with the exact
 component identities. The existing gate drivers still invoke Cargo; migrating
 those drivers remains a separate requirement. System fixtures created through

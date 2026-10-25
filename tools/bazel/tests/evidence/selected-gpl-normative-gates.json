@@ -1,0 +1,60 @@
+{
+  "abi_conformance": {
+    "diagnosis": "Unresolved; recorded equality assertions remain unchanged.",
+    "diagnostic": "loaded-plugin idle/wake evidence changed across flight variants",
+    "failed_flight_drv": "/nix/store/36gakk3w59087fssrf70cba9rk1plrd8-aos-vm-test-crucible-production-rust-plugin-flight-0.drv",
+    "first_split": {
+      "candidate_rows": 5009,
+      "hostile_expire_ps": 268892161950,
+      "hostile_raw_icount": 5377843238,
+      "index": 248,
+      "list": 6,
+      "owner": "rr",
+      "reference_expire_ps": 268892162050,
+      "reference_raw_icount": 5377843240,
+      "reference_rows": 4985,
+      "scope": "global",
+      "timer": 5,
+      "variants": [
+        "reference",
+        "hostile"
+      ]
+    },
+    "flight_direct_rootfs_input": "/nix/store/v5vh04w8pvjkzwpniky44y5kmyls8a22-fc-rootfs-base-0.drv",
+    "log_sha256": "a071527f97732b0771e28dde256c6907e8d6144d06886695333b638ac60f602b",
+    "named_wrapper_drv": "/nix/store/9gcy99agmdnbfc4xfw3cqs2wvkscywvp-crucible-green-before-advance-checks-crucible-phase2-gates-abiConformance-0.drv",
+    "rootfs": "/nix/store/igh4lm6wgrk2wrh1mg14yilqz9h858kb-fc-rootfs-base-0",
+    "rootfs_direct_plugin_input": "/nix/store/f5xs2wk2bp4ksn95d3wx5j57vmigwia3-crucible-qemu-plugin-0.1.0.drv",
+    "rootfs_drv": "/nix/store/v5vh04w8pvjkzwpniky44y5kmyls8a22-fc-rootfs-base-0.drv",
+    "status": "FAIL in prerequisite; no claim that ABI owner execution completed"
+  },
+  "component_selection": {
+    "controller": "/nix/store/g9jkgr6jllxqrm8z5aqf500jacdhbl4g-crucible-controller-0.1.0",
+    "gateway": "/nix/store/ll8dx2al7xiririyl3r6wx3xn099dp5r-crucible-debug-gateway-0.1.0",
+    "plugin": "/nix/store/9kd3wzrs1n3g1k7ichxksp81lajzkcpp-crucible-qemu-plugin-0.1.0",
+    "source": "/nix/store/533i9jzygz2ah4fwvwlr0jnnpxbhibk6-qemu-crucible-source-11.1.1"
+  },
+  "license_boundary": {
+    "log_sha256": "5072efc31e46ad544577cabc22ee7e8730968459bab268d087f867137e4c2e83",
+    "named_wrapper": "/nix/store/7z2nmjks4lxac0qh1xdiyvln2pjmbljn-crucible-green-before-advance-checks-crucible-phase1-gates-licenseBoundary-0",
+    "owner_cases_failed": 0,
+    "owner_cases_passed": 18,
+    "result": "PASS\ngreen_before_advance=checks.crucible.phase1.gates.licenseBoundary\ngreen_before_advance_dependency_count=0\n",
+    "status": "PASS"
+  },
+  "limits": [
+    "The named drivers still use Cargo; this qualifies component selection, not driver migration.",
+    "These are the exact frozen derivations instantiated before the later two-line Hub formatting commit.",
+    "A matching first split was recorded in an earlier Cargo-component flight. Its cause has not been established. No comparator normalization or retry-to-green was used.",
+    "Production cutover remains gated by the complete canonical chain."
+  ],
+  "schema_version": 1,
+  "source_sha256": {
+    "crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs": "f53158456954707fc0d5398e6307e814f9294662df241d23327086060af7e882",
+    "tests/crucible/phase1-license-boundary.nix": "718bd6fce24ddfa6b48d69907ced2b2de29929daf885753734082bac00147782",
+    "tests/crucible/phase2-abi-conformance.nix": "bf64bc5200f1c17537919aff94b3d46f66435bf1c62281e01315c84ea695666e",
+    "tests/crucible/phase7-production-rust-plugin-flight.nix": "bfefce328506823b515915f463e9c81f7ad711e82d3889a4f891efc6e6773dc3",
+    "tools/bazel/tests/gpl-gates.nix": "f81313a11114fa043c771011af3bbb0887cbabe5ff3fa1c9db3a8d2435e77093"
+  },
+  "status": "License gate passed; ABI gate blocked by its VM determinism prerequisite"
+}
