@@ -636,6 +636,41 @@ fn dropping_unreconciled_preparation_failure_quarantines_its_lifecycle_owner() {
 }
 
 #[test]
+fn an_unfinished_source_rollback_names_each_node_and_its_cause() {
+    let (_source, lifecycle) = permanently_failed_loop();
+    let node = lifecycle
+        .source
+        .world()
+        .vm_nodes()
+        .first()
+        .unwrap_or_else(|| panic!("fixture should contain a World node"))
+        .id
+        .clone();
+    let rollback = HotForkRollbackReport {
+        nodes: vec![node.clone()],
+        diagnostics: BTreeMap::from([(
+            node.clone(),
+            String::from("release retained hot-fork child QMP: injected"),
+        )]),
+    };
+
+    let failure = ProductionVmHotForkSourceWorldPreparationFailure::with_rollback(
+        lifecycle,
+        "one or more prepared sources did not complete rollback",
+        rollback,
+    );
+
+    let rendered = failure.to_string();
+    assert!(
+        rendered.contains(&format!(
+            "`{}`: release retained hot-fork child QMP: injected",
+            node.name
+        )),
+        "{rendered}"
+    );
+}
+
+#[test]
 fn hot_fork_capture_rejects_unresolved_lifecycle_ownership() {
     let source = super::super::runtime::tests::nonterminal_signal_replay_scenario();
     let mut lifecycle = super::super::runtime::tests::production_loop_without_backends(&source);

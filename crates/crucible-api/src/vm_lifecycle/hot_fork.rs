@@ -544,7 +544,14 @@ impl std::fmt::Display for ProductionVmHotForkSourceWorldPreparationFailure {
             formatter,
             "prepare production hot-fork source world: {}",
             self.message
-        )
+        )?;
+
+        // Callers that retire or quarantine the world keep only this text, so
+        // it must name why each unresolved source failed its rollback.
+        for (node, diagnostic) in &self.rollback_diagnostics {
+            write!(formatter, "; `{}`: {diagnostic}", node.name)?;
+        }
+        Ok(())
     }
 }
 
