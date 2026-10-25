@@ -9,7 +9,7 @@ use super::indexed;
 use crate::bucket::{FileBucket, FileBucketConfig, held::SingleHeld};
 use crate::domain::DomainNamespace;
 use crate::gc::runner::copied_retirement::CopiedRetirement;
-use crate::gc::runner::fixture::Fixture;
+use crate::gc::runner::fixture::{self, Fixture};
 use crate::guard::{Guard, OriginalAuthority};
 use crate::pack::{EntryKind, PackClass, PackId, PackWriter};
 use crate::ref_advance::{CommitTiming, Coordinator};
@@ -30,7 +30,13 @@ use terrane_format::gc::publication::{
 };
 use terrane_format::gc::retirement::{PermanentDeleteAuthorization, PermanentDeleteOperation};
 use terrane_format::gc::{Tombstone, Windows};
-use terrane_format::identity::{IdentityKind, TERRANE_V1};
+use terrane_format::identity::{Digest, IdentityKind, TERRANE_V1};
+
+/// Selects untrusted copied references or a separately authored destination root.
+enum ReferenceSetup {
+    Copied,
+    NewLocal,
+}
 
 /// Names the actual independently opened destination bucket.
 pub(crate) type Bucket = FileBucket<CopiedFs, NativeEffectClock, MetadataValidator>;
@@ -149,6 +155,45 @@ impl CopiedFixture {
             .0
     }
 
+    /// Publishes a genuine local root beside independently copied retirement data.
+    ///
+    /// Copied references and logs are omitted before destination activation;
+    /// their signed metadata remains untrusted and receives no local Original.
+    /// The new nonempty root uses the ordinary retained publication producer.
+    ///
+    /// # Panics
+    /// Panics on copied setup, genuine destination publication or verification failure.
+    pub(crate) async fn with_local_root(residue: Residue) -> (Self, Digest) {
+        let (fixture, _, _) = Self::with_reference_setup(
+            residue,
+            b"unreachable copied old body",
+            (false, false),
+            ReferenceSetup::NewLocal,
+        )
+        .await;
+        let request = fixture::request(Vec::new(), b"independent destination root", None);
+        let mut writer = fixture
+            .repository
+            .begin("refs/heads/_/main", &request.token, "sdk")
+            .await
+            .unwrap();
+        let head = fixture
+            .repository
+            .commit_request(&mut writer, request)
+            .await
+            .unwrap();
+        fixture.guard().verified_tree(head.commit).await.unwrap();
+        assert!(fixture.guard().original_commit(&head.commit).is_ok());
+        assert!(
+            fixture
+                .guard()
+                .original_commit(&fixture.source.head.commit)
+                .is_err()
+        );
+        drop(writer);
+        (fixture, head.commit)
+    }
+
     /// Copies a burned old family containing the source's genuinely published chunk.
     ///
     /// # Panics
@@ -190,6 +235,15 @@ impl CopiedFixture {
         residue: Residue,
         old_body: &[u8],
         options: (bool, bool),
+    ) -> (Self, Option<PackExclusion>, Option<indexed::Observation>) {
+        Self::with_reference_setup(residue, old_body, options, ReferenceSetup::Copied).await
+    }
+
+    async fn with_reference_setup(
+        residue: Residue,
+        old_body: &[u8],
+        options: (bool, bool),
+        references: ReferenceSetup,
     ) -> (Self, Option<PackExclusion>, Option<indexed::Observation>) {
         let (unrelated, with_indexed) = options;
         let (source, selections, observation) = if with_indexed {
@@ -286,8 +340,24 @@ impl CopiedFixture {
             Some(source.parent.join("copied-publication"));
         copy_payload(&source.config.root, &config.root).await;
         logical.insert("gc/lease".into(), None);
-        let capabilities =
+        let mut capabilities =
             BucketCapabilities::decode(logical["CAPABILITIES"].as_deref().unwrap()).unwrap();
+        if matches!(references, ReferenceSetup::NewLocal) {
+            // This is still untrusted copy assembly, before any destination
+            // registration or native publication. Never adopt source Original.
+            logical.retain(|key, _| !key.starts_with("refs/") && !key.starts_with("logs/"));
+            for directory in ["refs", "logs"] {
+                tokio::fs::remove_dir_all(config.root.join(directory))
+                    .await
+                    .unwrap();
+            }
+            capabilities.ref_names = Some(Vec::new());
+            let bytes = capabilities.encode().unwrap();
+            tokio::fs::write(config.root.join("CAPABILITIES"), &bytes)
+                .await
+                .unwrap();
+            logical.insert("CAPABILITIES".into(), Some(bytes));
+        }
         let manifest_key = format!(
             "objects/index/{}/MANIFEST",
             capabilities.generation.unwrap()

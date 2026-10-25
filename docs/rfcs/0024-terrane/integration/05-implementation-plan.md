@@ -91,6 +91,17 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-25)
 
+Source audit found that the combined collection/reconciliation test selected
+a copied head whose missing destination Original is intentional. The test now
+first requires that copied-root refusal. Its positive scenario omits source
+references only during untrusted copy assembly, then publishes and verifies
+a fresh nonempty destination root through the retained writer. The source
+head still has no destination Original. All original reconciliation, owner,
+late-residue, checkpoint and reopen assertions, clocks and bounds remain.
+The default-Tokio and surface-SDK profiles pass strict Clippy; native
+qualification of this strengthened fixture remains required. Production
+verification is unchanged.
+
 The managed presentation diagnostic identifies an actual Serve worker's
 `mkdirat(..., 02770)` failing with `EPERM` under the original
 `RestrictSUIDSGID` policy. Native admission now requests ordinary `0770`

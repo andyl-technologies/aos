@@ -46,7 +46,23 @@ fn assert_completed(image: &Image) {
 
 #[tokio::test]
 async fn permanent_local_collection_reconciles_with_its_original_live_session() {
-    let fixture = CopiedFixture::new(Residue::Pack).await;
+    // A copied signed head has no independently established destination
+    // Original. Collector startup must continue to refuse that root.
+    let copied = CopiedFixture::new(Residue::Pack).await;
+    let windows = Windows::new(30, 60, 60, 90).unwrap();
+    let result = copied
+        .repository
+        .start_local_collection("untrusted-copied-root".into(), 90, 9001, windows)
+        .await;
+    assert!(matches!(
+        result,
+        Err(crate::gc::runner::CollectionError::Store(failure))
+            if matches!(failure.kind(), crate::store::StoreErrorKind::Invalid(
+                crate::store::InvalidReason::MalformedRequest))
+    ));
+    cleanup(copied);
+
+    let (fixture, local_root) = CopiedFixture::with_local_root(Residue::Pack).await;
     fixture.own().await;
     let before = image(&fixture).await;
     let key = before.owner_key.as_deref().unwrap();
@@ -69,6 +85,8 @@ async fn permanent_local_collection_reconciles_with_its_original_live_session() 
         .await
         .unwrap();
     let roots = collection.roots().clone();
+    assert!(!roots.roots.is_empty());
+    assert!(roots.roots.iter().any(|root| root.commit == local_root));
     let checkpoint = collection.state().clone();
     let initial = collection.lease().clone();
     assert!(
