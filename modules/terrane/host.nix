@@ -10,6 +10,8 @@
   toml = lib.formats.toml {inherit lib pkgs;};
   localRepository = import ./_local-repository.nix {inherit lib;};
   nativeCache = import ./_cache.nix {inherit lib;};
+  maintenance = import ./_maintenance.nix {inherit lib;};
+  maintenanceEnabled = cfg.hostTier.maintenance != null;
   # Reject traversal and unit-file metacharacters before paths reach tmpfiles
   # or systemd. Parent ownership is part of the publisher's security boundary.
   pathType = types.strMatching "/[A-Za-z0-9_./-]+";
@@ -132,19 +134,25 @@
     else "terrane-${role}";
   # The publisher can retire cache bodies but cannot modify pins or quotas.
   groupsFor = role:
-    lib.optional (role == "serve" || role == "gc") "terrane-cache"
-    ++ lib.optional (role == "serve" || role == "gc" || role == "publish") "terrane-content";
+    if role == "gc" && maintenanceEnabled
+    then ["terrane-maintenance"]
+    else
+      lib.optional (role == "serve" || role == "gc") "terrane-cache"
+      ++ lib.optional (role == "serve" || role == "gc" || role == "publish") "terrane-content";
   reservedGroupIds =
     identities
     // {
       cache = 844;
       content = 845;
+      maintenance = 846;
     };
   expectedGroupName = name:
     if name == "cache"
     then "terrane-cache"
     else if name == "content"
     then "terrane-content"
+    else if name == "maintenance"
+    then "terrane-maintenance"
     else userFor name;
   publicRoot = (cfg.hostTier.domains.public or {path = cfg.hostTier.path;}).path;
   domainRoots =
@@ -163,10 +171,12 @@
   overlaps = a: b: a == b || lib.hasPrefix "${a}/" b || lib.hasPrefix "${b}/" a;
   uniqueRoots = builtins.all (a: builtins.all (b: a == b || !overlaps a b) roots) roots && builtins.length (lib.unique roots) == builtins.length roots;
   writable = role:
-    if role == "publish"
+    if role == "gc" && maintenanceEnabled
+    then []
+    else if role == "publish"
     then ["/run/terrane-publish"] ++ builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots
     else if role == "serve" || role == "gc"
-    then builtins.concatMap (root: ["${root}/state/cache" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots
+    then builtins.concatMap (root: ["${root}/state/cache" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots ++ lib.optional (role == "serve" && maintenanceEnabled) maintenance.runtimeRoot
     else [];
   # Preserve DOM-18 defaults so an unsupported private policy fails closed.
   effectiveWipe = name: domain:
@@ -184,6 +194,7 @@
       path = cfg.hostTier.path;
       size_bytes = cfg.hostTier.sizeBytes;
       reassembly = cfg.hostTier.reassembly;
+      maintenance = maintenance.render cfg.hostTier.maintenance;
       publisher =
         if cfg.hostTier.publisher == null
         then null
@@ -239,8 +250,8 @@
   service = role: {
     description = "Terrane ${role} role";
     wantedBy = lib.optional (role != "gc") "multi-user.target";
-    after = ["systemd-tmpfiles-setup.service"] ++ lib.optional (cfg.hostHelper.enable && role != "realize") "aos-terrane-host-quota.service";
-    requires = ["systemd-tmpfiles-setup.service"] ++ lib.optional (cfg.hostHelper.enable && role != "realize") "aos-terrane-host-quota.service";
+    after = ["systemd-tmpfiles-setup.service"] ++ lib.optional (cfg.hostHelper.enable && role != "realize") "aos-terrane-host-quota.service" ++ lib.optional (role == "gc" && maintenanceEnabled) "terrane-serve.service";
+    requires = ["systemd-tmpfiles-setup.service"] ++ lib.optional (cfg.hostHelper.enable && role != "realize") "aos-terrane-host-quota.service" ++ lib.optional (role == "gc" && maintenanceEnabled) "terrane-serve.service";
     serviceConfig = {
       Type =
         if role == "gc"
@@ -308,6 +319,7 @@ in {
       }) ["region" "zone" "host"]);
     }) {} "Store locality labels.";
     hostTier = {
+      maintenance = option (types.nullOr maintenance.type) null "Explicit bounded reconciliation against original serving owners; grants GC no direct cache-state access.";
       publisher = option (types.nullOr publisherType) null "Explicit publisher transport and process identities; omitted for SDK-only operation.";
       quota = option (types.nullOr quotaType) null "Explicit host quota inspector binding; an external helper is not enabled automatically.";
       path = option pathType "/var/lib/terrane" "Absolute host-tier root.";
@@ -346,6 +358,15 @@ in {
         tierBudget = cfg.hostTier.sizeBytes;
         hasPublisher = cfg.hostTier.publisher != null;
         hasQuota = cfg.hostTier.quota != null;
+      })
+      ++ (maintenance.checks {
+        value = cfg.hostTier.maintenance;
+        domains = cfg.hostTier.domains;
+        gcUid = identities.gc;
+        hasPublisher = cfg.hostTier.publisher != null;
+        serveEnabled = cfg.roles.serve.enable;
+        roots = declaredRoots ++ builtins.filter (root: root != null) (map (domain: domain.administrativeRoot) (builtins.attrValues cfg.hostTier.domains));
+        controlPaths = lib.optional (cfg.hostTier.publisher != null) cfg.hostTier.publisher.socketPath ++ lib.optional (cfg.hostTier.quota != null) cfg.hostTier.quota.socketPath;
       })
       ++ [
         {
@@ -416,12 +437,16 @@ in {
       // {
         terrane-cache.gid = 844;
         terrane-content.gid = 845;
+        terrane-maintenance.gid = 846;
       };
     # The root stays root-owned: cache identities cannot rename publisher roots.
     # Publisher-private directories are intentionally not readable by path by
     # other roles; verified read-only descriptors cross the process boundary.
     environment.etc."tmpfiles.d/terrane.conf".text =
       "d /run/terrane-publish 2750 terrane-publish terrane-content - -\n"
+      # Existing listener names survive until the original owner is stopped and
+      # custody is reconciled. Tmpfiles never unlinks a potentially live socket.
+      + lib.optionalString maintenanceEnabled "d ${maintenance.runtimeRoot} 2750 terrane terrane-maintenance - -\n"
       + lib.optionalString (!(builtins.elem cfg.hostTier.path roots)) "d ${cfg.hostTier.path} 0755 root root - -\n"
       + lib.concatMapStrings (entry: let
         root = entry.path;

@@ -83,9 +83,10 @@ in [
   }
   {
     assertion = builtins.all (name:
-      builtins.all (supplementaryMembershipAllowed name) accounts.${name}.extraGroups)
+      builtins.all (supplementaryMembershipAllowed name) accounts.${name}.extraGroups
+      && (!(builtins.elem accounts.${name}.group reservedGroups) || groupMemberAllowed accounts.${name}.group name))
     (builtins.attrNames accounts);
-    message = "Terrane groups must not grant content or publisher access to unrelated accounts.";
+    message = "Terrane primary and supplementary groups must remain confined to their authorized role identities.";
   }
   {
     assertion = builtins.all (group:

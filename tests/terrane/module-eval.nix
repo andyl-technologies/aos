@@ -927,13 +927,17 @@
       };
     }
   ];
-  failures = map (check: check.name) (builtins.filter (check: !check.pass) (assertions ++ extraAssertions));
+  maintenanceAssertions = import ./module-maintenance-eval.nix {
+    inherit lib evaluate nativeFixture cacheFixture surfaceIndexFixture checksPass;
+  };
+  allAssertions = assertions ++ extraAssertions ++ maintenanceAssertions;
+  failures = map (check: check.name) (builtins.filter (check: !check.pass) allAssertions);
   verified =
     if failures == []
     then
       builtins.toJSON {
         scope = "declarative module evaluation; no kernel runtime claims";
-        checks = map (check: check.name) (assertions ++ extraAssertions);
+        checks = map (check: check.name) allAssertions;
       }
     else throw "Terrane module evaluation failed: ${builtins.concatStringsSep ", " failures}";
 in

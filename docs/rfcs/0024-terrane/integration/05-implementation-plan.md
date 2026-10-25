@@ -18623,3 +18623,27 @@ The fixture and source-bound launcher now use a distinct maintenance-only group
 private-state denial remains mandatory, with an exact group assertion added.
 No production role-module assembly or managed directory lifecycle is claimed;
 those remain open. Fresh native qualification of this correction is pending.
+
+
+The declarative host module now renders explicit bounded maintenance settings
+and requires exact coverage of funded native surface domains, the deployed GC
+identity, an enabled serving role and disjoint protected socket paths. Its GC
+maintenance profile receives only transport group 846 and no writable cache
+paths; the original serving process retains its cache groups. The protected
+runtime parent is declared as serving-owned mode 2750 with group 846, and GC
+orders after and requires Serve. Reserved-group checks also reject unrelated
+accounts selecting a protected group as their primary group. Module evaluation
+passes all 109 checks, including seven new maintenance cases with required-input,
+funding, path, deadline, role and membership refusal controls. This is
+declarative qualification only. Native service startup, readiness ordering and
+coordinated restart cleanup remain outstanding; tmpfiles never removes existing
+listener names or supplies authority to release retained custody. No further
+trunk task is accepted.
+
+The preceding `19ec1e5c92` mandatory application compilation passes in
+1,462.199 seconds. Complete review matches all 8,232 immutable source files and
+190 actual test executables across 59 packages. Compilation does not qualify
+the failed maintenance guest. The new startup-restoration, original-session,
+preownership, configured-maintenance and configured-GC CLI guests, plus mandatory
+application compilation, are running against frozen `21871350bf`; their outcomes
+remain pending. Acceptance remains 28/64.
