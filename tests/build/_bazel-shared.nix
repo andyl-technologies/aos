@@ -15,6 +15,8 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     # The analyzer's native query uses -O independently of Cargo's test profile.
     editorCfgFlags = [];
+    editorExecRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes" "-Cstrip=none"];
+    retainEditorActionGraph = true;
     retainTestActionGraph = true;
     captureCompilerArguments = true;
   };
@@ -39,13 +41,21 @@
     workspace = family.editorWorkspace;
     flags = [];
   };
+  editor-execution-profiles = import ./_bazel-rust-editor-profiles.nix {
+    inherit pkgs;
+    inherit (family) editor;
+    pname = "aos-bazel-shared-editor-execution-profiles";
+    cargo = family.editor-cargo-oracle;
+    proceduralMacros = ["serde_derive" "thiserror_impl"];
+    macroDebuginfo = "0";
+  };
 in
   family
   // {
-    inherit execution-profiles editor-builtin-cfg;
+    inherit execution-profiles editor-builtin-cfg editor-execution-profiles;
     all =
       pkgs.runCommand "aos-bazel-shared-qualified-checks" {
-        buildDeps = [family.all family.editor-parity execution-profiles editor-builtin-cfg];
+        buildDeps = [family.all family.editor-parity execution-profiles editor-builtin-cfg editor-execution-profiles];
       } ''
         mkdir -p "$out"
         cp -r ${family.all}/evidence "$out/evidence"
@@ -53,5 +63,6 @@ in
         cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
         cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
         cp ${editor-builtin-cfg}/evidence.json "$out/editor-builtin-cfg.json"
+        cp ${editor-execution-profiles}/evidence.json "$out/editor-execution-profiles.json"
       '';
   }

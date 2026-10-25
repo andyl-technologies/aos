@@ -621,6 +621,13 @@ editor; ordinary development launchers, complete effective cfg behavior for
 arbitrary flags, VM determinism, production migration and performance acceptance
 remain separate.
 
+The [native editor macro profile rollout](tests/evidence/native-editor-macro-profile-rollout.json)
+adds a required audit of the editor's own retained compiler actions. Guest's
+three macros use optimization 0, debug information 2, enabled checks and no
+stripping, matching the captured native development builds. The target keeps
+its independent static profile. All 33 cases pass with the existing ignored
+case retained; the installed runtime and six CLI comparisons pass again.
+
 `checks.build.bazel.guest.all` builds the guest library and executable, both
 libtest artifacts, both integration tests, doctests, Clippy, formatting,
 documentation, and editor parity. Its separate `guest` dependency profile
@@ -949,6 +956,12 @@ crates use the native compiler's built-in cfg query, covering five selected
 roots. The retained test, developer, format and editor runs contain 288 uncached
 Linux sandbox actions. Ordinary development launcher enrollment and production
 cutover remain separate work.
+
+The [native editor macro profile rollout](tests/evidence/native-editor-macro-profile-rollout.json)
+also requires the editor's two macro compiler actions to match the captured
+native profile: optimization 0, debug information 0, enabled checks and no
+stripping. Whole-model inference remains complete without diagnostics. The
+ordinary test, Cargo oracle and developer outputs retain their prior identities.
 
 ## WebAssembly toolchain qualification
 
@@ -1285,6 +1298,14 @@ checks the same cfg values and authenticates its macro bytes; its 40 actions
 execute uncached in Linux sandboxes. All eight cases and ordinary compiler
 profile actions remain unchanged. The flight binary and VM derivation retain
 their qualified identities; this checkpoint reuses the earlier VM result.
+
+The [native editor macro profile rollout](tests/evidence/native-editor-macro-profile-rollout.json)
+requires the editor's actual macro action to match the captured native profile:
+optimization 0, debug information 0, enabled checks and no stripping. The
+packaged editor route authenticates the resulting macro bytes and native cfg
+values. All eight cases pass, whole-model inference remains complete without
+diagnostics, and ordinary test outputs and the earlier VM qualification retain
+their identities. The VM was not rerun for this editor-only change.
 
 The quota family owns `aos-linux-project-quota`, its unit tests and the
 `project-quota-flight` example. Its separate `quota` dependency profile retains

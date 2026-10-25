@@ -37,6 +37,8 @@
     # not enter the independent host configuration used to compile macros.
     editorTargetRustcFlags = editorFlags;
     editorCfgFlags = editorFlags;
+    editorExecRustcFlags = ["-Copt-level=0" "-Cdebuginfo=2" "-Cdebug-assertions=yes" "-Coverflow-checks=yes" "-Cstrip=none"];
+    retainEditorActionGraph = true;
     dependencyProfile = "guest";
     rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
     cargoFlags = ["--release"];
@@ -86,10 +88,17 @@
     workspace = family.editorWorkspace;
     flags = editorFlags;
   };
+  editor-execution-profiles = import ./_bazel-rust-editor-profiles.nix {
+    inherit pkgs;
+    inherit (family) editor;
+    pname = "aos-bazel-guest-editor-execution-profiles";
+    cargo = family.editor-cargo-oracle;
+    proceduralMacros = ["curve25519_dalek_derive" "serde_derive" "thiserror_impl"];
+  };
 in
   family
   // rec {
-    inherit execution-profiles editor-builtin-cfg;
+    inherit execution-profiles editor-builtin-cfg editor-execution-profiles;
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-guest-inventory";
       workspace = family.workspace;
@@ -161,7 +170,7 @@ in
       '';
     all =
       pkgs.runCommand "aos-bazel-guest-qualified-checks" {
-        buildDeps = [family.all family.editor-parity runtime execution-profiles editor-builtin-cfg];
+        buildDeps = [family.all family.editor-parity runtime execution-profiles editor-builtin-cfg editor-execution-profiles];
       } ''
         mkdir -p "$out"
         cp -r ${family.all}/evidence "$out/evidence"
@@ -169,6 +178,7 @@ in
         cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
         cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
         cp ${editor-builtin-cfg}/evidence.json "$out/editor-builtin-cfg.json"
+        cp ${editor-execution-profiles}/evidence.json "$out/editor-execution-profiles.json"
         cp -r ${runtime} "$out/runtime"
       '';
   }

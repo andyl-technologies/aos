@@ -5,7 +5,12 @@
   editor,
   cargo,
   proceduralMacros,
+  macroDebuginfo ? "2",
 }: let
+  selectedDebuginfo =
+    if builtins.elem macroDebuginfo ["0" "2"]
+    then macroDebuginfo
+    else throw "editor macro debug information must be 0 or 2";
   scripts = builtins.path {
     path = ../../tools/bazel/tests;
     name = "aos-bazel-editor-profile-verifiers";
@@ -41,7 +46,7 @@ in
         options = compiler_options(arguments)
         scalar = options["effective_scalar_codegen"]
         assert scalar.get("opt-level", "0") == "0", scalar
-        assert scalar.get("debuginfo", "0") == "2", scalar
+        assert scalar.get("debuginfo", "0") == ${builtins.toJSON selectedDebuginfo}, scalar
         assert scalar.get("strip", "none") == "none", scalar
         for name in ["debug-assertions", "overflow-checks"]:
             # Unoptimized native compilation enables assertions and overflow
@@ -91,7 +96,7 @@ in
         "native_trace_sha256": hashlib.sha256(trace.read_bytes()).hexdigest(),
         "evidence_sha256": {name: hashlib.sha256((evidence / name).read_bytes()).hexdigest()
                             for name in ["actions.json", "execution.json", "compiler-inputs.json"]},
-        "limits": ["Checks selected native development macros at optimization 0, debug information 2 and enabled checks. Complete compiler defaults, ABI/linker equivalence, other profiles and foreign targets remain separate."],
+        "limits": ["Checks selected native development macros at optimization 0, debug information ${selectedDebuginfo} and enabled checks. Complete compiler defaults, ABI/linker equivalence, other profiles and foreign targets remain separate."],
     }, indent=2, sort_keys=True) + "\n")
     PYTHON
   ''

@@ -15,6 +15,8 @@
     # Native analyzer cfg queries are optimized independently of test targets.
     editorTargetRustcFlags = [];
     editorCfgFlags = [];
+    editorExecRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes" "-Cstrip=none"];
+    retainEditorActionGraph = true;
     retainTestActionGraph = true;
     captureCompilerArguments = true;
   };
@@ -38,10 +40,18 @@
     workspace = family.editorWorkspace;
     flags = [];
   };
+  editor-execution-profiles = import ./_bazel-rust-editor-profiles.nix {
+    inherit pkgs;
+    inherit (family) editor;
+    pname = "aos-bazel-quota-editor-execution-profiles";
+    cargo = family.editor-cargo-oracle;
+    proceduralMacros = ["thiserror_impl"];
+    macroDebuginfo = "0";
+  };
 in
   family
   // rec {
-    inherit execution-profiles editor-builtin-cfg;
+    inherit execution-profiles editor-builtin-cfg editor-execution-profiles;
     development = import ./_bazel-quota-development.nix {
       inherit pkgs;
       inherit (family) editor tests;
@@ -104,7 +114,7 @@ in
       inherit (pkgs) lib;
       bazelProbe = flight;
     };
-    all = pkgs.runCommand "aos-bazel-quota-qualified-checks" {buildDeps = [family.all family.editor-parity flight installation execution-profiles editor-builtin-cfg development];} ''
+    all = pkgs.runCommand "aos-bazel-quota-qualified-checks" {buildDeps = [family.all family.editor-parity flight installation execution-profiles editor-builtin-cfg editor-execution-profiles development];} ''
       mkdir -p "$out/editor"
       cp -r ${family.all}/evidence "$out/evidence"
       cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
@@ -115,6 +125,7 @@ in
       cp ${installation}/installation.json "$out/installation.json"
       cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
       cp ${editor-builtin-cfg}/evidence.json "$out/editor-builtin-cfg.json"
+      cp ${editor-execution-profiles}/evidence.json "$out/editor-execution-profiles.json"
       cp ${development}/evidence.json "$out/development.json"
     '';
   }
