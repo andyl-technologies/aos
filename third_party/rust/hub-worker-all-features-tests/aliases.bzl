@@ -74,6 +74,7 @@ CRATES = {
     "wasm-bindgen-futures": "@aos_hub_worker_all_features_tests_crates__wasm-bindgen-futures-0.4.76//:wasm_bindgen_futures",
     "worker": "@aos_hub_worker_all_features_tests_crates__worker-0.8.5//:worker",
     "worker-sys": "@aos_hub_worker_all_features_tests_crates__worker-sys-0.8.5//:worker_sys",
+    "xz2": "@aos_hub_worker_all_features_tests_crates__xz2-0.1.7//:xz2",
     "zeroize": "@aos_hub_worker_all_features_tests_crates__zeroize-1.9.0//:zeroize",
     "zstd": "@aos_hub_worker_all_features_tests_crates__zstd-0.13.3//:zstd"
 }

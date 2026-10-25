@@ -1,7 +1,7 @@
 {
   "contracts": {
     "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
-    "third_party/rust/hub-native.bzl": "7b96ece43e6293e37e9b934984404f20e2e86cda451aee3dfcfaca1a0191027a",
+    "third_party/rust/hub-native.bzl": "19e98921ff22d362557a3394450ab44dda75e7b998873af507050e6a0926bf3e",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
     "tools/bazel/metadata/update_rust.py": "6dba4f1b82faf10f246c5cefa1ea2c92a7d075c4cc58b8da9183b9a34080f28c",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
@@ -65,7 +65,7 @@
     "BUILD.block-buffer-0.10.4.bazel": "02a5e2725cffa4f4b0d4a5f72d705688463b4450f155a1d0d17c21fdb5ae250e",
     "BUILD.block-buffer-0.12.0.bazel": "92d9edf75da808950c03bc33eba8f5fba777caf1d8fbbb66a79d1137dde5ec62",
     "BUILD.bumpalo-3.20.3.bazel": "2074fc4f38f68ef7781ae663b30828c3ccbc614168b240ca34a07189b1be71c0",
-    "BUILD.byteorder-1.5.0.bazel": "33d89f05981140d21ad96da1fa27d2017a0f5f907e6bedb95eeb094dfaa2bd07",
+    "BUILD.byteorder-1.5.0.bazel": "d62444170dcd8ad9f11e839310e7855be9704db623634852400a3423c83a602b",
     "BUILD.bytes-1.11.1.bazel": "3a85873e766dadd6c9b6e6fc437c37baef2f12c8a0fba19162d594dab7624902",
     "BUILD.bytes-utils-0.1.4.bazel": "e7a78204a8ad2c40d1476055d2d81954790b8f072b676e25b9276c39ac834845",
     "BUILD.bzip2-rs-0.1.2.bazel": "b395cad7780eda5f566ce39cb718fda727e59a2d7b741a6b07e2440c64ca6222",
@@ -212,7 +212,7 @@
     "BUILD.log-0.4.30.bazel": "bfe3ca74003a3ce34a4f53f0f21df54b8478ffa33da9eb217e899fa5b50424a3",
     "BUILD.lru-0.18.5.bazel": "d356c3db2cdce6dbb4e7c06037c3cc6ba71fd6189fefd92d8783ec100caaa139",
     "BUILD.lru-slab-0.1.2.bazel": "7a1874a5a1ed657637edc7c114c82f64277445db007b9c7158336ef1dc3b23a5",
-    "BUILD.lzma-rs-0.3.0.bazel": "8e41beb6296b9e9419999b3e99ca665c125d682cdd91bb06ee7d5b9681ecc6ec",
+    "BUILD.lzma-sys-0.1.20.bazel": "fd5ee2928e6387a0297372bde3b639d6c3ba345b7b09754aa3df6179aa7b38a6",
     "BUILD.matchit-0.8.4.bazel": "8936516fb8a424d4c2153ce9fad3554700ccd8ab61103bfbb93e9833278698a0",
     "BUILD.md-5-0.10.6.bazel": "a5563ccf600242ce370fdf56a3f7ca67d955118b2f5117c8de804f4be5550785",
     "BUILD.md-5-0.11.0.bazel": "69982768a0dae39e67a72129b99ea60e276e3440784fc3e1c3ed3a2bcbd9276d",
@@ -451,6 +451,7 @@
     "BUILD.wnaf-0.14.1.bazel": "46e63b854ccc5459498f502dd78af1883f97eda6bcb9354e9a5619c44b3f2f49",
     "BUILD.writeable-0.6.3.bazel": "7e4f37700d1b2789f809780c04c5ea8b29ab1c24dd785e7132aab5d2d74e67a8",
     "BUILD.xmlparser-0.13.6.bazel": "38a18e9906f462983322fbaf29aa3ead610b1970d26fc155dbeef44c1d4f21ef",
+    "BUILD.xz2-0.1.7.bazel": "a8723ad80e1a97b4d2b1061f4687feab8c7ec83f83acf1b69688d0f5db634708",
     "BUILD.yoke-0.8.3.bazel": "7f9b4fda302546a000b3ea9762b90c8ae00e3d464410b66ee489ae0b41e641f3",
     "BUILD.yoke-derive-0.8.2.bazel": "211a86a30304c3d643635410accd571a77eeb64dea1d5044e5da0dd7ecc4efea",
     "BUILD.zerocopy-0.8.49.bazel": "abf4eeb428f531fac21231a6db991663d360c634f82add5b2e9052eaab997c96",
@@ -465,11 +466,11 @@
     "BUILD.zstd-0.13.3.bazel": "7796198da687ca3f32898bbe62ed36ddc11e7d0f992fb1d361c01ff722dc141f",
     "BUILD.zstd-safe-7.2.4.bazel": "62be658098364c23a51c9a460d6b07e2f7dfdf20984f56103b49e0040725fe34",
     "BUILD.zstd-sys-2.0.16+zstd.1.5.7.bazel": "73a0971bbee1424688679dcdbf4884fbb45fddc356a4d6f3b31f258558358fe4",
-    "Cargo.lock": "172e0929f0c30ae8fbf413cfedd59a746945130c5f58e7878c3640f6d5bd2080",
-    "aliases.bzl": "0f77dd7aa5dd2030a5aad684a888da3450ed29ac77ee35a2713d1bd0702abe17",
-    "cargo-bazel.json": "dcca9a24b02c2fc47999a763adbdda76f0891d1763abf3d9bf83b30345b6efa2",
+    "Cargo.lock": "308ed6521da422c51fe44c1e626b73453c5828788b2ce5c36d2eaba36619ff7e",
+    "aliases.bzl": "4efec62c11c09026b6686b48b192e0923fb9e2c6b8100c5d206a1fd27a094442",
+    "cargo-bazel.json": "947ef5cfb10ada83c64f72aa81d09eeaa3e5be319d20bc3b02bcfef9e048da52",
     "generator-config.json": "970624004bccf4251581e7017d1df41e6736efac44f8cf6f033af0ba7048d722",
-    "repositories.MODULE.bazel": "224561d061c3e776ea97b8b918f10a6acccd7861b16a3c852aeb405857638da9"
+    "repositories.MODULE.bazel": "4236e5677b7166d1016b19e66b77207f696a9eaa1edb4aa1170f87e2ce1f2028"
   },
   "schema_version": 1,
   "sources": {
@@ -2513,15 +2514,15 @@
       "url": "https://static.crates.io/crates/lru-slab/0.1.2/download",
       "version": "0.1.2"
     },
-    "aos_hub_native_postgres_crates__lzma-rs-0.3.0": {
-      "build_file": "BUILD.lzma-rs-0.3.0.bazel",
-      "license": "MIT",
+    "aos_hub_native_postgres_crates__lzma-sys-0.1.20": {
+      "build_file": "BUILD.lzma-sys-0.1.20.bazel",
+      "license": "MIT/Apache-2.0",
       "license_domain": "apache-host",
-      "name": "lzma-rs",
-      "sha256": "297e814c836ae64db86b36cf2a557ba54368d03f6afcd7d947c266692f71115e",
-      "strip_prefix": "lzma-rs-0.3.0",
-      "url": "https://static.crates.io/crates/lzma-rs/0.3.0/download",
-      "version": "0.3.0"
+      "name": "lzma-sys",
+      "sha256": "5fda04ab3764e6cde78b9974eec4f779acaba7c4e84b36eca3cf77c581b85d27",
+      "strip_prefix": "lzma-sys-0.1.20",
+      "url": "https://static.crates.io/crates/lzma-sys/0.1.20/download",
+      "version": "0.1.20"
     },
     "aos_hub_native_postgres_crates__matchit-0.8.4": {
       "build_file": "BUILD.matchit-0.8.4.bazel",
@@ -4903,6 +4904,16 @@
       "url": "https://static.crates.io/crates/xmlparser/0.13.6/download",
       "version": "0.13.6"
     },
+    "aos_hub_native_postgres_crates__xz2-0.1.7": {
+      "build_file": "BUILD.xz2-0.1.7.bazel",
+      "license": "MIT/Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "xz2",
+      "sha256": "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2",
+      "strip_prefix": "xz2-0.1.7",
+      "url": "https://static.crates.io/crates/xz2/0.1.7/download",
+      "version": "0.1.7"
+    },
     "aos_hub_native_postgres_crates__yoke-0.8.3": {
       "build_file": "BUILD.yoke-0.8.3.bazel",
       "license": "Unicode-3.0",
@@ -5318,7 +5329,7 @@
     ],
     "contracts": {
       "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
-      "third_party/rust/hub-native.bzl": "7b96ece43e6293e37e9b934984404f20e2e86cda451aee3dfcfaca1a0191027a",
+      "third_party/rust/hub-native.bzl": "19e98921ff22d362557a3394450ab44dda75e7b998873af507050e6a0926bf3e",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
     },
@@ -5764,11 +5775,6 @@
         "features": [],
         "version": "=1.1.28"
       },
-      "lzma-rs": {
-        "default-features": true,
-        "features": [],
-        "version": "=0.3.0"
-      },
       "md-5": {
         "default-features": true,
         "features": [],
@@ -6002,6 +6008,13 @@
         ],
         "version": "=1.23.1"
       },
+      "xz2": {
+        "default-features": true,
+        "features": [
+          "static"
+        ],
+        "version": "=0.1.7"
+      },
       "zeroize": {
         "default-features": true,
         "features": [],
@@ -6023,12 +6036,8 @@
     "schema_version": 1
   },
   "tool_identity": {
-    "cargo": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+    "cargo": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/cargo",
     "closure": [
-      {
-        "narHash": "sha256:1vx4iinmcss0mp8k67p979k0fkax1lqdy6vwccb3mx30i6awqqhq",
-        "path": "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3"
-      },
       {
         "narHash": "sha256:0460jf7kr08j5c2s82yapqpdp17p5hk8vnb028p690n5yrd2inrb",
         "path": "/nix/store/071yhimnxva604hfim2d7m51k593jpks-bash-5.3p15"
@@ -6036,6 +6045,10 @@
       {
         "narHash": "sha256:12j6m23lfw5ci28aglhnc9zq448nampd126x1cy8nbz71jy0vwwx",
         "path": "/nix/store/0hsvhnbcc7rdm4ysk3wsfz7jlcawgxgz-linux-headers-6.12"
+      },
+      {
+        "narHash": "sha256:0rmkhgqvxbrwz7pbzq0h28ldx59hzzl52q2fa6hsxm7w8jsjkx0c",
+        "path": "/nix/store/4k2ypgq4zwwnfri04z4v0xx4jllnfvzc-workerd-cargo-bazel-0.18.0"
       },
       {
         "narHash": "sha256:0y5gycdr52a2xc8gzxf37bika6m7kyzw3az0lqdbmz4mma49drj5",
@@ -6062,12 +6075,24 @@
         "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
       },
       {
+        "narHash": "sha256:1d1bz1sdqzk3m3ibiznj1k325nqb1h78070g8bnrld98iyxcyi2p",
+        "path": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1"
+      },
+      {
         "narHash": "sha256:1jda1pw4105zkl8s5gb6zy0p08q5x029vgh2fps31f2pfq143mab",
         "path": "/nix/store/9d5sm56jg29gcfs4xia4ynymmahw6dks-xz-5.8.3"
       },
       {
+        "narHash": "sha256:1dv41crg5vnqa3l3n6pbgdmgqaz60p8icfjffdmizf1a4dd4fhkf",
+        "path": "/nix/store/bkypbbb7a2s3wsxgn0hc581yzyq7lpkx-python3-3.14.3"
+      },
+      {
         "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
         "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+      },
+      {
+        "narHash": "sha256:0abwynbibh6skbl6xsjlwisgpnara4a0f924nkdmg8yhi0g4w26z",
+        "path": "/nix/store/fkzbhzp93hw42w5dgfdrbsdv7a3cy13p-llvm-22.1.0"
       },
       {
         "narHash": "sha256:0dq59r0f8vdhmqzy2zars0xq12y1sa179xfbfvl9crk1px6a94f6",
@@ -6076,18 +6101,6 @@
       {
         "narHash": "sha256:0cdxvsdc0xmrw5bd28glv64963yz5y99ngzqbk6ihd4dw7nh05c1",
         "path": "/nix/store/h3y381vk7dz7alj6crzc224pwpm4lvwy-glibc-2.39-dev"
-      },
-      {
-        "narHash": "sha256:0qzmhwc0pd2r6bqs2nllagxysqb2v2qf1d291c6p7p3n1jrfx9ms",
-        "path": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1"
-      },
-      {
-        "narHash": "sha256:0rmkhgqvxbrwz7pbzq0h28ldx59hzzl52q2fa6hsxm7w8jsjkx0c",
-        "path": "/nix/store/j2gvqhqbkprzaklvqg0j82h59whgsryz-workerd-cargo-bazel-0.18.0"
-      },
-      {
-        "narHash": "sha256:02fsh2ljh0rlmz41mx6aqkkvd5i239nchb1xhsmkcailkdyrlrx7",
-        "path": "/nix/store/j7nidr85ia4bc427qhlrzsr7v4rm8akz-llvm-22.1.0"
       },
       {
         "narHash": "sha256:03hygpkakzvjgqd8xi0w2r2wk69wp71j955fr4shx02fs4n3nb6p",
@@ -6126,17 +6139,17 @@
         "path": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4"
       },
       {
-        "narHash": "sha256:1m8wd7jb8r8bcjyz8hqx115aygrz31w0i82gn4jwsdlpyhm91klb",
-        "path": "/nix/store/w6cwf3ns1j97c475chajmwk9v94xjzca-openssl-4.0.2"
+        "narHash": "sha256:1lvwqvhwq3hq31hvcdngq3w2q2brd8gsrbvx4nq955560qnap0p5",
+        "path": "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3"
       },
       {
         "narHash": "sha256:1vv30xb54bslyj4zrhir583a9m4ysqsmgyx4vfvpibqjaz3cndvi",
         "path": "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6"
       }
     ],
-    "generator": "/nix/store/j2gvqhqbkprzaklvqg0j82h59whgsryz-workerd-cargo-bazel-0.18.0/bin/cargo-bazel",
-    "path": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin:/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin",
-    "rustc": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+    "generator": "/nix/store/4k2ypgq4zwwnfri04z4v0xx4jllnfvzc-workerd-cargo-bazel-0.18.0/bin/cargo-bazel",
+    "path": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin:/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin",
+    "rustc": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc",
     "schema_version": 1
   }
 }

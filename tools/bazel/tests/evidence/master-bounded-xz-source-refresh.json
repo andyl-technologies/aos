@@ -1,0 +1,623 @@
+{
+  "cargo_oracle_sha256": "c7442dd7ce10c7c14f6211fc4d82ff871ac4cb76bcfa09862d1ec69dc75c27fa",
+  "configured_outputs": {
+    "accache": "/nix/store/13322jyzh6lmz1v4g0nalj4l71vw6byq-aos-bazel-accache-inventory-1",
+    "activation-core": "/nix/store/p2v4x82iz8qwwqd10m9lg05lnj52y5vp-aos-bazel-activation-core-inventory-1",
+    "activation-core-production": "/nix/store/22wd4b53zk3xm07kgd97j3gx411kxi0d-aos-bazel-activation-core-production-inventory-1",
+    "activation-crucible": "/nix/store/zzaxa9956h87i2cklyflzkfqgv17pzlk-aos-bazel-activation-crucible-inventory-1",
+    "activation-crucible-production": "/nix/store/vyfi3zw44n2fp23jwz8a15w20qw7qkjd-aos-bazel-activation-crucible-production-inventory-1",
+    "activation-storage": "/nix/store/3xnmq0159776sp61j1sdsji2n5zzcx4f-aos-bazel-activation-storage-inventory-1",
+    "activation-storage-production": "/nix/store/vf0vpp1p5acp3xcsyi7wai506j72qgdw-aos-bazel-activation-storage-production-inventory-1",
+    "activation-systemd": "/nix/store/mjw1kxqldjq58ck3f63kr3x1h4gjpknf-aos-bazel-activation-systemd-inventory-1",
+    "activation-systemd-parser": "/nix/store/gb1gl1plkbbfh7d6ll0l8jx39xdvbfv6-aos-bazel-activation-systemd-parser-inventory-1",
+    "activation-systemd-production": "/nix/store/v7g6gbq4r36nfk1kcdkpbpa2lsh4s2zc-aos-bazel-activation-systemd-production-inventory-1",
+    "aos-cli-fleet-tests": "/nix/store/mbjmwws1jhqwv8cyn03pr66akigwph2s-aos-bazel-aos-cli-fleet-tests-inventory-1",
+    "aos-cli-production": "/nix/store/12djcdssgkir358rzxjlkwf2181m6awb-aos-bazel-aos-cli-production-inventory-1",
+    "aos-cli-tests": "/nix/store/q7d3biwmdsl2lsfka6w2v22i6x9d1i97-aos-bazel-aos-cli-tests-inventory-1",
+    "boot-pilot": "/nix/store/x5cr1m2kvdbpgbs2k14r1l37s975nkmw-aos-bazel-boot-pilot-inventory-1",
+    "boot-preparation": "/nix/store/nz5fhh13ajv4v8g7wgrr0z6ndwm6zbx6-aos-bazel-boot-preparation-inventory-1",
+    "boot-preparation-minimal": "/nix/store/ln1nhlyipfkmlb71y52x0q08xwqnm5p7-aos-bazel-boot-preparation-minimal-inventory-1",
+    "boot-preparation-minimal-production": "/nix/store/8a9qmyxjgzl67kwal7bfm7fzssqviy8h-aos-bazel-boot-preparation-minimal-production-inventory-1",
+    "boot-preparation-production": "/nix/store/wl7ihm94c1c7vhl0gd9m8zq5kdklmb98-aos-bazel-boot-preparation-production-inventory-1",
+    "boot-preparation-standalone": "/nix/store/in5qizbv5r0va3qlwbl27bbi20xrkgx2-aos-bazel-boot-preparation-standalone-inventory-1",
+    "build-services": "/nix/store/840ik96gp2h7xp93idm3q63ysrhgcs8d-aos-bazel-build-services-inventory-1",
+    "cli-support": "/nix/store/811w7xaizv6bsa9ajf1ib2ldmgr8rayk-aos-bazel-cli-support-inventory-1",
+    "contracts": "/nix/store/9gmsg9p9n59f98szd4pn3la1ga1ym0ln-aos-bazel-contracts-inventory-1",
+    "control": "/nix/store/2rq468mabi4pikk223bkyb3szblr3sl0-aos-bazel-control-inventory-1",
+    "crucible-cli": "/nix/store/z62jkswbvx95xvh0qr2spfm6hm2vlb25-aos-bazel-crucible-cli-inventory-1",
+    "daemon": "/nix/store/ki3hal9458y887vl3wjil6s0862ajvs2-aos-bazel-daemon-inventory-1",
+    "deployment": "/nix/store/40pamcmgjm74kvrvdzh90jv4nsmcs69r-aos-bazel-deployment-inventory-1",
+    "device": "/nix/store/qq41p92v4hqziq4ai5j7s5ib9k016w2p-aos-bazel-device-inventory-1",
+    "engine": "/nix/store/nqmsm9hv1k9fz9xxd86849cj8x4x8ddr-aos-bazel-engine-inventory-1",
+    "fixture": "/nix/store/pzrv0yzch853iaiavp4r68s7chri81jl-aos-bazel-fixture-inventory-1",
+    "formats": "/nix/store/pcmhfyxbnqq0yfxpl8x7ligm38dfg971-aos-bazel-formats-inventory-1",
+    "guest": "/nix/store/j5aprxf8x5r3sj7bzl4pzw87xyn988zx-aos-bazel-guest-inventory-1",
+    "hub-client": "/nix/store/xhf8y4bnks35m7a23l9zc1m9rjc37zy2-aos-bazel-hub-client-inventory-1",
+    "hub-console": "/nix/store/9znfqf7xmmm1dypdkddxkn49dm5jmjz7-aos-bazel-hub-console-inventory-1",
+    "hub-console-browser": "/nix/store/6wjfi4yyqx9pxk0ax2i0j136hyv04lkn-aos-bazel-hub-console-browser-inventory-1",
+    "hub-db": "/nix/store/8mpk16q7nhj4v8as30vzc0a493n78ss3-aos-bazel-hub-db-inventory-1",
+    "hub-db-all-features": "/nix/store/06d3mim7fid3blvil9zsclnh9h87lcid-aos-bazel-hub-db-all-features-inventory-1",
+    "hub-db-all-features-production": "/nix/store/vw467vk2j5j5ih83nkhfcd7qpx9vx4m8-aos-bazel-hub-db-all-features-production-inventory-1",
+    "hub-db-production": "/nix/store/mv8v8ccyjm315z24410s22h30gya0xy1-aos-bazel-hub-db-production-inventory-1",
+    "hub-model": "/nix/store/56cbv3ik8qpjwlxwr95fpmx13b1m9hf7-aos-bazel-hub-model-inventory-1",
+    "hub-model-production": "/nix/store/ym2bdc2nkvys66phhjr4gy1qp5a15kw8-aos-bazel-hub-model-production-inventory-1",
+    "hub-native": "/nix/store/m8nwfdmar64xj87xxghrjg6mq12qgps2-aos-bazel-hub-native-inventory-1",
+    "hub-native-production": "/nix/store/qapakfxl890afaq22cwdycmq33fmavi0-aos-bazel-hub-native-production-inventory-1",
+    "hub-portable": "/nix/store/naa9arr5jlwi9cybzbd5h0fi5r2dpj72-aos-bazel-hub-portable-inventory-1",
+    "hub-service": "/nix/store/paylvgp9bj9knnbnqpp0lsjc204lgs2z-aos-bazel-hub-service-inventory-1",
+    "hub-service-all-features": "/nix/store/7lph8f65a7c7lq0j21af52gi22wshl69-aos-bazel-hub-service-all-features-inventory-1",
+    "hub-service-all-features-production": "/nix/store/ydsvq849yjrz5281ly2vh3rgyfwpgxwx-aos-bazel-hub-service-all-features-production-inventory-1",
+    "hub-service-production": "/nix/store/lglhw5nmsjbh6bp4kzsviw8krg03nh15-aos-bazel-hub-service-production-inventory-1",
+    "hub-worker-all-features-tests": "/nix/store/75zlmn0sq5fdrs9nzb4i41l87f5hav65-aos-bazel-hub-worker-all-features-tests-inventory-1",
+    "hub-worker-tests": "/nix/store/729bc0zk6bh7dk1hbps21djx4hal5xc0-aos-bazel-hub-worker-tests-inventory-1",
+    "hub-worker-wasm": "/nix/store/cq10qpcpd2dsh7dljqaxcb1b1yfqgf91-aos-bazel-hub-worker-wasm-inventory-1",
+    "hub-worker-wasm-all-features": "/nix/store/jfd9mpjgi0l7iskj89318s6gjic9pw0v-aos-bazel-hub-worker-wasm-all-features-inventory-1",
+    "hub-worker-wasm-do-e2e": "/nix/store/zmsmw3in35kpnkz44gmmm9f5mdic4937-aos-bazel-hub-worker-wasm-do-e2e-inventory-1",
+    "native-foundation": "/nix/store/1073ma4cqpzwqz39j7kwyjz15f8jj39g-aos-bazel-native-foundation-inventory-1",
+    "native-foundation-integration": "/nix/store/8ghkqli9jdp689fcpm0j06l4a740awcd-aos-bazel-native-foundation-integration-inventory-1",
+    "native-foundation-minimal": "/nix/store/zrw5xpk4n8n5x6kkcqszsagnfkcjbvkq-aos-bazel-native-foundation-minimal-inventory-1",
+    "native-foundation-production": "/nix/store/ldnkx5grpq408ps71hnvqxl5a023q2nc-aos-bazel-native-foundation-production-inventory-1",
+    "package-manager": "/nix/store/pk4ladj318nmrjpv9gjy2rc2wvglz048-aos-bazel-package-manager-inventory-1",
+    "package-manager-production": "/nix/store/y7x4ga537sdyy0z7j8mp4129ffn9nsz8-aos-bazel-package-manager-production-inventory-1",
+    "protocol": "/nix/store/j5767clim5nl9c5dk0cnnwx96pwp8rkb-aos-bazel-protocol-inventory-1",
+    "qemu-gateway-process-test": "/nix/store/3hrssyqya6nvwcs4q37cgia7sak1hlqz-aos-bazel-qemu-gateway-process-test-inventory-1",
+    "qemu-gpl-production": "/nix/store/npi1xa8dmn8prbfwmm8k10j2pq7pba8v-aos-bazel-qemu-gpl-production-inventory-1",
+    "qemu-host": "/nix/store/93zbszm1p957id4p9p985c7as5y8psnq-aos-bazel-qemu-host-inventory-1",
+    "qemu-plugin-process-test": "/nix/store/l1gx9jhvzrm6rjsfhbbhxh6fqlz8r3mm-aos-bazel-qemu-plugin-process-test-inventory-1",
+    "qemu-test-oracle-host": "/nix/store/vlfhbvcawsv1d0xmy3mwpsk6cgykgv44-aos-bazel-qemu-test-oracle-host-inventory-1",
+    "quota": "/nix/store/lag3kh7h8a7bf34idg4pva0v0cicxwai-aos-bazel-quota-inventory-1",
+    "registry-native": "/nix/store/5f68j3ih8vkfpq6lkm11rpm6dghdb0vj-aos-bazel-registry-native-inventory-1",
+    "registry-native-production": "/nix/store/mgsnpl627zg3ds2zq1xhkpba9fjx020b-aos-bazel-registry-native-production-inventory-1",
+    "registry-web": "/nix/store/362p7hmqp8mjqndxz38pswh1lfx8d5n0-aos-bazel-registry-web-inventory-1",
+    "registry-web-browser": "/nix/store/avhwcr2ipws01fn0grqv45zpqz5jsk6r-aos-bazel-registry-web-browser-inventory-1",
+    "release-coordination": "/nix/store/clxzc9qf0f59gycyfr76xs84qn96xl2k-aos-bazel-release-coordination-inventory-1",
+    "release-coordination-production": "/nix/store/60cdcixdg0klpzgccjag4fmi060qbang-aos-bazel-release-coordination-production-inventory-1",
+    "release-preparation": "/nix/store/6hvzl2d0ls50a465miszz9pbmbj3vq1r-aos-bazel-release-preparation-inventory-1",
+    "session": "/nix/store/111c8f9ay666vm4x7wpcc3ynim450axh-aos-bazel-session-inventory-1",
+    "shared": "/nix/store/8zxa779349y69mihmq8j10l7dbhd5rc8-aos-bazel-shared-inventory-1",
+    "source-catalog": "/nix/store/a51xlhchk405ccq7bnzmv4agl9ggygz7-aos-bazel-source-catalog-checks",
+    "store": "/nix/store/969sa5ngnzssjqzr767h3m9wf1l9vh9y-aos-bazel-store-inventory-1",
+    "store-s3": "/nix/store/vdywnv6gcgxvl24ild23j0mskkdzkavm-aos-bazel-store-s3-inventory-1"
+  },
+  "contract_only_profiles": [
+    "aos-cli-production",
+    "hub-worker-wasm",
+    "hub-worker-wasm-all-features",
+    "hub-worker-wasm-do-e2e"
+  ],
+  "dependency_changes": {
+    "cli_test_windows_consolidation": "Both regenerated CLI test SDKs drop the obsolete windows-sys 0.48 and eight associated windows-targets repositories, matching the merged workspace lockfile.",
+    "pinned_crates": {
+      "lzma-sys": {
+        "build_file": "BUILD.lzma-sys-0.1.20.bazel",
+        "license": "MIT/Apache-2.0",
+        "license_domain": "apache-host",
+        "name": "lzma-sys",
+        "sha256": "5fda04ab3764e6cde78b9974eec4f779acaba7c4e84b36eca3cf77c581b85d27",
+        "strip_prefix": "lzma-sys-0.1.20",
+        "url": "https://static.crates.io/crates/lzma-sys/0.1.20/download",
+        "version": "0.1.20"
+      },
+      "xz2": {
+        "build_file": "BUILD.xz2-0.1.7.bazel",
+        "license": "MIT/Apache-2.0",
+        "license_domain": "apache-host",
+        "name": "xz2",
+        "sha256": "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2",
+        "strip_prefix": "xz2-0.1.7",
+        "url": "https://static.crates.io/crates/xz2/0.1.7/download",
+        "version": "0.1.7"
+      }
+    },
+    "production_hub_native": "xz2 0.1.7 with static feature replaces lzma-rs; lzma-rs remains a test dependency.",
+    "transitive_native": "lzma-sys 0.1.20 compiles vendored liblzma C sources with the declared AOS toolchain."
+  },
+  "limits": [
+    "Configured inventory analysis establishes source selection, not full runtime qualification.",
+    "The static XZ fixture compiles dependencies but does not execute Hub decoding or link final Hub applications.",
+    "Inventory analysis uses previously qualified Console asset inputs; it does not requalify those assets.",
+    "No supported foreign-host or repeated performance acceptance claim is made."
+  ],
+  "merged_master": "b82df2e832b2e02b8dcd78b38e44981b43177152",
+  "native_compile": {
+    "actions": 31,
+    "build_script_environment": {
+      "AR": "/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin/ar",
+      "CARGO_FEATURE_STATIC": "1",
+      "CC": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+      "CFLAGS": "-U_FORTIFY_SOURCE",
+      "DEBUG": "true",
+      "HOST": "x86_64-unknown-linux-gnu",
+      "OPT_LEVEL": "0",
+      "TARGET": "x86_64-unknown-linux-gnu"
+    },
+    "cache_hits": 0,
+    "check": "checks.build.bazel.native-xz-source",
+    "execution_sha256": "7dcbbfa668e29fa1d4ffbd98bb00217f15471e8737014b1b7c5e9d4be6941eae",
+    "fixture": "An immutable private source view adds core_xz2 to the existing first-party Rust library fixture.",
+    "metrics_sha256": "2596d04cf82140bfefcfef59c2ec71b9c0929fd634913f0ba65ad47ca02a56c2",
+    "mnemonics": {
+      "AosPythonGenerate": 1,
+      "CargoBuildScriptRun": 3,
+      "ExtractCargoTomlEnvVars": 10,
+      "Rustc": 17
+    },
+    "offline_and_cache_flags": [
+      "--repository_disable_download",
+      "--lockfile_mode=error",
+      "--remote_cache=",
+      "--remote_executor=",
+      "--disk_cache="
+    ],
+    "output": "/nix/store/ll5979cx78mfzsjhmkifi922dhvfd3qg-aos-bazel-bounded-xz-native-source-probe-1",
+    "runners": {
+      "linux-sandbox": 31
+    },
+    "static_archive": {
+      "digest": {
+        "hash": "75d17c5271135cded14cf455aee80836a22b38b46cb6c6c4cb14cf78855d77a4",
+        "hashFunctionName": "SHA-256",
+        "sizeBytes": "1070656"
+      },
+      "isTool": false,
+      "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_hub_native_postgres_crates__lzma-sys-0.1.20/_bs.out_dir/liblzma.a",
+      "symlinkTargetPath": ""
+    }
+  },
+  "published_inventories": {
+    "accache-inventory.json": "99bd06159d1b708f8978ea045a9d6d1beacdfad28d02cb848026ff1f778324b8",
+    "activation-core-inventory.json": "b3081a77da67804de8d1dc0218a9be57d4b6a32a2ec0d3deec8871d1502dd6a5",
+    "activation-crucible-inventory.json": "a1104dc3227aa8b9dbdd4587b17b14ccde5f908a55bdabc9a7f8d779ac8bbc65",
+    "activation-storage-inventory.json": "870502fdd0007d8a4e912ad9b159feeaf20f529ea71920181b7392433ce2dcb5",
+    "activation-systemd-inventory.json": "fcacd35f4490867ff68c7e7040cd89fe82c2e4495a9ffde031f6c3d55cddba81",
+    "aos-cli-inventory.json": "b91a06e6160907df07cfb2e4346dce3ed4d6fa38befbd7c2fbf9073f97ff8085",
+    "boot-pilot-inventory.json": "7b33b5fc6ca64b6b65c73da02161b28b0506cfdd16ddf805f0c5ec0390f3daf4",
+    "boot-preparation-inventory.json": "be637c86c116caea15426fd28a088b85cbe313916a7e954dd2f8e69fad16619e",
+    "build-services-inventory.json": "e05469997e36b5e362450f95b753f0a5d1a8259cc8b80db701245cbaa96c64c4",
+    "cli-support-inventory.json": "1a5d452009a8192dfa2ac93f65d1097ca906f94193621be09df4da7b0638e032",
+    "contracts-inventory.json": "9d137cf303a4601614edcde3525411a54bdd668541d18018413f174f96b3ebed",
+    "control-inventory.json": "6b728b5467ba2aa726c9f4028d06b6e433caf8c6512386e827e6907f76df439e",
+    "crucible-cli-inventory.json": "7ebe93e5c97539ac7cd470cc2313586cf83f8255fd78e71cec7cc261ded7fd39",
+    "daemon-inventory.json": "7231a3a6f83aa1143530d19dd8941177ffddfea177e919f6fddd4fc1f1891837",
+    "deployment-inventory.json": "057117be2c5495888c3e50e4828d14c4cf191e8672810c774b053c44700f6c15",
+    "device-inventory.json": "b7d669a48cd56f89446d10e441751826485510ef04ec02e9cfc8cfb388a75046",
+    "engine-inventory.json": "706352dccefce2211a123e8ae15fb9b759b3ddd7ee036ab1846dc1fa08d7173f",
+    "fixture-inventory.json": "1b5561c0c9ab8d64bcc27c12985b17cccf71701c009673cefc4f1a29dcaa5b3f",
+    "formats-inventory.json": "077edb4ab910eaa0974c6ef15e193170d42d14c1428b7f9b411564f9ca064d25",
+    "guest-inventory.json": "6d7722a59292c54208014a9b4ade3c1fa5c317e80f834aa3f20a01fcd7c1f1f7",
+    "hub-client-inventory.json": "ceb26c37221fff7bfc7e11f3abf6010d6ad79d9de2bc0213a899aec9f76e31ab",
+    "hub-console-inventory.json": "4bbd81b4c908ca78af820bb9c232c1a07166ef2f4debf7a1ed0a4592ab3dd06b",
+    "hub-console-wasm-inventory.json": "9b563fe5c91cc58b9d04966c9a15943c76c17c864249c392d89f2d2cf967a115",
+    "hub-db-inventory.json": "a76f6e337557d69b34e4624dc03e49ea9da668660cfa6729890f75c75e79c408",
+    "hub-model-inventory.json": "d9945d4728f7fc078b2aeaf0b7c551956ceb5f83b01b266140c4489788b052f0",
+    "hub-native-inventory.json": "dcb09a46bc1619140ef4f561a05a00f5073dc4a971be16452b734f5553656480",
+    "hub-portable-inventory.json": "14f241fb3370d5297c00e99e1f6d3200f8141127b4c4b8eb9413201eb4eff196",
+    "hub-service-inventory.json": "5c60889f8b9f5570ca0b1865fbe02f044d3ed8c3e92721dc8ecd943e1abb5fd6",
+    "hub-worker-inventory.json": "0a48d57fe8a6ae7b72d4c5e7c5ecf9fbf91be4e69bbbd83b7ecf606aa1ad1ca7",
+    "hub-worker-wasm-inventory.json": "16045696b505e617080096a6c78d59b06f2909a7f3e04b554edf9d28a87a74d5",
+    "native-foundation-inventory.json": "9dc55e8f9017f3cd6c6c8e1f6371625e71d84b9cc7c3c7ce3dabc3c6c66a0a20",
+    "package-manager-inventory.json": "b8db04d885f80247c788b7d770f2c894a1e9e4862262d6cda7bf08051c8b5d64",
+    "protocol-inventory.json": "966313ef914f5a1825802ac4fa906651b7b87f01baa2d5d6f1c97cc387953cfd",
+    "qemu-gateway-process-test-inventory.json": "66f685c124d9e520f0a0ba26503fb7a41a8dc408cd537922314fdc08d94464aa",
+    "qemu-gpl-production-inventory.json": "a288e787c8ca086b4281423d46280867a1110adff102b98d7df543d5ed4ca850",
+    "qemu-host-inventory.json": "1a03cbc3d51a5f3e0cd2b1fce5a88b6a4ba574b94be8c8061aaf3e676a22ccfc",
+    "qemu-plugin-process-test-inventory.json": "31449a966c41048c236f80aed2dd44ed010a652478d99e0deb783b28cf169852",
+    "qemu-test-oracle-host-inventory.json": "4c76f76bd7ee7b78021531f47ad913db0e94f42aca33a3bebbd72ec980540ad7",
+    "quota-inventory.json": "060ce0dd940ecc6705ffad7e3acc1030e88087500fe5fa5a08b7b7620bfda0a5",
+    "registry-native-inventory.json": "24b24839c2cb76f8e63d9ae8104823fed76834c1730261454f91957a35582dc4",
+    "registry-web-inventory.json": "fbff3591ed81649f37e00cac4215e65966164481e7212e943d66206e80a38804",
+    "registry-web-wasm-inventory.json": "6ec47ca9d4628b3882ba1e508176765ae50de06d0c77bbea3266c1b5ddb41675",
+    "release-coordination-inventory.json": "bda9a8cff64c5de9915763831c85d2122bb7ae5c3efc596ec7919b9cdd82d544",
+    "release-preparation-inventory.json": "88459160bd7f1faa4909f7f231cbd7cacd85f7c599137ddd0253d55272dad793",
+    "session-inventory.json": "6455a3630967558f9458e81817f440d1a830781b682f248abb77cb386eb7320a",
+    "shared-inventory.json": "8905f87848a2ebebfeebe0015d39d08c933613c1df8c706353044c631dfaf83c",
+    "store-inventory.json": "10a056c4d7290b3ddb767d7bfd7cbdb43377878e180a05aaf29d7bc35c6c52df",
+    "store-s3-inventory.json": "07eaf570806ea8f554da4f58d0c9c0305dfb54bd2acb6ea479085409ed4d82bc"
+  },
+  "regenerated_profiles": [
+    "aos-cli-tests",
+    "aos-cli-fleet-tests",
+    "hub-native-postgres",
+    "hub-native-tests",
+    "hub-worker-tests",
+    "hub-worker-all-features-tests"
+  ],
+  "schema_version": 1,
+  "scope": "Merged bounded XZ dependencies, all configured source inventories, and an uncached static native dependency compilation.",
+  "sdk_specifications": {
+    "accache": {
+      "contracts_refreshed": false,
+      "generated_files": 54,
+      "source_crates": 49,
+      "specifications": "/nix/store/pdxb7137hcfvnqs4d770fm3606mbqvi2-aos-rust-accache-specifications-1"
+    },
+    "activation-core": {
+      "contracts_refreshed": false,
+      "generated_files": 46,
+      "source_crates": 41,
+      "specifications": "/nix/store/gwhq1bwabc2kq6f5c431mgcbs6kw96ri-aos-rust-activation-core-specifications-1"
+    },
+    "activation-core-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 81,
+      "source_crates": 76,
+      "specifications": "/nix/store/nky824srdjdrpqk2bff390qqda7vj5gd-aos-rust-activation-core-tests-specifications-1"
+    },
+    "activation-crucible": {
+      "contracts_refreshed": false,
+      "generated_files": 57,
+      "source_crates": 52,
+      "specifications": "/nix/store/ikz0sbg3vnzgpnk30c3ssfkwjbw7jhf6-aos-rust-activation-crucible-specifications-1"
+    },
+    "activation-crucible-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 150,
+      "source_crates": 145,
+      "specifications": "/nix/store/b8dcjyay5cdcaf0hcxv6fvp940lx6sdp-aos-rust-activation-crucible-tests-specifications-1"
+    },
+    "activation-storage": {
+      "contracts_refreshed": false,
+      "generated_files": 75,
+      "source_crates": 70,
+      "specifications": "/nix/store/gypmkz3168v98cimvfjsqpj2s4pgfkki-aos-rust-activation-storage-specifications-1"
+    },
+    "activation-systemd": {
+      "contracts_refreshed": false,
+      "generated_files": 144,
+      "source_crates": 139,
+      "specifications": "/nix/store/mi86y4fjj8k8r4icw5i1f5z8h0v6gxbh-aos-rust-activation-systemd-specifications-1"
+    },
+    "aos-cli-fleet-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 596,
+      "source_crates": 591,
+      "specifications": "/nix/store/cqbs1l56d4bzm2d85amn1rd0sr29yx0n-aos-rust-aos-cli-fleet-tests-specifications-1"
+    },
+    "aos-cli-production": {
+      "contracts_refreshed": true,
+      "generated_files": 565,
+      "source_crates": 560,
+      "specifications": "/nix/store/1xvafc6gmgcr1ayrrd2sqh64cf87h6bn-aos-rust-aos-cli-production-specifications-1"
+    },
+    "aos-cli-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 596,
+      "source_crates": 591,
+      "specifications": "/nix/store/gmgqdgvyq117ndj86wnsc2lprvwn0j82-aos-rust-aos-cli-tests-specifications-1"
+    },
+    "boot-preparation": {
+      "contracts_refreshed": false,
+      "generated_files": 356,
+      "source_crates": 351,
+      "specifications": "/nix/store/0c2qrg9mdwaig8pw8pz9vyy4wl4gjags-aos-rust-boot-preparation-specifications-1"
+    },
+    "boot-preparation-minimal": {
+      "contracts_refreshed": false,
+      "generated_files": 342,
+      "source_crates": 337,
+      "specifications": "/nix/store/305alv1qydxvd3f4pbn0hmghgqan9w3i-aos-rust-boot-preparation-minimal-specifications-1"
+    },
+    "build-services": {
+      "contracts_refreshed": false,
+      "generated_files": 268,
+      "source_crates": 263,
+      "specifications": "/nix/store/sq4bdk8a91hdnc0ywvk7bjn3n1a2rf24-aos-rust-build-services-specifications-1"
+    },
+    "cli-support": {
+      "contracts_refreshed": false,
+      "generated_files": 264,
+      "source_crates": 259,
+      "specifications": "/nix/store/idwalcphhx2520pdvf6p3j5sbzmr1azv-aos-rust-cli-support-specifications-1"
+    },
+    "control": {
+      "contracts_refreshed": false,
+      "generated_files": 287,
+      "source_crates": 282,
+      "specifications": "/nix/store/hx4jcy2nr9nnpmmcv89r530p8vpixg5m-aos-rust-control-specifications-1"
+    },
+    "core": {
+      "contracts_refreshed": false,
+      "generated_files": 41,
+      "source_crates": 36,
+      "specifications": "/nix/store/hlkv9ixjndqr4sh899b7n84n6c7vdb49-aos-rust-core-specifications-1"
+    },
+    "crucible-cli": {
+      "contracts_refreshed": false,
+      "generated_files": 366,
+      "source_crates": 361,
+      "specifications": "/nix/store/r3wg9v5798y3dqw431ylx9qkjfm1d7h1-aos-rust-crucible-cli-specifications-1"
+    },
+    "daemon": {
+      "contracts_refreshed": false,
+      "generated_files": 336,
+      "source_crates": 331,
+      "specifications": "/nix/store/ixvw2qic6jmvfwgkli6ikrn6gnl1snzg-aos-rust-daemon-specifications-1"
+    },
+    "deployment": {
+      "contracts_refreshed": false,
+      "generated_files": 106,
+      "source_crates": 101,
+      "specifications": "/nix/store/bpzpc3ppi866nhhkiqymhk6nphw34d9r-aos-rust-deployment-specifications-1"
+    },
+    "device": {
+      "contracts_refreshed": false,
+      "generated_files": 48,
+      "source_crates": 43,
+      "specifications": "/nix/store/8s365q6pd6ghpc6czp6z3qgq9k8qzkir-aos-rust-device-specifications-1"
+    },
+    "engine": {
+      "contracts_refreshed": false,
+      "generated_files": 143,
+      "source_crates": 138,
+      "specifications": "/nix/store/xjk7q43icyb0vrzp7bd5aviri3y2hl50-aos-rust-engine-specifications-1"
+    },
+    "formats": {
+      "contracts_refreshed": false,
+      "generated_files": 116,
+      "source_crates": 111,
+      "specifications": "/nix/store/6py6v48xpqlijsp001qabkargmd4lwfy-aos-rust-formats-specifications-1"
+    },
+    "guest": {
+      "contracts_refreshed": false,
+      "generated_files": 124,
+      "source_crates": 119,
+      "specifications": "/nix/store/k5w3pxpj4hd5wld8c4sxqn09v9hhbirw-aos-rust-guest-specifications-1"
+    },
+    "hub-client": {
+      "contracts_refreshed": false,
+      "generated_files": 197,
+      "source_crates": 192,
+      "specifications": "/nix/store/vrz55ky2qpmain299w44bqyaf1rjw7ai-aos-rust-hub-client-specifications-1"
+    },
+    "hub-console": {
+      "contracts_refreshed": false,
+      "generated_files": 119,
+      "source_crates": 114,
+      "specifications": "/nix/store/nxx81yzdvcqp7irbswl4pn1jila7zcxl-aos-rust-hub-console-specifications-1"
+    },
+    "hub-console-wasm": {
+      "contracts_refreshed": false,
+      "generated_files": 266,
+      "source_crates": 261,
+      "specifications": "/nix/store/8mab5f52m21bp76r1gw09bhxi55jd438-aos-rust-hub-console-wasm-specifications-1"
+    },
+    "hub-db": {
+      "contracts_refreshed": false,
+      "generated_files": 217,
+      "source_crates": 212,
+      "specifications": "/nix/store/2vkpg47srnmhvj7i4m4x7jqs59rzq4mh-aos-rust-hub-db-specifications-1"
+    },
+    "hub-db-all-features": {
+      "contracts_refreshed": false,
+      "generated_files": 252,
+      "source_crates": 247,
+      "specifications": "/nix/store/dcaccghjksm732prd2p3q1mk7vib9bzs-aos-rust-hub-db-all-features-specifications-1"
+    },
+    "hub-db-all-features-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 263,
+      "source_crates": 258,
+      "specifications": "/nix/store/l8c0rj785nknxwzfrj3q8vkh1iw86iiy-aos-rust-hub-db-all-features-tests-specifications-1"
+    },
+    "hub-db-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 228,
+      "source_crates": 223,
+      "specifications": "/nix/store/p46m0d4snxy0sqdrs6vwglp0mnwp6rwl-aos-rust-hub-db-tests-specifications-1"
+    },
+    "hub-model": {
+      "contracts_refreshed": false,
+      "generated_files": 129,
+      "source_crates": 124,
+      "specifications": "/nix/store/zpfw81j4xhs1553grwprpjx6j430a5yy-aos-rust-hub-model-specifications-1"
+    },
+    "hub-model-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 172,
+      "source_crates": 167,
+      "specifications": "/nix/store/gm9m9dfvxgn0bm2sxvpdv8bllg0x1y19-aos-rust-hub-model-tests-specifications-1"
+    },
+    "hub-native-postgres": {
+      "contracts_refreshed": false,
+      "generated_files": 463,
+      "source_crates": 458,
+      "specifications": "/nix/store/5vjbag21013ghq1dhp51yz105jxb1c39-aos-rust-hub-native-postgres-specifications-1"
+    },
+    "hub-native-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 499,
+      "source_crates": 494,
+      "specifications": "/nix/store/fbjz0362zzkm1d3a18y5znkd07hkyb39-aos-rust-hub-native-tests-specifications-1"
+    },
+    "hub-portable": {
+      "contracts_refreshed": false,
+      "generated_files": 72,
+      "source_crates": 67,
+      "specifications": "/nix/store/0jmfgc79dfqjw4n9s7wa9j71j1l2i6np-aos-rust-hub-portable-specifications-1"
+    },
+    "hub-service": {
+      "contracts_refreshed": false,
+      "generated_files": 293,
+      "source_crates": 288,
+      "specifications": "/nix/store/wrjihwjpjnfii957bbx5zyvw317zfij6-aos-rust-hub-service-specifications-1"
+    },
+    "hub-service-all-features": {
+      "contracts_refreshed": false,
+      "generated_files": 317,
+      "source_crates": 312,
+      "specifications": "/nix/store/qhw5cbwbf5jkg1hslsqsm1libbd4n94a-aos-rust-hub-service-all-features-specifications-1"
+    },
+    "hub-service-all-features-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 473,
+      "source_crates": 468,
+      "specifications": "/nix/store/4acxsb1aiqwv1zyyp6rqy4750g5x9vav-aos-rust-hub-service-all-features-tests-specifications-1"
+    },
+    "hub-service-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 450,
+      "source_crates": 445,
+      "specifications": "/nix/store/p3g8an1qs5izz1ph9qvknhp4k367xk8k-aos-rust-hub-service-tests-specifications-1"
+    },
+    "hub-worker-all-features-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 455,
+      "source_crates": 450,
+      "specifications": "/nix/store/myrxrczqsah10in8g2mh8k52c66hyd4d-aos-rust-hub-worker-all-features-tests-specifications-1"
+    },
+    "hub-worker-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 455,
+      "source_crates": 450,
+      "specifications": "/nix/store/wqgrgnlcnswd42xn4bzcb69x9lfwhgng-aos-rust-hub-worker-tests-specifications-1"
+    },
+    "hub-worker-wasm": {
+      "contracts_refreshed": true,
+      "generated_files": 273,
+      "source_crates": 268,
+      "specifications": "/nix/store/0b9iwmp353ffmh6907ms37r1dsf4ka6r-aos-rust-hub-worker-wasm-specifications-1"
+    },
+    "hub-worker-wasm-all-features": {
+      "contracts_refreshed": true,
+      "generated_files": 273,
+      "source_crates": 268,
+      "specifications": "/nix/store/939pb76lbh0v3fzamicm7cpf84ylncgr-aos-rust-hub-worker-wasm-all-features-specifications-1"
+    },
+    "hub-worker-wasm-do-e2e": {
+      "contracts_refreshed": true,
+      "generated_files": 273,
+      "source_crates": 268,
+      "specifications": "/nix/store/gk0kis0a1jhnffrf2cbcsz0falbis8rk-aos-rust-hub-worker-wasm-do-e2e-specifications-1"
+    },
+    "native-bindings": {
+      "contracts_refreshed": false,
+      "generated_files": 13,
+      "source_crates": 8,
+      "specifications": "/nix/store/rc3rv32ahhy0rblsk1kplvx3mwnvylb5-aos-rust-native-bindings-specifications-1"
+    },
+    "native-foundation": {
+      "contracts_refreshed": false,
+      "generated_files": 344,
+      "source_crates": 339,
+      "specifications": "/nix/store/bwzqsd9ix3kqyj1xsjyr38bgaqns75a7-aos-rust-native-foundation-specifications-1"
+    },
+    "native-foundation-minimal": {
+      "contracts_refreshed": false,
+      "generated_files": 256,
+      "source_crates": 251,
+      "specifications": "/nix/store/vjrbyq7vz5kdzcy4hj8a25kn4a49yxsn-aos-rust-native-foundation-minimal-specifications-1"
+    },
+    "native-foundation-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 351,
+      "source_crates": 346,
+      "specifications": "/nix/store/x08h65x7iqh3ln98bvpj8ixz2qn96z76-aos-rust-native-foundation-tests-specifications-1"
+    },
+    "package-manager": {
+      "contracts_refreshed": false,
+      "generated_files": 401,
+      "source_crates": 396,
+      "specifications": "/nix/store/ncf76l0f93bl2zr6wnjb7f5jbrqsn6i2-aos-rust-package-manager-specifications-1"
+    },
+    "package-manager-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 425,
+      "source_crates": 420,
+      "specifications": "/nix/store/98bkcr2wm6zm7vynbvhjz2pkgcx7zmmx-aos-rust-package-manager-tests-specifications-1"
+    },
+    "qemu-gpl-plugin-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 40,
+      "source_crates": 35,
+      "specifications": "/nix/store/cadfpwf7a05dzwdaaspcf3qy3bd06rg9-aos-rust-qemu-gpl-plugin-tests-specifications-1"
+    },
+    "qemu-gpl-production": {
+      "contracts_refreshed": false,
+      "generated_files": 40,
+      "source_crates": 35,
+      "specifications": "/nix/store/bka5p3nw54vslb4ybibgncavqv4yh97c-aos-rust-qemu-gpl-production-specifications-1"
+    },
+    "qemu-gpl-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 76,
+      "source_crates": 71,
+      "specifications": "/nix/store/liryrsi93sk5ikj0jbw81dd2gwfagl0p-aos-rust-qemu-gpl-tests-specifications-1"
+    },
+    "qemu-host": {
+      "contracts_refreshed": false,
+      "generated_files": 143,
+      "source_crates": 138,
+      "specifications": "/nix/store/agibpnvfrx0346vds8pc629pc7x3b2cm-aos-rust-qemu-host-specifications-1"
+    },
+    "qemu-test-oracle-host": {
+      "contracts_refreshed": false,
+      "generated_files": 266,
+      "source_crates": 261,
+      "specifications": "/nix/store/c0hail3l1mfjhqa95sv2ijjpnapi52bc-aos-rust-qemu-test-oracle-host-specifications-1"
+    },
+    "quota": {
+      "contracts_refreshed": false,
+      "generated_files": 18,
+      "source_crates": 13,
+      "specifications": "/nix/store/q81vx0nadk8wwbgx8ijj47sa5fmzh7hq-aos-rust-quota-specifications-1"
+    },
+    "registry-native": {
+      "contracts_refreshed": false,
+      "generated_files": 401,
+      "source_crates": 396,
+      "specifications": "/nix/store/9q4x396a8rbpb8y3z59blzg23kqdxavi-aos-rust-registry-native-specifications-1"
+    },
+    "registry-native-tests": {
+      "contracts_refreshed": false,
+      "generated_files": 401,
+      "source_crates": 396,
+      "specifications": "/nix/store/xddlasm6al6g79dzdrr8gyd43bdvd10r-aos-rust-registry-native-tests-specifications-1"
+    },
+    "registry-web": {
+      "contracts_refreshed": false,
+      "generated_files": 245,
+      "source_crates": 240,
+      "specifications": "/nix/store/d1f11wzc0qvyzcvw891zimkbq5yzirfy-aos-rust-registry-web-specifications-1"
+    },
+    "registry-web-wasm": {
+      "contracts_refreshed": false,
+      "generated_files": 245,
+      "source_crates": 240,
+      "specifications": "/nix/store/26hp5a14na4iqg74phncyryvv740i3zz-aos-rust-registry-web-wasm-specifications-1"
+    },
+    "release-coordination": {
+      "contracts_refreshed": false,
+      "generated_files": 379,
+      "source_crates": 374,
+      "specifications": "/nix/store/xi94lp7s21slmpg0giw2ywz1r22ki8hc-aos-rust-release-coordination-specifications-1"
+    },
+    "release-preparation": {
+      "contracts_refreshed": false,
+      "generated_files": 190,
+      "source_crates": 185,
+      "specifications": "/nix/store/w7vy2540dp49wivk9aribf2p156dja7p-aos-rust-release-preparation-specifications-1"
+    },
+    "session": {
+      "contracts_refreshed": false,
+      "generated_files": 149,
+      "source_crates": 144,
+      "specifications": "/nix/store/mrg1jkgn90vr0w71qlf2vvksfclfg8v7-aos-rust-session-specifications-1"
+    },
+    "store": {
+      "contracts_refreshed": false,
+      "generated_files": 124,
+      "source_crates": 119,
+      "specifications": "/nix/store/khlb7wvbiv6x4a0xr34likgx29kiabci-aos-rust-store-specifications-1"
+    },
+    "store-s3": {
+      "contracts_refreshed": false,
+      "generated_files": 283,
+      "source_crates": 278,
+      "specifications": "/nix/store/3s93ikp5wphhlmpvx3wigaj0xpf1i6li-aos-rust-store-s3-specifications-1"
+    }
+  },
+  "source_catalog": {
+    "output": "/nix/store/a51xlhchk405ccq7bnzmv4agl9ggygz7-aos-bazel-source-catalog-checks",
+    "report_sha256": "b8025a1c701a7c06704982e9ea3fab00c69acd65af3384dcd38d3099569665a0"
+  }
+}

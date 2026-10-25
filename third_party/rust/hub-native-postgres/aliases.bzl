@@ -27,7 +27,6 @@ CRATES = {
     "jwt-rustcrypto": "@aos_hub_native_postgres_crates__jwt-rustcrypto-0.2.1//:jwt_rustcrypto",
     "libc": "@aos_hub_native_postgres_crates__libc-0.2.186//:libc",
     "libz-sys": "@aos_hub_native_postgres_crates__libz-sys-1.1.28//:libz_sys",
-    "lzma-rs": "@aos_hub_native_postgres_crates__lzma-rs-0.3.0//:lzma_rs",
     "md-5": "@aos_hub_native_postgres_crates__md-5-0.11.0//:md5",
     "openssl-sys": "@aos_hub_native_postgres_crates__openssl-sys-0.9.116//:openssl_sys",
     "p256": "@aos_hub_native_postgres_crates__p256-0.13.2//:p256",
@@ -65,6 +64,7 @@ CRATES = {
     "unicode-normalization": "@aos_hub_native_postgres_crates__unicode-normalization-0.1.25//:unicode_normalization",
     "url": "@aos_hub_native_postgres_crates__url-2.5.8//:url",
     "uuid": "@aos_hub_native_postgres_crates__uuid-1.23.1//:uuid",
+    "xz2": "@aos_hub_native_postgres_crates__xz2-0.1.7//:xz2",
     "zeroize": "@aos_hub_native_postgres_crates__zeroize-1.9.0//:zeroize",
     "zstd": "@aos_hub_native_postgres_crates__zstd-0.13.3//:zstd"
 }

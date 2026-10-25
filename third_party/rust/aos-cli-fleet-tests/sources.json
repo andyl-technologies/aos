@@ -1,7 +1,7 @@
 {
   "contracts": {
     "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
-    "third_party/rust/aos-cli.bzl": "03b7b845f29187fc2be454be85f08ac650856e8e6daad723551188de11c305aa",
+    "third_party/rust/aos-cli.bzl": "339faa0e0c182fdc415df439c91d9bfb7df7de5eb44f094bd811c28addbbe2dc",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
     "tools/bazel/metadata/update_rust.py": "6dba4f1b82faf10f246c5cefa1ea2c92a7d075c4cc58b8da9183b9a34080f28c",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
@@ -279,6 +279,7 @@
     "BUILD.lru-0.18.5.bazel": "da17b0b18ef7679d594461a02b7bff112925addffb677aff8fa8d1de001abc02",
     "BUILD.lru-slab-0.1.2.bazel": "742ecb81445f07376556bf5176e5fcee762228a5dc052d209c03a307f0d84ad5",
     "BUILD.lzma-rs-0.3.0.bazel": "a168fcd679c228c40f5a3ed117414c7ac09bd12503785f72c26a921acd59168a",
+    "BUILD.lzma-sys-0.1.20.bazel": "bb10124674720cf50e7dfa3996288e1cb25dcbe4021af963b3f07cba4afa0bb6",
     "BUILD.mac_address-1.2.1.bazel": "7730c99de2fee8e7bc196a1bb464b66c5e799303413e512e98f5c5c18a46775f",
     "BUILD.matchit-0.8.4.bazel": "0a2dfa56a0186edf5879104c335f5c2cd71e35310fe2c5f51be391e6ce95e696",
     "BUILD.md-5-0.11.0.bazel": "f0f27289a70635c019c721d5d27f858bd48b317769c6f2ef5446c295088d37a7",
@@ -556,26 +557,17 @@
     "BUILD.winapi-util-0.1.11.bazel": "1a8a506a58a6ff47e4028609706c05fe90f4a654a3d842ac6179c5bb27d4590d",
     "BUILD.winapi-x86_64-pc-windows-gnu-0.4.0.bazel": "243226fad8a53463687f6e6dee1a9c985b0007c577a7a7767797a10157fccb0e",
     "BUILD.windows-link-0.2.1.bazel": "b1385208cc6375c21484a883ebdf88d2c41cba851fed65eebcc6fe801a2d4fc3",
-    "BUILD.windows-sys-0.48.0.bazel": "a7091709a38f635d58e0dd6027fa070a2441bf5a469d44adb62af86ef8780785",
     "BUILD.windows-sys-0.52.0.bazel": "bebaae792f40f3fda254c4ed5947c1aa23e06dbc8f232f953e0bed55ea89e82d",
     "BUILD.windows-sys-0.59.0.bazel": "848e76356badf494630e9bb40667f533c610ba52254d91decf5b42ec1a84b10b",
     "BUILD.windows-sys-0.61.2.bazel": "2b3e1b2d81303985a0930be142fe86c300854f5e5ae7be82e0daff4a66183af6",
-    "BUILD.windows-targets-0.48.5.bazel": "ce1c19a391bab51203885c6ee74cfc2d2ed585d948d7061944bc9fb63de94f7c",
     "BUILD.windows-targets-0.52.6.bazel": "b9c12e49335b28675a8a54bca06c36e95088c71e96c75f97954d21ea13f70318",
-    "BUILD.windows_aarch64_gnullvm-0.48.5.bazel": "c4968b0e91d7ca18bffcca2be742307cec757f0f31cc37f4800d4dfbdb8c0ad1",
     "BUILD.windows_aarch64_gnullvm-0.52.6.bazel": "6b32a34af1277744ff8aeecbf03422aae2a121a465a638bae84e654c08a81659",
-    "BUILD.windows_aarch64_msvc-0.48.5.bazel": "551b8e0971485e5409d6078bce2ae4087632da1f3471fdad247e704fc956cabd",
     "BUILD.windows_aarch64_msvc-0.52.6.bazel": "05ff3d4125bbd137c5566932205d7259b4ea5ea90b5e3d6f15342491a9085c6e",
-    "BUILD.windows_i686_gnu-0.48.5.bazel": "12b50767cfdea3195f3491436d2190db08d51db284c5657dc7032c80c77956f8",
     "BUILD.windows_i686_gnu-0.52.6.bazel": "0f957a2319583bd19f97fa3f8f9c28eaac284f545d94ddf487a6db7b9bf3c49c",
     "BUILD.windows_i686_gnullvm-0.52.6.bazel": "50ab392ce51a6d1dd89fec793784798fb9de000a789fb346f1ec65907827a725",
-    "BUILD.windows_i686_msvc-0.48.5.bazel": "323fc53473cc068afb9bf763cf6318a64722e06595659f3ab2b35efcd2586ca9",
     "BUILD.windows_i686_msvc-0.52.6.bazel": "1672c6d3ea45bceb17ec76ee7af839e0ec854206c366b47164ab39af123fc460",
-    "BUILD.windows_x86_64_gnu-0.48.5.bazel": "b74a78f80069a8995e7b190d6aca15d0f8ec19c60019de01c1e33dc49b0ae2de",
     "BUILD.windows_x86_64_gnu-0.52.6.bazel": "76dd7e555de1af9eec05bc07c3f11ad2c480ec3ba963382c41310306b3c2ad7f",
-    "BUILD.windows_x86_64_gnullvm-0.48.5.bazel": "2daefe7064c13b2021ac1696e83737ca5a4b21da5ba0ef68bd83a87a33a8981d",
     "BUILD.windows_x86_64_gnullvm-0.52.6.bazel": "6cd4298a9a4812d1926c5825dab3198ad1510fa8ea15f902ba7b3eb642b943c1",
-    "BUILD.windows_x86_64_msvc-0.48.5.bazel": "5c38374b479a40990842a2531511059c8aa229e03ff18473fa0edbca591e7e4f",
     "BUILD.windows_x86_64_msvc-0.52.6.bazel": "bd6f7e3ff1069591b9dc072f567a755eed1c8c785104f246c9c623f004185575",
     "BUILD.winnow-0.7.15.bazel": "89a6c7d4f607d72cc49ef5496c69c03cd75910f8b584cff2b031703e35184d29",
     "BUILD.wit-bindgen-0.51.0.bazel": "7774905e910a21711a1e336d8ba9bdc8ea18e70f936572df822806e5301b7efd",
@@ -590,6 +582,7 @@
     "BUILD.x509-parser-0.18.1.bazel": "11434cd6512d04bba47560e68bab15fd10d9e9c1cc2dbe5e1c0b45d19802f2f4",
     "BUILD.xattr-1.6.1.bazel": "a5f731a9b6c222cd19268294c51cc4d5989c682a099594df60855157a6dda802",
     "BUILD.xmlparser-0.13.6.bazel": "e269adfdfd8313950a7a46a1a4abfe2ce45c1de73410ac42361a81efb45201f8",
+    "BUILD.xz2-0.1.7.bazel": "aff03d641d1faf37613907ce075594b901bb0137742da07108e2a9680800d469",
     "BUILD.yasna-0.6.0.bazel": "1af9006de2e622ddcc70a1bca3f9056459171fddc9fd836b9212763f5a875f0a",
     "BUILD.yoke-0.8.3.bazel": "ec67b6768899c694244f7e8ed5734f4dcb7f29c1430261f6596a147e9323195b",
     "BUILD.yoke-derive-0.8.2.bazel": "e671ce8d6499961f5ab0da6b157fbfb836f49c74760a5ba8413fd03a7e0a87dd",
@@ -606,11 +599,11 @@
     "BUILD.zstd-0.13.3.bazel": "13cf327724a41d0a49a96c39c716ebbe3d08b3040868785a75dc7f8376bb2b43",
     "BUILD.zstd-safe-7.2.4.bazel": "7ae44b614bd153048bf36ecd91733c7dfa2b1e75e05daa7682982cd582eaa7d4",
     "BUILD.zstd-sys-2.0.16+zstd.1.5.7.bazel": "3bc504df786155e99cb189eeb296e443a4dfa875eb75a6a4895fe095150b35a4",
-    "Cargo.lock": "b5cc1c487f8cc39a32444e784a3a53713dad3fd0ad7d9f5382c85c0614155da7",
-    "aliases.bzl": "291badc9f4a20212e9c60409e414eed56055cce7d59a94d3f3d1983e855100e7",
-    "cargo-bazel.json": "2b3eae96d1ca5ce0fd95e5411829f0eb0c5d5b69425eba6b15fee7737cf7f6e0",
+    "Cargo.lock": "97790c1c1ef3ae930667b8af81a32dfd6fb7463aab07cb962d7cbe676cee4dfd",
+    "aliases.bzl": "90d618399d6630ac854749d5959f8799b005eb0dfd645e63b6c9bd7277014cdf",
+    "cargo-bazel.json": "60ad39afbb0c728ec067addb784534b6543cd61accb9277f6cc827590160e418",
     "generator-config.json": "62ed44261d815d1ef7742d603e118d0bc0c1ae57a2814ac2f592a2998e427e3f",
-    "repositories.MODULE.bazel": "3989a33088615db1d8a5d7a38746848d68ff964bc8ea500ac2d5fa09a78a1b77"
+    "repositories.MODULE.bazel": "fc67386b9c4ced6269a484872a04a73bcf3f3efc5a6389ba79d50dccc38bb3f7"
   },
   "schema_version": 1,
   "sources": {
@@ -3323,6 +3316,16 @@
       "strip_prefix": "lzma-rs-0.3.0",
       "url": "https://static.crates.io/crates/lzma-rs/0.3.0/download",
       "version": "0.3.0"
+    },
+    "aos_aos_cli_fleet_tests_crates__lzma-sys-0.1.20": {
+      "build_file": "BUILD.lzma-sys-0.1.20.bazel",
+      "license": "MIT/Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "lzma-sys",
+      "sha256": "5fda04ab3764e6cde78b9974eec4f779acaba7c4e84b36eca3cf77c581b85d27",
+      "strip_prefix": "lzma-sys-0.1.20",
+      "url": "https://static.crates.io/crates/lzma-sys/0.1.20/download",
+      "version": "0.1.20"
     },
     "aos_aos_cli_fleet_tests_crates__mac_address-1.2.1": {
       "build_file": "BUILD.mac_address-1.2.1.bazel",
@@ -6094,16 +6097,6 @@
       "url": "https://static.crates.io/crates/windows-link/0.2.1/download",
       "version": "0.2.1"
     },
-    "aos_aos_cli_fleet_tests_crates__windows-sys-0.48.0": {
-      "build_file": "BUILD.windows-sys-0.48.0.bazel",
-      "license": "MIT OR Apache-2.0",
-      "license_domain": "apache-host",
-      "name": "windows-sys",
-      "sha256": "677d2418bec65e3338edb076e806bc1ec15693c5d0104683f2efe857f61056a9",
-      "strip_prefix": "windows-sys-0.48.0",
-      "url": "https://static.crates.io/crates/windows-sys/0.48.0/download",
-      "version": "0.48.0"
-    },
     "aos_aos_cli_fleet_tests_crates__windows-sys-0.52.0": {
       "build_file": "BUILD.windows-sys-0.52.0.bazel",
       "license": "MIT OR Apache-2.0",
@@ -6134,16 +6127,6 @@
       "url": "https://static.crates.io/crates/windows-sys/0.61.2/download",
       "version": "0.61.2"
     },
-    "aos_aos_cli_fleet_tests_crates__windows-targets-0.48.5": {
-      "build_file": "BUILD.windows-targets-0.48.5.bazel",
-      "license": "MIT OR Apache-2.0",
-      "license_domain": "apache-host",
-      "name": "windows-targets",
-      "sha256": "9a2fa6e2155d7247be68c096456083145c183cbbbc2764150dda45a87197940c",
-      "strip_prefix": "windows-targets-0.48.5",
-      "url": "https://static.crates.io/crates/windows-targets/0.48.5/download",
-      "version": "0.48.5"
-    },
     "aos_aos_cli_fleet_tests_crates__windows-targets-0.52.6": {
       "build_file": "BUILD.windows-targets-0.52.6.bazel",
       "license": "MIT OR Apache-2.0",
@@ -6153,16 +6136,6 @@
       "strip_prefix": "windows-targets-0.52.6",
       "url": "https://static.crates.io/crates/windows-targets/0.52.6/download",
       "version": "0.52.6"
-    },
-    "aos_aos_cli_fleet_tests_crates__windows_aarch64_gnullvm-0.48.5": {
-      "build_file": "BUILD.windows_aarch64_gnullvm-0.48.5.bazel",
-      "license": "MIT OR Apache-2.0",
-      "license_domain": "apache-host",
-      "name": "windows_aarch64_gnullvm",
-      "sha256": "2b38e32f0abccf9987a4e3079dfb67dcd799fb61361e53e2882c3cbaf0d905d8",
-      "strip_prefix": "windows_aarch64_gnullvm-0.48.5",
-      "url": "https://static.crates.io/crates/windows_aarch64_gnullvm/0.48.5/download",
-      "version": "0.48.5"
     },
     "aos_aos_cli_fleet_tests_crates__windows_aarch64_gnullvm-0.52.6": {
       "build_file": "BUILD.windows_aarch64_gnullvm-0.52.6.bazel",
@@ -6174,16 +6147,6 @@
       "url": "https://static.crates.io/crates/windows_aarch64_gnullvm/0.52.6/download",
       "version": "0.52.6"
     },
-    "aos_aos_cli_fleet_tests_crates__windows_aarch64_msvc-0.48.5": {
-      "build_file": "BUILD.windows_aarch64_msvc-0.48.5.bazel",
-      "license": "MIT OR Apache-2.0",
-      "license_domain": "apache-host",
-      "name": "windows_aarch64_msvc",
-      "sha256": "dc35310971f3b2dbbf3f0690a219f40e2d9afcf64f9ab7cc1be722937c26b4bc",
-      "strip_prefix": "windows_aarch64_msvc-0.48.5",
-      "url": "https://static.crates.io/crates/windows_aarch64_msvc/0.48.5/download",
-      "version": "0.48.5"
-    },
     "aos_aos_cli_fleet_tests_crates__windows_aarch64_msvc-0.52.6": {
       "build_file": "BUILD.windows_aarch64_msvc-0.52.6.bazel",
       "license": "MIT OR Apache-2.0",
@@ -6193,16 +6156,6 @@
       "strip_prefix": "windows_aarch64_msvc-0.52.6",
       "url": "https://static.crates.io/crates/windows_aarch64_msvc/0.52.6/download",
       "version": "0.52.6"
-    },
-    "aos_aos_cli_fleet_tests_crates__windows_i686_gnu-0.48.5": {
-      "build_file": "BUILD.windows_i686_gnu-0.48.5.bazel",
-      "license": "MIT OR Apache-2.0",
-      "license_domain": "apache-host",
-      "name": "windows_i686_gnu",
-      "sha256": "a75915e7def60c94dcef72200b9a8e58e5091744960da64ec734a6c6e9b3743e",
-      "strip_prefix": "windows_i686_gnu-0.48.5",
-      "url": "https://static.crates.io/crates/windows_i686_gnu/0.48.5/download",
-      "version": "0.48.5"
     },
     "aos_aos_cli_fleet_tests_crates__windows_i686_gnu-0.52.6": {
       "build_file": "BUILD.windows_i686_gnu-0.52.6.bazel",
@@ -6224,16 +6177,6 @@
       "url": "https://static.crates.io/crates/windows_i686_gnullvm/0.52.6/download",
       "version": "0.52.6"
     },
-    "aos_aos_cli_fleet_tests_crates__windows_i686_msvc-0.48.5": {
-      "build_file": "BUILD.windows_i686_msvc-0.48.5.bazel",
-      "license": "MIT OR Apache-2.0",
-      "license_domain": "apache-host",
-      "name": "windows_i686_msvc",
-      "sha256": "8f55c233f70c4b27f66c523580f78f1004e8b5a8b659e05a4eb49d4166cca406",
-      "strip_prefix": "windows_i686_msvc-0.48.5",
-      "url": "https://static.crates.io/crates/windows_i686_msvc/0.48.5/download",
-      "version": "0.48.5"
-    },
     "aos_aos_cli_fleet_tests_crates__windows_i686_msvc-0.52.6": {
       "build_file": "BUILD.windows_i686_msvc-0.52.6.bazel",
       "license": "MIT OR Apache-2.0",
@@ -6243,16 +6186,6 @@
       "strip_prefix": "windows_i686_msvc-0.52.6",
       "url": "https://static.crates.io/crates/windows_i686_msvc/0.52.6/download",
       "version": "0.52.6"
-    },
-    "aos_aos_cli_fleet_tests_crates__windows_x86_64_gnu-0.48.5": {
-      "build_file": "BUILD.windows_x86_64_gnu-0.48.5.bazel",
-      "license": "MIT OR Apache-2.0",
-      "license_domain": "apache-host",
-      "name": "windows_x86_64_gnu",
-      "sha256": "53d40abd2583d23e4718fddf1ebec84dbff8381c07cae67ff7768bbf19c6718e",
-      "strip_prefix": "windows_x86_64_gnu-0.48.5",
-      "url": "https://static.crates.io/crates/windows_x86_64_gnu/0.48.5/download",
-      "version": "0.48.5"
     },
     "aos_aos_cli_fleet_tests_crates__windows_x86_64_gnu-0.52.6": {
       "build_file": "BUILD.windows_x86_64_gnu-0.52.6.bazel",
@@ -6264,16 +6197,6 @@
       "url": "https://static.crates.io/crates/windows_x86_64_gnu/0.52.6/download",
       "version": "0.52.6"
     },
-    "aos_aos_cli_fleet_tests_crates__windows_x86_64_gnullvm-0.48.5": {
-      "build_file": "BUILD.windows_x86_64_gnullvm-0.48.5.bazel",
-      "license": "MIT OR Apache-2.0",
-      "license_domain": "apache-host",
-      "name": "windows_x86_64_gnullvm",
-      "sha256": "0b7b52767868a23d5bab768e390dc5f5c55825b6d30b86c844ff2dc7414044cc",
-      "strip_prefix": "windows_x86_64_gnullvm-0.48.5",
-      "url": "https://static.crates.io/crates/windows_x86_64_gnullvm/0.48.5/download",
-      "version": "0.48.5"
-    },
     "aos_aos_cli_fleet_tests_crates__windows_x86_64_gnullvm-0.52.6": {
       "build_file": "BUILD.windows_x86_64_gnullvm-0.52.6.bazel",
       "license": "MIT OR Apache-2.0",
@@ -6283,16 +6206,6 @@
       "strip_prefix": "windows_x86_64_gnullvm-0.52.6",
       "url": "https://static.crates.io/crates/windows_x86_64_gnullvm/0.52.6/download",
       "version": "0.52.6"
-    },
-    "aos_aos_cli_fleet_tests_crates__windows_x86_64_msvc-0.48.5": {
-      "build_file": "BUILD.windows_x86_64_msvc-0.48.5.bazel",
-      "license": "MIT OR Apache-2.0",
-      "license_domain": "apache-host",
-      "name": "windows_x86_64_msvc",
-      "sha256": "ed94fce61571a4006852b7389a063ab983c02eb1bb37b47f8272ce92d06d9538",
-      "strip_prefix": "windows_x86_64_msvc-0.48.5",
-      "url": "https://static.crates.io/crates/windows_x86_64_msvc/0.48.5/download",
-      "version": "0.48.5"
     },
     "aos_aos_cli_fleet_tests_crates__windows_x86_64_msvc-0.52.6": {
       "build_file": "BUILD.windows_x86_64_msvc-0.52.6.bazel",
@@ -6433,6 +6346,16 @@
       "strip_prefix": "xmlparser-0.13.6",
       "url": "https://static.crates.io/crates/xmlparser/0.13.6/download",
       "version": "0.13.6"
+    },
+    "aos_aos_cli_fleet_tests_crates__xz2-0.1.7": {
+      "build_file": "BUILD.xz2-0.1.7.bazel",
+      "license": "MIT/Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "xz2",
+      "sha256": "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2",
+      "strip_prefix": "xz2-0.1.7",
+      "url": "https://static.crates.io/crates/xz2/0.1.7/download",
+      "version": "0.1.7"
     },
     "aos_aos_cli_fleet_tests_crates__yasna-0.6.0": {
       "build_file": "BUILD.yasna-0.6.0.bazel",
@@ -6869,7 +6792,7 @@
     ],
     "contracts": {
       "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
-      "third_party/rust/aos-cli.bzl": "03b7b845f29187fc2be454be85f08ac650856e8e6daad723551188de11c305aa",
+      "third_party/rust/aos-cli.bzl": "339faa0e0c182fdc415df439c91d9bfb7df7de5eb44f094bd811c28addbbe2dc",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
     },
@@ -7845,6 +7768,13 @@
         "features": [],
         "version": "=1.0.10"
       },
+      "xz2": {
+        "default-features": true,
+        "features": [
+          "static"
+        ],
+        "version": "=0.1.7"
+      },
       "zeroize": {
         "default-features": true,
         "features": [],
@@ -7866,12 +7796,8 @@
     "schema_version": 1
   },
   "tool_identity": {
-    "cargo": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+    "cargo": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/cargo",
     "closure": [
-      {
-        "narHash": "sha256:1vx4iinmcss0mp8k67p979k0fkax1lqdy6vwccb3mx30i6awqqhq",
-        "path": "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3"
-      },
       {
         "narHash": "sha256:0460jf7kr08j5c2s82yapqpdp17p5hk8vnb028p690n5yrd2inrb",
         "path": "/nix/store/071yhimnxva604hfim2d7m51k593jpks-bash-5.3p15"
@@ -7879,6 +7805,10 @@
       {
         "narHash": "sha256:12j6m23lfw5ci28aglhnc9zq448nampd126x1cy8nbz71jy0vwwx",
         "path": "/nix/store/0hsvhnbcc7rdm4ysk3wsfz7jlcawgxgz-linux-headers-6.12"
+      },
+      {
+        "narHash": "sha256:0rmkhgqvxbrwz7pbzq0h28ldx59hzzl52q2fa6hsxm7w8jsjkx0c",
+        "path": "/nix/store/4k2ypgq4zwwnfri04z4v0xx4jllnfvzc-workerd-cargo-bazel-0.18.0"
       },
       {
         "narHash": "sha256:0y5gycdr52a2xc8gzxf37bika6m7kyzw3az0lqdbmz4mma49drj5",
@@ -7905,12 +7835,24 @@
         "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
       },
       {
+        "narHash": "sha256:1d1bz1sdqzk3m3ibiznj1k325nqb1h78070g8bnrld98iyxcyi2p",
+        "path": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1"
+      },
+      {
         "narHash": "sha256:1jda1pw4105zkl8s5gb6zy0p08q5x029vgh2fps31f2pfq143mab",
         "path": "/nix/store/9d5sm56jg29gcfs4xia4ynymmahw6dks-xz-5.8.3"
       },
       {
+        "narHash": "sha256:1dv41crg5vnqa3l3n6pbgdmgqaz60p8icfjffdmizf1a4dd4fhkf",
+        "path": "/nix/store/bkypbbb7a2s3wsxgn0hc581yzyq7lpkx-python3-3.14.3"
+      },
+      {
         "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
         "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+      },
+      {
+        "narHash": "sha256:0abwynbibh6skbl6xsjlwisgpnara4a0f924nkdmg8yhi0g4w26z",
+        "path": "/nix/store/fkzbhzp93hw42w5dgfdrbsdv7a3cy13p-llvm-22.1.0"
       },
       {
         "narHash": "sha256:0dq59r0f8vdhmqzy2zars0xq12y1sa179xfbfvl9crk1px6a94f6",
@@ -7919,18 +7861,6 @@
       {
         "narHash": "sha256:0cdxvsdc0xmrw5bd28glv64963yz5y99ngzqbk6ihd4dw7nh05c1",
         "path": "/nix/store/h3y381vk7dz7alj6crzc224pwpm4lvwy-glibc-2.39-dev"
-      },
-      {
-        "narHash": "sha256:0qzmhwc0pd2r6bqs2nllagxysqb2v2qf1d291c6p7p3n1jrfx9ms",
-        "path": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1"
-      },
-      {
-        "narHash": "sha256:0rmkhgqvxbrwz7pbzq0h28ldx59hzzl52q2fa6hsxm7w8jsjkx0c",
-        "path": "/nix/store/j2gvqhqbkprzaklvqg0j82h59whgsryz-workerd-cargo-bazel-0.18.0"
-      },
-      {
-        "narHash": "sha256:02fsh2ljh0rlmz41mx6aqkkvd5i239nchb1xhsmkcailkdyrlrx7",
-        "path": "/nix/store/j7nidr85ia4bc427qhlrzsr7v4rm8akz-llvm-22.1.0"
       },
       {
         "narHash": "sha256:03hygpkakzvjgqd8xi0w2r2wk69wp71j955fr4shx02fs4n3nb6p",
@@ -7969,17 +7899,17 @@
         "path": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4"
       },
       {
-        "narHash": "sha256:1m8wd7jb8r8bcjyz8hqx115aygrz31w0i82gn4jwsdlpyhm91klb",
-        "path": "/nix/store/w6cwf3ns1j97c475chajmwk9v94xjzca-openssl-4.0.2"
+        "narHash": "sha256:1lvwqvhwq3hq31hvcdngq3w2q2brd8gsrbvx4nq955560qnap0p5",
+        "path": "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3"
       },
       {
         "narHash": "sha256:1vv30xb54bslyj4zrhir583a9m4ysqsmgyx4vfvpibqjaz3cndvi",
         "path": "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6"
       }
     ],
-    "generator": "/nix/store/j2gvqhqbkprzaklvqg0j82h59whgsryz-workerd-cargo-bazel-0.18.0/bin/cargo-bazel",
-    "path": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin:/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin",
-    "rustc": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+    "generator": "/nix/store/4k2ypgq4zwwnfri04z4v0xx4jllnfvzc-workerd-cargo-bazel-0.18.0/bin/cargo-bazel",
+    "path": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin:/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin",
+    "rustc": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc",
     "schema_version": 1
   }
 }

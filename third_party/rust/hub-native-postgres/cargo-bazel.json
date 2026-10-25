@@ -1,5 +1,5 @@
 {
-  "checksum": "66a81508e6bb48bc13b0af137882d1bccf12a423cbe36ee3b827d66d06d6f639",
+  "checksum": "42f9820e290d129db03e21776944039dbdaf382014142947d248c9981176c9c9",
   "crates": {
     "adler2 2.0.1": {
       "name": "adler2",
@@ -4257,7 +4257,6 @@
         ],
         "crate_features": {
           "common": [
-            "default",
             "std"
           ],
           "selects": {}
@@ -6987,10 +6986,6 @@
               "target": "libz_sys"
             },
             {
-              "id": "lzma-rs 0.3.0",
-              "target": "lzma_rs"
-            },
-            {
               "id": "md-5 0.11.0",
               "target": "md5"
             },
@@ -7137,6 +7132,10 @@
             {
               "id": "uuid 1.23.1",
               "target": "uuid"
+            },
+            {
+              "id": "xz2 0.1.7",
+              "target": "xz2"
             },
             {
               "id": "zeroize 1.9.0",
@@ -13706,21 +13705,33 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "lzma-rs 0.3.0": {
-      "name": "lzma-rs",
-      "version": "0.3.0",
-      "package_url": "https://github.com/gendx/lzma-rs",
+    "lzma-sys 0.1.20": {
+      "name": "lzma-sys",
+      "version": "0.1.20",
+      "package_url": "https://github.com/alexcrichton/xz2-rs",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/lzma-rs/0.3.0/download",
-          "sha256": "297e814c836ae64db86b36cf2a557ba54368d03f6afcd7d947c266692f71115e"
+          "url": "https://static.crates.io/crates/lzma-sys/0.1.20/download",
+          "sha256": "5fda04ab3764e6cde78b9974eec4f779acaba7c4e84b36eca3cf77c581b85d27"
         }
       },
       "targets": [
         {
           "Library": {
-            "crate_name": "lzma_rs",
+            "crate_name": "lzma_sys",
             "crate_root": "src/lib.rs",
+            "srcs": {
+              "allow_empty": true,
+              "include": [
+                "**/*.rs"
+              ]
+            }
+          }
+        },
+        {
+          "BuildScript": {
+            "crate_name": "build_script_build",
+            "crate_root": "build.rs",
             "srcs": {
               "allow_empty": true,
               "include": [
@@ -13730,32 +13741,64 @@
           }
         }
       ],
-      "library_target_name": "lzma_rs",
+      "library_target_name": "lzma_sys",
       "common_attrs": {
         "compile_data_glob": [
           "**"
         ],
+        "crate_features": {
+          "common": [
+            "static"
+          ],
+          "selects": {}
+        },
         "deps": {
           "common": [
             {
-              "id": "byteorder 1.5.0",
-              "target": "byteorder"
+              "id": "libc 0.2.186",
+              "target": "libc"
             },
             {
-              "id": "crc 3.4.0",
-              "target": "crc"
+              "id": "lzma-sys 0.1.20",
+              "target": "build_script_build"
             }
           ],
           "selects": {}
         },
         "edition": "2018",
-        "version": "0.3.0"
+        "version": "0.1.20"
       },
-      "license": "MIT",
+      "build_script_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "compile_data_glob_excludes": [
+          "**/*.rs"
+        ],
+        "data_glob": [
+          "**"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "cc 1.2.65",
+              "target": "cc"
+            },
+            {
+              "id": "pkg-config 0.3.33",
+              "target": "pkg_config"
+            }
+          ],
+          "selects": {}
+        },
+        "links": "lzma"
+      },
+      "license": "MIT/Apache-2.0",
       "license_ids": [
+        "Apache-2.0",
         "MIT"
       ],
-      "license_file": "LICENSE"
+      "license_file": "LICENSE-APACHE"
     },
     "matchit 0.8.4": {
       "name": "matchit",
@@ -28943,6 +28986,60 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
+    "xz2 0.1.7": {
+      "name": "xz2",
+      "version": "0.1.7",
+      "package_url": "https://github.com/alexcrichton/xz2-rs",
+      "repository": {
+        "Http": {
+          "url": "https://static.crates.io/crates/xz2/0.1.7/download",
+          "sha256": "388c44dc09d76f1536602ead6d325eb532f5c122f17782bd57fb47baeeb767e2"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "xz2",
+            "crate_root": "src/lib.rs",
+            "srcs": {
+              "allow_empty": true,
+              "include": [
+                "**/*.rs"
+              ]
+            }
+          }
+        }
+      ],
+      "library_target_name": "xz2",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "crate_features": {
+          "common": [
+            "static"
+          ],
+          "selects": {}
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "lzma-sys 0.1.20",
+              "target": "lzma_sys"
+            }
+          ],
+          "selects": {}
+        },
+        "edition": "2018",
+        "version": "0.1.7"
+      },
+      "license": "MIT/Apache-2.0",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "license_file": "LICENSE-APACHE"
+    },
     "yoke 0.8.3": {
       "name": "yoke",
       "version": "0.8.3",
@@ -30047,7 +30144,6 @@
     "jwt-rustcrypto 0.2.1",
     "libc 0.2.186",
     "libz-sys 1.1.28",
-    "lzma-rs 0.3.0",
     "md-5 0.11.0",
     "openssl-sys 0.9.116",
     "p256 0.13.2",
@@ -30085,6 +30181,7 @@
     "unicode-normalization 0.1.25",
     "url 2.5.8",
     "uuid 1.23.1",
+    "xz2 0.1.7",
     "zeroize 1.9.0",
     "zstd 0.13.3"
   ],

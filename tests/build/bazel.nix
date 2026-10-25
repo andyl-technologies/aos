@@ -115,6 +115,7 @@ in
     sysroot-metadata = import ./_bazel-sysroot-metadata.nix {inherit pkgs;};
     manifest-extractor = import ./_bazel-manifest-extractor.nix {inherit pkgs;};
     static-runtime = import ./_bazel-static-runtime.nix {inherit pkgs;};
+    native-xz-source = import ./_bazel-xz-source.nix {inherit pkgs;};
     native-libraries = let
       shared = import ./_bazel-native-libraries.nix {inherit pkgs;};
       static = import ./_bazel-native-libraries.nix {
@@ -490,6 +491,7 @@ in
             sysroot-metadata
             manifest-extractor
             native-libraries
+            native-xz-source
             static-runtime.all
             precision-parity
             license-boundary

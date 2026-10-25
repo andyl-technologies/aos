@@ -1,7 +1,7 @@
 {
   "contracts": {
-    "crates/Cargo.lock": "b18fd38ac5bba2e0de53f2e79096739f664289b80861a470f72ea7faeb1ead58",
-    "crates/Cargo.toml": "f2d3e5f496217ab00020726b43c55acc30fb9c6a38196825ccd2a694bf1ee18e",
+    "crates/Cargo.lock": "7631207053bb5ff0de018fca6e6e6b8508e0cc218351d9a9629c702a3ae3edf8",
+    "crates/Cargo.toml": "4ea1901d3e46f12cede8a706cef714c4e2c37f3db70c147e6eee0ede14ae38a4",
     "crates/accache/Cargo.lock": "dc5cde7d1ded15dd3eff021516ee9fc9ce58ddf4ed15245bf1b8d55d3e1f8f6f",
     "crates/accache/Cargo.toml": "fd956f2b54861515b55346656f5d06a000912edebf0810a3ee427d693d9d4594",
     "crates/accache/accache-frontend/Cargo.toml": "a359f00d127c0c8009d87e28431c137972f5ad76571f589eab6cc43d7380ea83",
@@ -58,7 +58,7 @@
     "crates/hub/aos-hub-console/Cargo.toml": "3e8d7af2c9a5150add9071a6c1c9b562f7fd4818d625e776bd4fe2ad95ffe019",
     "crates/hub/aos-hub-db/Cargo.toml": "8486640cbbc448222065cba01162d71db9fd5c9a51728a55306955d1869efd31",
     "crates/hub/aos-hub-model/Cargo.toml": "2cc659c7682894500eb9997ae86f039427b7803370bc8760d022fdba49f690a7",
-    "crates/hub/aos-hub-native/Cargo.toml": "25cf2fed07f48744e0ce7ec5c22acfd9bb07720cc902018be818a44368e33403",
+    "crates/hub/aos-hub-native/Cargo.toml": "84c5ef8529a122096f34231293df2f2dae3bf4d1e3a3ae746ea92a064e2d1742",
     "crates/hub/aos-hub-service/Cargo.toml": "437aba325efab4f14d141da2f689c56d5724367e3edb1ac672c5e5e0b444e501",
     "crates/hub/aos-hub-ui/Cargo.toml": "8a8b0dbbde252274e8c71e2a31aa1aefe97ae78f60a815ebf4f1507a10200484",
     "crates/hub/aos-hub-worker/Cargo.toml": "a23b9a01a1c57da8ce4dae22717f6584a25b80e07c18a57938de5c7cd0b2830c",
@@ -476,6 +476,12 @@
         "crates/Cargo.toml"
       ],
       "path": "tests/build/_bazel-registry-native.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-registry-web-wasm-cargo.nix"
     },
     {
       "interfaces": [

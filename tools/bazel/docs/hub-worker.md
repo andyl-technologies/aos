@@ -20,6 +20,20 @@ Cargo aliases, including `getrandom` and `getrandom_03` where both versions are
 used. The runtime-independent Worker tests retain the Native Hub test-support
 edge without adding it to deployment builds.
 
+The merged bounded-XZ implementation uses `xz2` with its static feature in
+Native Hub. Native Worker tests and CLI test SDKs carry that dependency;
+Worker Wasm deployments retain their existing dependency graph. `lzma-rs`
+remains available for Native Hub's test fixtures.
+
+`checks.build.bazel.native-xz-source` compiles the pinned `xz2` and `lzma-sys`
+sources with the AOS Rust and C toolchains in an uncached Linux sandbox.
+It uses a private copy of the existing Rust fixture to exercise the dependency
+without changing application targets. This probe checks native compilation;
+Hub runtime behavior and application parity require their separate gates.
+The [merged XZ source checkpoint](../tests/evidence/master-bounded-xz-source-refresh.json)
+retains the 31 sandboxed actions, static archive digest, 65 SDK specification
+checks, and 48 refreshed source inventory families.
+
 ## Deployment packaging
 
 `//crates/hub/aos-hub-worker:shared` compiles the deployment library for

@@ -76,6 +76,7 @@ CRATES = {
     "unicode-normalization": "@aos_hub_native_tests_crates__unicode-normalization-0.1.25//:unicode_normalization",
     "url": "@aos_hub_native_tests_crates__url-2.5.8//:url",
     "uuid": "@aos_hub_native_tests_crates__uuid-1.23.1//:uuid",
+    "xz2": "@aos_hub_native_tests_crates__xz2-0.1.7//:xz2",
     "zeroize": "@aos_hub_native_tests_crates__zeroize-1.9.0//:zeroize",
     "zstd": "@aos_hub_native_tests_crates__zstd-0.13.3//:zstd"
 }

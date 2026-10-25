@@ -93,6 +93,7 @@ CRATES = {
     "url": "@aos_aos_cli_fleet_tests_crates__url-2.5.8//:url",
     "uuid": "@aos_aos_cli_fleet_tests_crates__uuid-1.23.1//:uuid",
     "webpki-roots": "@aos_aos_cli_fleet_tests_crates__webpki-roots-1.0.10//:webpki_roots",
+    "xz2": "@aos_aos_cli_fleet_tests_crates__xz2-0.1.7//:xz2",
     "zeroize": "@aos_aos_cli_fleet_tests_crates__zeroize-1.9.0//:zeroize",
     "zstd": "@aos_aos_cli_fleet_tests_crates__zstd-0.13.3//:zstd"
 }

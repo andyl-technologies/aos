@@ -28,7 +28,6 @@ HUB_NATIVE_POSTGRES_PACKAGES = {
     "humantime": crate.spec(version = "=2.3.0"),
     "jwt-rustcrypto": crate.spec(version = "=0.2.1"),
     "libc": crate.spec(version = "=0.2.186"),
-    "lzma-rs": crate.spec(version = "=0.3.0"),
     "md-5": crate.spec(version = "=0.11.0"),
     "p256": crate.spec(version = "=0.13.2", features = ["ecdsa"]),
     "password-hash": crate.spec(version = "=0.5.0", features = ["getrandom"]),
@@ -64,6 +63,7 @@ HUB_NATIVE_POSTGRES_PACKAGES = {
     "unicode-normalization": crate.spec(version = "=0.1.25"),
     "url": crate.spec(version = "=2.5.8"),
     "uuid": crate.spec(version = "=1.23.1", features = ["serde", "v4"]),
+    "xz2": crate.spec(version = "=0.1.7", features = ["static"]),
     "zeroize": crate.spec(version = "=1.9.0"),
     "zstd": crate.spec(version = "=0.13.3", features = ["zstdmt"]),
 }
@@ -141,6 +141,7 @@ HUB_NATIVE_TESTS_PACKAGES = {
     "unicode-normalization": crate.spec(version = "=0.1.25"),
     "url": crate.spec(version = "=2.5.8"),
     "uuid": crate.spec(version = "=1.23.1", features = ["serde", "v4"]),
+    "xz2": crate.spec(version = "=0.1.7", features = ["static"]),
     "zeroize": crate.spec(version = "=1.9.0"),
     "zstd": crate.spec(version = "=0.13.3", features = ["zstdmt"]),
 }

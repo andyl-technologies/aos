@@ -46,7 +46,6 @@ DEPENDENCIES = [
     "//third_party/rust:core_futures_util",
     "//third_party/rust:core_hex",
     "//third_party/rust:core_hmac",
-    "//third_party/rust:core_lzma_rs",
     "//third_party/rust:core_p256",
     "//third_party/rust:core_rand",
     "//third_party/rust:core_reqwest",
@@ -66,6 +65,7 @@ DEPENDENCIES = [
     "//third_party/rust:core_tracing",
     "//third_party/rust:core_url",
     "//third_party/rust:core_uuid",
+    "//third_party/rust:core_xz2",
     "//third_party/rust:core_zeroize",
     "//third_party/rust:core_zstd",
 ]
@@ -82,6 +82,7 @@ TEST_DEPENDENCIES = [
     "//third_party/rust:core_http",
     "//third_party/rust:core_http_body_util",
     "//third_party/rust:core_jsonwebtoken",
+    "//third_party/rust:core_lzma_rs",
     "//third_party/rust:core_rusqlite",
     "//third_party/rust:core_sqlx",
     "//third_party/rust:core_tower",
