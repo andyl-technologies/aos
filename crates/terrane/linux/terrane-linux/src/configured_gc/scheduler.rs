@@ -22,6 +22,13 @@ use crate::quota_confinement::Installed;
 
 type Collector<'repository> = LocalCollection<'repository, TokioLocalFs, TokioClock>;
 
+/// Distinguishes reaching Sweep from actually performing its bounded work.
+#[derive(Eq, PartialEq)]
+enum Progress {
+    Marking,
+    Swept,
+}
+
 #[derive(Default)]
 struct Cursors {
     maintenance: MaintenanceCursor,
@@ -57,21 +64,25 @@ async fn collect(
         .await
         .map_err(Error::Io)?
         .to_string();
-    let mut collector = repository
-        .start_next_local_collection(holder, plan.settings.lease_seconds, plan.windows)
+    let restoration = repository
+        .start_next_local_restoration(holder, plan.settings.lease_seconds, plan.windows)
         .await?;
+    let mut collector = restoration.begin_next_collection().await?;
     let mut cursors = Cursors::default();
     let mut next_cycle = deadline(plan)?;
     let mut ready = Some(ready);
 
     loop {
         installed.check_current().map_err(Error::Io)?;
-        step(&mut collector, &mut cursors, plan).await?;
+        let progress = step(&mut collector, &mut cursors, plan).await?;
         if collector.state().phase == Phase::Sweep {
             if let Some(notification) = ready.take() {
                 notification().map_err(Error::Io)?;
             }
-            if Instant::now() >= next_cycle {
+            // Slow marking must still reach sweep work before an expired
+            // interval can start another cycle. Otherwise every cycle can mark
+            // successfully while retirement and recovery starve indefinitely.
+            if progress == Progress::Swept && Instant::now() >= next_cycle {
                 collector.begin_next_cycle().await?;
                 next_cycle = deadline(plan)?;
             }
@@ -90,13 +101,13 @@ async fn step(
     collector: &mut Collector<'_>,
     cursors: &mut Cursors,
     plan: &ValidatedCollector<'_>,
-) -> Result<(), Error> {
+) -> Result<Progress, Error> {
     if collector.state().phase == Phase::Mark {
         collector.mark_batch(plan.settings.mark_batch).await?;
         if collector.state().pending.is_empty() {
             collector.finish_mark().await?;
         }
-        return Ok(());
+        return Ok(Progress::Marking);
     }
 
     let intents = collector
@@ -110,7 +121,7 @@ async fn step(
                 // mark a fresh cycle before considering that pack again.
                 if collector.restore_pack(intent.exclusion).await? {
                     collector.begin_next_cycle().await?;
-                    return Ok(());
+                    return Ok(Progress::Marking);
                 }
             }
             DeletePhase::Done | DeletePhase::Cancelled => {}
@@ -138,7 +149,7 @@ async fn step(
                         && collector.restore_pack(exclusion).await?
                     {
                         collector.begin_next_cycle().await?;
-                        return Ok(());
+                        return Ok(Progress::Marking);
                     }
                     // Existing intent, including Done, stays in its original
                     // recovery protocol; a paged inventory cannot establish this.
@@ -169,7 +180,7 @@ async fn step(
             })
             .await?;
     }
-    Ok(())
+    Ok(Progress::Swept)
 }
 
 fn disconnected() -> Error {

@@ -94,13 +94,61 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+Exact-incarnation local deletion lookup at `83cd177fbc` passes its original
+full-D guest in 1,534.927 seconds. Complete review verifies all 8,218 immutable
+source files, 5,470 crate inputs, the actual retained Cargo SDK library-test
+artifact and installed executable hash. The exact case executes once as
+UID/GID 840 on ext4 with empty capabilities and no-new-privileges. It requires
+absence before ownership, exact pending status, no match for another epoch
+and exact durable Done, alongside all original elapsed-D, physical absence,
+incarnation, journal, publication and idempotence assertions. This is a native
+lookup/deletion component result, not complete configured GC-role acceptance.
+
+Restoration can now transfer its original session into a fresh ordinary marking
+cycle. The transfer renews the same whole lease and invokes the existing native
+checkpoint producer, which independently authenticates current roots and selects
+above retained cycle keys. The session's native clock and cancellation poison
+remain intact. Automatic restoration scopes candidate verification using the
+actual held registered cycle inventory without creating or reserving a marking
+checkpoint. Its hint discovery uses the existing current native observation.
+`LocalRestoration` retains the repository's genuine Original and original
+coordinator through the same transfer. Configured local collector startup now
+uses this assembly; selection and dispatch of startup restoration candidates
+remain outstanding.
+
+The focused guest adds genuine restore-to-marking and expired-transfer cases,
+paired with the original Meta restoration/reopen regression. The new positive
+case requires unchanged earlier checkpoint bytes, the same holder/epoch with
+renewed expiry, fresh marking and retirement, stale old Trash refusal and zero
+extra data-body reads. Poisoning after transfer must invalidate a check retained
+before transfer, which distinguishes the original session from cloned lease
+bytes. The expired case requires no selected-state or checkpoint change. Each
+case retains the 180-second actor bound; the new three-case suite has a
+600-second whole-guest bound. Native and mandatory compilation qualification
+remain pending; no acceptance changes.
+
 The migrated restoration guest at `c8e84fe13e` finishes in 1,578.609 seconds
 with all ten original exact cases passing as the isolated ext4 actor. The added
 eleventh case fails on the same lineage-digest assertion documented below;
 the aggregate remains failed. Correction `127be00d39` preserves signed carried
-dependencies instead of requiring unchanged encoding. Native collector and
-corrected eleven-case restoration qualifications are running from the frozen
-`ea10cabb8d` source alongside mandatory application compilation.
+dependencies instead of requiring unchanged encoding. The configured collector guest at `ea10cabb8d` fails in 680.547 seconds:
+its real actor reaches readiness but does not reclaim the orphan within the
+original 180-second bound. Frozen source hashes are unchanged and failed
+scratch/evidence are retained. The scheduler can finish a slow marking pass
+after its cycle interval and start another marking cycle before performing
+any sweep work. It now requires a completed bounded sweep step before interval
+rollover. Separately, the fixture incorrectly sought GC checkpoints in portable
+snapshot projections; the corrected observer checks the contiguous protected
+commit/transaction chain, exact predecessors, whole-value changes, binding,
+genesis and snapshot digests. A fresh observation of genuine Done precedes
+SIGTERM, and timeout diagnostics retain pair presence, physical cycle inventory
+and the last observer result. Actor and whole-guest deadlines are unchanged.
+All supported SDK and both Linux strict compiler profiles pass for this
+restoration handoff and the corrected scheduler/observer. Python AST, original
+selector preservation, touched Nix formatting and PLAN-2 checks pass. These
+corrections still require fresh native qualification. Corrected eleven-case
+restoration and mandatory application qualification continue from the original
+frozen `ea10cabb8d` source.
 
 Mandatory workspace compilation at `c8e84fe13e` and `83cd177fbc` passes in
 1,567.318 and 1,289.360 seconds respectively. Complete independent reviews
@@ -129,8 +177,8 @@ Done after full D, physical pack/index/Trash absence, multiple selected cycles
 under the original lease, and an unchanged live head with an authenticated
 payload read. The source-bound image retains a fourth actual Cargo artifact
 for this fixture. Its guest harness is registered with a 420-second bound;
-native and mandatory compilation qualification remain pending. The CLI remains
-unchanged. Compaction, startup restoration of excluded required metadata,
+the first native qualification fails as recorded above; fresh native and
+mandatory compilation qualification remain pending. The CLI remains unchanged. Compaction, startup restoration of excluded required metadata,
 complete role filesystem isolation and other GC backends remain outstanding;
 this component does not establish full GC-role or task acceptance.
 
@@ -171,9 +219,9 @@ ownership, exact pending status, absence for a different epoch and exact `Done`
 status after actual deletion. All original elapsed-D, physical absence,
 incarnation, journal, publication and idempotence assertions remain. Both
 supported Tokio all-target strict lint profiles and the std-only library
-profile pass, along with touched formatting, PLAN-2 and diff checks. Native
-qualification and mandatory workspace compilation remain pending. Configured
-GC scheduling and task acceptance are unchanged.
+profile pass, along with touched formatting, PLAN-2 and diff checks. Native lookup/deletion and mandatory workspace compilation pass at
+`83cd177fbc` as recorded above. Full configured GC-role and task acceptance
+remain unchanged.
 
 Mandatory workspace compilation at `144d310a76` and `5bb7e9db5b` passes in
 760.663 and 1,421.178 seconds respectively. Both full reviews verify all 8,215

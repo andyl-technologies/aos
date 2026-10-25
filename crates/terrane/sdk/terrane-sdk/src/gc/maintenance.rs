@@ -5,7 +5,7 @@
 //! genuine native producer with fresh current qualification. Completed passes
 //! never remove a permanent owner from this recurring inventory.
 
-use super::{Collection, CollectionError, denied, session::Session};
+use super::{Collection, CollectionError, Restoration, denied, session::Session};
 use crate::bucket::held::SingleHeld;
 use crate::bucket::publication::collection_observation::MetadataStore;
 use crate::bucket::{BucketBinding, FileBucket};
@@ -53,6 +53,39 @@ pub enum MaintenanceHint {
     },
     /// Requests fresh restoration or retirement qualification for an exclusion.
     ExcludedPack(PackExclusion),
+}
+
+impl<F, B, V, C> Restoration<'_, F, B, V, C>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+    C: Clock,
+{
+    /// Selects current maintenance hints before ordinary marking begins.
+    ///
+    /// Renews this original session and observes the actual selected catalog;
+    /// it does not traverse root bodies or create a checkpoint. Hints include
+    /// permanently owned families that restoration must not attempt to restore.
+    /// Each consumer still requires its own independent native qualification.
+    ///
+    /// # Errors
+    /// Preserves bound, ownership and native observation failures from
+    /// [`Collection::maintenance_hints`]. Cancellation poisons this session.
+    pub async fn maintenance_hints(
+        &mut self,
+        cursor: &mut MaintenanceCursor,
+        maximum: usize,
+    ) -> Result<Vec<MaintenanceHint>, CollectionError> {
+        observe(
+            self.guard,
+            self.authority,
+            &mut self.session,
+            cursor,
+            maximum,
+        )
+        .await
+    }
 }
 
 impl<F, B, V, C> Collection<'_, F, B, V, C>

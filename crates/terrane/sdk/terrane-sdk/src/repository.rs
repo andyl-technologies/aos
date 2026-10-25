@@ -45,7 +45,7 @@ pub use crate::guard::ListedRef;
 pub use audit::RegisteredDomainAudit;
 pub use blame::{EntryBlame, EntryProvenance};
 #[cfg(all(feature = "std", unix))]
-pub use collection::LocalCollection;
+pub use collection::{LocalCollection, LocalRestoration};
 pub use diff::Difference;
 pub use error::Error;
 pub use file_read::PreparedFileRead;

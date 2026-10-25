@@ -120,7 +120,7 @@ pub struct Restoration<'configuration, F, B, V, C> {
     guard: &'configuration Guard<FileBucket<F, B, V>, C>,
     authority: &'configuration OriginalAuthority,
     session: session::Session,
-    cycle: u64,
+    cycle: Option<u64>,
     windows: Windows,
 }
 
@@ -142,6 +142,37 @@ where
         holder: String,
         duration: u64,
         cycle: u64,
+        windows: Windows,
+    ) -> Result<Self, CollectionError> {
+        Self::start_with_cycle(guard, authority, holder, duration, Some(cycle), windows).await
+    }
+
+    /// Acquires restoration ownership without supplying a marking cycle number.
+    ///
+    /// Each restoration chooses above the retained registered cycle keys under
+    /// its actual held publication. That number scopes fresh root verification;
+    /// it does not reserve or create a checkpoint. [`Self::begin_next_collection`]
+    /// independently selects its new cycle from the then-current publication.
+    ///
+    /// # Errors
+    /// Preserves ownership and native-clock failures from [`Self::start`]. Later
+    /// restoration refuses malformed or exhausted registered cycle inventories.
+    pub async fn start_next(
+        guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+        authority: &'configuration OriginalAuthority,
+        holder: String,
+        duration: u64,
+        windows: Windows,
+    ) -> Result<Self, CollectionError> {
+        Self::start_with_cycle(guard, authority, holder, duration, None, windows).await
+    }
+
+    async fn start_with_cycle(
+        guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+        authority: &'configuration OriginalAuthority,
+        holder: String,
+        duration: u64,
+        cycle: Option<u64>,
         windows: Windows,
     ) -> Result<Self, CollectionError> {
         let lease = Collector::new(guard, authority)
@@ -186,6 +217,42 @@ where
         .await?;
         operation.complete();
         Ok(result)
+    }
+
+    /// Starts a fresh marking cycle while retaining this original session.
+    ///
+    /// Consumes restoration ownership, renews the same whole lease and invokes
+    /// the ordinary checkpoint producer. Complete current root authentication
+    /// runs again. No old restoration observation supplies marking authority;
+    /// no lease release, takeover or replacement cancellation guard occurs.
+    ///
+    /// # Errors
+    /// Rejects lost or poisoned ownership, incomplete current roots, malformed
+    /// or exhausted retained cycle keys and failed checkpoint durability.
+    /// Cancellation or failure stops the consumed session permanently.
+    pub async fn begin_next_collection(
+        mut self,
+    ) -> Result<Collection<'configuration, F, B, V, C>, CollectionError> {
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let (roots, state) = crate::selected_bridge::native_collection_checkpoints::begin_next(
+            self.guard,
+            self.authority,
+            &self.session,
+            self.windows,
+        )
+        .await?;
+        operation.complete();
+        Ok(Collection {
+            guard: self.guard,
+            authority: self.authority,
+            session: self.session,
+            windows: self.windows,
+            roots,
+            state,
+        })
     }
 
     /// Borrows the exact whole currently acknowledged native maintenance lease.
@@ -609,7 +676,7 @@ where
             self.guard,
             self.authority,
             &mut self.session,
-            (self.roots.cycle, self.windows),
+            (Some(self.roots.cycle), self.windows),
             &requested,
         )
         .await?;

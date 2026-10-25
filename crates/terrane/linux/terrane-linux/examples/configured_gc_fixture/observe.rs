@@ -4,7 +4,10 @@ use std::{collections::BTreeMap, os::unix::ffi::OsStrExt, path::Path};
 
 use terrane_format::gc::{
     DeleteOperation, DeletePhase, GcLease, GcRoots, GcState,
-    publication::{PortableCurrent, PortableSnapshot},
+    publication::{
+        Activation, BackendRegistration, PortableCurrent, PortableSnapshot, PredecessorSlot,
+        PublicationCommit, PublicationState, PublicationTransaction,
+    },
 };
 use terrane_sdk::pack::PackId;
 
@@ -32,26 +35,72 @@ pub(super) fn find_pack(bucket: &Path, hash: [u8; 32]) -> FixtureResult<PackId> 
     selected.ok_or_else(|| "native orphan pack missing".into())
 }
 
-fn projection(bucket: &Path) -> FixtureResult<BTreeMap<String, Option<Vec<u8>>>> {
-    let mut current = PortableCurrent::decode(&fs::read(bucket.join("publication/PORTABLE"))?)?;
-    let mut selected = BTreeMap::new();
-    let mut previous_revision = None;
-    loop {
-        let bytes = fs::read(bucket.join(&current.key))?;
-        current.check_snapshot(&bytes)?;
-        let snapshot = PortableSnapshot::decode(&bytes)?;
-        if previous_revision.is_some_and(|previous| snapshot.revision >= previous) {
-            return Err("portable predecessor revisions are not decreasing".into());
-        }
-        previous_revision = Some(snapshot.revision);
-        for row in snapshot.projection {
-            selected.entry(row.key).or_insert(row.value);
-        }
-        match snapshot.predecessor {
-            Some(previous) => current = previous,
-            None => return Ok(selected),
-        }
+/// Observes the contiguous committed prefix, including nonportable GC changes.
+///
+/// Immutable slots select transactions; PORTABLE is only a cache of a subset of
+/// their payloads. These independent checks grant no native effect authority.
+fn projection(bucket: &Path, control: &Path) -> FixtureResult<BTreeMap<String, Option<Vec<u8>>>> {
+    let registration_bytes = fs::read(control.join("backend-registration.cbor"))?;
+    let registration = BackendRegistration::decode(&registration_bytes)?;
+    if registration.activation != Activation::Active || registration.genesis.is_none() {
+        return Err("native publication registration is not active".into());
     }
+
+    let mut selected = BTreeMap::new();
+    let mut state: Option<PublicationState> = None;
+    let mut previous_slot = None;
+    let mut previous_snapshot: Option<(PortableCurrent, Vec<u8>)> = None;
+    let mut revision = 0_u64;
+    loop {
+        let key = format!("publication/commits/{revision}");
+        let bytes = match fs::read(control.join(&key)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.into()),
+        };
+        let digest = *blake3::hash(&bytes).as_bytes();
+        if revision == 0 && registration.genesis != Some(digest) {
+            return Err("native publication genesis digest disagrees".into());
+        }
+        let commit = PublicationCommit::decode(&bytes)?;
+        let transaction_bytes = fs::read(control.join(&commit.transaction_key))?;
+        commit.check_transaction(&key, &transaction_bytes)?;
+        let transaction = PublicationTransaction::decode(&transaction_bytes)?;
+        if transaction.old != state
+            || transaction.predecessor != previous_slot
+            || transaction.new.binding != registration.binding
+        {
+            return Err("native publication predecessor or binding disagrees".into());
+        }
+        for change in &transaction.changes {
+            if selected.get(&change.key).and_then(Option::as_ref) != change.expected.as_ref() {
+                return Err("native publication whole-value expectation disagrees".into());
+            }
+            selected.insert(change.key.clone(), change.new.clone());
+        }
+
+        let snapshot_bytes = fs::read(bucket.join(&transaction.snapshot.key))?;
+        transaction.check_snapshot(&snapshot_bytes)?;
+        let snapshot = PortableSnapshot::decode(&snapshot_bytes)?;
+        if let Some((pointer, bytes)) = &previous_snapshot {
+            // A full portable checkpoint has no predecessor, while a delta
+            // must name precisely the preceding committed transaction's bytes.
+            if snapshot.predecessor.is_some() {
+                snapshot.check_predecessor(pointer, bytes)?;
+            }
+        }
+        previous_snapshot = Some((transaction.snapshot, snapshot_bytes));
+        state = Some(transaction.new);
+        previous_slot = Some(PredecessorSlot { revision, digest });
+        revision = revision
+            .checked_add(1)
+            .ok_or("publication revision overflow")?;
+    }
+    if state.is_none() || fs::read(control.join("backend-registration.cbor"))? != registration_bytes
+    {
+        return Err("native committed prefix missing or registration changed".into());
+    }
+    Ok(selected)
 }
 
 pub(super) fn verify_deletion(root: &Path) -> FixtureResult<()> {
@@ -65,7 +114,9 @@ pub(super) fn verify_deletion(root: &Path) -> FixtureResult<()> {
             return Err("native orphan pair still present".into());
         }
     }
-    let selected = projection(&bucket)?;
+    let digest = blake3::hash(bucket.as_os_str().as_bytes()).to_hex();
+    let control = bucket.with_file_name(format!(".terrane-control:{digest}"));
+    let selected = projection(&bucket, &control)?;
     let lease = GcLease::decode(
         selected
             .get("gc/lease")
@@ -93,8 +144,6 @@ pub(super) fn verify_deletion(root: &Path) -> FixtureResult<()> {
         return Err("collector did not start a fresh second cycle".into());
     }
 
-    let digest = blake3::hash(bucket.as_os_str().as_bytes()).to_hex();
-    let control = bucket.with_file_name(format!(".terrane-control:{digest}"));
     let mut matching = 0;
     for cycle in fs::read_dir(control.join("gc"))? {
         let directory = cycle?.path().join("delete").join(id.to_string());

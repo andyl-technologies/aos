@@ -7,7 +7,7 @@
 use super::{MetadataValidator, Repository};
 use crate::{
     bucket::{BucketBinding, FileBucket},
-    gc::runner::{Collection, CollectionError},
+    gc::runner::{Collection, CollectionError, Restoration},
     ref_advance::Coordinator,
     store::{Clock, LocalFs},
 };
@@ -19,11 +19,50 @@ pub struct LocalCollection<'repository, F: LocalFs, C: Clock> {
     coordinator: &'repository Coordinator<FileBucket<F, C, MetadataValidator>, C, F>,
 }
 
+/// Retains original repository bindings before a marking checkpoint is created.
+pub struct LocalRestoration<'repository, F: LocalFs, C: Clock> {
+    restoration: Restoration<'repository, F, C, MetadataValidator, C>,
+    coordinator: &'repository Coordinator<FileBucket<F, C, MetadataValidator>, C, F>,
+}
+
 impl<F, C> Repository<FileBucket<F, C, MetadataValidator>, C, F>
 where
     F: LocalFs + BucketBinding + Sync + 'static,
     C: Clock + BucketBinding + Sync + 'static,
 {
+    /// Acquires restoration ownership without opening an ordinary marking cycle.
+    ///
+    /// Uses this repository's genuine Original authority and actual whole lease.
+    /// Candidate-only metadata can qualify restoration before ordinary root
+    /// traversal is possible. No signing capability or cycle number is supplied.
+    ///
+    /// # Errors
+    /// Refuses missing native retention, competing or invalid ownership,
+    /// unsupported native clocks and failed lease durability.
+    pub async fn start_next_local_restoration(
+        &self,
+        holder: String,
+        duration: u64,
+        windows: Windows,
+    ) -> Result<LocalRestoration<'_, F, C>, CollectionError> {
+        let retention = self
+            .local_retention
+            .as_ref()
+            .ok_or_else(crate::gc::runner::denied)?;
+        let restoration = Restoration::start_next(
+            self.coordinator.guard(),
+            &retention.authority,
+            holder,
+            duration,
+            windows,
+        )
+        .await?;
+        Ok(LocalRestoration {
+            restoration,
+            coordinator: &self.coordinator,
+        })
+    }
+
     /// Starts collection using this repository's independently checked authority.
     ///
     /// The native collector acquires its actual singleton lease, authenticates
@@ -126,6 +165,57 @@ where
         Ok(LocalCollection {
             collection,
             coordinator: &self.coordinator,
+        })
+    }
+}
+
+impl<'repository, F, C> LocalRestoration<'repository, F, C>
+where
+    F: LocalFs + BucketBinding,
+    C: Clock + BucketBinding,
+{
+    /// Borrows the exact whole lease retained by this restoration session.
+    pub fn lease(&self) -> &GcLease {
+        self.restoration.lease()
+    }
+
+    /// Selects bounded current hints without requiring ordinary root traversal.
+    ///
+    /// # Errors
+    /// Preserves bounds, ownership, native observation and cancellation failures
+    /// from [`Restoration::maintenance_hints`]. Hints grant no effect permission.
+    pub async fn maintenance_hints(
+        &mut self,
+        cursor: &mut crate::gc::runner::maintenance::MaintenanceCursor,
+        maximum: usize,
+    ) -> Result<Vec<crate::gc::runner::maintenance::MaintenanceHint>, CollectionError> {
+        self.restoration.maintenance_hints(cursor, maximum).await
+    }
+
+    /// Restores an exact candidate through fresh native qualification.
+    ///
+    /// # Errors
+    /// Preserves current-history, ownership, pair, durability and cancellation
+    /// failures from [`Restoration::restore_pack`]. Old marks grant no authority.
+    pub async fn restore_pack(
+        &mut self,
+        requested: terrane_format::bucket::PackExclusion,
+    ) -> Result<bool, CollectionError> {
+        self.restoration.restore_pack(requested).await
+    }
+
+    /// Begins fresh marking while retaining the original session and coordinator.
+    ///
+    /// # Errors
+    /// Preserves current root, ownership, cycle and durability failures from
+    /// [`Restoration::begin_next_collection`]. No replacement lease is acquired.
+    pub async fn begin_next_collection(
+        self,
+    ) -> Result<LocalCollection<'repository, F, C>, CollectionError> {
+        let collection = self.restoration.begin_next_collection().await?;
+        Ok(LocalCollection {
+            collection,
+            coordinator: self.coordinator,
         })
     }
 }

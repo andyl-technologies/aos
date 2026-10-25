@@ -58,6 +58,12 @@ PREOWNERSHIP_CASES = [
     ]
 ]
 
+RESTORATION_SESSION_CASES = [
+    "gc::runner::tests::restore::session::gc_restoration_native_hands_original_session_to_fresh_marking",
+    "gc::runner::tests::restore::session::gc_restoration_native_expired_handoff_creates_no_checkpoint",
+    "gc::runner::tests::restore::gc_restore_native_reopen_and_fresh_cycle_make_old_trash_stale",
+]
+
 
 def verify_image(source, image):
     """Binds the actual retained Cargo test image to every immutable crate input."""
@@ -119,6 +125,8 @@ def main():
         cases = MISSING_TRASH_CASES
     elif suite == "preownership-restore":
         cases = PREOWNERSHIP_CASES
+    elif suite == "restoration-session":
+        cases = RESTORATION_SESSION_CASES
     else:
         raise ValueError("unknown native collection qualification suite")
 
@@ -163,6 +171,9 @@ def main():
     elif suite == "preownership-restore":
         print("PASS all eleven pre-ownership restoration and fresh-cycle recovery cases in ext4 guest",
               flush=True)
+    elif suite == "restoration-session":
+        print("PASS restoration and fresh marking retain original session poison and lease; "
+              "expired handoff has no effects and original Meta restoration still passes", flush=True)
     else:
         print("PASS actual local-v1 intent discovery survives exact full-D deletion and durable Done",
               flush=True)

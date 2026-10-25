@@ -65,6 +65,7 @@ def main():
                                        stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
             ready = None
             deadline = started + 180
+            last_observation = None
             while time.monotonic() < deadline:
                 require(process.poll() is None, "collector exited before durable collection")
                 if ready is None and "CONFIGURED_GC_READY\n" in stdout_path.read_text():
@@ -73,10 +74,26 @@ def main():
                 if ready is not None and all(not path.exists() for path in pair):
                     cycles = list((root / "bucket/gc").glob("*/roots"))
                     if len(cycles) >= 2:
-                        break
+                        # Pair absence precedes durable Done. Wait for the actual
+                        # protected acknowledgment before asking for shutdown.
+                        observed = subprocess.run(
+                            [str(executable), "observe", str(root), "840"],
+                            capture_output=True, text=True, timeout=10)
+                        last_observation = {"returncode": observed.returncode,
+                                            "stdout": observed.stdout, "stderr": observed.stderr}
+                        if observed.returncode == 0:
+                            require(observed.stdout == "CONFIGURED_GC_OBSERVED_DONE\n",
+                                    "unexpected native Done observation")
+                            print(observed.stdout, end="", flush=True)
+                            break
                 time.sleep(0.1)
             else:
-                raise RuntimeError("collector did not reclaim and start fresh cycles within its bound")
+                diagnostics = {"native_pair_present": [path.exists() for path in pair],
+                               "physical_cycles": sorted(path.parent.name for path in
+                                                         (root / "bucket/gc").glob("*/roots")),
+                               "last_observation": last_observation}
+                raise RuntimeError("collector did not reclaim and start fresh cycles within its bound: "
+                                   + json.dumps(diagnostics, sort_keys=True))
             reclaimed = time.monotonic()
             require(reclaimed - started >= 60, "physical deletion preceded a full external D")
             # SIGTERM exercises cancellation and executor joining in the actual

@@ -332,7 +332,7 @@ pub(crate) async fn restore_pack<F, B, V, C>(
     guard: &Guard<FileBucket<F, B, V>, C>,
     authority: &OriginalAuthority,
     session: &mut Session,
-    settings: (u64, Windows),
+    settings: (Option<u64>, Windows),
     requested: &PackExclusion,
 ) -> Result<bool, CollectionError>
 where
@@ -342,6 +342,7 @@ where
     C: Clock,
 {
     session.recheck()?;
+    let (requested_cycle, windows) = settings;
     let holder = SingleHeld::acquire(guard.store()).await?;
     let held = holder.destination();
     let mut retained = None;
@@ -350,6 +351,13 @@ where
         // Every lease-only transition discards the previous selection and plans.
         let renewal_controls = {
             let observed = held.observe_publication_unrepaired().await?;
+            let cycle = match requested_cycle {
+                Some(cycle) => cycle,
+                None => {
+                    crate::gc::runner::cycle::next(observed.logical().keys().map(String::as_str))?
+                }
+            };
+            let settings = (cycle, windows);
             let metadata = MetadataStore::new(&held, &observed, session);
             let catalog = metadata.collection_catalog().await?;
             let Some(exclusion) = catalog

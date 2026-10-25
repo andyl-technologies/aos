@@ -75,6 +75,12 @@ fn dispatch() -> FixtureResult<()> {
         })
         .map_err(Into::into);
     }
+    if mode == "observe" {
+        check_owner(root, owner)?;
+        observe::verify_deletion(root)?;
+        println!("CONFIGURED_GC_OBSERVED_DONE");
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

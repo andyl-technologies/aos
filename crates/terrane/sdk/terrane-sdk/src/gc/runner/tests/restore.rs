@@ -12,6 +12,7 @@ mod support;
 use support::*;
 
 mod missing_trash;
+mod session;
 
 mod copy;
 use copy::copied;
