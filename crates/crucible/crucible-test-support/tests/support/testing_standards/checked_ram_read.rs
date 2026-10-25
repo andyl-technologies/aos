@@ -19,7 +19,7 @@ const INPUTS: &[Input] = &[
             "fn read_envelope_with_partition(",
             "pub(super) fn read_envelope_using(",
             "let mut checked = || { boundary()?; verify(original) };",
-            "let account = work.original().child().map_err(admission)?;",
+            "let original = work.original(); let account = original.child().map_err(|source| RamStoreError::from_admission(original, source))?;",
             "let (maximum_bytes, maximum_children) = object_limits(id)?;",
             "backend.read_with_boundary(original, id, None, boundary)",
             "if source.logical_length() > maximum_bytes",
@@ -36,6 +36,10 @@ const INPUTS: &[Input] = &[
             "ContentEnvelope::from_canonical_bytes_with_child_limit(bytes, maximum_children)?",
         ],
         counts: &[
+            (
+                "let original = work.original(); let account = original.child().map_err(|source| RamStoreError::from_admission(original, source))?;",
+                2,
+            ),
             (
                 "source.read_all_with_boundary(original, maximum_bytes, &mut checked)",
                 2,
