@@ -100,6 +100,35 @@ T-TOPO-2 on B-topology. The trunk's HOST-24 periodic lease-expiry obligation
 remains with the original physical worker; it is not replaced by that optional
 collection work.
 
+The actual configured GC CLI at `32727e80b3` passes its native guest in
+650.063 seconds; the separate collector component passes in 638.421 seconds.
+Both complete reviews verify all 8,229 immutable source files, 5,479 bound
+crate inputs and four retained Cargo artifacts. The CLI's actual installed
+executable hash is `200719730abb20a032f57e091a2cd42a303c937abc330f38a4e8265271bec19c`.
+Its UID/GID 840 ext4 actor has empty capabilities, no-new-privileges and active
+seccomp. Syntax-only, unsupported-composition and role-mismatch controls
+preserve protected commit slots. Readiness takes 7.139 seconds, physical
+reclamation including full D takes 101.877 seconds, and acknowledged shutdown
+takes 0.008 seconds. Genuine Done, fresh cycles and unchanged authenticated
+live content pass. The component independently reaches readiness in 7.130
+seconds, reclaims in 101.826 seconds and shuts down in 0.008 seconds. These
+results qualify the local CLI and component at that checkpoint; complete
+GC-role composition, host-local timer integration and later workspace
+compilation remain unproven. No task acceptance changes.
+
+Focused original-session qualification at `7f11415ca9` passes its three-case
+guest in 1,406.876 seconds. Complete review verifies all 8,228 immutable
+source files, 5,478 crate inputs and the retained Cargo SDK library-test
+executable. The exact restore-to-marking, expired-handoff and original
+Meta-reopen cases each execute once as UID/GID 840 on ext4 with empty
+capabilities and no-new-privileges. The retained session poison, unchanged old
+checkpoints and no-effect expired refusal remain required. The separate
+eleven-case restoration regression passes in 1,484.284 seconds with the same
+complete source and executable review. Workspace test-target compilation at
+that checkpoint passes in 1,415.989 seconds; full review verifies 190 test
+executables across 59 packages. Compilation establishes no native runtime
+behavior, and these results do not qualify the later startup-candidate scan.
+
 The collector component at startup checkpoint `0c2fbb6668` passes its native
 guest in 587.913 seconds. Complete independent review verifies all 8,229
 immutable source files, 5,479 crate inputs and four actual retained Cargo
@@ -130,8 +159,9 @@ selected cycles, unchanged live signed content, empty capabilities,
 no-new-privileges, seccomp and acknowledged shutdown. The proof records the
 actual CLI artifact hash and launcher separately from fixture setup/verification.
 CLI strict all-target lint, controller AST, touched Nix formatting, PLAN-2 and
-diff checks pass; native and mandatory workspace qualification remain pending.
-No task acceptance changes.
+diff checks pass. The native CLI and component now pass complete review as
+recorded above; mandatory workspace qualification remains pending. No task
+acceptance changes.
 
 The corrected configured collector at `7f11415ca9` passes its native guest in
 597.840 seconds. Complete independent review verifies all 8,228 immutable
