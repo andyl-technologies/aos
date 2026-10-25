@@ -199,6 +199,19 @@ start without a Bazel server, and retain their actual cache settings. The
 disposable cold cache is removed after qualification. This run does not repeat
 the earlier Git-worktree trial or establish numeric performance acceptance.
 
+The [current real Git-worktree qualification](tests/evidence/real-worktree-cache-current-toolchain.json)
+uses three detached checkouts and an initially empty dedicated disk cache.
+The producer executes all twelve actions; the edited consumer restores nine,
+rebuilds its Rust and C++ applications, and matches a fresh uncached build byte
+for byte. Two additional derivations overlap by 9.59 seconds, with separate
+output directories and mount, network, PID, and user namespaces; their artifacts
+match the isolated builds. Raw sequential namespace IDs remain in the receipt: Linux
+recycled two IDs after a build finished. The topology verifier compares identity
+only during overlapping lifetimes and has five regression cases, including
+rejection of shared live namespaces. Trial worktrees and the dedicated cache
+are removed after retaining provenance and fixture edits. These observations
+qualify cache correctness, with numeric performance acceptance still separate.
+
 To repeat the Git-worktree trial, use `tests/worktree-cache.nix` with an
 absolute `checkoutPath`, a sandbox `cacheDir`, and a new `trial`. Start with an
 empty dedicated trial namespace. Build the producer, apply the retained fixture
