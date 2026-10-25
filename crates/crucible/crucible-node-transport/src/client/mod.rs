@@ -6,6 +6,8 @@
 //! the installed node adapter must independently verify complete receipt bytes,
 //! owner scope and actual process resources before publishing runtime evidence.
 
+/// Exposes lossless bounded JSON storage DATA without journal or Source rights.
+pub mod compact_json;
 mod content;
 mod controller;
 pub(crate) use controller::maximum_canonical_ack_framed_bytes;

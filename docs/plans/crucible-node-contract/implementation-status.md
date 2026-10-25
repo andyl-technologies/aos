@@ -10,6 +10,40 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Lossless compact JSON storage DATA
+
+A new immutable JSON DATA bank stores explicit scalar tags, exact integer and
+floating-point bits, UTF-8 strings and length-delimited containers. An exact
+borrowed prewalk precedes allocation. Its borrowed serializer emits the
+original logical JSON without rebuilding a tree or parsing text; fresh owned
+materialization remains an explicit operation requiring separate funding.
+
+Structural induction bounds encoded bank bytes by nine times the complete
+canonical JSON extent: scalar and key encodings fit that factor, while each
+seventeen-byte container header fits its two canonical delimiters. Construction
+checks actual Vec capacity against its independent restriction. Caller-owned
+spare capacities remain with the original tree and are not copied into the bank.
+
+Six focused controls pass in each codec build, covering exact Number variants
+and bits, arbitrary nested error details and Poll outcomes, Unicode keys,
+independent grammar families, spare capacities, portable depth/array limits
+and insufficient restrictions. Both complete Transport suites pass 2,157 tests
+with zero failures and twenty ignored, using frozen actual compiler artifacts.
+All-feature/all-target checking, scoped formatting and six architecture checks
+pass. The new module has no Clippy diagnostics. Strict Transport Clippy retains
+four existing large-enum errors with matching codes, messages and source paths;
+it is not a strict lint pass.
+
+Application test-target compilation passes. Actual metadata records 185 test
+artifacts across 58 packages, including 76 integration targets; the captured
+source matches all 645 frozen owned Rust/Cargo inputs. SDK journals continue
+to use their existing tree representation and charge. Connecting compact
+storage to actual journal insertion, response and failed-prefix custody,
+paired history readers/writers, and independently funded materialization is
+unfinished. This DATA component grants no allocation, Source or native rights
+and establishes no new native or VM qualification. Full SDK funding, runtime
+handoff, live Native18 and the full RFC remain unfinished.
+
 ## Independent kernel census polling in process tests
 
 The process-reclamation test helper now polls its independent kernel-resource
