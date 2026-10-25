@@ -1214,6 +1214,7 @@ class EffectivePolicyTest(unittest.TestCase):
         prepare = effective_policy.owner_policy.OFFLINE_PREPARE
         for object_class, permission in (
             ("dir", "search"),
+            ("lnk_file", "read"),
             *(("file", permission) for permission in ("getattr", "open", "read")),
         ):
             with self.subTest(required=(object_class, permission)):
@@ -1229,6 +1230,10 @@ class EffectivePolicyTest(unittest.TestCase):
             ("file", (
                 "append", "create", "ioctl", "link", "lock", "rename", "setattr", "unlink",
                 "write", "execute", "execute_no_trans", "map", "relabelfrom", "relabelto",
+            )),
+            ("lnk_file", (
+                "append", "create", "ioctl", "link", "lock", "rename", "setattr", "unlink",
+                "write", "relabelfrom", "relabelto",
             )),
         ):
             for permission in permissions:
