@@ -22,6 +22,8 @@ pub(crate) enum FixedServiceProfileRoleV1 {
     Mount,
     Network,
     BootPreparation,
+    Method46ControllerInitial,
+    Method46StorageInitial,
 }
 
 impl FixedServiceProfileRoleV1 {
@@ -33,6 +35,8 @@ impl FixedServiceProfileRoleV1 {
             Self::Mount => b"aos-sandbox-mountd.service",
             Self::Network => b"aos-netd.service",
             Self::BootPreparation => b"aos-sandbox-runtime-publisher.service",
+            Self::Method46ControllerInitial => b"aos-sandbox-controller-floor-initialize.service",
+            Self::Method46StorageInitial => b"aos-sandbox-storage-floor-initialize.service",
         }
     }
 }
@@ -374,7 +378,9 @@ pub(crate) fn require_profile_syntax<E: Default>(bytes: &[u8], base: bool, role:
             let expected = match role {
                 FixedServiceProfileRoleV1::Source => "aos-source-signer",
                 FixedServiceProfileRoleV1::Ownership | FixedServiceProfileRoleV1::Mount
-                    | FixedServiceProfileRoleV1::Network | FixedServiceProfileRoleV1::BootPreparation => "root",
+                    | FixedServiceProfileRoleV1::Network | FixedServiceProfileRoleV1::BootPreparation
+                    | FixedServiceProfileRoleV1::Method46ControllerInitial
+                    | FixedServiceProfileRoleV1::Method46StorageInitial => "root",
                 FixedServiceProfileRoleV1::Cache => "aos-cache-signer",
             };
             if !base || *seen || value != expected {
@@ -458,11 +464,15 @@ pub(crate) fn require_profile_syntax<E: Default>(bytes: &[u8], base: bool, role:
         // Optional explicit root User/Group assignments were already checked
         // above; neither can appear in a drop-in or select another identity.
         FixedServiceProfileRoleV1::Ownership | FixedServiceProfileRoleV1::Mount
-            | FixedServiceProfileRoleV1::Network | FixedServiceProfileRoleV1::BootPreparation => true,
+            | FixedServiceProfileRoleV1::Network | FixedServiceProfileRoleV1::BootPreparation
+            | FixedServiceProfileRoleV1::Method46ControllerInitial
+            | FixedServiceProfileRoleV1::Method46StorageInitial => true,
     };
     let directories = match role {
         FixedServiceProfileRoleV1::Source | FixedServiceProfileRoleV1::Cache
-            | FixedServiceProfileRoleV1::BootPreparation => true,
+            | FixedServiceProfileRoleV1::BootPreparation
+            | FixedServiceProfileRoleV1::Method46ControllerInitial
+            | FixedServiceProfileRoleV1::Method46StorageInitial => true,
         FixedServiceProfileRoleV1::Ownership | FixedServiceProfileRoleV1::Mount =>
             state_directory == base && runtime_directory == base
                 && state_mode == base && runtime_mode == base,

@@ -61,7 +61,12 @@
   };
   rejectedBy = message: selected:
     builtins.any (check: check.message == message && !check.assertion) selected.config.assertions;
-  validation = assert builtins.all (check: check.assertion) cfg.assertions;
+  failedAssertions = builtins.filter (check: !check.assertion) cfg.assertions;
+  validation = assert failedAssertions
+  == []
+  || throw (
+    builtins.concatStringsSep "\n" (builtins.map (check: check.message) failedAssertions)
+  );
   # Compare the actual independently replayed input, including its owner and
   # deferred unit addresses, with the image that native activation must adopt.
   assert hostReplay.config.aos.servicesRetainImageDefinitions;
@@ -132,13 +137,13 @@ in
 
       # Inspect the actual finite manifest consumed by the original manager.
       enclosure = pathlib.Path(sys.argv[3]).read_bytes()
-      assert enclosure[:8] == b"AOSRPE05"
+      assert enclosure[:8] == b"AOSRPE06"
       assert hashlib.sha256(enclosure[:-32]).digest() == enclosure[-32:]
       count, = struct.unpack_from(">H", enclosure, 452)
-      assert 1 <= count <= 16
-      assert len(enclosure) == 2774 + count * 1506
+      assert 1 <= count <= 18
+      assert len(enclosure) == 3478 + count * 1506
       names = [
-          enclosure[2742 + index * 1506:2806 + index * 1506].split(b"\0", 1)[0]
+          enclosure[3446 + index * 1506:3510 + index * 1506].split(b"\0", 1)[0]
           for index in range(count)
       ]
       assert names == sorted(set(names))

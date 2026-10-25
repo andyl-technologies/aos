@@ -7,6 +7,12 @@
 mod boot_preparation;
 pub use boot_preparation::{RuntimeBootPreparationSourceCaptureV1, RuntimeBootPreparationStartupRolesV1,
     RuntimeBootPreparationReceivingClosedV1, RuntimeBootPreparationOriginComparisonDataV1};
+mod method46_initial;
+pub use method46_initial::{
+    Method46InitialOriginComparisonDataV1, Method46InitialReceivingClosedV1,
+    Method46InitialServiceRoleV1, Method46InitialSourceCaptureV1,
+    Method46InitialStartupRolesV1,
+};
 mod fixed_service_currentness;
 mod fixed_service_profile;
 mod fixed_service_receiving;

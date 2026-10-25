@@ -133,7 +133,7 @@ pub struct RuntimeBootPreparationOriginComparisonDataV1 {
     pub recipient_invocation: [u8; 16],
     /// Commits to the complete original image policy.
     pub policy_digest: [u8; 32],
-    /// Commits to the complete original Parent05 partition and unit roster.
+    /// Commits to the complete original Parent06 partition and unit roster.
     pub parent_digest: [u8; 32],
     /// Commits to the original materialized publisher unit fragment.
     pub unit_fragment_digest: [u8; 32],
@@ -153,7 +153,7 @@ enum First {
 /// Retains the genuine normal BootPreparation source and receiving interval.
 ///
 /// Construction is inert. Successful initial capture, complete native transfer,
-/// Parent05 partition, same-process containment and real before/after owners
+/// Parent06 partition, same-process containment and real before/after owners
 /// remain necessary. Failed originals and spent traffic are never reset.
 #[must_use = "retain the receiver through all body and independently owed posts"]
 pub struct RuntimeBootPreparationSourceCaptureV1 {

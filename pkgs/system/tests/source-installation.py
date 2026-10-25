@@ -25,13 +25,13 @@ def validate():
     units = Path(os.environ["unitImage"])
     bootstrap = Path(os.environ["bootstrapImage"]) / "bootstrap.bin"
     raw = parent.read_bytes()
-    if raw[:8] != b"AOSRPE05" or hashlib.sha256(raw[:-32]).digest() != raw[-32:]:
-        raise ValueError("final Parent05 header or checksum mismatch")
+    if raw[:8] != b"AOSRPE06" or hashlib.sha256(raw[:-32]).digest() != raw[-32:]:
+        raise ValueError("final Parent06 header or checksum mismatch")
     if raw[8:40] != hashlib.sha256(bootstrap.read_bytes()).digest():
         raise ValueError("Parent does not bind the actual selected bootstrap")
     count = struct.unpack_from(">H", raw, 452)[0]
-    if not 1 <= count <= 16 or len(raw) != 2774 + 1506 * count:
-        raise ValueError("Parent05 full geometry mismatch")
+    if not 1 <= count <= 18 or len(raw) != 3478 + 1506 * count:
+        raise ValueError("Parent06 full geometry mismatch")
     dimensions = json.loads(os.environ["dimensionJson"])
     contract = json.loads(os.environ["contractJson"])
     if len(dimensions) != 22 or len(set(dimensions)) != 22:
@@ -39,12 +39,14 @@ def validate():
     ranges = ["sourceSignerReceiving", "sourceSignerSender", "controllerSuccessorSender",
               "ownershipReceiving", "ownershipSender", "cacheSignerReceiving", "cacheSignerSender", "mountReceiving", "mountSender",
               "networkReceiving", "networkSender", "hostBootPreparationReceiving",
-              "hostBootPreparationSender"]
+              "hostBootPreparationSender", "method46ControllerInitialReceiving",
+              "method46ControllerInitialSender", "method46StorageInitialReceiving",
+              "method46StorageInitialSender"]
     expected = []
     for name in ranges:
         vector = contract[name]
         expected.extend([0] * 22 if vector is None else [vector[key] for key in dimensions])
-    if tuple(expected) != struct.unpack_from(">286Q", raw, 454):
+    if tuple(expected) != struct.unpack_from(">374Q", raw, 454):
         raise ValueError("actual Parent range commitments differ from selected configuration")
 
     spec = importlib.util.spec_from_file_location("source_profile", os.environ["profileValidator"])
@@ -69,7 +71,7 @@ def validate():
         return path
 
     for index in range(count):
-        row = raw[2742 + 1506 * index:2742 + 1506 * (index + 1)]
+        row = raw[3446 + 1506 * index:3446 + 1506 * (index + 1)]
         name = fixed_text(row[:64])
         names.append(name)
         if leaf(row[64:352]) != name:
@@ -87,6 +89,15 @@ def validate():
         raise ValueError("actual fixed roster lacks its unique selected Source service")
     if (module.CACHE_UNIT in names) != cache_enabled:
         raise ValueError("actual Cache roster differs from the selected installation")
+    for unit, receiving, sender in (
+        ("aos-sandbox-controller-floor-initialize.service",
+         "method46ControllerInitialReceiving", "method46ControllerInitialSender"),
+        ("aos-sandbox-storage-floor-initialize.service",
+         "method46StorageInitialReceiving", "method46StorageInitialSender"),
+    ):
+        selected = contract[receiving] is not None
+        if (unit in names) != selected or (contract[sender] is not None) != selected:
+            raise ValueError("actual manual initial-floor roster differs from its selected partition")
     for profile in profiles:
         profile.require_complete()
 

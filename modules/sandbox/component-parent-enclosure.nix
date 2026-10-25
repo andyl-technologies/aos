@@ -30,6 +30,8 @@
   bootPreparation =
     config.aos.sandbox.runtimeDeploymentPublisher.enable
     && config.aos.sandbox.runtimeDeploymentPublisher.bootPreparation;
+  method46ControllerInitial = cfg != null && cfg.method46ControllerInitialReceiving != null;
+  method46StorageInitial = cfg != null && cfg.method46StorageInitialReceiving != null;
   confinedViewPreparation =
     config.aos.sandbox.policyAuthority.enable
     && config.aos.security.selinux.enable
@@ -56,6 +58,8 @@
     ++ lib.optional config.aos.sandbox.cacheSignerView.enable "aos-sandbox-cache-signer-views"
     ++ lib.optional config.aos.sandbox.mountBroker.enable "aos-sandbox-mountd"
     ++ lib.optional config.aos.sandbox.networkBroker.enable "aos-netd"
+    ++ lib.optional method46ControllerInitial "aos-sandbox-controller-floor-initialize"
+    ++ lib.optional method46StorageInitial "aos-sandbox-storage-floor-initialize"
     ++ lib.optionals config.aos.sandbox.policyAuthority.enable [
       "aos-sandbox-cache-journal-view"
       "aos-sandbox-policy-cache-recovery"
@@ -105,7 +109,7 @@
     members;
 
   manifest =
-    pkgs.runCommand "aos-resource-parent-enclosure-v5" {
+    pkgs.runCommand "aos-resource-parent-enclosure-v6" {
       nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
       contractJson = builtins.toJSON cfg;
       policyJson = builtins.toJSON bank.policy;
@@ -174,6 +178,10 @@
       network_sender = vector(contract["networkSender"]) if contract["networkSender"] is not None else [0] * 22
       boot_receiving = vector(contract["hostBootPreparationReceiving"]) if contract["hostBootPreparationReceiving"] is not None else [0] * 22
       boot_sender = vector(contract["hostBootPreparationSender"]) if contract["hostBootPreparationSender"] is not None else [0] * 22
+      controller_initial = vector(contract["method46ControllerInitialReceiving"]) if contract["method46ControllerInitialReceiving"] is not None else [0] * 22
+      controller_initial_sender = vector(contract["method46ControllerInitialSender"]) if contract["method46ControllerInitialSender"] is not None else [0] * 22
+      storage_initial = vector(contract["method46StorageInitialReceiving"]) if contract["method46StorageInitialReceiving"] is not None else [0] * 22
+      storage_initial_sender = vector(contract["method46StorageInitialSender"]) if contract["method46StorageInitialSender"] is not None else [0] * 22
       boot_selected = os.environ["bootPreparationSelected"] == "yes"
       if boot_selected != any(boot_receiving) or boot_selected != any(boot_sender):
           raise ValueError("Host boot preparation requires both genuine M/HostService subdivisions")
@@ -196,14 +204,28 @@
                   raise ValueError("Host boot preparation requires one finite complete sender/receiver interval")
       mount_present = any(member["name"] == "aos-sandbox-mountd.service" for member in members)
       network_present = any(member["name"] == "aos-netd.service" for member in members)
+      controller_initial_present = any(member["name"] == "aos-sandbox-controller-floor-initialize.service" for member in members)
+      storage_initial_present = any(member["name"] == "aos-sandbox-storage-floor-initialize.service" for member in members)
       for label, present, receiving, sending in [
           ("Mount", mount_present, mount, mount_sender),
           ("Network", network_present, network, network_sender),
+          ("METHOD46 Controller initial", controller_initial_present, controller_initial, controller_initial_sender),
+          ("METHOD46 Storage initial", storage_initial_present, storage_initial, storage_initial_sender),
       ]:
           if present != any(receiving) or present != any(sending):
               raise ValueError(f"{label} F/M slices must match the actual enabled fixed service")
           if present and (sending[0] == 0 or sending[1] == 0 or sending[3] == 0 or sending[21] != 1):
               raise ValueError(f"{label} sender requires one finite original interval")
+      # Manual jobs have one native birth each. Reject an incomplete pair
+      # while building the image, before PID1's independent admission check.
+      for present, receiving, sending in [
+          (controller_initial_present, controller_initial, controller_initial_sender),
+          (storage_initial_present, storage_initial, storage_initial_sender),
+      ]:
+          if present and any(values[index] == 0 for values in (receiving, sending) for index in (0, 1, 2, 3)):
+              raise ValueError("METHOD46 initial pairs require finite CPU, memory, PID and FD reservations")
+          if present and any(values[21] != 1 for values in (receiving, sending)):
+              raise ValueError("METHOD46 initial pairs require exactly one original sender/receiver operation")
       cache_present = any(member["name"] == "aos-sandbox-cache-signerd.service" for member in members)
       if cache_present != any(cache) or cache_present != any(cache_sender):
           raise ValueError("Cache slices must match the actual enabled Cache signer service")
@@ -227,8 +249,9 @@
           if policy.get(name) is not None:
               part = vector(policy[name])
               residual = [left - right for left, right in zip(residual, part)]
-      senders = [sender, controller_sender, ownership_sender, cache_sender, mount_sender, network_sender, boot_sender]
-      receivers = [source, ownership, cache, mount, network]
+      senders = [sender, controller_sender, ownership_sender, cache_sender, mount_sender, network_sender, boot_sender,
+                 controller_initial_sender, storage_initial_sender]
+      receivers = [source, ownership, cache, mount, network, controller_initial, storage_initial]
       if any(sum(parts) > whole for parts, whole in zip(zip(*senders), manager)):
           raise ValueError("all fixed-service senders must be disjoint subdivisions inside M")
       if cache_present and (cache_sender[0] == 0 or cache_sender[1] == 0
@@ -261,6 +284,10 @@
           service_vectors.append((network, nofiles[1]))
       if boot_selected:
           service_vectors.append((boot_receiving, nofiles[1]))
+      if controller_initial_present:
+          service_vectors.append((controller_initial, nofiles[1]))
+      if storage_initial_present:
+          service_vectors.append((storage_initial, nofiles[1]))
       for values, nofile in service_vectors:
           if any(values[index] == 0 for index in (0, 1, 2, 3, 21)):
               raise ValueError("parent service accounting is incomplete")
@@ -304,14 +331,14 @@
           raise ValueError("remaining tmpfs accounting must fit the remaining fixed memory envelope")
 
       names = [member["name"] for member in members]
-      if not 1 <= len(names) <= 16 or names != sorted(set(names)) or "aoscomponents.slice" not in names:
+      if not 1 <= len(names) <= 18 or names != sorted(set(names)) or "aoscomponents.slice" not in names:
           raise ValueError("parent membership must be a bounded canonical fixed table")
       bootstrap = Path(sys.argv[2]).read_bytes()
-      body = b"AOSRPE05" + hashlib.sha256(bootstrap).digest()
+      body = b"AOSRPE06" + hashlib.sha256(bootstrap).digest()
       body += struct.pack(">44Q", *(manager + fixed))
       body += struct.pack(">2Q", *nofiles)
       body += dispositions(manager) + dispositions(fixed) + struct.pack(">H", len(members))
-      body += struct.pack(">286Q", *(source + sender + controller_sender + ownership + ownership_sender + cache + cache_sender + mount + mount_sender + network + network_sender + boot_receiving + boot_sender))
+      body += struct.pack(">374Q", *(source + sender + controller_sender + ownership + ownership_sender + cache + cache_sender + mount + mount_sender + network + network_sender + boot_receiving + boot_sender + controller_initial + controller_initial_sender + storage_initial + storage_initial_sender))
       unit_root = Path(sys.argv[3])
 
       def field(value, width):
@@ -348,7 +375,7 @@
       for profile in profiles:
           profile.require_complete()
       encoded = body + hashlib.sha256(body).digest()
-      if len(encoded) != 2774 + 1506 * len(members):
+      if len(encoded) != 3478 + 1506 * len(members):
           raise ValueError("parent enclosure fixed wire geometry changed")
       Path(sys.argv[1]).write_bytes(encoded)
       PY
@@ -366,6 +393,26 @@ in {
           fixedServices = lib.mkOption {
             type = vectorType;
             description = "Finite F accounting for the named singleton service roster, not all node services.";
+          };
+          method46ControllerInitialReceiving = lib.mkOption {
+            type = lib.types.nullOr vectorType;
+            default = null;
+            description = "Complete manual Controller initial-floor receiving subdivision inside F, disjoint from every other fixed receiver.";
+          };
+          method46ControllerInitialSender = lib.mkOption {
+            type = lib.types.nullOr vectorType;
+            default = null;
+            description = "One-shot PID1 Controller initial-floor delivery subdivision inside M; failed originals remain charged.";
+          };
+          method46StorageInitialReceiving = lib.mkOption {
+            type = lib.types.nullOr vectorType;
+            default = null;
+            description = "Complete manual Storage initial-floor receiving subdivision inside F, disjoint from Controller and all other fixed receivers.";
+          };
+          method46StorageInitialSender = lib.mkOption {
+            type = lib.types.nullOr vectorType;
+            default = null;
+            description = "One-shot PID1 Storage initial-floor delivery subdivision inside M, disjoint from Controller and all other senders.";
           };
           sourceSignerSender = lib.mkOption {
             type = lib.types.nullOr vectorType;
@@ -484,7 +531,7 @@ in {
       {
         assertion =
           builtins.length members
-          <= 16
+          <= 18
           && builtins.all (name: bodies ? ${name} && bodies.${name}.enable && bodies.${name}.aliases == []) members
           && builtins.all (name: leafOwnership ? ${"systemd/system/${name}"}) members
           && builtins.all (unit: unit.valid) (builtins.attrValues nativeAuditUnits)
@@ -509,14 +556,14 @@ in {
     # Host-stage replay evaluates the retained sources independently of this
     # image module. Keep the same definition owner in that authenticated input.
     aos.activation.stages.host.configuration = [retainedServiceDefinitions];
-    environment.etc."aos/resource-parent-enclosure-v5" = {
+    environment.etc."aos/resource-parent-enclosure-v6" = {
       source = "${manifest}/enclosure.bin";
       mode = "0444";
     };
     # Selection is independent of successful manifest acquisition: a missing
     # selected manifest cannot silently fall back to the ordinary null path.
-    environment.etc."aos/resource-parent-enclosure-required-v5" = {
-      text = "AOSRPE05";
+    environment.etc."aos/resource-parent-enclosure-required-v6" = {
+      text = "AOSRPE06";
       mode = "0444";
     };
 

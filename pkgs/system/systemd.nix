@@ -341,6 +341,7 @@ in
       ./patches/0037-account-view-root-preparation.patch
       ./patches/0038-confine-offline-public-output.patch
       ./patches/0039-nsresourced-retirement-fentry.patch
+      ./patches/0041-method46-initial-parent06.patch
     ];
 
     buildDeps = [
@@ -716,6 +717,18 @@ in
           ''
           else ''
             ./test-nspawn-seccomp
+          '';
+      }
+      {
+        name = "check-aos-fixed-service-profile";
+        script =
+          if stdenv.isCross
+          then ''
+            # Target execution belongs to the architecture-specific VM gate.
+            true
+          ''
+          else ''
+            ./test-aos-fixed-service-profile
           '';
       }
       {

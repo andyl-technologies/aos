@@ -333,6 +333,22 @@ fixed_service_initial_table!(
 );
 
 fixed_service_initial_table!(
+    Method46ControllerInitialActivationTableV1,
+    "METHOD46 Controller initial provisioning table",
+    "Retains the Controller manual approval listener, PID1 image, immutable profile and original paid source channel.",
+    4,
+    "count exceeds four slots"
+);
+
+fixed_service_initial_table!(
+    Method46StorageInitialActivationTableV1,
+    "METHOD46 Storage initial provisioning table",
+    "Retains the Storage manual approval listener, PID1 image, immutable profile and original paid source channel.",
+    4,
+    "count exceeds four slots"
+);
+
+fixed_service_initial_table!(
     SourceSignerInitialActivationTableV1, "Source initial origin table",
     "Retains Source's original PID1 service channel and image-delivered Root profile."
 );

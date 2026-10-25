@@ -570,7 +570,7 @@ pub fn boot_preparation_source_contract_data_v1() -> [u8; 32] {
     contract(
         b"aos.runtime-deployment.boot-source-contract.v1\0",
         &[
-            "AOSRPE05",
+            "AOSRPE06",
             "AOSRSO03:role6",
             "initial4:listener,pid1,profile,source",
             "aos-sandbox-runtime-publisher.service",

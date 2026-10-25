@@ -217,6 +217,20 @@ Recent committed startup fixes close narrower prerequisites:
   observation. The funded manual producer, installed hooks and connected
   recovery remain incomplete; public admission stays closed.
 
+- The initial-floor funding foundation now uses the explicit `AOSRPE06`
+  enclosure: separate Controller and Storage manual sender/receiver vectors,
+  fixed service roles, original four-descriptor delivery and independent
+  pre-exec/native-after custody. All 22 dimensions remain subject to the
+  existing disjoint subdivision check. Missing or malformed selected pairs
+  are rejected; neither role borrows the BootPreparation or logging interval.
+  The hermetic systemd package passes its ten fixed-profile tests and existing
+  seccomp/offline-output checks
+  (`/nix/store/yyjibcj21ayifymr6bm9jzjrfp7lxs37-systemd-261.2`). Two native
+  receiver regressions and 28 image pair-shape probes pass. Complete Rust target
+  compilation and the measured profile build remain in progress. The manual
+  services are not selected or installed by this foundation, and no complete
+  producer, approved intent, TPM initialization or public admission is claimed.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they

@@ -81,6 +81,14 @@ impl FixedServiceReceivingCaptureV1<Closed> {
         self.require_role_startup_current(FixedServiceRoleV1::BootPreparation)
     }
 
+    pub(super) fn require_method46_controller_initial_current_v1(&self) -> Result<(), Closed> {
+        self.require_role_startup_current(FixedServiceRoleV1::Method46ControllerInitial)
+    }
+
+    pub(super) fn require_method46_storage_initial_current_v1(&self) -> Result<(), Closed> {
+        self.require_role_startup_current(FixedServiceRoleV1::Method46StorageInitial)
+    }
+
     /// Borrows this same image-enrolled Network service's invocation identity.
     ///
     /// The value supplies per-service catalog instance DATA, not a secret,
@@ -120,7 +128,8 @@ impl FixedServiceReceivingCaptureV1<Closed> {
     pub fn require_startup_representation_v4(&mut self, complete: ResourceVector) -> Result<(), Closed> {
         if self.operation_active || self.operation_closed
             || !matches!(self.role, FixedServiceRoleV1::Mount | FixedServiceRoleV1::Network
-                | FixedServiceRoleV1::BootPreparation)
+                | FixedServiceRoleV1::BootPreparation | FixedServiceRoleV1::Method46ControllerInitial
+                | FixedServiceRoleV1::Method46StorageInitial)
             || self.require_permanent_fd_coverage_v1().is_err()
             || self.service_startup.as_ref().is_some_and(|owner| owner.finished || owner.first.is_some())
         { self.operation_closed = true; return Err(Closed); }

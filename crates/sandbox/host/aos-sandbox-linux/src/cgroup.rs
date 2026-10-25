@@ -1003,6 +1003,8 @@ enum InitialServiceCgroupV1 {
     NixProvisioner,
     RuntimeScopeSameRoot,
     RuntimeBootPreparation,
+    Method46ControllerInitial,
+    Method46StorageInitial,
     SourceSigner,
     CacheSigner,
     MountService,
@@ -1028,6 +1030,8 @@ impl InitialServiceCgroupV1 {
             Self::NixProvisioner => "system.slice/aos-sandbox-nix-floor-provision.service",
             Self::RuntimeScopeSameRoot => ".",
             Self::RuntimeBootPreparation => "aos.slice/aos-control.slice/aos-sandbox-runtime-publisher.service",
+            Self::Method46ControllerInitial => "aoscomponents.slice/aos-sandbox-controller-floor-initialize.service",
+            Self::Method46StorageInitial => "aoscomponents.slice/aos-sandbox-storage-floor-initialize.service",
             Self::StorageManager => "init.scope",
             Self::StorageControl => "aos.slice/aos-control.slice",
             Self::SourceSigner => "aoscomponents.slice/aos-sandbox-source-signerd.service",
@@ -1173,6 +1177,16 @@ impl StorageRecoveryControlCgroupReadbackV1 {
 fixed_running_initial_cgroup!(
     RuntimeBootPreparationInitialCgroupReadbackV1, RuntimeBootPreparation,
     "Retains only the fixed BootPreparation publisher cgroup and native probes."
+);
+
+fixed_running_initial_cgroup!(
+    Method46ControllerInitialCgroupReadbackV1, Method46ControllerInitial,
+    "Retains the Controller manual initial-floor service cgroup and native probes."
+);
+
+fixed_running_initial_cgroup!(
+    Method46StorageInitialCgroupReadbackV1, Method46StorageInitial,
+    "Retains the Storage manual initial-floor service cgroup and native probes."
 );
 
 fixed_running_initial_cgroup!(

@@ -37,6 +37,8 @@ pub(crate) enum FixedServiceRoleV1 {
     Mount = 4,
     Network = 5,
     BootPreparation = 6,
+    Method46ControllerInitial = 7,
+    Method46StorageInitial = 8,
 }
 
 impl FixedServiceRoleV1 {
@@ -48,6 +50,8 @@ impl FixedServiceRoleV1 {
             Self::Mount => b"aos-sandbox-mountd.service",
             Self::Network => b"aos-netd.service",
             Self::BootPreparation => b"aos-sandbox-runtime-publisher.service",
+            Self::Method46ControllerInitial => b"aos-sandbox-controller-floor-initialize.service",
+            Self::Method46StorageInitial => b"aos-sandbox-storage-floor-initialize.service",
         }
     }
 
@@ -59,6 +63,7 @@ impl FixedServiceRoleV1 {
             Self::Mount => "aos-mount-root-profile",
             Self::Network => "aos-network-root-profile",
             Self::BootPreparation => "aos-runtime-deployment-startup-profile",
+            Self::Method46ControllerInitial | Self::Method46StorageInitial => "aos-method46-initial-startup-profile",
         }
     }
 
@@ -71,6 +76,8 @@ impl FixedServiceRoleV1 {
             Self::Mount => FixedServiceProfileRoleV1::Mount,
             Self::Network => FixedServiceProfileRoleV1::Network,
             Self::BootPreparation => FixedServiceProfileRoleV1::BootPreparation,
+            Self::Method46ControllerInitial => FixedServiceProfileRoleV1::Method46ControllerInitial,
+            Self::Method46StorageInitial => FixedServiceProfileRoleV1::Method46StorageInitial,
         }
     }
 
@@ -79,10 +86,30 @@ impl FixedServiceRoleV1 {
             Self::Source => Some(b"system_u:system_r:aos_sandbox_source_signer_t"),
             Self::Cache => Some(crate::cache_signer_context::CACHE_SIGNER_TASK_CONTEXT_V1),
             Self::BootPreparation => Some(b"system_u:system_r:aos_runtime_deployment_publisher_t"),
+            Self::Method46ControllerInitial => Some(b"system_u:system_r:aos_method46_controller_initial_t"),
+            Self::Method46StorageInitial => Some(b"system_u:system_r:aos_method46_storage_initial_t"),
             // Ownership has no declared MAC-domain supplier. Its initial
             // actual context is retained, then compared exactly on every post.
             Self::Ownership | Self::Mount | Self::Network => None,
         }
+    }
+
+    fn complete_initial_names(self) -> Option<[&'static str; 4]> {
+        match self {
+            Self::BootPreparation => Some([
+                ROLE_NAME, self.auxiliary_name(), "aos-runtime-deployment",
+                "aos-runtime-deployment-pid1-image",
+            ]),
+            Self::Method46ControllerInitial | Self::Method46StorageInitial => Some([
+                ROLE_NAME, self.auxiliary_name(), "aos-method46-initial-approval",
+                "aos-method46-initial-pid1-image",
+            ]),
+            _ => None,
+        }
+    }
+
+    fn initial_role_count(self) -> usize {
+        if self.complete_initial_names().is_some() { 4 } else { 2 }
     }
 
     fn identity_matches(self) -> bool {
@@ -91,7 +118,8 @@ impl FixedServiceRoleV1 {
         match self {
             Self::Source | Self::Cache => rustix::process::getuid().as_raw() != 0 && rustix::process::geteuid().as_raw() != 0
                 && rustix::process::getgid().as_raw() != 0 && rustix::process::getegid().as_raw() != 0,
-            Self::Ownership | Self::Mount | Self::Network | Self::BootPreparation => root,
+            Self::Ownership | Self::Mount | Self::Network | Self::BootPreparation
+                | Self::Method46ControllerInitial | Self::Method46StorageInitial => root,
         }
     }
 }
@@ -103,6 +131,8 @@ enum FixedServiceInitialTableV1 {
     Mount(aos_sandbox_linux::inherited_fd::MountInitialActivationTableV4),
     Network(aos_sandbox_linux::inherited_fd::NetworkInitialActivationTableV4),
     BootPreparation(aos_sandbox_linux::inherited_fd::RuntimeBootPreparationInitialActivationTableV1),
+    Method46ControllerInitial(aos_sandbox_linux::inherited_fd::Method46ControllerInitialActivationTableV1),
+    Method46StorageInitial(aos_sandbox_linux::inherited_fd::Method46StorageInitialActivationTableV1),
 }
 
 impl FixedServiceInitialTableV1 {
@@ -114,11 +144,16 @@ impl FixedServiceInitialTableV1 {
             FixedServiceRoleV1::Mount => Self::Mount(aos_sandbox_linux::inherited_fd::MountInitialActivationTableV4::new()),
             FixedServiceRoleV1::Network => Self::Network(aos_sandbox_linux::inherited_fd::NetworkInitialActivationTableV4::new()),
             FixedServiceRoleV1::BootPreparation => Self::BootPreparation(aos_sandbox_linux::inherited_fd::RuntimeBootPreparationInitialActivationTableV1::new()),
+            FixedServiceRoleV1::Method46ControllerInitial => Self::Method46ControllerInitial(aos_sandbox_linux::inherited_fd::Method46ControllerInitialActivationTableV1::new()),
+            FixedServiceRoleV1::Method46StorageInitial => Self::Method46StorageInitial(aos_sandbox_linux::inherited_fd::Method46StorageInitialActivationTableV1::new()),
         }
     }
 
     fn observe_once(&mut self) -> Result<(), &aos_linux_descriptors::Error> {
-        match self { Self::Source(value) => value.observe_once(), Self::Ownership(value) => value.observe_once(), Self::Cache(value) => value.observe_once(), Self::Mount(value) => value.observe_once(), Self::Network(value) => value.observe_once(), Self::BootPreparation(value) => value.observe_once() }
+        match self { Self::Source(value) => value.observe_once(), Self::Ownership(value) => value.observe_once(), Self::Cache(value) => value.observe_once(), Self::Mount(value) => value.observe_once(), Self::Network(value) => value.observe_once(), Self::BootPreparation(value) => value.observe_once(),
+            Self::Method46ControllerInitial(value) => value.observe_once(),
+            Self::Method46StorageInitial(value) => value.observe_once(),
+        }
     }
 
     fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 4]> {
@@ -129,12 +164,17 @@ impl FixedServiceInitialTableV1 {
             Self::Mount(value) => value.take_completed_entries(),
             Self::Network(value) => value.take_completed_entries(),
             Self::BootPreparation(value) => return value.take_completed_entries(),
+            Self::Method46ControllerInitial(value) => return value.take_completed_entries(),
+            Self::Method46StorageInitial(value) => return value.take_completed_entries(),
         };
         ordinary.map(|[first, second]| [first, second, None, None])
     }
 
     fn failure(&self) -> Option<&aos_linux_descriptors::Error> {
-        match self { Self::Source(value) => value.failure(), Self::Ownership(value) => value.failure(), Self::Cache(value) => value.failure(), Self::Mount(value) => value.failure(), Self::Network(value) => value.failure(), Self::BootPreparation(value) => value.failure() }
+        match self { Self::Source(value) => value.failure(), Self::Ownership(value) => value.failure(), Self::Cache(value) => value.failure(), Self::Mount(value) => value.failure(), Self::Network(value) => value.failure(), Self::BootPreparation(value) => value.failure(),
+            Self::Method46ControllerInitial(value) => value.failure(),
+            Self::Method46StorageInitial(value) => value.failure(),
+        }
     }
 }
 
@@ -145,6 +185,8 @@ enum FixedServiceInitialCgroupV1 {
     Mount(aos_sandbox_linux::cgroup::MountInitialCgroupReadbackV4),
     Network(aos_sandbox_linux::cgroup::NetworkInitialCgroupReadbackV4),
     BootPreparation(aos_sandbox_linux::cgroup::RuntimeBootPreparationInitialCgroupReadbackV1),
+    Method46ControllerInitial(aos_sandbox_linux::cgroup::Method46ControllerInitialCgroupReadbackV1),
+    Method46StorageInitial(aos_sandbox_linux::cgroup::Method46StorageInitialCgroupReadbackV1),
 }
 
 impl FixedServiceInitialCgroupV1 {
@@ -156,27 +198,38 @@ impl FixedServiceInitialCgroupV1 {
             FixedServiceRoleV1::Mount => Self::Mount(Default::default()),
             FixedServiceRoleV1::Network => Self::Network(Default::default()),
             FixedServiceRoleV1::BootPreparation => Self::BootPreparation(Default::default()),
+            FixedServiceRoleV1::Method46ControllerInitial => Self::Method46ControllerInitial(Default::default()),
+            FixedServiceRoleV1::Method46StorageInitial => Self::Method46StorageInitial(Default::default()),
         }
     }
 
     fn capture_once(&mut self) -> Result<(), aos_linux_descriptors::Error> {
-        match self { Self::Source(value) => value.capture_once(), Self::Ownership(value) => value.capture_once(), Self::Cache(value) => value.capture_once(), Self::Mount(value) => value.capture_once(), Self::Network(value) => value.capture_once(), Self::BootPreparation(value) => value.capture_once() }
+        match self { Self::Source(value) => value.capture_once(), Self::Ownership(value) => value.capture_once(), Self::Cache(value) => value.capture_once(), Self::Mount(value) => value.capture_once(), Self::Network(value) => value.capture_once(), Self::BootPreparation(value) => value.capture_once(),
+            Self::Method46ControllerInitial(value) => value.capture_once(),
+            Self::Method46StorageInitial(value) => value.capture_once(),
+        }
     }
 
     fn take_validated_pair(&mut self) -> Option<(CgroupV2Root, RetainedCgroupAnchor)> {
-        match self { Self::Source(value) => value.take_validated_pair(), Self::Ownership(value) => value.take_validated_pair(), Self::Cache(value) => value.take_validated_pair(), Self::Mount(value) => value.take_validated_pair(), Self::Network(value) => value.take_validated_pair(), Self::BootPreparation(value) => value.take_validated_pair() }
+        match self { Self::Source(value) => value.take_validated_pair(), Self::Ownership(value) => value.take_validated_pair(), Self::Cache(value) => value.take_validated_pair(), Self::Mount(value) => value.take_validated_pair(), Self::Network(value) => value.take_validated_pair(), Self::BootPreparation(value) => value.take_validated_pair(),
+            Self::Method46ControllerInitial(value) => value.take_validated_pair(),
+            Self::Method46StorageInitial(value) => value.take_validated_pair(),
+        }
     }
 
     fn failure(&self) -> Option<&(dyn Error + 'static)> {
-        match self { Self::Source(value) => value.failure(), Self::Ownership(value) => value.failure(), Self::Cache(value) => value.failure(), Self::Mount(value) => value.failure(), Self::Network(value) => value.failure(), Self::BootPreparation(value) => value.failure() }
+        match self { Self::Source(value) => value.failure(), Self::Ownership(value) => value.failure(), Self::Cache(value) => value.failure(), Self::Mount(value) => value.failure(), Self::Network(value) => value.failure(), Self::BootPreparation(value) => value.failure(),
+            Self::Method46ControllerInitial(value) => value.failure(),
+            Self::Method46StorageInitial(value) => value.failure(),
+        }
     }
 }
 
 const ROLE_NAME: &str = "aos-resource-service-origin-v1";
 const MAXIMUM_PARTS: usize = 9;
-const PARENT_HEADER: usize = 2742;
+const PARENT_HEADER: usize = 3446;
 const PARENT_ROW: usize = 1506;
-const PARENT_MAXIMUM: usize = PARENT_HEADER + 16 * PARENT_ROW + 32;
+const PARENT_MAXIMUM: usize = PARENT_HEADER + 18 * PARENT_ROW + 32;
 
 type NativeResult = Result<(), aos_linux_descriptors::Error>;
 
@@ -332,6 +385,14 @@ impl<E: Copy + Default + Error + 'static> FixedServiceReceivingCaptureV1<E> {
         Self::new(FixedServiceRoleV1::BootPreparation, upper_inline_bytes)
     }
 
+    pub(super) fn new_method46_controller_initial_v1(upper_inline_bytes: usize) -> Self {
+        Self::new(FixedServiceRoleV1::Method46ControllerInitial, upper_inline_bytes)
+    }
+
+    pub(super) fn new_method46_storage_initial_v1(upper_inline_bytes: usize) -> Self {
+        Self::new(FixedServiceRoleV1::Method46StorageInitial, upper_inline_bytes)
+    }
+
     fn new(role: FixedServiceRoleV1, upper_inline_bytes: usize) -> Self {
         Self {
             role, upper_inline_bytes,
@@ -390,7 +451,7 @@ impl<E: Copy + Default + Error + 'static> FixedServiceReceivingCaptureV1<E> {
     fn capture_inner(&mut self) -> Result<(), E> {
         if self.table.observe_once().is_err() { return Err(self.fail(Failure::Table)); }
         self.entries = self.table.take_completed_entries();
-        let role_count = if self.role == FixedServiceRoleV1::BootPreparation { 4 } else { 2 };
+        let role_count = self.role.initial_role_count();
         self.names = Some(super::names::original_activation_names_v1(role_count));
         let names = match self.names.as_ref().and_then(|result| result.as_ref().ok()) {
             Some(names) => names,
@@ -398,10 +459,9 @@ impl<E: Copy + Default + Error + 'static> FixedServiceReceivingCaptureV1<E> {
         };
         let origin_index = names.iter().position(|name| name == ROLE_NAME);
         let profile_index = names.iter().position(|name| name == self.role.auxiliary_name());
-        if self.role == FixedServiceRoleV1::BootPreparation
-            && ![ROLE_NAME, self.role.auxiliary_name(), "aos-runtime-deployment",
-                "aos-runtime-deployment-pid1-image"].iter().all(|expected|
-                names.iter().filter(|name| name.as_str() == *expected).count() == 1)
+        if self.role.complete_initial_names().is_some_and(|expected_names|
+            !expected_names.iter().all(|expected|
+                names.iter().filter(|name| name.as_str() == *expected).count() == 1))
         {
             return Err(self.fail(Failure::Names));
         }
@@ -594,7 +654,7 @@ impl<E: Copy + Default + Error + 'static> FixedServiceReceivingCaptureV1<E> {
         let enrollment = self.enrollment.ok_or(E::default())?;
         let packet = &self.parts[0].as_ref().ok_or(E::default())?.payload;
         let count = usize::from(u16::from_be_bytes(bytes[452..454].try_into().map_err(|_| E::default())?));
-        if &bytes[..8] != b"AOSRPE05" || !(1..=16).contains(&count)
+        if &bytes[..8] != b"AOSRPE06" || !(1..=18).contains(&count)
             || bytes.len() != PARENT_HEADER + 32 + count * PARENT_ROW
             || Sha256::digest(&bytes[..bytes.len() - 32]).as_slice() != &bytes[bytes.len() - 32..]
             || Sha256::digest(bytes).as_slice() != &packet[56..88]
@@ -616,36 +676,28 @@ impl<E: Copy + Default + Error + 'static> FixedServiceReceivingCaptureV1<E> {
         let network_sender = read_vector::<E>(&bytes[2214..2390])?;
         let boot_receiving = read_vector::<E>(&bytes[2390..2566])?;
         let boot_sender = read_vector::<E>(&bytes[2566..2742])?;
+        let controller_initial = read_vector::<E>(&bytes[2742..2918])?;
+        let controller_initial_sender = read_vector::<E>(&bytes[2918..3094])?;
+        let storage_initial = read_vector::<E>(&bytes[3094..3270])?;
+        let storage_initial_sender = read_vector::<E>(&bytes[3270..3446])?;
         let manager = read_vector::<E>(&bytes[40..216])?;
         let fixed = read_vector::<E>(&bytes[216..392])?;
+        // Each subtraction consumes a distinct subdivision of the same whole
+        // M or F. Checked arithmetic rejects overlap in every dimension.
+        let mut manager_remaining = manager;
+        for part in [&sender, &controller_sender, &ownership_sender, &cache_sender,
+            &mount_sender, &network_sender, &boot_sender,
+            &controller_initial_sender, &storage_initial_sender]
+        {
+            manager_remaining = manager_remaining.checked_sub(*part).map_err(|_| E::default())?;
+        }
+        let mut fixed_remaining = fixed;
+        for part in [&source, &ownership, &cache, &mount, &network,
+            &controller_initial, &storage_initial]
+        {
+            fixed_remaining = fixed_remaining.checked_sub(*part).map_err(|_| E::default())?;
+        }
         for dimension in D::ALL {
-            if source.get(dimension) > fixed.get(dimension)
-                || sender.get(dimension) > manager.get(dimension)
-                || controller_sender.get(dimension) > manager.get(dimension) - sender.get(dimension)
-                || ownership.get(dimension) > fixed.get(dimension) - source.get(dimension)
-                || ownership_sender.get(dimension) > manager.get(dimension)
-                    - sender.get(dimension) - controller_sender.get(dimension)
-                || cache.get(dimension) > fixed.get(dimension)
-                    - source.get(dimension) - ownership.get(dimension)
-                || cache_sender.get(dimension) > manager.get(dimension)
-                    - sender.get(dimension) - controller_sender.get(dimension)
-                    - ownership_sender.get(dimension)
-                || mount.get(dimension) > fixed.get(dimension)
-                    - source.get(dimension) - ownership.get(dimension) - cache.get(dimension)
-                || mount_sender.get(dimension) > manager.get(dimension)
-                    - sender.get(dimension) - controller_sender.get(dimension)
-                    - ownership_sender.get(dimension) - cache_sender.get(dimension)
-                || network.get(dimension) > fixed.get(dimension)
-                    - source.get(dimension) - ownership.get(dimension) - cache.get(dimension) - mount.get(dimension)
-                || network_sender.get(dimension) > manager.get(dimension)
-                    - sender.get(dimension) - controller_sender.get(dimension)
-                    - ownership_sender.get(dimension) - cache_sender.get(dimension) - mount_sender.get(dimension)
-                || boot_sender.get(dimension) > manager.get(dimension)
-                    - sender.get(dimension) - controller_sender.get(dimension)
-                    - ownership_sender.get(dimension) - cache_sender.get(dimension)
-                    - mount_sender.get(dimension) - network_sender.get(dimension) {
-                return Err(E::default());
-            }
             if boot_receiving.get(dimension) > enrollment.policy.host_service_envelope_data_v1()
                 .unwrap_or(ResourceVector::ZERO).get(dimension)
             {
@@ -660,6 +712,8 @@ impl<E: Copy + Default + Error + 'static> FixedServiceReceivingCaptureV1<E> {
             FixedServiceRoleV1::Mount => (mount, mount_sender),
             FixedServiceRoleV1::Network => (network, network_sender),
             FixedServiceRoleV1::BootPreparation => (boot_receiving, boot_sender),
+            FixedServiceRoleV1::Method46ControllerInitial => (controller_initial, controller_initial_sender),
+            FixedServiceRoleV1::Method46StorageInitial => (storage_initial, storage_initial_sender),
         };
         let cpu = selected.get(D::CpuMicrosPerPeriod);
         let memory = selected.get(D::MemoryBytes);
@@ -702,11 +756,13 @@ impl<E: Copy + Default + Error + 'static> FixedServiceReceivingCaptureV1<E> {
             .ok_or(AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes })?
             .checked_add(ordinary_bytes.checked_mul(MAXIMUM_PARTS - 1).ok_or(AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes })?)
             .and_then(|value| value.checked_add(transfer_bytes))
-            // Parent05 also retains the actual BootPreparation receiving and
-            // sender temporaries beside the existing complete receiver.
-            .and_then(|value| value.checked_add(8 * std::mem::size_of::<ResourceVector>()))
+            // Parent06 compares all seventeen subdivisions, M/F, checked
+            // remainders and selected copies. Bound their complete overlapping
+            // stack representations and the fixed borrowed-vector iterators.
+            .and_then(|value| value.checked_add(28 * std::mem::size_of::<ResourceVector>()))
+            .and_then(|value| value.checked_add(16 * std::mem::size_of::<&ResourceVector>()))
             .and_then(|value| value.checked_add(512 +
-                (if self.role == FixedServiceRoleV1::BootPreparation { 4 } else { 2 }) * std::mem::size_of::<String>()))
+                (self.role.initial_role_count()) * std::mem::size_of::<String>()))
             .and_then(|value| value.checked_add(8 * 4096 + 2 * 4097))
             .ok_or(AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes })?;
         let membership_residual = ExactCgroupMembershipReadbackV1::dominant_requested_bytes_v1()
@@ -715,7 +771,7 @@ impl<E: Copy + Default + Error + 'static> FixedServiceReceivingCaptureV1<E> {
         let memory = memory.checked_add(membership_residual)
             .ok_or(AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes })?;
         let membership_files = ExactCgroupMembershipReadbackV1::MAXIMUM_RETAINED_FILES_V1;
-        let initial_roles = if self.role == FixedServiceRoleV1::BootPreparation { 4 } else { 2 };
+        let initial_roles = self.role.initial_role_count();
         let physical_files = receive_files.checked_add(2 * MAXIMUM_PARTS + initial_roles + 2 + 6 + 2 + 2 + membership_files)
             .ok_or(AccountingError::ArithmeticOverflow { dimension: D::OpenFiles })?;
         let permanent = self.transfer.permanent_open_files().map_err(|_| AccountingError::ArithmeticOverflow { dimension: D::OpenFiles })?;
@@ -823,7 +879,8 @@ impl<E: Copy + Default + Error + 'static> FixedServiceReceivingCaptureV1<E> {
         let start = u128::from(before.start_time_ticks()).checked_mul(1_000_000)
             .and_then(|value| value.checked_div(u128::from(ticks_per_second))).ok_or(E::default())?;
         if matches!(self.role, FixedServiceRoleV1::Ownership | FixedServiceRoleV1::Mount
-            | FixedServiceRoleV1::Network | FixedServiceRoleV1::BootPreparation) {
+            | FixedServiceRoleV1::Network | FixedServiceRoleV1::BootPreparation
+            | FixedServiceRoleV1::Method46ControllerInitial | FixedServiceRoleV1::Method46StorageInitial) {
             let credentials = self.membership.as_ref().and_then(|result| result.as_ref().ok())
                 .and_then(|info| info.credentials()).ok_or(E::default())?;
             if [
@@ -939,7 +996,8 @@ fn require_origin_header<E: Default>(payload: &[u8], index: usize, role: FixedSe
 {
     let magic = match role {
         FixedServiceRoleV1::Network => b"AOSRSO02",
-        FixedServiceRoleV1::BootPreparation => b"AOSRSO03",
+        FixedServiceRoleV1::BootPreparation | FixedServiceRoleV1::Method46ControllerInitial
+            | FixedServiceRoleV1::Method46StorageInitial => b"AOSRSO03",
         _ => b"AOSRSO01",
     };
     if payload.len() != if index == 3 { FIXED_SERVICE_FINAL_TRANSFER_BYTES } else { FIXED_SERVICE_ORIGIN_HEADER_BYTES }
@@ -981,6 +1039,42 @@ mod origin_header_tests {
             {
                 payload[9] = foreign as u8;
                 assert!(require_origin_header::<()>(&payload, index, foreign, 42).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn manual_initial_origins_cannot_cross_roles_or_reuse_boot_delivery() {
+        for role in [
+            FixedServiceRoleV1::Method46ControllerInitial,
+            FixedServiceRoleV1::Method46StorageInitial,
+        ] {
+            for index in 0..MAXIMUM_PARTS {
+                let length = if index == 3 {
+                    FIXED_SERVICE_FINAL_TRANSFER_BYTES
+                } else {
+                    FIXED_SERVICE_ORIGIN_HEADER_BYTES
+                };
+                let mut payload = vec![0_u8; length];
+                payload[..8].copy_from_slice(b"AOSRSO03");
+                payload[8] = index as u8;
+                payload[9] = role as u8;
+                payload[40..48].copy_from_slice(&42_u64.to_be_bytes());
+
+                assert!(require_origin_header::<()>(&payload, index, role, 42).is_ok());
+                for foreign in [
+                    FixedServiceRoleV1::BootPreparation,
+                    FixedServiceRoleV1::Method46ControllerInitial,
+                    FixedServiceRoleV1::Method46StorageInitial,
+                ] {
+                    if foreign != role {
+                        assert!(require_origin_header::<()>(&payload, index, foreign, 42).is_err());
+                    }
+                }
+                for old_magic in [b"AOSRSO01", b"AOSRSO02"] {
+                    payload[..8].copy_from_slice(old_magic);
+                    assert!(require_origin_header::<()>(&payload, index, role, 42).is_err());
+                }
             }
         }
     }
