@@ -520,6 +520,20 @@ async fn restore_meta_reopened(startup: bool) {
                 .is_none()
         );
     }
+    if startup {
+        let holder = SingleHeld::acquire(reopened.coordinator().guard().store())
+            .await
+            .unwrap();
+        let held = holder.destination();
+        let observed = held.observe_publication_unrepaired().await.unwrap();
+        let metadata = crate::bucket::publication::collection_observation::MetadataStore::new(
+            &held,
+            &observed,
+            &maintenance.session,
+        );
+        let error = metadata.get(&node, None).await.unwrap_err();
+        assert!(matches!(error.kind(), StoreErrorKind::Corrupt(_)));
+    }
     let restore_before = image(&fixture).await;
     assert!(
         maintenance
@@ -539,6 +553,56 @@ async fn restore_meta_reopened(startup: bool) {
     assert_eq!(rows.iter().find(|row| row.record.hash == hash), Some(&row));
     assert!(!fixture.config.root.join(fresh.pack_key()).exists());
     if startup {
+        {
+            let holder = SingleHeld::acquire(reopened.coordinator().guard().store())
+                .await
+                .unwrap();
+            let held = holder.destination();
+            let observed = held.observe_publication_unrepaired().await.unwrap();
+            let metadata = crate::bucket::publication::collection_observation::MetadataStore::new(
+                &held,
+                &observed,
+                &maintenance.session,
+            );
+            assert_eq!(metadata.get(&node, None).await.unwrap(), node_body);
+            let reads = metadata.reads().unwrap();
+            assert!(reads.iter().any(|read| read.path()
+                == fixture.config.root.join(fresh.pack_key())
+                && read.bytes().is_none()));
+            assert!(reads.iter().any(|read| read.path()
+                == fixture.config.root.join(id.pack_key())
+                && read.bytes().is_some()));
+        }
+        // An eligible duplicate must not hide present corrupt primary bytes.
+        // Remove only this deliberate replacement, leaving the original loss.
+        let missing_path = fixture.config.root.join(fresh.pack_key());
+        let mut corrupt_primary = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&missing_path)
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut corrupt_primary, b"corrupt primary")
+            .await
+            .unwrap();
+        corrupt_primary.sync_all().await.unwrap();
+        drop(corrupt_primary);
+        {
+            let holder = SingleHeld::acquire(reopened.coordinator().guard().store())
+                .await
+                .unwrap();
+            let held = holder.destination();
+            let observed = held.observe_publication_unrepaired().await.unwrap();
+            let metadata = crate::bucket::publication::collection_observation::MetadataStore::new(
+                &held,
+                &observed,
+                &maintenance.session,
+            );
+            let error = metadata.get(&node, None).await.unwrap_err();
+            assert!(matches!(error.kind(), StoreErrorKind::Corrupt(_)));
+        }
+        tokio::fs::remove_file(&missing_path).await.unwrap();
+        assert!(!missing_path.exists());
         assert!(
             maintenance
                 .restoration_hints(&mut startup_cursor, 1)

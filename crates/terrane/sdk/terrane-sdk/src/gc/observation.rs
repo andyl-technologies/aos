@@ -30,6 +30,10 @@ use terrane_format::refs::{RefClass, RefLogRecord, RefName, RefRecord};
 
 #[path = "observation/containers.rs"]
 mod containers;
+
+#[path = "observation/metadata_placement.rs"]
+mod metadata_placement;
+
 pub(crate) use containers::CollectionCatalog;
 
 /// Contains one exact inventoried commit-bearing ref and its selected history.
@@ -560,7 +564,7 @@ where
                     && !bucket.physically_excluded(&catalog, row.pack().as_bytes()))
                     || self.permits_restore(candidate.as_ref(), row))
         });
-        let (id, location) = if let Some(row) = ordinary {
+        let (mut id, mut location) = if let Some(row) = ordinary {
             let mut location = (row.pack(), row.entry().clone());
             if let Some(candidate_entry) = candidate_entry
                 && row.pack() != candidate_entry.0
@@ -625,21 +629,35 @@ where
             candidate_entry
                 .ok_or_else(|| StoreFailure::new(StoreErrorKind::Absent(identity.clone())))?
         };
-        let inventory = catalog
-            .inventory
-            .as_ref()
-            .and_then(|entries| entries.iter().find(|entry| entry.pack_id == *id.as_bytes()))
-            .ok_or_else(corrupt)?;
         let cached = self.packs.lock().map_err(|_| corrupt())?.get(&id).cloned();
         let mut acquired = None;
         let container = match cached {
             Some(container) => container,
             None => {
-                let container = Arc::new(self.read_metadata_pack(&catalog, id).await?);
+                let container = match self.read_metadata_pack(&catalog, id).await? {
+                    Some(container) => container,
+                    None => {
+                        // Restoration preserves a fresh Live row even when its
+                        // physical pack was lost. Only actual absence permits
+                        // another currently eligible, fully verified placement.
+                        let recovered = self
+                            .recover_missing_metadata(&catalog, identity, id)
+                            .await?;
+                        id = recovered.0;
+                        location = recovered.1;
+                        recovered.2
+                    }
+                };
+                let container = Arc::new(container);
                 acquired = Some(Arc::clone(&container));
                 container
             }
         };
+        let inventory = catalog
+            .inventory
+            .as_ref()
+            .and_then(|entries| entries.iter().find(|entry| entry.pack_id == *id.as_bytes()))
+            .ok_or_else(corrupt)?;
         if &container.inventory != inventory {
             return Err(corrupt());
         }
@@ -678,70 +696,6 @@ where
             .map_err(|_| corrupt())?
             .insert(cache_key, body.clone());
         Ok(body)
-    }
-
-    /// Acquires one actual metadata container after independent member placement.
-    ///
-    /// No body or semantic role is admitted here. Only a successful requested
-    /// read inserts these preimages into this adapter's operation-local cache.
-    ///
-    /// # Errors
-    /// Preserves actual storage failures and rejects mismatched container bytes,
-    /// identities, geometry, metadata class and detached-index relationships.
-    async fn read_metadata_pack(
-        &self,
-        catalog: &crate::bucket::catalog::Catalog,
-        id: PackId,
-    ) -> Result<CachedMetadataPack, StoreFailure> {
-        let bucket = self.held.bucket();
-        let index = bucket
-            .read_optional_observed(&BucketKey::parse(&id.index_key()).map_err(|_| corrupt())?)
-            .await?;
-        let index_bytes = index.bytes().ok_or_else(corrupt)?;
-        let snapshot = PackIndexSnapshot::decode(
-            index_bytes,
-            catalog.capabilities.generation.ok_or_else(corrupt)?,
-        )
-        .map_err(|_| corrupt())?;
-        if snapshot.header().id() != id || snapshot.header().class() != PackClass::Meta {
-            return Err(corrupt());
-        }
-        let entry = catalog
-            .inventory
-            .as_ref()
-            .and_then(|entries| entries.iter().find(|entry| entry.pack_id == *id.as_bytes()))
-            .ok_or_else(corrupt)?;
-        if index_bytes.len() as u64 != entry.index_size {
-            return Err(corrupt());
-        }
-        let index_identity = TERRANE_V1
-            .from_digest(IdentityKind::Index, &entry.index_hash)
-            .map_err(|_| corrupt())?;
-        TERRANE_V1
-            .verify(&index_identity, index_bytes)
-            .map_err(|_| corrupt())?;
-        let pack = bucket
-            .read_optional_observed(&BucketKey::parse(&id.pack_key()).map_err(|_| corrupt())?)
-            .await?;
-        let bytes = pack.bytes().ok_or_else(corrupt)?;
-        if bytes.len() as u64 != entry.pack_size {
-            return Err(corrupt());
-        }
-        let pack_identity = TERRANE_V1
-            .from_digest(IdentityKind::Pack, &entry.pack_hash)
-            .map_err(|_| corrupt())?;
-        TERRANE_V1
-            .verify(&pack_identity, bytes)
-            .map_err(|_| corrupt())?;
-        let reader = PackReader::open(bytes).map_err(|_| corrupt())?;
-        reader
-            .check_index_object(index_bytes)
-            .map_err(|_| corrupt())?;
-        Ok(CachedMetadataPack {
-            inventory: entry.clone(),
-            index,
-            pack,
-        })
     }
 }
 
