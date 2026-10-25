@@ -1,5 +1,6 @@
 {sourceGate}: let
   selectors = [
+    "gc::runner::permanent_local_tests::recovery::permanent_local_collection_reconciles_with_its_original_live_session"
     "gc::runner::permanent_local_tests::recovery::permanent_local_pass_reclaims_pack_index_and_all_observed_trash_cycles"
     "gc::runner::permanent_local_tests::recovery::permanent_local_empty_pass_keeps_owner_and_reclaims_late_same_key_residue"
     "gc::runner::permanent_local_tests::recovery::permanent_local_takeover_uses_current_lease_without_replacing_owner"
@@ -44,6 +45,6 @@ in
   # and provider qualification still require their complete owning gate sets.
   sourceGate "local-permanent-reconciliation" ''
     ${runCases}
-    printf 'PASS: permanent local recovery and fresh-placement restore (34 exact cases)\n' \
+    printf 'PASS: permanent local recovery and fresh-placement restore (35 exact cases)\n' \
       > "$out/result"
   ''

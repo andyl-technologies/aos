@@ -186,7 +186,51 @@ from the guest closure. The corrected guest invokes that same checked-in script
 through the already retained immutable Terrane source dependency. Its three
 exact cases, privilege checks, assertions and deadlines remain unchanged. The
 failed receipt and source snapshot are retained; native qualification of the
-corrected guest remains pending.
+corrected guest is recorded separately below.
+
+The corrected maintenance guest at `3dddb7880c` passes in 280.715 seconds.
+Independent review checks all 8,202 immutable source files, the five retained
+Cargo test executables, their package/target/feature/profile identities and the
+actual guest proof. All three exact cases execute once on ext4 as UID/GID 840
+with empty capabilities and no-new-privileges. Native reopening with public
+trust alone and original-session marking/resume are qualified; configured GC
+service dispatch and process confinement remain unqualified. The checker echoes
+each retained case log, so serial output contains two copies of each single
+actual execution rather than six executions.
+
+The mounted-manifest diagnostic guest at `c64ba460c4` fails in 1,097.346 seconds.
+It reaches actual kernel startup and releases the first lower read, but the
+coalesced open returns EIO. The owner reports an unexpected fixture control
+packet; child error reporting shares that private control socket and only the
+first error-text fragment is retained. This result does not establish the
+underlying preparation failure or a successful signed manifest read. The exact
+signed input, assertions and deadlines remain unchanged; both failed frozen
+guests and their receipts remain retained. T-FUSE-1 and T-FUSE-2 stay open.
+
+Native permanent reconciliation now borrows a collection's original mutable
+session instead of acquiring a second singleton lease. `Recovery::reconcile`
+and `LocalCollection::reconcile_permanent` delegate to the same native producer.
+The algorithm preserves every renewal, cancellation poison, current-owner,
+Original, DATA, history, observation, selection and physical acknowledgment
+check. The same original coordinator identity and enforced commit-window check
+used by standalone recovery also precede collection-based reconciliation.
+A source comparison verifies the moved algorithm against `6570934587`
+after only session borrowing and formatter changes to optional trailing commas.
+
+A new actual native case requires initial and late-residue reclamation under
+that same live collection lease, refusal of a second acquisition even for the
+same holder, unchanged roots/mark checkpoint and permanent ownership, and
+continued marking afterward. The existing auxiliary inventory includes it as
+the 35th case. The separate
+`terrane.integration.native-local-collection-reconciliation` guest selects that
+case plus original empty/late recovery, lease takeover, foreign-hardlink refusal
+and cancellation controls. It requires source-bound Cargo artifacts, UID/GID
+840, empty capabilities, no-new-privileges and actual ext4; its qualification
+remains pending. The shared native SDK image now preserves exact artifact bytes
+through fixup. Final strict all-target Clippy passes for both Tokio/surface
+and Tokio-only profiles; the portable std-only library also passes. Python
+syntax, touched Nix formatting, PLAN-2 coverage and diff checks pass. This is
+GC service integration groundwork and accepts no new trunk task.
 
 The complete `fuse-index-roundtrip` owning gate at `91abbf8445` passes in
 1,567.153 seconds. Independent review verifies all six retained prerequisite

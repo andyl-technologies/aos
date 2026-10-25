@@ -158,6 +158,7 @@
   # immutable source identity. Keep these explicit references through fixup.
   nativeSdkTestImage = import ./native-sdk-test-image.nix {
     sourceGate = sourceGateWithInputs {
+      preserveArtifactBytes = true;
       runtimeDeps = [pkgs.rust pkgs.rust.dev pkgs.diffutils] ++ (pkgs.rust.runtimeDeps or []);
       nukeRefsKeep = [pkgs.terrane.src];
       extraBuildDeps = [pkgs.binutils];
@@ -514,6 +515,10 @@ in {
   integration.local-permanent-reconciliation = import ./local-permanent-reconciliation.nix {sourceGate = nativeSdkGate;};
   integration.native-local-deletion = import ./native-local-deletion.nix {sourceGate = nativeSdkGate;};
   integration.native-local-maintenance = import ./local-maintenance.nix {inherit pkgs lib sourceGateWithInputs;};
+  integration.native-local-collection-reconciliation = import ./local-collection-reconciliation.nix {
+    inherit pkgs lib;
+    image = nativeSdkTestImage;
+  };
   integration.native-local-gc-conformance = localGcConformance;
   integration.native-collector-clock = import ./native-collector-clock.nix {sourceGate = nativeSdkGate;};
   integration.native-cold-fork-source = nativeForkPrerequisites.coldSource;

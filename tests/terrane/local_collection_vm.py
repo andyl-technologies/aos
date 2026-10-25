@@ -1,0 +1,99 @@
+"""Executes original-session reconciliation and recovery regressions in a guest."""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+PREFIX = "gc::runner::permanent_local_tests::"
+CASES = [
+    PREFIX + "recovery::permanent_local_collection_reconciles_with_its_original_live_session",
+    PREFIX + "recovery::permanent_local_empty_pass_keeps_owner_and_reclaims_late_same_key_residue",
+    PREFIX + "recovery::permanent_local_takeover_uses_current_lease_without_replacing_owner",
+    PREFIX + "faults::permanent_local_foreign_hardlink_refuses_unlink",
+    PREFIX + "faults::permanent_local_cancelled_waiter_before_open_retains_exclusion_through_worker_completion",
+]
+
+
+def verify_image(source, image):
+    """Binds the actual retained Cargo test image to every immutable crate input."""
+    identity = json.loads((image / "share/identity.json").read_text())
+    assert identity["schema_version"] == 1 and identity["source"] == str(source)
+    assert identity["default_features"] is False
+    assert identity["requested_features"] == ["tokio", "surface-sdk"]
+    assert identity["features"] == ["send", "std", "surface-sdk", "tokio"]
+    assert identity["cargo_profile"] == "test"
+    assert identity["profile"]["test"] is True
+    assert identity["profile"]["opt_level"] == "s"
+    assert identity["profile"]["debuginfo"] == 0
+    assert identity["working_directory"] == "terrane/sdk/terrane-sdk"
+    hashes = {
+        path.relative_to(source / "crates").as_posix():
+        hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted((source / "crates").rglob("*"))
+        if path.is_file() and path.relative_to(source / "crates").as_posix()
+        != ".cargo/config.toml"
+    }
+    assert identity["input_sha256"] == hashes
+    rows = [json.loads(line) for line in (image / "share/build.jsonl").read_text().splitlines()]
+    artifacts = [row for row in rows if row.get("reason") == "compiler-artifact"
+                 and row.get("package_id") == identity["package_id"]
+                 and row.get("target", {}).get("name") == "terrane_sdk"
+                 and row.get("target", {}).get("kind") == ["lib"]
+                 and row.get("profile", {}).get("test") is True
+                 and row.get("executable")]
+    assert len(artifacts) == 1
+    assert artifacts[0]["features"] == identity["features"]
+    assert artifacts[0]["profile"] == identity["profile"]
+    binary = image / "libexec/terrane-native-sdk-tests"
+    assert binary.read_bytes().startswith(b"\x7fELF")
+    return hashlib.sha256(binary.read_bytes()).hexdigest()
+
+
+def main():
+    """Runs exact real native producers under an unprivileged ext4 identity."""
+    assert os.getuid() == os.geteuid() == 840
+    assert os.getgid() == os.getegid() == 840 and os.getgroups() == []
+    status = dict(line.split(":", 1) for line in Path("/proc/self/status")
+                  .read_text().splitlines() if ":" in line)
+    for name in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]:
+        assert int(status[name].strip(), 16) == 0, name
+    assert status["NoNewPrivs"].strip() == "1"
+    source = Path(os.environ["src"])
+    image = Path(os.environ["TERRANE_COLLECTION_TEST_IMAGE"])
+    evidence = Path(os.environ["TERRANE_COLLECTION_EVIDENCE"])
+    os.chdir(source / "crates")
+    binary_hash = verify_image(source, image)
+    binary = image / "bin/terrane-native-sdk-tests"
+    checker = source / "tests/terrane/check_native_gate.py"
+    inventory = evidence / "inventory.log"
+    with inventory.open("wb") as output:
+        subprocess.run([str(binary), "--list"], stdout=output, stderr=subprocess.STDOUT,
+                       check=True, timeout=5)
+    subprocess.run([sys.executable, str(checker), "inventory", str(inventory),
+                    json.dumps(CASES)], check=True, timeout=5)
+    for case in CASES:
+        log = evidence / (case.rsplit("::", 1)[-1] + ".log")
+        with log.open("wb") as output:
+            completed = subprocess.run([str(binary), case, "--exact", "--test-threads=1"],
+                                       stdout=output, stderr=subprocess.STDOUT, timeout=180)
+        print(log.read_text(), end="", flush=True)
+        completed.check_returncode()
+        subprocess.run([sys.executable, str(checker), "execution", str(log),
+                        json.dumps([case])], check=True, timeout=5,
+                       stdout=subprocess.DEVNULL)
+    assert verify_image(source, image) == binary_hash
+    print("LOCAL_COLLECTION_RECONCILIATION_PROOF " + json.dumps({
+        "source": str(source), "image": str(image), "cases": CASES,
+        "uid": os.getuid(), "capabilities": 0, "no_new_privileges": True,
+        "binary_sha256": binary_hash, "configured_gc_runtime": False,
+    }, sort_keys=True), flush=True)
+    print("PASS original collection session reconciles actual permanent residues and retains "
+          "marking; recovery lease, hardlink and cancellation controls pass", flush=True)
+
+
+if __name__ == "__main__":
+    main()

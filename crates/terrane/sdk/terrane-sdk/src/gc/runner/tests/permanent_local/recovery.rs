@@ -2,8 +2,10 @@
 
 use super::support::*;
 use crate::gc::runner::copied_retirement_tests::support::{CopiedFixture, Residue};
-use crate::store::RefStore;
+use crate::gc::runner::permanent_local::Recovery;
+use crate::store::{Clock, RefStore};
 use terrane_format::gc::retirement::{ObservationState, PassCoverage, PassPhase};
+use terrane_format::gc::{GcLease, Windows};
 
 #[path = "recovery/renewal.rs"]
 mod renewal;
@@ -37,6 +39,94 @@ fn assert_completed(image: &Image) {
             .iter()
             .all(|row| row.state != ObservationState::Planned)
     );
+}
+
+#[tokio::test]
+async fn permanent_local_collection_reconciles_with_its_original_live_session() {
+    let fixture = CopiedFixture::new(Residue::Pack).await;
+    fixture.own().await;
+    let before = image(&fixture).await;
+    let key = before.owner_key.as_deref().unwrap();
+    let previous = GcLease::decode(before.logical["gc/lease"].as_deref().unwrap()).unwrap();
+    let ticks = fixture
+        .source
+        .clock
+        .monotonic()
+        .as_secs()
+        .checked_add(1)
+        .unwrap();
+    fixture
+        .source
+        .clock
+        .set(previous.expiry.checked_add(1).unwrap(), ticks);
+    let windows = Windows::new(30, 60, 60, 90).unwrap();
+    let mut collection = fixture
+        .repository
+        .start_local_collection("combined-maintenance".into(), 90, 9001, windows)
+        .await
+        .unwrap();
+    let roots = collection.roots().clone();
+    let checkpoint = collection.state().clone();
+    let initial = collection.lease().clone();
+    assert!(
+        Recovery::start(
+            fixture.guard(),
+            &fixture.authority,
+            initial.holder.clone(),
+            90,
+            fixture.repository.coordinator(),
+            windows,
+        )
+        .await
+        .is_err()
+    );
+
+    let report = collection.reconcile_permanent(key, 8).await.unwrap();
+
+    assert_eq!(report.reclaimed, 1);
+    assert!(report.selected_events > report.reclaimed);
+    assert!(
+        !fixture
+            .guard()
+            .store()
+            .root()
+            .join(fixture.pack.pack_key())
+            .exists()
+    );
+    assert_eq!(collection.roots(), &roots);
+    assert_eq!(collection.state(), &checkpoint);
+    assert_eq!(collection.lease().holder, initial.holder);
+    assert_eq!(collection.lease().epoch, initial.epoch);
+    let first = image(&fixture).await;
+    assert_owner_retained(&before, &first);
+    assert_completed(&first);
+    assert_eq!(first.pass.as_ref().unwrap().lease, *collection.lease());
+
+    // A completed pass cannot certify future absence. The same session must
+    // qualify and remove genuinely late residue while retaining its checkpoint.
+    let path = fixture.guard().store().root().join(fixture.pack.pack_key());
+    tokio::fs::write(&path, b"late residue during the original marking session")
+        .await
+        .unwrap();
+    let late = collection.reconcile_permanent(key, 8).await.unwrap();
+    assert_eq!(late.reclaimed, 1);
+    assert!(!path.exists());
+    assert_eq!(collection.state(), &checkpoint);
+    let after = image(&fixture).await;
+    assert_owner_retained(&before, &after);
+    assert_completed(&after);
+    assert_eq!(
+        after.pass.as_ref().unwrap().pass,
+        first.pass.as_ref().unwrap().pass + 1
+    );
+    assert_eq!(after.pass.as_ref().unwrap().lease, *collection.lease());
+
+    collection.mark_batch(1).await.unwrap();
+    assert_eq!(collection.roots(), &roots);
+    assert_eq!(collection.lease().epoch, initial.epoch);
+    drop(collection);
+    let fixture = reopen_checked(fixture, &after).await;
+    cleanup(fixture);
 }
 
 #[tokio::test]

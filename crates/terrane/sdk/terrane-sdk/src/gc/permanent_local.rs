@@ -53,26 +53,7 @@ where
         coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
         windows: Windows,
     ) -> Result<Self, CollectionError> {
-        if !std::ptr::eq(guard, coordinator.guard()) {
-            return Err(denied().into());
-        }
-        let maximum = coordinator.maximum_commit_duration();
-        let commit = maximum
-            .as_secs()
-            .checked_add(u64::from(maximum.subsec_nanos() != 0))
-            .ok_or(GcError::Exhausted)?;
-        if windows.commit() != commit
-            || windows.grace() <= commit
-            || windows.deletion() < windows.grace()
-        {
-            return Err(GcError::Window.into());
-        }
-        Windows::new(
-            windows.commit(),
-            windows.grace(),
-            windows.deletion(),
-            windows.retention(),
-        )?;
+        check_configuration(guard, coordinator, windows)?;
         let lease = Collector::new(guard, authority)
             .acquire(holder, duration)
             .await?
@@ -152,158 +133,217 @@ where
         owner_key: &str,
         maximum_requests: usize,
     ) -> Result<Reconciliation, CollectionError> {
-        if maximum_requests == 0 || maximum_requests > 4096 {
-            return Err(denied().into());
-        }
-        let operation = self.session.operation()?;
-        #[cfg(test)]
-        let trace = crate::ref_advance::NativeTrace::new(
-            self.guard.store().root(),
-            "permanent-reconciliation",
-        );
-        let mut report = Reconciliation {
-            reclaimed: 0,
-            selected_events: 0,
-        };
-        loop {
-            #[cfg(test)]
-            trace.mark("loop-renewal-start");
-            // Each bounded traversal starts with an acknowledged whole renewal.
-            // The previous native work has returned and released its checked
-            // borrows; its expiry-specific predicates cannot authorize this work.
-            self.session
-                .renew(&Collector::new(self.guard, self.authority))
-                .await?;
-            #[cfg(test)]
-            trace.mark("loop-renewal-acknowledged");
-            self.session.recheck()?;
-            let holder = crate::bucket::held::SingleHeld::acquire(self.guard.store()).await?;
-            let held = holder.destination();
-            let observed = held.observe_publication_unrepaired().await?;
-            #[cfg(test)]
-            trace.mark("loop-publication-observed");
-            let owner = native_permanent_local::qualify(
-                self.guard,
-                self.authority,
-                &self.session,
-                &held,
-                &observed,
-                owner_key,
-                None,
-            )
-            .await?;
-            let checked = native_copied_placement::qualify_current_owned(
-                self.guard,
-                self.authority,
-                &self.session,
-                &held,
-                &observed,
-                &owner,
-                (Some(owner.controls()), &self.windows),
-            )
-            .await?;
-            let history = native_permanent_local::history::selected(held.fs(), &owner).await?;
-            #[cfg(test)]
-            trace.mark("loop-current-inputs-and-history-qualified");
-            let current_cycles = candidate_cycles(held.fs(), held.root()).await?;
-            let cycles = history.batch(&current_cycles);
-            let observation =
-                std::sync::Arc::new(effects::observe(held.fs(), &checked, cycles, &history).await?);
-            #[cfg(test)]
-            trace.mark("loop-native-observation-returned");
-            let rows = observation
-                .progress()
-                .map_err(crate::selected_bridge::native_restore_failure)?;
-            let next = history.next(&rows);
-            let artifacts = checked.artifacts(&held).await?;
-            #[cfg(test)]
-            trace.mark("loop-fresh-artifacts-prepared");
-            let (_, phase) =
-                effects::publish_observed(held.fs(), &checked, &artifacts, &observation).await?;
-            #[cfg(test)]
-            trace.mark("loop-progress-acknowledged");
-            report.selected_events += 1;
+        reconcile_current(
+            self.guard,
+            self.authority,
+            &mut self.session,
+            &self.windows,
+            owner_key,
+            maximum_requests,
+        )
+        .await
+    }
+}
 
-            // Drop every checked borrow before independently resolving the
-            // new selected event. The old operation cannot authorize its child.
-            drop(artifacts);
-            drop(observation);
-            drop(checked);
-            drop(owner);
-            drop(observed);
-            drop(held);
-            drop(holder);
-            let Some(next) = next else {
-                if phase == terrane_format::gc::retirement::PassPhase::PassCompleted {
-                    break;
-                }
-                // The initial event must be Open. Independently resolve it and
-                // repeat the complete native traversal before selecting completion.
-                continue;
-            };
-            if report.reclaimed == maximum_requests {
+/// Checks that current native windows belong to the exact configured coordinator.
+///
+/// # Errors
+/// Rejects a foreign Guard, overflow or windows inconsistent with the original
+/// coordinator's enforced maximum commit duration.
+pub(super) fn check_configuration<F, B, V, C>(
+    guard: &Guard<FileBucket<F, B, V>, C>,
+    coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+    windows: Windows,
+) -> Result<(), CollectionError>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+    C: Clock,
+{
+    if !std::ptr::eq(guard, coordinator.guard()) {
+        return Err(denied().into());
+    }
+    let maximum = coordinator.maximum_commit_duration();
+    let commit = maximum
+        .as_secs()
+        .checked_add(u64::from(maximum.subsec_nanos() != 0))
+        .ok_or(GcError::Exhausted)?;
+    if windows.commit() != commit
+        || windows.grace() <= commit
+        || windows.deletion() < windows.grace()
+    {
+        return Err(GcError::Window.into());
+    }
+    Windows::new(
+        windows.commit(),
+        windows.grace(),
+        windows.deletion(),
+        windows.retention(),
+    )?;
+    Ok(())
+}
+
+/// Runs the original reconciliation producer using an exclusively borrowed session.
+///
+/// The caller retains its marking state and singleton lease. Each observation,
+/// selection and physical request still independently qualifies current inputs.
+///
+/// # Errors
+/// Preserves invalid bounds, lost leases, changed ownership or controls, unsafe
+/// artifacts and failed native durability refusals from the original producer.
+///
+/// # Panics
+/// In test builds, panics if opt-in phase diagnostics cannot write to stderr.
+pub(super) async fn reconcile_current<F, B, V, C>(
+    guard: &Guard<FileBucket<F, B, V>, C>,
+    authority: &OriginalAuthority,
+    session: &mut session::Session,
+    windows: &Windows,
+    owner_key: &str,
+    maximum_requests: usize,
+) -> Result<Reconciliation, CollectionError>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+    C: Clock,
+{
+    if maximum_requests == 0 || maximum_requests > 4096 {
+        return Err(denied().into());
+    }
+    let operation = session.operation()?;
+    #[cfg(test)]
+    let trace =
+        crate::ref_advance::NativeTrace::new(guard.store().root(), "permanent-reconciliation");
+    let mut report = Reconciliation {
+        reclaimed: 0,
+        selected_events: 0,
+    };
+    loop {
+        #[cfg(test)]
+        trace.mark("loop-renewal-start");
+        // Each bounded traversal starts with an acknowledged whole renewal.
+        // The previous native work has returned and released its checked
+        // borrows; its expiry-specific predicates cannot authorize this work.
+        session.renew(&Collector::new(guard, authority)).await?;
+        #[cfg(test)]
+        trace.mark("loop-renewal-acknowledged");
+        session.recheck()?;
+        let holder = crate::bucket::held::SingleHeld::acquire(guard.store()).await?;
+        let held = holder.destination();
+        let observed = held.observe_publication_unrepaired().await?;
+        #[cfg(test)]
+        trace.mark("loop-publication-observed");
+        let owner = native_permanent_local::qualify(
+            guard, authority, session, &held, &observed, owner_key, None,
+        )
+        .await?;
+        let checked = native_copied_placement::qualify_current_owned(
+            guard,
+            authority,
+            session,
+            &held,
+            &observed,
+            &owner,
+            (Some(owner.controls()), windows),
+        )
+        .await?;
+        let history = native_permanent_local::history::selected(held.fs(), &owner).await?;
+        #[cfg(test)]
+        trace.mark("loop-current-inputs-and-history-qualified");
+        let current_cycles = candidate_cycles(held.fs(), held.root()).await?;
+        let cycles = history.batch(&current_cycles);
+        let observation =
+            std::sync::Arc::new(effects::observe(held.fs(), &checked, cycles, &history).await?);
+        #[cfg(test)]
+        trace.mark("loop-native-observation-returned");
+        let rows = observation
+            .progress()
+            .map_err(crate::selected_bridge::native_restore_failure)?;
+        let next = history.next(&rows);
+        let artifacts = checked.artifacts(&held).await?;
+        #[cfg(test)]
+        trace.mark("loop-fresh-artifacts-prepared");
+        let (_, phase) =
+            effects::publish_observed(held.fs(), &checked, &artifacts, &observation).await?;
+        #[cfg(test)]
+        trace.mark("loop-progress-acknowledged");
+        report.selected_events += 1;
+
+        // Drop every checked borrow before independently resolving the
+        // new selected event. The old operation cannot authorize its child.
+        drop(artifacts);
+        drop(observation);
+        drop(checked);
+        drop(owner);
+        drop(observed);
+        drop(held);
+        drop(holder);
+        let Some(next) = next else {
+            if phase == terrane_format::gc::retirement::PassPhase::PassCompleted {
                 break;
             }
-
-            // Requalify the selected duty and complete current DATA under the
-            // same whole lease as its Planned event. The next loop renews only
-            // after this request has actually returned and released its holds.
-            #[cfg(test)]
-            trace.mark("reclaim-qualification-start");
-            let holder = crate::bucket::held::SingleHeld::acquire(self.guard.store()).await?;
-            let held = holder.destination();
-            let observed = held.observe_publication_unrepaired().await?;
-            let owner = native_permanent_local::qualify(
-                self.guard,
-                self.authority,
-                &self.session,
-                &held,
-                &observed,
-                owner_key,
-                None,
-            )
-            .await?;
-            let checked = native_copied_placement::qualify_current_owned(
-                self.guard,
-                self.authority,
-                &self.session,
-                &held,
-                &observed,
-                &owner,
-                (Some(owner.controls()), &self.windows),
-            )
-            .await?;
-            let history = native_permanent_local::history::selected(held.fs(), &owner).await?;
-            let current_cycles = candidate_cycles(held.fs(), held.root()).await?;
-            let mut cycles = history.batch(&current_cycles);
-            if let terrane_format::gc::retirement::ObservedArtifact::Trash(cycle) = next.artifact
-                && cycles.binary_search(&cycle).is_err()
-            {
-                if cycles.len() == native_permanent_local::history::NATIVE_BATCH_CYCLES {
-                    cycles.pop();
-                }
-                cycles.push(cycle);
-                cycles.sort_unstable();
-            }
-            let observation =
-                std::sync::Arc::new(effects::observe(held.fs(), &checked, cycles, &history).await?);
-            let request =
-                native_permanent_local::qualify_reclaim(&checked, &held, next.artifact).await?;
-            #[cfg(test)]
-            trace.mark("reclaim-current-inputs-and-observation-qualified");
-            effects::reclaim(held.fs(), &request, observation).await?;
-            #[cfg(test)]
-            trace.mark("reclaim-acknowledged");
-            report.reclaimed += 1;
-            // The next iteration observes actual outcomes and selects another
-            // event, including late residues. No successful absence is cached.
+            // The initial event must be Open. Independently resolve it and
+            // repeat the complete native traversal before selecting completion.
+            continue;
+        };
+        if report.reclaimed == maximum_requests {
+            break;
         }
-        self.session.recheck()?;
-        operation.complete();
+
+        // Requalify the selected duty and complete current DATA under the
+        // same whole lease as its Planned event. The next loop renews only
+        // after this request has actually returned and released its holds.
         #[cfg(test)]
-        trace.mark("reconciliation-completed");
-        Ok(report)
+        trace.mark("reclaim-qualification-start");
+        let holder = crate::bucket::held::SingleHeld::acquire(guard.store()).await?;
+        let held = holder.destination();
+        let observed = held.observe_publication_unrepaired().await?;
+        let owner = native_permanent_local::qualify(
+            guard, authority, session, &held, &observed, owner_key, None,
+        )
+        .await?;
+        let checked = native_copied_placement::qualify_current_owned(
+            guard,
+            authority,
+            session,
+            &held,
+            &observed,
+            &owner,
+            (Some(owner.controls()), windows),
+        )
+        .await?;
+        let history = native_permanent_local::history::selected(held.fs(), &owner).await?;
+        let current_cycles = candidate_cycles(held.fs(), held.root()).await?;
+        let mut cycles = history.batch(&current_cycles);
+        if let terrane_format::gc::retirement::ObservedArtifact::Trash(cycle) = next.artifact
+            && cycles.binary_search(&cycle).is_err()
+        {
+            if cycles.len() == native_permanent_local::history::NATIVE_BATCH_CYCLES {
+                cycles.pop();
+            }
+            cycles.push(cycle);
+            cycles.sort_unstable();
+        }
+        let observation =
+            std::sync::Arc::new(effects::observe(held.fs(), &checked, cycles, &history).await?);
+        let request =
+            native_permanent_local::qualify_reclaim(&checked, &held, next.artifact).await?;
+        #[cfg(test)]
+        trace.mark("reclaim-current-inputs-and-observation-qualified");
+        effects::reclaim(held.fs(), &request, observation).await?;
+        #[cfg(test)]
+        trace.mark("reclaim-acknowledged");
+        report.reclaimed += 1;
+        // The next iteration observes actual outcomes and selects another
+        // event, including late residues. No successful absence is cached.
     }
+    session.recheck()?;
+    operation.complete();
+    #[cfg(test)]
+    trace.mark("reconciliation-completed");
+    Ok(report)
 }
 
 async fn candidate_cycles<F: LocalFs + BucketBinding>(

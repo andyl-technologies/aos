@@ -116,6 +116,27 @@ where
         self.collection.lease()
     }
 
+    /// Reconciles bounded permanent residues using this same original collector.
+    ///
+    /// The producer renews this session's whole lease and independently resolves
+    /// each owner and physical request. Marking progress remains intact.
+    ///
+    /// # Errors
+    /// Rejects invalid bounds, stale ownership, changed controls, unsafe artifacts
+    /// and failed native acknowledgments. Cancellation stops the session.
+    ///
+    /// # Panics
+    /// In test builds, panics if opt-in phase diagnostics cannot write to stderr.
+    pub async fn reconcile_permanent(
+        &mut self,
+        owner_key: &str,
+        maximum_requests: usize,
+    ) -> Result<crate::gc::runner::permanent_local::Reconciliation, CollectionError> {
+        self.collection
+            .reconcile_permanent(self.coordinator, owner_key, maximum_requests)
+            .await
+    }
+
     /// Advances bounded metadata traversal through the original collector.
     ///
     /// # Errors

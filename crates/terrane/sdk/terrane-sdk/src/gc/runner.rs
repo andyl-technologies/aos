@@ -238,6 +238,37 @@ where
         })
     }
 
+    /// Reconciles permanent residues under this collection's original live session.
+    ///
+    /// Marking roots and checkpoints remain unchanged. The owner key is only a
+    /// candidate hint; the original producer independently checks current owner,
+    /// physical controls, history and whole lease before every native effect.
+    ///
+    /// # Errors
+    /// Rejects invalid bounds, unknown ownership, lost leases, changed controls,
+    /// unsafe artifacts and incomplete native durability. Cancellation stops the
+    /// session and queued native work retains its exclusions.
+    ///
+    /// # Panics
+    /// In test builds, panics if opt-in phase diagnostics cannot write to stderr.
+    pub async fn reconcile_permanent(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+        owner_key: &str,
+        maximum_requests: usize,
+    ) -> Result<permanent_local::Reconciliation, CollectionError> {
+        permanent_local::check_configuration(self.guard, coordinator, self.windows)?;
+        permanent_local::reconcile_current(
+            self.guard,
+            self.authority,
+            &mut self.session,
+            &self.windows,
+            owner_key,
+            maximum_requests,
+        )
+        .await
+    }
+
     /// Reopens selected progress after renewing an exact whole lease through native selection.
     ///
     /// Persisted traversal claims are replayed against actual authenticated roots
