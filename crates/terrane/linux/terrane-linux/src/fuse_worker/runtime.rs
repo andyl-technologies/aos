@@ -100,6 +100,7 @@ async fn run_connection(
             if reply.outcome == Outcome::IoError {
                 observe(Event::OpenFailed {
                     node: reply.ticket.node(),
+                    expired: reply.expired,
                 })?;
             }
         }

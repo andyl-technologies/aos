@@ -235,6 +235,21 @@ profiles; portable std-only library Clippy also passes. Guest syntax, diff check
 and PLAN-2 requirement ownership pass. The initial decoder lint rejected a
 constant-sized chunk iterator; the final implementation uses checked byte pairs.
 
+The seven-case maintenance guest at `c1299ed204` passes in 293.003 seconds.
+Independent review compares all 8,208 immutable source files and five retained
+Cargo test executables with their actual package/target/features/profile and
+installed hashes. Each of the seven exact cases executes once on ext4 as
+UID/GID 840 with empty capabilities and no-new-privileges; the checker prints
+a second copy of each retained case log. Configured public-file reopening,
+unchanged Serve behavior and the installed-Guard/unsafe-file refusal controls
+are qualified. Mandatory workspace compilation remains pending; configured GC
+service execution and process confinement remain unimplemented.
+
+Mandatory application-target compilation at `c83791dad3` passes in 698.845
+seconds. Independent review verifies all 8,204 immutable source files, 190 test
+executables and 59 packages. Compilation does not establish native success;
+the original four-case guest remains failed as recorded above.
+
 The initial maintenance guest at `6570934587` fails in 261.665 seconds before
 executing a Rust case: its separately interpolated Python entry point is absent
 from the guest closure. The corrected guest invokes that same checked-in script
@@ -273,6 +288,15 @@ final framed fixture also passes its own feature-enabled check. Native
 diagnosis remains pending. Mandatory workspace compilation at `becb606eaf`
 passes in 697.654 seconds. Independent review verifies 8,204 immutable source
 files, 190 test executables and 59 packages, as compilation only.
+
+Open-failure observations now retain whether the original waiter's deadline
+selected EIO. Queue admission, coalescing, completion and response behavior
+remain unchanged. Six pure queue cases pass, including independent deadlines,
+late joiners and failed backing completion; strict Linux all-feature and
+Tokio-only all-target Clippy profiles pass. Native fixture builds also record
+the original retained service task's terminal result after detached drain,
+without logging its credential-bearing context. Fresh native diagnosis remains
+pending; no deadline, signed input, custody assertion or acceptance changes.
 
 Native permanent reconciliation now borrows a collection's original mutable
 session instead of acquiring a second singleton lease. `Recovery::reconcile`

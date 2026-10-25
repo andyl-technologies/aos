@@ -80,6 +80,7 @@ fn individual_deadlines_and_late_joiners_never_cancel_the_shared_fetch() {
     assert_eq!(queue.next_deadline(), Some(now + Duration::from_secs(1)));
 
     let expired = queue.next_reply(now + Duration::from_secs(1)).unwrap();
+    assert!(expired.expired);
     assert_eq!(
         (expired.unique, expired.ticket, expired.outcome),
         (id(1), original, Outcome::IoError)
@@ -104,6 +105,7 @@ fn individual_deadlines_and_late_joiners_never_cancel_the_shared_fetch() {
 
     queue.complete(original, Outcome::Ready).unwrap();
     let late = queue.next_reply(now + Duration::from_secs(4)).unwrap();
+    assert!(!late.expired);
     assert_eq!(
         (late.unique, late.ticket, late.outcome),
         (id(3), original, Outcome::Ready)
@@ -124,6 +126,7 @@ fn stale_completions_cannot_resolve_a_new_fetch_for_the_same_node() {
 
     assert_eq!(queue.complete(original, Outcome::Ready), Err(Error::Stale));
     let failed = queue.next_reply(now).unwrap();
+    assert!(!failed.expired);
     assert_eq!(
         (failed.unique, failed.ticket, failed.outcome),
         (id(1), original, Outcome::IoError)

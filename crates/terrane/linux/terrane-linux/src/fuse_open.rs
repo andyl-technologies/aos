@@ -47,6 +47,8 @@ pub struct Reply {
     pub ticket: Ticket,
     /// Selects a successful installed backing or the required open error.
     pub outcome: Outcome,
+    /// Records whether this waiter's own deadline selected its error response.
+    pub expired: bool,
 }
 
 /// Resolves one open waiter independently of other waiters and the shared fetch.
@@ -250,14 +252,16 @@ impl Queue {
             .iter()
             .position(|waiter| waiter.deadline <= now || waiter.outcome.is_some())?;
         let waiter = self.waiters.swap_remove(position);
+        let expired = waiter.deadline <= now;
         Some(Reply {
             unique: waiter.unique,
             ticket: waiter.ticket,
-            outcome: if waiter.deadline <= now {
+            outcome: if expired {
                 Outcome::IoError
             } else {
                 waiter.outcome?
             },
+            expired,
         })
     }
 

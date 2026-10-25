@@ -10,6 +10,8 @@ use super::{PendingRequest, RequestedBacking, WorkerChannel};
 use crate::host_cache::{
     NativeExposureLease, NativeMetadataOwner, NativeReadDriver, NativeRootIndex,
 };
+#[cfg(feature = "native-test-fixtures")]
+use std::io::Write as _;
 use std::{io, rc::Rc, time::Duration};
 use terrane_format::surface::{View, ViewTarget};
 use terrane_sdk::{
@@ -144,7 +146,22 @@ impl Service {
         let (stop, receive) = oneshot::channel();
         Ok(Self {
             stop: Some(stop),
-            task: Some(local.spawn_local(run(channel, context, receive))),
+            task: Some(local.spawn_local(async move {
+                #[cfg(feature = "native-test-fixtures")]
+                let started = tokio::time::Instant::now();
+
+                let result = run(channel, context, receive).await;
+
+                // A dropped fixture supervisor detaches this task. Retain its
+                // original terminal result when the runtime finishes driving it.
+                #[cfg(feature = "native-test-fixtures")]
+                let _ = writeln!(
+                    io::stderr(),
+                    "WORKER_SERVICE_RESULT elapsed_ms={} result={result:?}",
+                    started.elapsed().as_millis(),
+                );
+                result
+            })),
         })
     }
 

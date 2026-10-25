@@ -107,8 +107,10 @@ pub enum Event {
     },
     /// An open has received EIO; its accepted physical work may remain retained.
     OpenFailed {
-        /// Original canonical node of the expired response.
+        /// Original canonical node of the failed response.
         node: NonZeroU64,
+        /// Reports that this waiter's deadline selected EIO, independently of the fetch.
+        expired: bool,
     },
 }
 
