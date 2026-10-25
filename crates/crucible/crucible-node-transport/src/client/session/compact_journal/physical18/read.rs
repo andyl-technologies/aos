@@ -5,7 +5,7 @@
 //! validates every local shared edge. Tree and Box geometry remain separate.
 
 use super::super::{CompactClientCustody, CompactClientOriginal, PendingEnvelope};
-use super::{CompactCustody18Limits, TAG, invalid, refused};
+use super::{CompactCustody18Limits, Edition, invalid, refused};
 use crate::ProviderError;
 use crate::client::{
     ClientContent,
@@ -26,12 +26,13 @@ use std::{
 pub(super) fn decode(
     input: &[u8],
     limits: CompactCustody18Limits,
+    edition: Edition,
 ) -> Result<CompactClientCustody, ProviderError> {
     if input.len() > limits.maximum_input_bytes {
         return Err(refused());
     }
     let mut fields = Fields::array(input)?;
-    if plain_string(next(&mut fields)?)? != TAG
+    if plain_string(next(&mut fields)?)? != edition.tag()
         || plain_string(next(&mut fields)?)? != METADATA_CAPACITY_RECORD_FORMAT
     {
         return Err(invalid());
@@ -61,12 +62,14 @@ pub(super) fn decode(
         data,
         &mut Ledger::new(records.rows(), limits.json),
         limits,
+        edition,
         false,
     )?;
     read(
         data,
         &mut Ledger::new(records.rows(), limits.json),
         limits,
+        edition,
         true,
     )?
     .ok_or_else(invalid)
@@ -76,6 +79,7 @@ fn read(
     input: &[u8],
     ledger: &mut Ledger<'_, '_, '_>,
     limits: CompactCustody18Limits,
+    edition: Edition,
     build: bool,
 ) -> Result<Option<CompactClientCustody>, ProviderError> {
     let mut fields = Fields::array(input)?;
@@ -85,6 +89,7 @@ fn read(
     let maximum_envelope_bank_bytes = number(next(&mut fields)?)?;
     if maximum_requests == 0
         || maximum_requests > 4096
+        || maximum_bytes == 0
         || retained_bytes > maximum_bytes
         || maximum_envelope_bank_bytes == 0
         || maximum_envelope_bank_bytes > limits.maximum_envelope_bank_bytes
@@ -110,7 +115,9 @@ fn read(
     )?;
     let content_bytes = next(&mut fields)?;
     let content = ValidatedCompactMetadata8::validate(content_bytes, limits.content)?;
-    if content.data().stored_limits().maximum_bytes != maximum_bytes {
+    if edition == Edition::Coupled18
+        && content.data().stored_limits().maximum_bytes != maximum_bytes
+    {
         return Err(invalid());
     }
     ledger.rows = content.validate_compact_custody18_capacity_rows(ledger.rows.clone())?;

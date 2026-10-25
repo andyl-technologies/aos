@@ -10,6 +10,45 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Independent compact journal and content ceilings
+
+Compact SDK construction can now retain content under its own unchanged byte
+ceiling while setting the new empty journals' independent canonical-byte ceiling.
+The slot-based constructor checks every fallible scalar before moving content;
+refusal preserves both original slots, and success moves the complete content
+store directly into its output. Existing journal history still requires its
+original owner or an independently funded migration. Neither construction API
+renews prior consumed credit or supplies a Source action or storage admission.
+
+The explicit `source-private.compact-custody/19` writer and paired inert reader
+preserve both ceilings, consumed journal/content credit, complete bank originals,
+content aliases and independent pending/typed failure owners. They share the
+physical18 field and capacity grammar. Each reader accepts only its own edition;
+the physical18 writer refuses unequal ceilings before changing its record bank.
+For equal ceilings the two encodings differ only in their explicit version tag.
+This custody DATA edition does not select a newer native lifecycle.
+
+Eight new controls cover actual Initial capacity growth into distinct ceilings,
+completed and unfinished content reservations, both ceiling orders, consumed
+journal history, independent budget refusals, slot preservation and original
+byte ownership, a real socket exchange, failed received owners, truncation and
+exact/one-short capacity restrictions. All thirty-eight SDK/history, four bank
+codec, nine canonical/publication and nine body controls pass in both codec
+builds. Both complete Transport suites pass 2,217 tests with zero failures and
+twenty ignored, using frozen compiler-selected artifacts. All-feature/all-target
+checking, scoped formatting and six architecture checks pass. The session facade's
+required source-review digest, implementation count and cohesion record were
+updated for its new child-module export.
+
+Strict Transport Clippy retains the exact preceding code/message multiset: four
+existing errors and 1,725 warnings. It is not a strict Transport lint pass.
+Application test-target compilation passes with 185 test artifacts across 58
+packages, including 76 integration targets. Its captured source matches all 681
+frozen owned Rust/Cargo inputs. Complete future SDK R/T/S, genuine Source18-funded
+runtime capacity handoff, the five-phase recipe producer and full RFC
+qualification remain unfinished; no Source constructor selects this custody path
+yet.
+
 ## Borrowed typed body construction
 
 Shared typed body decoding now constructs its independent typed result directly

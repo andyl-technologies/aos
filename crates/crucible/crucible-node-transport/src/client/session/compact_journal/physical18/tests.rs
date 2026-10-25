@@ -10,7 +10,7 @@ use crate::protocol_snapshot::owned11::json_value::HistoricalJsonLimits;
 use crucible_node_format::{Id, U64};
 use serde_json::{Value, json};
 
-fn limits(input: &[u8]) -> CompactCustody18Limits {
+pub(in crate::client::session::compact_journal) fn limits(input: &[u8]) -> CompactCustody18Limits {
     CompactCustody18Limits {
         maximum_input_bytes: input.len(),
         maximum_capacity_rows: 4096,

@@ -61,6 +61,9 @@ pub use content::compact_metadata8;
 /// Exposes the complete inert compact SDK custody history grammar.
 pub use session::physical18 as compact_custody18;
 
+/// Exposes complete compact custody DATA with independent byte ceilings.
+pub use session::physical19 as compact_custody19;
+
 pub(crate) mod host_startup;
 pub use host_startup::{
     OriginalPacketHostStartup, PacketNativeHostStartupInputs, PacketNativeHostStartupStorageData,

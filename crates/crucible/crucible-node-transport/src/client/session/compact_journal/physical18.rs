@@ -27,6 +27,21 @@ mod typed;
 
 const TAG: &str = "source-private.compact-custody/18";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Edition {
+    Coupled18,
+    Independent19,
+}
+
+impl Edition {
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Coupled18 => TAG,
+            Self::Independent19 => "source-private.compact-custody/19",
+        }
+    }
+}
+
 /// Restricts complete historical DATA construction without granting allocation.
 ///
 /// The caller independently admits encoded input, all retained and failed-prefix
@@ -60,11 +75,23 @@ impl CompactClientCustody {
     ///
     /// # Errors
     /// Refuses unsupported compact banks, retained frame variants, census
-    /// overflow or an exhausted/unreserved record bank.
+    /// overflow, unequal journal/content ceilings or an exhausted/unreserved
+    /// record bank. Unequal ceilings require the explicit physical19 grammar.
     pub fn physical_custody18_data<'a>(
         &'a self,
         records: &'a mut MetadataRecordBank,
     ) -> Result<impl Serialize + 'a, ProviderError> {
+        self.physical_custody_data(records, Edition::Coupled18)
+    }
+
+    pub(super) fn physical_custody_data<'a>(
+        &'a self,
+        records: &'a mut MetadataRecordBank,
+        edition: Edition,
+    ) -> Result<impl Serialize + 'a, ProviderError> {
+        if edition == Edition::Coupled18 && self.maximum_bytes != self.content.byte_ceiling() {
+            return Err(invalid());
+        }
         for original in self.controller.values().chain(self.provider.values()) {
             original.request.physical18_data()?;
             if let Some(response) = &original.response {
@@ -77,6 +104,7 @@ impl CompactClientCustody {
         Ok(CustodyView {
             custody: self,
             records,
+            edition,
         })
     }
 }
@@ -84,12 +112,13 @@ impl CompactClientCustody {
 struct CustodyView<'a> {
     custody: &'a CompactClientCustody,
     records: &'a MetadataRecordBank,
+    edition: Edition,
 }
 
 impl Serialize for CustodyView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         (
-            TAG,
+            self.edition.tag(),
             METADATA_CAPACITY_RECORD_FORMAT,
             CustodyFields(self.custody),
             self.records.rows(),
@@ -200,7 +229,7 @@ impl Serialize for FrameView<'_> {
 /// quarantine survive reconstruction. Even invalid typed failure prefixes remain
 /// DATA: decoding does not authenticate their schemas, identities or receipts.
 pub struct HistoricalCompactCustody18 {
-    custody: CompactClientCustody,
+    pub(super) custody: CompactClientCustody,
 }
 
 impl HistoricalCompactCustody18 {
@@ -215,7 +244,15 @@ impl HistoricalCompactCustody18 {
     /// Refuses unknown editions, incomplete/extra fields, invalid or mismatched
     /// capacity rows, limits, bank geometry, aliases or failed exact allocations.
     pub fn decode(input: &[u8], limits: CompactCustody18Limits) -> Result<Self, ProviderError> {
-        read::decode(input, limits).map(|custody| Self { custody })
+        Self::decode_edition(input, limits, Edition::Coupled18)
+    }
+
+    pub(super) fn decode_edition(
+        input: &[u8],
+        limits: CompactCustody18Limits,
+        edition: Edition,
+    ) -> Result<Self, ProviderError> {
+        read::decode(input, limits, edition).map(|custody| Self { custody })
     }
 
     /// Reports unchanged lifetime ceilings and consumed canonical-byte credit.

@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 
 mod identity;
 pub mod physical18;
+pub mod physical19;
 mod storage;
 
 /// Retains one complete compact original and its last authentic response.
@@ -226,16 +227,88 @@ impl CompactClientCustody {
         content: ClientContent,
         maximum_envelope_bank_bytes: usize,
     ) -> Result<Self, ProviderError> {
-        let maximum_bytes = content.byte_ceiling();
-        let bank_bound = CompactJson::maximum_storage_bytes(maximum_bytes, usize::MAX)?;
-        if maximum_requests == 0
-            || maximum_requests > 4096
-            || maximum_envelope_bank_bytes == 0
-            || maximum_envelope_bank_bytes > bank_bound
-        {
-            return Err(credit());
+        Self::with_journal_byte_ceiling(
+            maximum_requests,
+            content.byte_ceiling(),
+            content,
+            maximum_envelope_bank_bytes,
+        )
+    }
+
+    /// Constructs empty journals with independent journal and content ceilings.
+    ///
+    /// Moving `content` preserves its complete history, reserved credit and
+    /// aliases. The supplied journal ceiling applies only to the new, empty
+    /// journals; it neither derives credit from content nor admits migration of
+    /// an existing journal. Callers separately fund all future owners and
+    /// construction before invoking this SDK operation. Numeric ceilings supply
+    /// no Source or allocation authority.
+    ///
+    /// The physical19 custody grammar preserves these independent ceilings.
+    /// Physical18 remains available only when the two ceilings are equal.
+    ///
+    /// # Errors
+    /// Refuses zero or more than 4096 originals per namespace, a zero journal or
+    /// bank ceiling, checked bank-bound overflow, or a bank ceiling above nine
+    /// times the journal byte ceiling.
+    pub fn with_journal_byte_ceiling(
+        maximum_requests: usize,
+        maximum_bytes: usize,
+        content: ClientContent,
+        maximum_envelope_bank_bytes: usize,
+    ) -> Result<Self, ProviderError> {
+        validate_journal_limits(maximum_requests, maximum_bytes, maximum_envelope_bank_bytes)?;
+        Ok(Self::empty(
+            maximum_requests,
+            maximum_bytes,
+            content,
+            maximum_envelope_bank_bytes,
+        ))
+    }
+
+    /// Retains independent-ceiling custody directly from original content slots.
+    ///
+    /// All fallible scalar checks precede the move. Refusal preserves both
+    /// input and output owners; success moves the entire existing content store
+    /// directly into the output without a callback or later fallible operation.
+    /// The new journals are empty. Existing journal history must remain in its
+    /// original owner or pass through a separately funded migration.
+    ///
+    /// The actual Source caller separately authenticates and spends its action
+    /// before construction. This SDK operation grants no Source rights, future
+    /// storage admission or permission to grow a previous lifetime quota.
+    ///
+    /// # Errors
+    /// Refuses missing content, occupied output or unsupported journal/bank
+    /// ceilings, preserving both original slots on every refusal.
+    pub fn retain_with_journal_byte_ceiling_into(
+        maximum_requests: usize,
+        maximum_bytes: usize,
+        content: &mut Option<ClientContent>,
+        maximum_envelope_bank_bytes: usize,
+        output: &mut Option<Self>,
+    ) -> Result<(), ProviderError> {
+        if content.is_none() || output.is_some() {
+            return Err(changed());
         }
-        Ok(Self {
+        validate_journal_limits(maximum_requests, maximum_bytes, maximum_envelope_bank_bytes)?;
+        let content = content.take().ok_or_else(changed)?;
+        *output = Some(Self::empty(
+            maximum_requests,
+            maximum_bytes,
+            content,
+            maximum_envelope_bank_bytes,
+        ));
+        Ok(())
+    }
+
+    fn empty(
+        maximum_requests: usize,
+        maximum_bytes: usize,
+        content: ClientContent,
+        maximum_envelope_bank_bytes: usize,
+    ) -> Self {
+        Self {
             maximum_requests,
             maximum_bytes,
             retained_bytes: 0,
@@ -245,7 +318,7 @@ impl CompactClientCustody {
             content,
             pending: None,
             unexpected: None,
-        })
+        }
     }
 
     /// Borrows an original from its explicit endpoint namespace.
@@ -712,6 +785,23 @@ fn observe_unexpected_frame(
 
 fn materialize(bank: &CompactJson) -> Result<Envelope, ProviderError> {
     bank.materialize_envelope()
+}
+
+fn validate_journal_limits(
+    maximum_requests: usize,
+    maximum_bytes: usize,
+    maximum_envelope_bank_bytes: usize,
+) -> Result<(), ProviderError> {
+    let bank_bound = CompactJson::maximum_storage_bytes(maximum_bytes, usize::MAX)?;
+    if maximum_requests == 0
+        || maximum_requests > 4096
+        || maximum_bytes == 0
+        || maximum_envelope_bank_bytes == 0
+        || maximum_envelope_bank_bytes > bank_bound
+    {
+        return Err(credit());
+    }
+    Ok(())
 }
 
 fn credit() -> ProviderError {
