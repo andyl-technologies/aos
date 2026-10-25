@@ -77,6 +77,11 @@ def matrix(Access, Transition, accesses, roles):
             "chown", "dac_read_search", "setgid", "setuid", "sys_admin",
         )))
         positive.append(Access(preparer, preparer, "user_namespace", "create"))
+        positive.extend(accesses(preparer, "init_t", "unix_stream_socket", ("read", "write")))
+        negative.extend(accesses(preparer, "*", "unix_stream_socket", ("connect", "connectto")))
+        for actor in actors:
+            if actor != "init_t":
+                negative.extend(accesses(preparer, actor, "unix_stream_socket", ("read", "write")))
         positive.append(Access(preparer, mount, "dir", "mounton"))
         positive.extend(accesses(preparer, "fs_t", "filesystem", ("getattr", "remount", "unmount")))
         positive.append(Access(preparer, "tmpfs_t", "filesystem", "getattr"))

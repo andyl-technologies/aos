@@ -28,6 +28,7 @@ def matrix(Access, Transition, accesses, all_roles):
         "init_t", DOMAIN, "process2", ("nnp_transition", "nosuid_transition"),
     ))
     positive.extend(accesses("init_t", RUNTIME, "dir", ("mounton", "rmdir")))
+    positive.extend(accesses(DOMAIN, "init_t", "unix_stream_socket", ("read", "write")))
     positive.extend(accesses(
         ROOT, HISTORY, "file",
         (*read, "append", "create", "ioctl", "lock", "rename", "setattr", "unlink", "write"),
@@ -47,6 +48,8 @@ def matrix(Access, Transition, accesses, all_roles):
     for other in (
         *all_roles, "aos_sandbox_runtime_roots_t", "aos_sandbox_runtime_roots_handoff_t",
     ):
+        if other not in (DOMAIN, "init_t"):
+            negative.extend(accesses(DOMAIN, other, "unix_stream_socket", ("read", "write")))
         if other != DOMAIN:
             negative.extend(accesses(
                 DOMAIN, other, "unix_stream_socket",

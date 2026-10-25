@@ -47,6 +47,9 @@ allow aos_sandbox_view_preparer self:file { getattr open read write };
 allow aos_sandbox_view_preparer self:lnk_file { getattr read };
 allow aos_sandbox_view_preparer nsfs_t:file { getattr open read };
 allow aos_sandbox_view_preparer init_t:fd use;
+# Exec inheritance checks both directions on PID 1's journal streams.
+# Fixed unit entry supplies these descriptors; no outbound connection is allowed.
+allow aos_sandbox_view_preparer init_t:unix_stream_socket { read write };
 allow aos_sandbox_view_preparer null_device_t:chr_file { getattr open read write };
 allow aos_sandbox_view_preparer aos_sandbox_view_parent_t:dir { getattr open read search };
 allow aos_sandbox_view_preparer fs_t:filesystem { getattr remount unmount };

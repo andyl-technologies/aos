@@ -336,6 +336,38 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(source, "sshd_unit_t", "service", permission)
                     )
 
+    def test_fixed_startup_log_streams_are_inherited_only(self) -> None:
+        for domain in (
+            "aos_sandbox_source_view_preparer_t",
+            "aos_sandbox_cache_view_preparer_t",
+            "aos_sandbox_policy_recovery_t",
+        ):
+            for permission in ("read", "write"):
+                with self.subTest(domain=domain, permission=permission):
+                    self.assert_missing_allow_rejected(
+                        effective_policy.Access(domain, "init_t", "unix_stream_socket", permission)
+                    )
+
+                for target in (
+                    "aos_sandbox_controller_t",
+                    "aos_sandbox_storage_t",
+                    "aos_sandbox_policy_authority_t",
+                ):
+                    with self.subTest(domain=domain, target=target, permission=permission):
+                        access = effective_policy.Access(domain, target, "unix_stream_socket", permission)
+                        policy = FakePolicy()
+                        policy.allows[access] = [FakeRule("foreign inherited stream")]
+                        with self.assertRaisesRegex(
+                            ValueError, "forbidden allow exists|foreign normal Root custody grant exists",
+                        ):
+                            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+            for permission in ("connect", "connectto"):
+                with self.subTest(domain=domain, permission=permission):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(domain, "init_t", "unix_stream_socket", permission)
+                    )
+
     def test_view_preparer_nosuid_entry_stays_with_the_manager(self) -> None:
         for role in ("source", "cache"):
             preparer = f"aos_sandbox_{role}_view_preparer_t"
