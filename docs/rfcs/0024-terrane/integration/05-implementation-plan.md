@@ -295,6 +295,20 @@ module's exact account and group declarations for the ordinary native
 identity provider. This changes no service privileges or readiness assertion;
 renewed manager qualification remains required. Trunk acceptance stays 28/64.
 
+The four surface owning gates at `a9a08d2696` pass in 2,074.289 seconds.
+Independent review matches all 8,258 immutable source files, six retained
+Cargo executables, the original twenty-seven ordered nonignored selectors,
+four UID-840 selector guests and the original ext4 presentation guest. All
+guest identity, empty-capability, no-new-privileges and clean-exit controls
+pass. This qualifies the read-only session correction and guest migration;
+the shared feature matrix remains required for T-SURF-1 acceptance.
+
+Feature-matrix renewal at `4914e8a0dc` begins with its six original base and
+all-feature cache guests. Its audited prerequisite closure contains those six
+KVM checks, two compile-only images and fourteen metadata/image assembly
+derivations. After these complete, native matrix execution belongs in the
+isolated builder; prerequisite construction alone is not a matrix result.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement
