@@ -23,6 +23,12 @@
       "derivation_sha256": "7835bb633ce93d7c8d6c7e0aea0be869152fe5ffaeba3240a5d9f1211aff07c6",
       "output": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0"
     },
+    "full_rust_test_targets": {
+      "derivation": "/nix/store/493336wqvwvbnjl3yp5b8sbcxsbl7qh0-aos-test-targets-0.1.0.drv",
+      "derivation_sha256": "a83a8610a54a9e07cddb2bc6f70d89cd2dcf4fe2e8cc83a29902372a5ce85024",
+      "output": "/nix/store/689prc9gahlvxvpya1hyrnvf6ibrid1z-aos-test-targets-0.1.0",
+      "scope": "Compiles all application unit and integration targets without running them."
+    },
     "hhj5b1qaqgvabsfgxlhr9yan7cha17nr-aos-bazel-rust-source-patch-checks": {
       "derivation": "/nix/store/y6nhd9c8q54cbxkp84fygr14gfqn0a0v-aos-bazel-rust-source-patch-checks.drv",
       "derivation_sha256": "c4db7fd15c285ab10c61ecfcf38e3a4488454641cdc7c7c3f664b6396a1867f6",
@@ -647,9 +653,6 @@
     "The broad Cargo test-target compile check covers unchanged Rust sources and manifests; its snapshot precedes two Nix-only edits. The Bazel checks cover the final source-patch implementation."
   ],
   "native_target": "x86_64-unknown-linux-gnu",
-  "pending_checks": [
-    "checks.rust.aos-test-targets"
-  ],
   "policy_regression_count": 427,
   "pre_patch_build": {
     "derivation": "/nix/store/d4vsx4fdmsc6mg940kabphv49vwbp9i0-aos-bazel-crucible-feature-powerset-1.drv",
