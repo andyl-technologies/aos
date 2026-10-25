@@ -150,6 +150,25 @@ The idle-owner checkpoint `7fd476648e` also passes mandatory application-target
 compilation in 711.842 seconds. Full review compares all 8,198 source files and
 confirms 190 test executables across 59 packages; this is compilation only.
 
+The live-expiry checkpoint `1945fa7fb0` passes its actual mounted expiry guest
+in 863.982 seconds, the retained-cold-work regression in 847.679 seconds and
+mandatory workspace compilation in 679.467 seconds. Complete independent review
+compares 8,198 immutable files, all three images and nine retained Cargo/installed
+executables for each native component; compilation review verifies 190 test
+executables across 59 packages. The expiry case observes the actual durable
+deadline and exact denial without requesting stop, then requires autonomous
+worker disconnect, ENOTCONN, and every original exposure field except phase
+plus all exposure pins unchanged. The cold regression still completes cache
+handoff after a cancelled borrowed wait and acknowledged stop, refusing backing
+disclosure while allowing sealed warm reuse without a second lower read.
+
+The configured mounted-worker checkpoint `7fd476648e` passes in 1,219.115
+seconds with full source/image/ELF review. Original service channel closure after
+durable drain autonomously stops its idle worker; no second supervisor stop
+command is sent. Kernel disconnection preserves original physical bindings and
+pins. Neither this result nor lease expiry acknowledges actual retained kernel
+reference closure.
+
 The configured surface aggregate at `ac4f28b701` passes in 1,265.705 seconds.
 Independent review compares 8,196 immutable source files, all three images and
 nine retained Cargo/installed executables. The five original read-only namespace
@@ -177,7 +196,8 @@ configured mounted expiry guest waits for its actual twenty-second exposure leas
 without calling stop, then requires autonomous service/worker exit, disconnected
 kernel metadata and unchanged original exposure bindings and pins. Consumer grace
 may expire during that wait; ordinary mounted controls still compare all pins
-exactly. Native expiry qualification and mandatory compilation remain pending.
+exactly. These paths are qualified at the exact `1945fa7fb0` checkpoint above; the later
+mounted-manifest fixture remains separately in qualification.
 
 Checkpoint `0f180b1201` passes mandatory application-target compilation in
 828.199 seconds. Independent review compares all 8,194 immutable source files
