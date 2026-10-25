@@ -219,6 +219,15 @@ unit identities, confinement, funding and native cache fs-verity requirements
 remain intact. Evaluation/dry-run passes; renewed committed-source runtime
 qualification remains required. The failed manager result remains evidence.
 
+The four host-cache owning gates also move all twenty-one original selectors
+into independent unprivileged ext4 guests: layout (4), verification (5),
+S3-FIFO eviction (8), and recovery (4). Exact discovery and one-case nonignored
+execution, fresh private storage and immutable Cargo artifact checks remain
+mandatory. The guests verify UID/GID 840, empty groups and capability sets,
+and no-new-privileges. All ten existing physical proof prerequisites remain
+required; the host gate phases only consume completed guest results. Renewed
+committed-source qualification is pending; no host-tier task is accepted.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement

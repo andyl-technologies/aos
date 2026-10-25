@@ -1,16 +1,18 @@
 # Policy tests alone cannot qualify physical admission or recovery. Each owning
 # gate also consumes the same source's complete ext4/quota/verity VM proofs.
 {
-  nativeSdkGate,
+  pkgs,
+  lib,
+  sourceGateWithInputs,
+  nativeSdkTestImage,
   hostCacheProof,
   initialEnrollmentProof,
   ...
 }: let
-  cases = label: module: names:
-    import ../_native-cases.nix {
-      inherit label;
-      selectors = map (name: "host::cache::${module}::${name}") names;
-    };
+  guest = import ../host-cache-selector-proof.nix {
+    inherit pkgs lib;
+    image = nativeSdkTestImage;
+  };
   physical = ''
     test "$(cat ${hostCacheProof.native}/result)" = PASS
     test "$(cat ${initialEnrollmentProof.native}/result)" = PASS
@@ -35,10 +37,13 @@
       ${initialEnrollmentProof.coldPublicPressure} \
       ${initialEnrollmentProof.coldManifestPressure} > "$out/nix-support/native-proofs"
   '';
-  gate = name: module: names: message:
-    nativeSdkGate name ''
-      ${cases name module names}
+  gate = name: module: names: message: let
+    proof = guest name (map (test: "host::cache::${module}::${test}") names);
+  in
+    sourceGateWithInputs {} name ''
+      test "$(cat ${proof}/result)" = PASS
       ${physical}
+      printf '%s\n' ${proof} > "$out/nix-support/host-cache-selector-proof"
       printf '%s\n' '${message}' > "$out/result"
     '';
 in {
