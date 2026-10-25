@@ -10,6 +10,49 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Compact SDK exchanges and failed-frame custody
+
+A distinct compact SDK custody owner now seals complete controller and provider
+originals into immutable banks on the actual ClientSession wire path. Direct
+serialization of the defining Envelope uses bounded measuring and writing
+passes without an intermediate JSON tree. The writer checks existing capacity
+before every append. Original identity hashes, endpoint namespaces, unrecycled
+canonical-byte credit, authentic responses and cached ACKs retain their existing
+meaning. The caller keeps its borrowed request even when compaction refuses.
+
+Received responses and provider originals enter an owning pending slot before
+fallible accounting or copying. Failure fences the actual stream while keeping
+that envelope and all earlier compact originals. Unsupported traffic retains
+its entire ReceivedFrame, including independently owned typed body backing;
+subsequent exchanges cannot discard it. Its census refuses until the complete
+typed population is qualified, rather than returning an envelope-only count.
+
+Seven socket/serializer controls cover failed send, refusal before publication,
+received-response copy failure, cached responses and changed originals, real
+BlobBegin/Chunk/Finish plus duplicate ACK recovery, exact defining-envelope
+serialization and complete unsupported-notification custody after socket
+closure. They use real I/O beneath an inert registrar/schema fixture and do not
+establish measured Child, Hello, Source or native authority.
+
+Both complete Transport suites pass 2,164 tests with zero failures and twenty
+ignored, using frozen compiler-selected artifacts. All-feature/all-target
+checking, scoped formatting and six architecture checks pass. Strict Transport
+Clippy has the same diagnostic code/message multiset as the preceding commit:
+four existing large-enum errors and 1,726 warnings, with no diagnostics in the
+new modules. This is not a strict lint pass.
+
+Application test-target compilation passes. Its actual metadata records 185
+test artifacts across 58 packages, including 76 integration targets. All 648
+frozen owned Rust/Cargo inputs match the captured application source.
+
+Source constructors and CnpController still use their existing custody path.
+The new path has no Source allocation grant or reduced production journal
+reservation. Its complete future R/T/S projections, received and generated
+failure populations, independently funded materialization, paired physical
+history codecs and genuine Source/runtime handoff remain required before
+Source selection. No new native or VM qualification is claimed; full SDK
+funding, live Native18 and the full RFC remain unfinished.
+
 ## Lossless compact JSON storage DATA
 
 A new immutable JSON DATA bank stores explicit scalar tags, exact integer and
@@ -36,10 +79,10 @@ it is not a strict lint pass.
 
 Application test-target compilation passes. Actual metadata records 185 test
 artifacts across 58 packages, including 76 integration targets; the captured
-source matches all 645 frozen owned Rust/Cargo inputs. SDK journals continue
-to use their existing tree representation and charge. Connecting compact
-storage to actual journal insertion, response and failed-prefix custody,
-paired history readers/writers, and independently funded materialization is
+source matches all 645 frozen owned Rust/Cargo inputs. At that stage SDK
+journals still used their existing tree representation and charge. The newer
+compact exchange path is recorded above; Source selection, paired physical
+history readers/writers and independently funded materialization remain
 unfinished. This DATA component grants no allocation, Source or native rights
 and establishes no new native or VM qualification. Full SDK funding, runtime
 handoff, live Native18 and the full RFC remain unfinished.

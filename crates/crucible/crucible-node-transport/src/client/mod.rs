@@ -49,8 +49,8 @@ pub use reference::{
     TransmissionObservation, TransmissionObservationHandle,
 };
 pub use session::{
-    ClientCustody, ClientOriginal, ClientPeer, ClientSession, OriginalHelloJournal,
-    OriginalNative5CustodyFacts,
+    ClientCustody, ClientOriginal, ClientPeer, ClientSession, CompactClientCustody,
+    CompactClientOriginal, OriginalHelloJournal, OriginalNative5CustodyFacts,
 };
 
 /// Exposes bounded source-private content decoding data without source rights.

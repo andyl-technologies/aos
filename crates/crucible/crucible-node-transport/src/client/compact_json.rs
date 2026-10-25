@@ -30,6 +30,8 @@ const SCALAR_WIDTH: usize = 9;
 const CONTAINER_WIDTH: usize = 17;
 const MAXIMUM_DEPTH: usize = 64;
 
+mod envelope;
+
 /// Owns one immutable, losslessly encoded JSON DATA value.
 ///
 /// No decoder accepts caller-supplied binary banks. Construction starts from an
@@ -38,6 +40,16 @@ const MAXIMUM_DEPTH: usize = 64;
 /// relationship between independently owning requests, journals or snapshots.
 pub struct CompactJson {
     bytes: Vec<u8>,
+}
+
+impl crate::retained_metadata::ObserveMetadata for CompactJson {
+    fn observe_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let Self { bytes } = self;
+        observer.vector::<u8>(bytes.capacity())
+    }
 }
 
 impl CompactJson {

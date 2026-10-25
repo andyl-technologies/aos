@@ -23,8 +23,10 @@ mod assigned_publication;
 pub(in crate::client) use assigned_publication::OriginalAssignedPublicationData;
 
 mod bootstrap_cut;
+mod compact_journal;
 mod fresh_restore_query;
 mod journal_storage;
+pub use compact_journal::{CompactClientCustody, CompactClientOriginal};
 #[path = "session/original_conflict.rs"]
 pub(super) mod original_conflict;
 #[path = "session/resend.rs"]
