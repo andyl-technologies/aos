@@ -96,6 +96,20 @@ production worker, mount-broker or full RFC conformance. Pack compaction
 (GC-18 to GC-21) is explicitly deferred from T-GC-1 to T-GC-2 on B-jobs;
 that optional workline is outside this agreed trunk completion scope.
 
+The corrected configured collector at `7f11415ca9` passes its native guest in
+597.840 seconds. Complete independent review verifies all 8,228 immutable
+source files, 5,478 crate inputs, all four actual retained Cargo artifacts and
+installed executable bytes. The real UID/GID 840 ext4 actor has empty
+capabilities, no-new-privileges and active seccomp. Readiness takes 6.637
+seconds; physical reclamation takes 100.157 seconds, including the full-D wait;
+acknowledged shutdown takes 0.032 seconds. The independent protected-chain
+observer requires genuine Done before shutdown, fresh cycles under the same
+whole lease and an unchanged live head with an authenticated payload read.
+The original 180/420-second actor/guest bounds remain unchanged. This scoped
+collector result does not qualify the later startup scan, complete GC-role
+isolation, other backends or the CLI. The earlier `ea10cabb8d` failure remains
+retained; trunk acceptance stays 27/64.
+
 Corrected eleven-case restoration qualification at `ea10cabb8d` passes in
 1,490.789 seconds. Complete independent review verifies all 8,227 immutable
 source files, 5,477 crate inputs and the actual retained Cargo library-test
@@ -182,8 +196,9 @@ SIGTERM, and timeout diagnostics retain pair presence, physical cycle inventory
 and the last observer result. Actor and whole-guest deadlines are unchanged.
 All supported SDK and both Linux strict compiler profiles pass for this
 restoration handoff and the corrected scheduler/observer. Python AST, original
-selector preservation, touched Nix formatting and PLAN-2 checks pass. These
-corrections still require fresh native qualification. Corrected eleven-case
+selector preservation, touched Nix formatting and PLAN-2 checks pass. The
+collector correction now passes native qualification at `7f11415ca9` as
+recorded above; focused session handoff qualification remains pending. Corrected eleven-case
 restoration and mandatory application qualification at the original frozen
 `ea10cabb8d` source now pass as recorded above.
 
