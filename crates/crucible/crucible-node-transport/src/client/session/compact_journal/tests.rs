@@ -517,6 +517,111 @@ fn compact_materialization_checks_defining_fields_at_maximum_depth() -> TestResu
 }
 
 #[test]
+fn envelope_preflight_matches_jcs_escaping_and_number_normalization() -> TestResult {
+    let (_lease, _session, _custody, _peer, mut request) = fixture(BANK_BYTES);
+    let mut text: String = (0..=127).map(char::from).collect();
+    for code in [
+        0x80, 0x85, 0xff, 0x100, 0x2028, 0xd7ff, 0xe000, 0xffff, 0x10000, 0x10ffff,
+    ] {
+        text.push(char::from_u32(code).unwrap());
+    }
+    request.body.insert(text.clone(), Value::String(text));
+    request
+        .body
+        .insert("𐀀".into(), json!({"\u{e000}": [null, true, false, {}, []]}));
+    let mut numbers = vec![
+        json!(u64::MAX),
+        json!(i64::MIN),
+        json!(9_007_199_254_740_993_u64),
+    ];
+    for value in [-0.0, 0.0, 1.0, 1e20, 1e-7, f64::MAX, f64::from_bits(1)] {
+        numbers.push(json!(value));
+    }
+    let mut bits = 0xd85e_56ae_5ff3_2a91_u64;
+    for _ in 0..1024 {
+        bits ^= bits << 13;
+        bits ^= bits >> 7;
+        bits ^= bits << 17;
+        if let Some(number) = serde_json::Number::from_f64(f64::from_bits(bits)) {
+            numbers.push(Value::Number(number));
+        }
+    }
+    request.body.insert("numbers".into(), Value::Array(numbers));
+    let expected = canonical::canonical_json(&serde_json::to_value(&request)?)?.len();
+    let bank = CompactJson::from_envelope(&request, usize::MAX)?.retained_bytes();
+
+    assert_eq!(
+        CompactJson::envelope_extents(&request, bank, expected)?,
+        (bank, expected)
+    );
+    assert!(CompactJson::envelope_extents(&request, bank - 1, expected).is_err());
+    assert!(CompactJson::envelope_extents(&request, bank, expected - 1).is_err());
+    Ok(())
+}
+
+#[test]
+fn outgoing_preflight_refuses_unbounded_work_before_identity_validation() -> TestResult {
+    for deep in [false, true] {
+        let (_lease, mut session, mut custody, mut peer, mut request) = fixture(BANK_BYTES);
+        // The defining hash would report this protocol error first. The size or
+        // depth refusal proves the bounded preflight runs before that supplier.
+        request.protocol = "not-CNP/1".into();
+        let mut value = if deep {
+            Value::Null
+        } else {
+            json!("x".repeat(CONTENT_BYTES))
+        };
+        if deep {
+            for _ in 0..128 {
+                value = Value::Array(vec![value]);
+            }
+        }
+        request.body.insert("outside_local_bounds".into(), value);
+        let original = request.clone();
+
+        let result = session.exchange_compact(&mut custody, &mut request, Duration::from_secs(2));
+
+        assert!(
+            matches!(result, Err(ProviderError::ResourceExhausted(_))),
+            "{result:?}"
+        );
+        assert_eq!(request, original);
+        assert_eq!(custody.originals().count(), 0);
+        assert_eq!(custody.retained_journal_bytes(), 0);
+        assert!(custody.pending_envelope().is_none());
+        assert_eq!(peer.read(&mut [0])?, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn retry_preflight_allows_sequence_width_without_renewing_full_credit() -> TestResult {
+    let (_lease, _session, _custody, _peer, request) = fixture(BANK_BYTES);
+    let canonical = super::super::envelope_bytes(&request)?;
+    let bank = CompactJson::from_envelope(&request, usize::MAX)?.retained_bytes();
+    for origin in [RequestOrigin::Controller, RequestOrigin::Provider] {
+        let content = ClientContent::new(canonical, 8, 1)?;
+        let mut custody = CompactClientCustody::new(8, content, bank)?;
+        custody.retain_request(origin, &request, 0)?;
+        assert_eq!(custody.retained_journal_bytes(), canonical);
+        let mut retry = request.clone();
+        retry.sequence = U64::new(u64::MAX);
+
+        custody.retain_request(origin, &retry, 0)?;
+
+        assert_eq!(custody.retained_journal_bytes(), canonical);
+        assert_eq!(custody.originals().count(), 1);
+        let original = custody
+            .original(origin, request.request_id.0.as_ref().unwrap())
+            .unwrap();
+        assert_eq!(original.materialize_request()?, request);
+        assert_eq!(original.retained_bank_bytes(), bank);
+        assert!(!original.has_response());
+    }
+    Ok(())
+}
+
+#[test]
 fn unsupported_notification_keeps_complete_frame_and_fences_stream() -> TestResult {
     let (_lease, mut session, mut custody, mut peer, mut request) = fixture(BANK_BYTES);
     let server = std::thread::spawn(move || {

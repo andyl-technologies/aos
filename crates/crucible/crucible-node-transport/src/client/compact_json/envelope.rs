@@ -9,7 +9,31 @@ use super::*;
 use crate::envelope::Envelope;
 use serde::ser::{Impossible, SerializeStruct, SerializeTuple, SerializeTupleStruct};
 
+mod canonical_extent;
+use canonical_extent::CanonicalExtent;
+
 impl CompactJson {
+    /// Measures bank and exact canonical extents before any whole-value allocation.
+    ///
+    /// Ordering object members changes no byte count. Strings follow JSON's
+    /// escaping rules; numbers use the defining JCS writer on inline scalars.
+    /// Neither pass constructs a tree, text bank or identity hash. The caller
+    /// separately admits these bounded recursive controls before invocation.
+    ///
+    /// # Errors
+    /// Refuses unsupported geometry or either independent byte restriction.
+    pub(in crate::client) fn envelope_extents(
+        original: &Envelope,
+        maximum_bank_bytes: usize,
+        maximum_canonical_bytes: usize,
+    ) -> Result<(usize, usize), ProviderError> {
+        let mut counter = Encoder::new(None, maximum_bank_bytes);
+        counter.canonical = Some(CanonicalExtent::new(maximum_canonical_bytes));
+        original.serialize(&mut counter).map_err(provider_error)?;
+        let canonical = counter.canonical.ok_or_else(invalid)?.bytes();
+        Ok((counter.position, canonical))
+    }
+
     /// Copies a complete original envelope without an intermediate JSON tree.
     ///
     /// The defining Envelope serializer supplies field names and scalar formats.
@@ -78,6 +102,7 @@ struct Encoder<'a> {
     maximum: usize,
     depth: usize,
     string_key: bool,
+    canonical: Option<CanonicalExtent>,
 }
 
 impl<'a> Encoder<'a> {
@@ -88,6 +113,7 @@ impl<'a> Encoder<'a> {
             maximum,
             depth: 0,
             string_key: false,
+            canonical: None,
         }
     }
 
@@ -117,11 +143,22 @@ impl<'a> Encoder<'a> {
 
     fn scalar(&mut self, tag: u8) -> Result<(), Error> {
         self.value()?;
+        if let Some(canonical) = &mut self.canonical {
+            canonical.add(match tag {
+                NULL | TRUE => 4,
+                FALSE => 5,
+                _ => return Err(Error::Unsupported),
+            })?;
+        }
         self.emit(&[tag])
     }
 
     fn number(&mut self, tag: u8, bytes: [u8; 8]) -> Result<(), Error> {
-        self.scalar(tag)?;
+        self.value()?;
+        if let Some(canonical) = &mut self.canonical {
+            canonical.number(tag, bytes)?;
+        }
+        self.emit(&[tag])?;
         self.emit(&bytes)
     }
 
@@ -133,7 +170,11 @@ impl<'a> Encoder<'a> {
                 .map_err(|_| Error::Geometry)?
                 .to_le_bytes(),
         )?;
-        self.emit(value.as_bytes())
+        self.emit(value.as_bytes())?;
+        if let Some(canonical) = &mut self.canonical {
+            canonical.string(value)?;
+        }
+        Ok(())
     }
 
     fn begin(&mut self, tag: u8, expected: Option<usize>) -> Result<Compound<'_, 'a>, Error> {
@@ -144,6 +185,10 @@ impl<'a> Encoder<'a> {
         let header = self.position;
         self.emit(&[tag])?;
         self.emit(&[0; 16])?;
+        if let Some(canonical) = &mut self.canonical {
+            // Both delimiters are counted before walking any children.
+            canonical.add(2)?;
+        }
         self.depth += 1;
         Ok(Compound {
             encoder: self,
@@ -183,6 +228,11 @@ impl Compound<'_, '_> {
     fn element<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), Error> {
         if self.tag != ARRAY || self.count >= crucible_node_format::MAX_ARRAY_ELEMENTS {
             return Err(Error::Geometry);
+        }
+        if self.count != 0
+            && let Some(canonical) = &mut self.encoder.canonical
+        {
+            canonical.add(1)?;
         }
         value.serialize(&mut *self.encoder)?;
         self.count = self.count.checked_add(1).ok_or(Error::Geometry)?;
@@ -256,6 +306,10 @@ impl SerializeMap for Compound<'_, '_> {
     fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> Result<(), Error> {
         if self.tag != OBJECT || self.pending_key {
             return Err(Error::Unsupported);
+        }
+        if let Some(canonical) = &mut self.encoder.canonical {
+            // Every member has a colon; all but the first also have a comma.
+            canonical.add(if self.count == 0 { 1 } else { 2 })?;
         }
         self.encoder.string_key = true;
         key.serialize(&mut *self.encoder)?;

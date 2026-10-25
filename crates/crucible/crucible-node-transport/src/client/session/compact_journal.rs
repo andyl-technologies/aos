@@ -293,6 +293,8 @@ impl CompactClientCustody {
         response_room: usize,
     ) -> Result<(), ProviderError> {
         let id = request.request_id.0.as_ref().ok_or_else(changed)?;
+        let retry = self.journal(origin).contains_key(id);
+        let bytes = self.preflight_envelope(request, retry)?;
         let identity = request.request_hash(origin)?;
         if let Some(original) = self.journal(origin).get(id) {
             if original.identity != identity {
@@ -306,7 +308,6 @@ impl CompactClientCustody {
         if self.journal(origin).len() >= self.maximum_requests {
             return Err(credit());
         }
-        let bytes = super::envelope_bytes(request)?;
         self.ensure_room(bytes.checked_add(response_room).ok_or_else(credit)?)?;
         let bank = CompactJson::from_envelope(request, self.maximum_envelope_bank_bytes)?;
         self.retain_bytes(bytes)?;
@@ -331,7 +332,7 @@ impl CompactClientCustody {
 
     fn complete_response(&mut self, id: &Id) -> Result<Envelope, ProviderError> {
         let pending = self.pending.as_ref().ok_or_else(changed)?;
-        let bytes = super::envelope_bytes(&pending.envelope)?;
+        let bytes = self.preflight_envelope(&pending.envelope, false)?;
         self.ensure_room(bytes)?;
         let bank = CompactJson::from_envelope(&pending.envelope, self.maximum_envelope_bank_bytes)?;
         let origin = pending.origin;
@@ -349,6 +350,23 @@ impl CompactClientCustody {
             .take()
             .map(|pending| pending.envelope)
             .ok_or_else(changed)
+    }
+
+    fn preflight_envelope(&self, envelope: &Envelope, retry: bool) -> Result<usize, ProviderError> {
+        // Only sequence is mutable on a same-identity retry. Its decimal U64
+        // string can grow to twenty bytes after the original was journaled.
+        // This slack bounds preflight work only: no new bank or byte credit is
+        // granted, and changed retry bodies still fail the defining hash check.
+        let sequence_slack = if retry { 20 } else { 0 };
+        let bank = self
+            .maximum_envelope_bank_bytes
+            .checked_add(sequence_slack)
+            .ok_or_else(credit)?;
+        let canonical = self
+            .maximum_bytes
+            .checked_add(sequence_slack)
+            .ok_or_else(credit)?;
+        CompactJson::envelope_extents(envelope, bank, canonical).map(|(_, bytes)| bytes)
     }
 }
 
@@ -478,6 +496,8 @@ impl ClientSession {
             usize::try_from(self.authority.limits().frame_bytes.get()).map_err(|_| credit())?;
         // The pending slot owns the received envelope throughout the fallible
         // request copy. Temporarily borrowing it cannot remove failure custody.
+        let retry = custody.provider.contains_key(&id);
+        let bytes = custody.preflight_envelope(&pending.envelope, retry)?;
         let identity = pending.envelope.request_hash(RequestOrigin::Provider)?;
         if let Some(original) = custody.provider.get(&id) {
             if original.identity != identity {
@@ -492,7 +512,6 @@ impl ClientSession {
             if custody.provider.len() >= custody.maximum_requests {
                 return Err(credit());
             }
-            let bytes = super::envelope_bytes(&pending.envelope)?;
             custody.ensure_room(bytes.checked_add(response_room).ok_or_else(credit)?)?;
             let bank =
                 CompactJson::from_envelope(&pending.envelope, custody.maximum_envelope_bank_bytes)?;

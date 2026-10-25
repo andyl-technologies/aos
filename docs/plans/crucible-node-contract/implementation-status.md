@@ -10,6 +10,41 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Bounded compact SDK preflight before identity work
+
+Compact originals now receive a bounded, allocation-free geometry and canonical
+extent preflight before the defining request hash. Previously an oversized or
+deep caller request could enter whole-envelope JSON construction before its
+bank limit was checked. The new walk checks nesting and independent bank and
+canonical byte restrictions while borrowing the original request. Strings
+follow JSON escaping, and number widths use the authoritative JCS scalar writer.
+Object ordering cannot change the byte count. Hash identity remains unchanged.
+
+Actual received provider originals and response charging use the same exact
+count without constructing another whole-envelope Value or canonical output
+bank. Received failure envelopes stay in their pending owner. A retry's bounded
+preflight allowance includes possible widening of its sequence string; the
+original bank and unrecycled byte charge remain unchanged.
+
+Fourteen focused SDK controls pass in both codec builds, covering prior
+wire/custody behavior and the new escaping, numeric, size/depth ordering and
+exhausted-credit retry cases. Both complete Transport suites pass 2,171 tests
+with zero failures and twenty ignored, using frozen compiler-selected artifacts.
+All-feature/all-target checking, scoped formatting and six architecture checks
+pass. Strict Transport Clippy retains the exact preceding code/message multiset:
+four existing errors and 1,726 warnings, with no diagnostics in the changed
+modules. It is not a strict lint pass.
+
+Application test-target compilation passes. Actual metadata records 185 test
+artifacts across 58 packages, including 76 integration targets; its captured
+source matches all 652 frozen owned Rust/Cargo inputs.
+
+The defining request hash still constructs whole-value projections after this
+bounded preflight; those populations require independent transient admission.
+Complete future SDK R/T/S, same-Source reservations and runtime handoff, live
+Native18 and paired physical histories remain unfinished. These checks create
+no Source or allocation grant; no new native or VM qualification is claimed.
+
 ## Direct compact SDK materialization
 
 Compact request views and cached responses now materialize the concrete
