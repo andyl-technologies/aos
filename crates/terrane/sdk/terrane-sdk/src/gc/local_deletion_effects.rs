@@ -27,7 +27,7 @@ pub(crate) async fn discover<F: LocalFs + BucketBinding>(
     after: Option<&str>,
     maximum: usize,
 ) -> Result<Vec<crate::gc::runner::maintenance::local_deletion::LocalDeletionHint>, StoreFailure> {
-    use crate::gc::runner::maintenance::local_deletion::{Candidates, decode_hint};
+    use crate::gc::runner::maintenance::local_deletion::Candidates;
 
     let (frame, control) = capture(fs, current).await?;
     let owner = frame.owner;
@@ -68,27 +68,83 @@ pub(crate) async fn discover<F: LocalFs + BucketBinding>(
 
     let mut hints = Vec::with_capacity(maximum);
     for key in candidates.into_keys() {
-        let (mut frame, current_control) = capture(fs, current).await?;
-        if current_control != control {
-            return Err(corrupt());
-        }
-        let path = control.join(&key);
-        let metadata = fs.symlink_metadata(&path).await.map_err(io_failure)?;
-        if metadata.len() > MAX_INTENT_BYTES {
-            return Err(corrupt());
-        }
-        let bytes = frame
-            .actual_read(
-                fs,
-                &path,
-                FencePolicy::ProtectedRecord { owner: frame.owner },
-            )
-            .await?
-            .ok_or_else(corrupt)?;
-        hints.push(decode_hint(key, &bytes).map_err(|_| corrupt())?);
+        hints.push(read_hint(fs, current, &control, key).await?);
     }
     current.revalidate().await?;
     Ok(hints)
+}
+
+async fn read_hint<F: LocalFs + BucketBinding>(
+    fs: &F,
+    current: &CheckedCurrentCollection<'_, '_>,
+    control: &std::path::Path,
+    key: String,
+) -> Result<crate::gc::runner::maintenance::local_deletion::LocalDeletionHint, StoreFailure> {
+    use crate::gc::runner::maintenance::local_deletion::decode_hint;
+
+    let (mut frame, current_control) = capture(fs, current).await?;
+    if current_control != control {
+        return Err(corrupt());
+    }
+    let path = control.join(&key);
+    let metadata = fs.symlink_metadata(&path).await.map_err(io_failure)?;
+    if metadata.len() > MAX_INTENT_BYTES {
+        return Err(corrupt());
+    }
+    let bytes = frame
+        .actual_read(
+            fs,
+            &path,
+            FencePolicy::ProtectedRecord { owner: frame.owner },
+        )
+        .await?
+        .ok_or_else(corrupt)?;
+    decode_hint(key, &bytes).map_err(|_| corrupt())
+}
+
+/// Looks up one exact local-v1 incarnation without inferring absence from a page.
+///
+/// # Errors
+/// Rejects unsafe private directories, malformed or duplicate matching intents,
+/// lost current authority and failed protected reads. Status grants no effects.
+pub(crate) async fn lookup<F: LocalFs + BucketBinding>(
+    fs: &F,
+    current: &CheckedCurrentCollection<'_, '_>,
+    requested: &terrane_format::bucket::PackExclusion,
+) -> Result<Option<crate::gc::runner::maintenance::local_deletion::LocalDeletionHint>, StoreFailure>
+{
+    let (frame, control) = capture(fs, current).await?;
+    let owner = frame.owner;
+    drop(frame);
+
+    let cycle = control.join(format!("gc/{}", requested.cycle));
+    let delete = cycle.join("delete");
+    let directory = delete.join(hex(&requested.pack_id));
+    for ancestor in [control.join("gc"), cycle, delete, directory.clone()] {
+        if intent_directory(fs, &ancestor, owner).await?.is_none() {
+            current.revalidate().await?;
+            return Ok(None);
+        }
+    }
+
+    let mut matching = None;
+    for path in intent_children(fs, &directory, owner).await? {
+        if !hex_leaf(&path, 64) {
+            continue;
+        }
+        let key = path
+            .strip_prefix(&control)
+            .ok()
+            .and_then(|path| path.to_str())
+            .ok_or_else(corrupt)?;
+        terrane_format::bucket::BucketKey::parse(key).map_err(|_| corrupt())?;
+        let hint = read_hint(fs, current, &control, key.to_owned()).await?;
+        if &hint.exclusion == requested && matching.replace(hint).is_some() {
+            return Err(corrupt());
+        }
+    }
+    current.revalidate().await?;
+    Ok(matching)
 }
 
 fn hex_leaf(path: &std::path::Path, length: usize) -> bool {

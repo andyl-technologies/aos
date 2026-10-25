@@ -9,10 +9,17 @@ async fn full_d_and_current_lease_unlink_exact_triple_and_finish_done() {
     let fixture = Fixture::new().await;
     let (mut collection, requested) = retired(&fixture).await;
     let original = before(&fixture, &requested).await;
+    assert!(
+        collection
+            .local_deletion_hint(&requested)
+            .await
+            .require()
+            .is_none()
+    );
     fixture.clock.enable_timer();
 
     let owned = collection
-        .own_local_pack(fixture.repository.coordinator(), requested)
+        .own_local_pack(fixture.repository.coordinator(), requested.clone())
         .await
         .require();
     assert_eq!(owned.phase, terrane_format::gc::DeletePhase::Invalidated);
@@ -46,6 +53,19 @@ async fn full_d_and_current_lease_unlink_exact_triple_and_finish_done() {
     assert_eq!(pending[0].exclusion.cycle, owned.authorization.cycle);
     assert_eq!(pending[0].exclusion.epoch, owned.authorization.epoch);
     assert_eq!(pending[0].phase, owned.phase);
+    assert_eq!(
+        collection.local_deletion_hint(&requested).await.require(),
+        Some(pending[0].clone())
+    );
+    let mut other_epoch = requested.clone();
+    other_epoch.epoch = other_epoch.epoch.checked_add(1).require();
+    assert!(
+        collection
+            .local_deletion_hint(&other_epoch)
+            .await
+            .require()
+            .is_none()
+    );
 
     let done = collection
         .resume_local_delete(
@@ -72,6 +92,10 @@ async fn full_d_and_current_lease_unlink_exact_triple_and_finish_done() {
     assert_eq!(completed[0].operation_key, pending[0].operation_key);
     assert_eq!(completed[0].exclusion, pending[0].exclusion);
     assert_eq!(completed[0].phase, terrane_format::gc::DeletePhase::Done);
+    assert_eq!(
+        collection.local_deletion_hint(&requested).await.require(),
+        Some(completed[0].clone())
+    );
 
     drop(collection);
     fixture.cleanup();

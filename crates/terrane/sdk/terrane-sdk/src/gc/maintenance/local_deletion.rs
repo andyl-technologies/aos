@@ -42,6 +42,54 @@ where
     V: ContentValidator + BucketBinding,
     C: Clock,
 {
+    /// Looks up retained ordinary deletion status for one exact incarnation.
+    ///
+    /// Requires completed marking and renews the original whole lease. Searches
+    /// that incarnation's protected directory independently of paged discovery,
+    /// including terminal `Done` and `Cancelled` records. Retains at most one
+    /// decoded hint; native immediate-directory enumeration remains unbounded.
+    /// A missing hint grants no restoration or deletion permission.
+    ///
+    /// # Errors
+    /// Rejects unfinished marking before effects. Refuses malformed, duplicate
+    /// matching or unsafe intent, lost ownership and changed current inputs.
+    /// Failure or cancellation after preflight stops the original session.
+    pub async fn local_deletion_hint(
+        &mut self,
+        requested: &PackExclusion,
+    ) -> Result<Option<LocalDeletionHint>, CollectionError> {
+        if self.state.phase != terrane_format::gc::Phase::Sweep {
+            return Err(denied().into());
+        }
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let holder = SingleHeld::acquire(self.guard.store()).await?;
+        let held = holder.destination();
+        let observed = held.observe_publication_unrepaired().await?;
+        let current = crate::selected_bridge::native_current_collection::qualify(
+            self.guard,
+            self.authority,
+            &self.session,
+            &held,
+            &observed,
+            (&self.roots, &self.state),
+            self.windows,
+        )
+        .await?;
+        let hint = crate::store::native_publication_effects::collection_local_deletion::lookup(
+            held.fs(),
+            &current,
+            requested,
+        )
+        .await?;
+        current.revalidate().await?;
+        self.session.recheck()?;
+        operation.complete();
+        Ok(hint)
+    }
+
     /// Selects bounded ordinary deletion hints under the original live session.
     ///
     /// Includes terminal intents and excludes the disjoint permanent-v2 protocol.

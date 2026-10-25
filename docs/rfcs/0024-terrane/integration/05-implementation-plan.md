@@ -94,6 +94,23 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+Exact-incarnation ordinary deletion status is now exposed on `Collection` and
+repository-retained `LocalCollection`. The lookup examines that cycle/pack's
+protected local-v1 directory independently of paged discovery, validates every
+candidate through the existing protected record reader and rejects ambiguous
+matching records. It includes terminal `Done` and `Cancelled` status. It requires
+current completed marking and renews the original whole lease; status and
+absence grant no restoration, ownership or deletion permission.
+
+The original full-D deletion case now also requires no matching intent before
+ownership, exact pending status, absence for a different epoch and exact `Done`
+status after actual deletion. All original elapsed-D, physical absence,
+incarnation, journal, publication and idempotence assertions remain. Both
+supported Tokio all-target strict lint profiles and the std-only library
+profile pass, along with touched formatting, PLAN-2 and diff checks. Native
+qualification and mandatory workspace compilation remain pending. Configured
+GC scheduling and task acceptance are unchanged.
+
 Mandatory workspace compilation at `144d310a76` and `5bb7e9db5b` passes in
 760.663 and 1,421.178 seconds respectively. Both full reviews verify all 8,215
 immutable source files, 190 test executables and 59 packages as compilation

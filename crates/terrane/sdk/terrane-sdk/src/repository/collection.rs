@@ -268,6 +268,25 @@ where
         self.collection.local_deletion_hints(cursor, maximum).await
     }
 
+    /// Looks up protected local-v1 status for an exact exclusion, including Done.
+    ///
+    /// Uses the original session and current completed marking. Unlike a page
+    /// of recurring hints, this examines the requested incarnation directly.
+    /// The result grants no effect permission and does not retain a witness.
+    ///
+    /// # Errors
+    /// Refuses unfinished marking, unsafe or ambiguous intent, lost ownership
+    /// and changed current inputs. Actual failure or cancellation stops the session.
+    pub async fn local_deletion_hint(
+        &mut self,
+        requested: &terrane_format::bucket::PackExclusion,
+    ) -> Result<
+        Option<crate::gc::runner::maintenance::local_deletion::LocalDeletionHint>,
+        CollectionError,
+    > {
+        self.collection.local_deletion_hint(requested).await
+    }
+
     /// Retires at most one eligible pack through the original coordinator.
     ///
     /// # Errors
