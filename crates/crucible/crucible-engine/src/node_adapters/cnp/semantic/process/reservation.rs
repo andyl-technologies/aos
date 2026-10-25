@@ -116,6 +116,7 @@ impl CnpSemanticLaunchReservation {
             provider_pid: 0,
             directory,
             controller: None,
+            compact_runtime: None,
             protocol_supervisor: std::cell::RefCell::new(None),
             handshake: None,
             extension_handshake: None,

@@ -10,7 +10,7 @@ use std::rc::Rc;
 use crucible_node_format::{ContentRef, U64};
 use crucible_node_transport::{
     ProviderError,
-    client::CnpController,
+    client::{CnpController, CompactRuntimeController},
     handshake::{ExtensionHandshake, Handshake},
 };
 use rustix::process::{Pid, Signal, getpgid, kill_process_group};
@@ -26,6 +26,7 @@ mod complete_registry;
 mod executable_guard;
 mod original_child;
 mod precredit_storage;
+mod protocol;
 mod retained_storage;
 
 mod reservation;
@@ -112,6 +113,8 @@ pub struct CnpSemanticProcessCustody {
     provider_pid: u32,
     pub(super) directory: PathBuf,
     pub(super) controller: Option<CnpController>,
+    // Only the separately funded Source handoff may populate this alternative.
+    pub(super) compact_runtime: Option<CompactRuntimeController>,
     pub(super) protocol_supervisor:
         std::cell::RefCell<Option<crucible_node_transport::connection::OriginalProtocolSupervisor>>,
     pub(super) handshake: Option<Handshake>,
@@ -196,9 +199,17 @@ impl CnpSemanticProcessCustody {
         &self.directory
     }
 
-    /// Borrows retained original control and content custody when attached.
+    /// Borrows legacy control custody before a compact runtime handoff.
+    ///
+    /// A retained compact owner has no legacy controller accessor. Both slots
+    /// being populated also refuses this view; matching labels do not select
+    /// one of two competing owners.
     pub fn controller(&self) -> Option<&CnpController> {
-        self.controller.as_ref()
+        if self.compact_runtime.is_some() {
+            None
+        } else {
+            self.controller.as_ref()
+        }
     }
 
     /// Checks current actual native process identity independently of its JSON claims.
@@ -250,7 +261,7 @@ impl CnpSemanticProcessCustody {
         if getpgid(Some(group)).map_err(std::io::Error::from)? != group {
             return Err(ProviderError::Correlation("generic native process changed"));
         }
-        if let Some(controller) = &self.controller {
+        if let Some(controller) = self.original_controller_data()? {
             controller.authority().ensure_live()?;
             if controller.peer_pid() != self.provider_pid
                 || controller.peer_executable() != &self.expected_executable
@@ -296,6 +307,9 @@ impl CnpSemanticProcessCustody {
         if let Some(controller) = &mut self.controller {
             controller.fence();
         }
+        if let Some(runtime) = &mut self.compact_runtime {
+            runtime.fence();
+        }
         if let Some((controller, handshake)) = &mut self.rejected_control {
             controller.fence();
             handshake.contain();
@@ -334,6 +348,7 @@ impl Drop for CnpSemanticProcessCustody {
         std::mem::forget(self.child.take());
         std::mem::forget(self.original_child.take());
         std::mem::forget(self.controller.take());
+        std::mem::forget(self.compact_runtime.take());
         std::mem::forget(self.protocol_supervisor.get_mut().take());
         std::mem::forget(self.handshake.take());
         std::mem::forget(self.extension_handshake.take());
@@ -408,6 +423,7 @@ impl CnpSemanticLaunchGuard {
                 provider_pid,
                 directory,
                 controller: None,
+                compact_runtime: None,
                 protocol_supervisor: std::cell::RefCell::new(None),
                 handshake: None,
                 extension_handshake: None,
@@ -509,6 +525,7 @@ impl CnpSemanticLaunchGuard {
         custody.authenticate_process()?;
         handshake.validate_registration(controller.authority())?;
         if custody.controller.is_some()
+            || custody.compact_runtime.is_some()
             || custody.extension_handshake.is_some()
             || controller.peer_pid() != custody.provider_pid()
             || controller.peer_executable() != &custody.expected_executable
@@ -550,6 +567,7 @@ impl CnpSemanticLaunchGuard {
         custody.authenticate_process()?;
         original_handshake.verify_authority(original_controller.authority())?;
         if custody.controller.is_some()
+            || custody.compact_runtime.is_some()
             || custody.handshake.is_some()
             || custody.extension_handshake.is_some()
             || original_controller.peer_pid() != custody.provider_pid()

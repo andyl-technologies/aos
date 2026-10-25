@@ -139,6 +139,7 @@ impl CnpSemanticLaunchReservation {
             || native.original_child.is_some()
             || native.provider_pid != 0
             || native.controller.is_some()
+            || native.compact_runtime.is_some()
             || supervisor.is_some()
             || native.handshake.is_some()
             || native.extension_handshake.is_some()

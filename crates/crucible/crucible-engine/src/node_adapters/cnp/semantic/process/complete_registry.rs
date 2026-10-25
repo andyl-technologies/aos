@@ -30,8 +30,8 @@ impl CnpSemanticProcessCustody {
                 .as_ref()
                 .ok_or_else(|| refused("complete registry original typed handshake absent"))?;
             let controller = self
-                .controller
-                .as_ref()
+                .original_controller_data()
+                .map_err(unknown)?
                 .ok_or_else(|| refused("complete registry original controller absent"))?;
             let view = handshake
                 .original_complete_registry_view(controller.authority(), owner)

@@ -38,6 +38,8 @@ use crate::{node_contract::*, node_scheduling::*};
 
 #[path = "packet_collection_guard.rs"]
 mod collection_guard;
+#[path = "packet_preparation/compact_runtime.rs"]
+mod compact_runtime;
 #[path = "packet_native.rs"]
 mod native;
 #[path = "packet_oracle.rs"]

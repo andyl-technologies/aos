@@ -183,7 +183,6 @@ impl OriginalPacketHostStartup {
         self.profile = Some(inputs.launch.capture_profile.clone());
         self.executable = Some(inputs.executable.clone());
         self.schemas = Some(Rc::new(hello::InitialHelloSchema));
-        self.deadline = Some(ExchangeDeadline::start(Duration::from_secs(60))?);
         let selection = self.selection.as_ref().ok_or_else(refused)?;
         self.plain_handshake = Some(hello::handshake(inputs.launch, registration)?);
         self.handshake = Some(ExtensionHandshake::from_original_empty_registry_retained(
@@ -305,6 +304,7 @@ impl OriginalPacketHostStartup {
         supervisor: &Rc<dyn ConnectionSupervisor>,
         controller_budget: Duration,
     ) -> Result<(), ProviderError> {
+        self.start_initial_deadline()?;
         let registration = self.registration.as_ref().ok_or_else(refused)?;
         let selection = self.selection.as_ref().ok_or_else(refused)?;
         let hello = self.hello.as_ref().ok_or_else(refused)?;

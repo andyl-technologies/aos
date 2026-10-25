@@ -131,7 +131,12 @@ impl InstalledCompleteScene {
         #[cfg(test)]
         eprintln!("native control: prepare launch begin");
         PacketCompleteReportStartupHolder::launch_and_complete_original_scene(&self.original)
-            .map_err(|_| refused())?;
+            .map_err(|error| {
+                #[cfg(test)]
+                eprintln!("native control: original scene launch refused: {error:?}");
+                let _ = error;
+                refused()
+            })?;
         #[cfg(test)]
         eprintln!("native control: prepare launch end");
         // The earlier installation edition remains preparation-only. Only the

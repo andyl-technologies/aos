@@ -10,6 +10,77 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Compact runtime in original process custody
+
+The original process capsule now retains a compact runtime alternative beside
+its legacy controller slot. A shared immutable view checks that only one owner
+is present and forwards the same registrar, saved peer/executable and actual
+control descriptor. Source reads retain their original identity across the move;
+no mutable legacy accessor is exposed through compact custody. Process checks,
+registry metadata reads, containment and inherited-process drop handling include
+the compact owner. Reattachment and old startup identities refuse it.
+
+The raw precredit census consumes the compact owner's whole metadata walk only
+with its matching concrete retained supervisor and optional original witness.
+Competing owners or an unavailable concrete supervisor refuse. Legacy formatted
+observers and edition-17 historical readers also refuse populated compact custody
+rather than omit its suffix or reinterpret it as an empty controller.
+
+Two Transport controls check unchanged registrar/peer/content/descriptor identity,
+foreign-handshake refusal, fencing, revocation and unchanged journal debit. Two
+Engine controls use the existing real Child/socket fixture to check Source reads,
+whole-capsule supervisor transfer, actual containment/reaping, unknown-supervisor
+and edition-17 refusal, competing slots and a foreign runtime peer. Their explicit
+test-only ownership moves issue no production Source18 grant or native class.
+
+Both complete Transport codec suites pass 2,240 tests with zero failures and
+twenty ignored. The complete standard Engine suite, configured with its frozen
+source-built reference provider, passes 2,074 tests with zero failures and 34
+ignored. All eleven runtime controls pass in both Transport codec builds. Scoped
+formatting, five-package all-feature/all-target checking and all six architecture
+checks pass. Strict Transport Clippy retains the exact preceding diagnostic
+multiset: four existing errors and 1,725 warnings; it is not a strict lint pass.
+Application test-target compilation passes with 185 artifacts across 58 packages,
+including 76 integration targets; its captured source matches all 713 frozen
+owned Rust/Cargo inputs. Strict Engine Clippy reports 126 errors and 2,170
+warnings; its error code/message multiset is contained in the earlier Engine
+baseline, and no error pointed to the seventeen owned Rust files at that stage.
+The existing
+source-built inactive startup/reclamation baseline refused before runtime
+construction. The same retained scene completed retirement and reclamation. The
+failure was narrowed to the second provider's socket acquisition after successful
+native launch, bootstrap publication and Initial admission. The SDK previously
+started all connection deadlines during shared pre-Child construction. A
+candidate fix starts each fixed cut at that provider's first admitted socket or
+direct Hello operation and preserves every existing cut, including expiry. The
+Initial row already includes the entire SDK constructor window and its deadline
+backing; fixed deadline constructor controls are now included at the I/O entry.
+A new real-socket control checks independent prepared SDKs and unchanged cuts.
+The twenty host startup controls pass in both codecs. The native rerun confirms
+that the second provider now acquires its socket and completes Hello, then
+refuses later during protocol continuation. The same retained scene completes
+retirement and reclamation. No clean published-PR or successful native lifecycle
+qualification is claimed. Revised application
+compilation passes with 185 artifacts, 58 packages and 76 integration targets,
+and its captured source matches all 720 frozen Rust/Cargo inputs. The revised
+Engine suite passes 2,074 tests with 34 ignored; architecture, scoped formatting
+and all-feature/all-target checks pass. Both strict diagnostic multisets remain
+unchanged from the preceding candidate. Both complete revised Transport suites
+pass 2,241 tests with zero failures and twenty ignored.
+
+A temporary diagnostic narrowed the second member's refusal to canonical ACK
+Admit and then exposed an expired exchange deadline. The provider emitted no
+endpoint failure, and the same scene completed retirement and reclamation.
+The companion artifacts in that run were unoptimized development builds with
+full debug information. Temporary Source error tracing and inherited provider
+stderr were restored exactly; neither diagnostic variant qualifies the native
+lifecycle. The fixed deadline remains sixty seconds, with no renewal.
+
+Both production capsule constructors initialize the new slot empty. Complete
+future SDK R/T/S, the genuine same-Source one-use funded handoff and production
+Native18 selection remain unfinished, as do the remaining full RFC obligations.
+The new ownership path supplies no Source action or quota renewal.
+
 ## Runtime census after stream fencing
 
 The compact runtime's whole metadata census now authenticates original

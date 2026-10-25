@@ -75,6 +75,7 @@ impl CnpSemanticProcessCustody {
             provider_pid: _,
             directory,
             controller,
+            compact_runtime,
             protocol_supervisor,
             handshake,
             extension_handshake,
@@ -137,6 +138,14 @@ impl CnpSemanticProcessCustody {
             // walks the same controller plus its actual shared supervisor and
             // retained protocol view; no second guessed header is charged.
             let supervisor = protocol_supervisor.try_borrow().map_err(unknown)?;
+            // This legacy callback has no independently retained concrete
+            // supervisor loan for the compact owner. Native18 uses the raw
+            // precredit path; old observers must never silently omit that graph.
+            if compact_runtime.is_some() {
+                return Err(refused(
+                    "compact runtime requires its concrete supervisor census",
+                ));
+            }
             match (controller, supervisor.as_ref()) {
                 (Some(controller), Some(supervisor)) => counter.metadata(
                     &controller
@@ -270,8 +279,8 @@ impl CnpSemanticProcessCustody {
             .as_ref()
             .ok_or_else(|| refused("original extension handshake is absent"))?;
         let controller = self
-            .controller
-            .as_ref()
+            .original_controller_data()
+            .map_err(unknown)?
             .ok_or_else(|| refused("original extension controller is absent"))?;
         extension
             .verify_authority(controller.authority())
@@ -300,8 +309,8 @@ impl CnpSemanticProcessCustody {
             .as_ref()
             .ok_or_else(|| refused("original extension handshake is absent"))?;
         let controller = self
-            .controller
-            .as_ref()
+            .original_controller_data()
+            .map_err(unknown)?
             .ok_or_else(|| refused("original extension controller is absent"))?;
         extension
             .verify_authority(controller.authority())

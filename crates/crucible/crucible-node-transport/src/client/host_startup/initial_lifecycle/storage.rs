@@ -194,6 +194,8 @@ pub(super) fn quote(
         // until actual Controller completion. Already present prepared roots
         // are conservatively charged again; no prior future row is relabeled
         // as current backing or treated as authority for this next action.
+        // This includes the deadline allocation and all three eventual views:
+        // its physical cut starts only at this provider's admitted I/O entry.
         startup.quote.retained_requested_bytes(),
         codec,
         extra_bank_view,

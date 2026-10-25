@@ -261,10 +261,18 @@ impl PacketCompleteReportStartupHolder {
                 return Err(RuntimeError::OwnerUnavailable);
             }
         }
-        Self::reserve_original_preparation_supervisors(original)
-            .map_err(|_| RuntimeError::ResourceLimit)?;
-        Self::finalize_original_report_startup(original)
-            .map_err(|_| RuntimeError::ResourceLimit)?;
+        Self::reserve_original_preparation_supervisors(original).map_err(|error| {
+            #[cfg(test)]
+            eprintln!("native control: preparation supervisor reservation refused: {error:?}");
+            let _ = error;
+            RuntimeError::ResourceLimit
+        })?;
+        Self::finalize_original_report_startup(original).map_err(|error| {
+            #[cfg(test)]
+            eprintln!("native control: report startup finalization refused: {error:?}");
+            let _ = error;
+            RuntimeError::ResourceLimit
+        })?;
         if initial_per_member {
             Self::launch_original_native_startup_with_initial_lifecycle(original)?;
         } else {

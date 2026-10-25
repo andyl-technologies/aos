@@ -82,6 +82,7 @@ impl OriginalHostLaunchIdentity {
             || custody.child.is_some()
             || custody.original_child.is_none()
             || custody.controller.is_some()
+            || custody.compact_runtime.is_some()
             || custody.handshake.is_some()
             || custody.extension_handshake.is_some()
             || custody.source.is_some()
@@ -192,6 +193,7 @@ impl OriginalHostLaunchIdentity {
         };
         let custody = retained.authenticate_data(actual, source)?;
         if custody.controller.is_some()
+            || custody.compact_runtime.is_some()
             || custody.source.is_some()
             || custody.handshake.is_some()
             || custody.extension_handshake.is_some()
@@ -225,6 +227,7 @@ impl OriginalHostInitialLifecycleGuardIdentity {
             || custody.child.is_some()
             || custody.original_child.is_none()
             || custody.runtime.is_some()
+            || custody.compact_runtime.is_some()
             || custody.killed
             || custody.reaped.is_some()
             || custody.source.as_ref().is_some_and(|installed| {
@@ -264,7 +267,10 @@ impl OriginalHostInitialLifecycleGuardIdentity {
     ) -> Result<OriginalHostInitialSocketCall<'a>, RuntimeError> {
         self.authenticate_current(actual, source)?;
         let custody = self.authenticate_data(actual, source)?;
-        if custody.controller.is_some() || custody.source.is_some() {
+        if custody.controller.is_some()
+            || custody.compact_runtime.is_some()
+            || custody.source.is_some()
+        {
             return Err(RuntimeError::OutstandingObligations);
         }
         let call =

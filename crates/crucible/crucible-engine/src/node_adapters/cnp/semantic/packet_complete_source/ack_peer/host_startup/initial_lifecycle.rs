@@ -382,7 +382,7 @@ impl PacketCompleteOriginalHostSdk {
         state.phase = InitialPhase::SocketStarted;
         let call = identity.guard.begin_socket(guard, &source)?;
         self.sdk
-            .as_ref()
+            .as_mut()
             .ok_or(RuntimeError::OwnerUnavailable)?
             .acquire_original_initial_socket_into(socket, completed)
             .map_err(|_| RuntimeError::OwnerUnavailable)?;

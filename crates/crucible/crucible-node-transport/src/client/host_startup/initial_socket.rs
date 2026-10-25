@@ -43,6 +43,7 @@ pub fn original_packet_host_initial_socket_counter_scratch_data() -> usize {
         + size_of::<Option<Duration>>()
         + size_of::<Result<Duration, ProviderError>>()
         + size_of::<Result<(), ProviderError>>()
+        + initial_deadline_counter_scratch_data()
         + size_of::<&super::ExchangeDeadline>()
         + size_of::<Result<&CStr, ProviderError>>()
         + size_of::<rustix::fs::Stat>()
@@ -62,7 +63,23 @@ pub fn original_packet_host_initial_socket_counter_scratch_data() -> usize {
         + size_of::<usize>()
 }
 
+pub(super) fn initial_deadline_counter_scratch_data() -> usize {
+    size_of::<super::ExchangeDeadline>()
+        + size_of::<Result<super::ExchangeDeadline, ProviderError>>()
+        + size_of::<Duration>()
+        + size_of::<&mut OriginalPacketHostStartup>()
+}
+
 impl OriginalPacketHostStartup {
+    // All SDKs may be constructed before sequential Child launches. Start each
+    // physical cut at its own admitted I/O entry; never replace an existing cut.
+    pub(super) fn start_initial_deadline(&mut self) -> Result<(), ProviderError> {
+        if self.deadline.is_none() {
+            self.deadline = Some(super::ExchangeDeadline::start(Duration::from_secs(60))?);
+        }
+        Ok(())
+    }
+
     /// Acquires the same selected initial socket without renewing its deadline.
     ///
     /// The Source's actual installed action authenticates the path against its
@@ -73,6 +90,8 @@ impl OriginalPacketHostStartup {
     /// at the selected path under the same original deadline. Readiness is not
     /// peer authentication. It never replaces a failed descriptor or retries
     /// the connection.
+    /// The first admitted acquisition starts this SDK's physical cut; preparing
+    /// other SDKs or completing another provider does not spend that interval.
     ///
     /// # Errors
     /// Refuses a foreign, partial or connected SDK root, occupied output,
@@ -80,7 +99,7 @@ impl OriginalPacketHostStartup {
     /// original cut, or unavailable socket/connection. Descriptors already
     /// created remain in the caller's original output slot.
     pub fn acquire_original_initial_socket_into(
-        &self,
+        &mut self,
         path: &Path,
         completed: &mut Option<UnixStream>,
     ) -> Result<(), ProviderError> {
@@ -98,6 +117,7 @@ impl OriginalPacketHostStartup {
         {
             return Err(refused());
         }
+        self.start_initial_deadline()?;
         let deadline = self.deadline.as_ref().ok_or_else(refused)?;
         check_deadline(deadline)?;
         let original_path = SocketPath::new(path)?;
@@ -267,6 +287,96 @@ mod tests {
     }
 
     #[test]
+    fn prepared_hosts_start_independent_cuts_at_their_first_socket_operation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::net::UnixListener;
+
+        let directory = TestDirectory::new()?;
+        let stale_path = directory.0.join("stale.sock");
+        drop(UnixListener::bind(&stale_path)?);
+        let path = directory.0.join("later.sock");
+        let listener = UnixListener::bind(&path)?;
+        let (_, mut earlier) = super::super::tests::prepared_initial_lifecycle_model();
+        let (_, mut later) = super::super::tests::prepared_initial_lifecycle_model();
+
+        assert!(earlier.deadline.is_none());
+        assert!(later.deadline.is_none());
+        let mut failed_socket = None;
+        assert!(
+            earlier
+                .acquire_original_initial_socket_into(&stale_path, &mut failed_socket)
+                .is_err()
+        );
+        assert!(failed_socket.is_some());
+        earlier
+            .deadline
+            .as_ref()
+            .ok_or("missing earlier cut")?
+            .tighten(Duration::from_millis(1))?;
+        let earlier_cut = earlier
+            .deadline
+            .as_ref()
+            .ok_or("missing earlier cut")?
+            .original_cut();
+        std::thread::park_timeout(Duration::from_millis(5));
+
+        assert!(
+            earlier
+                .deadline
+                .as_ref()
+                .ok_or("missing earlier cut")?
+                .remaining()
+                .is_err()
+        );
+        assert!(later.deadline.is_none());
+        let mut connected = None;
+        later.acquire_original_initial_socket_into(&path, &mut connected)?;
+        let (_peer, _) = listener.accept()?;
+        let later_cut = later
+            .deadline
+            .as_ref()
+            .ok_or("missing later cut")?
+            .original_cut();
+        assert!(
+            later
+                .deadline
+                .as_ref()
+                .ok_or("missing later cut")?
+                .remaining()
+                .is_ok()
+        );
+        assert!(later_cut > earlier_cut);
+
+        earlier.start_initial_deadline()?;
+        later.start_initial_deadline()?;
+        assert_eq!(
+            earlier
+                .deadline
+                .as_ref()
+                .ok_or("missing earlier cut")?
+                .original_cut(),
+            earlier_cut
+        );
+        assert_eq!(
+            later
+                .deadline
+                .as_ref()
+                .ok_or("missing later cut")?
+                .original_cut(),
+            later_cut
+        );
+        assert!(
+            earlier
+                .deadline
+                .as_ref()
+                .ok_or("missing earlier cut")?
+                .remaining()
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn initial_socket_waits_for_delayed_real_listener_without_renewing_cut()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::{fd::AsRawFd, unix::net::UnixListener};
@@ -276,8 +386,11 @@ mod tests {
         let (_, mut root) = super::super::tests::prepared_initial_lifecycle_model();
         let cut = super::super::ExchangeDeadline::start(Duration::from_secs(2))?;
         root.deadline = Some(cut);
-        let deadline = root.deadline.as_ref().ok_or("missing original cut")?;
-        let original_cut = deadline.original_cut();
+        let original_cut = root
+            .deadline
+            .as_ref()
+            .ok_or("missing original cut")?
+            .original_cut();
         let child_path = path.clone();
         let listener = std::thread::spawn(move || {
             std::thread::park_timeout(Duration::from_millis(20));
@@ -295,7 +408,13 @@ mod tests {
             .ok_or("actual connected socket not retained")?;
         let descriptor = stream.as_raw_fd();
 
-        assert_eq!(deadline.original_cut(), original_cut);
+        assert_eq!(
+            root.deadline
+                .as_ref()
+                .ok_or("missing original cut")?
+                .original_cut(),
+            original_cut
+        );
         assert!(rustix::io::fcntl_getfd(stream)?.contains(rustix::io::FdFlags::CLOEXEC));
         assert!(!rustix::fs::fcntl_getfl(stream)?.contains(rustix::fs::OFlags::NONBLOCK));
         assert!(
@@ -351,7 +470,7 @@ mod tests {
         symlink(&actual, &link)?;
         let regular = directory.0.join("regular");
         std::fs::write(&regular, b"not a control socket")?;
-        let (_, root) = super::super::tests::prepared_initial_lifecycle_model();
+        let (_, mut root) = super::super::tests::prepared_initial_lifecycle_model();
 
         for path in [&link, &regular, &directory.0] {
             let mut completed = None;
@@ -373,7 +492,7 @@ mod tests {
         let directory = TestDirectory::new()?;
         let path = directory.0.join("stale.sock");
         drop(UnixListener::bind(&path)?);
-        let (_, root) = super::super::tests::prepared_initial_lifecycle_model();
+        let (_, mut root) = super::super::tests::prepared_initial_lifecycle_model();
         let mut completed = None;
 
         assert!(

@@ -8,6 +8,8 @@ use super::*;
 use crate::client::session::CompactClientJournal;
 use crate::envelope::RequestOrigin;
 
+mod identity;
+
 /// Owns compact runtime exchanges alongside the complete original controller.
 ///
 /// The legacy controller has no mutable accessor, extractor or deref conversion.

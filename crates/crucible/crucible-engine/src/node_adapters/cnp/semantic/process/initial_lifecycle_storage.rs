@@ -7,10 +7,11 @@
 use std::mem::size_of;
 
 use crucible_node_transport::{
-    connection::OriginalRetainedSupervisor, handshake::OriginalExtensionRegistryOwner,
+    ProviderError, client::CompactRuntimeController, connection::OriginalRetainedSupervisor,
+    handshake::OriginalExtensionRegistryOwner,
 };
 
-use super::CnpSemanticLaunchGuard;
+use super::{CnpSemanticLaunchGuard, protocol::OriginalControllerView};
 use crate::{
     node_adapters::cnp::semantic::retained_storage::preparation::PreparationCounter,
     node_contract::RuntimeError,
@@ -19,10 +20,15 @@ use crate::{
 impl CnpSemanticLaunchGuard {
     /// Counts the concrete fixed bank used by the raw launched-guard observer.
     ///
-    /// SDK and installed Source nested observer headers, compiler frames,
-    /// allocator physical overhead and kernel resources remain separate terms.
-    pub const fn original_initial_lifecycle_storage_counter_scratch_data() -> usize {
+    /// Includes the compact alternative's complete SDK census controls. Source
+    /// observer headers, compiler frames, allocator overhead and kernel
+    /// resources remain separate terms.
+    pub fn original_initial_lifecycle_storage_counter_scratch_data() -> usize {
         size_of::<PreparationCounter>()
+            + size_of::<OriginalControllerView<'static>>()
+            + size_of::<Option<OriginalControllerView<'static>>>()
+            + size_of::<Result<Option<OriginalControllerView<'static>>, ProviderError>>()
+            + CompactRuntimeController::retained_metadata_counter_scratch_data()
             + size_of::<Option<&OriginalExtensionRegistryOwner>>()
             + size_of::<Option<&OriginalRetainedSupervisor>>()
             // The initial preparation walk also lends its exact roster Source.
@@ -58,7 +64,10 @@ impl CnpSemanticLaunchGuard {
             .custody
             .as_ref()
             .ok_or(RuntimeError::OwnerUnavailable)?;
-        let attached = custody.controller.is_some();
+        let attached = custody
+            .original_controller_data()
+            .map_err(|_| RuntimeError::ForeignAuthority)?
+            .is_some();
         if !attached && registry.is_some() {
             return Err(RuntimeError::ForeignAuthority);
         }
@@ -111,7 +120,10 @@ impl CnpSemanticLaunchGuard {
                 .checked_add(executable.retained_descriptor_views_precredit_data()?)
                 .ok_or(RuntimeError::ResourceLimit)?;
         }
-        if let Some(controller) = &native.controller {
+        if let Some(controller) = native
+            .original_controller_data()
+            .map_err(|_| RuntimeError::ForeignAuthority)?
+        {
             total = total
                 .checked_add(
                     controller

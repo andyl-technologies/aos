@@ -78,6 +78,7 @@ impl PacketNativeHostStartupStorageData {
 /// are separate. No serialization or metadata observer runs in this getter.
 pub fn original_packet_host_startup_counter_scratch_data() -> usize {
     ClientSession::original_bootstrap_hello_cut_capture_counter_scratch_data()
+        + super::initial_socket::initial_deadline_counter_scratch_data()
         + 4 * size_of::<MetadataObserver<'static>>()
         + 4 * size_of::<RetainedProtocolMetadataFacts>()
         + size_of::<PacketNativeHostStartupStorageData>()

@@ -239,9 +239,11 @@ impl CnpSemanticProcessCustody {
         self.ensure_origin()?;
         self.read_owner.ensure_current()?;
         self.authenticate_process()?;
-        let controller = self.controller.as_ref().ok_or(ProviderError::Correlation(
-            "generic original read controller absent",
-        ))?;
+        let controller = self
+            .original_controller_data()?
+            .ok_or(ProviderError::Correlation(
+                "generic original read controller absent",
+            ))?;
         // Exactly one surviving original handshake must own this registrar.
         // Typed negotiation stays typed, including an empty selected roster.
         let registration = match (&self.handshake, &self.extension_handshake) {

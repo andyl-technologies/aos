@@ -34,6 +34,11 @@ impl CnpSemanticLaunchGuard {
         custody
             .ensure_origin()
             .map_err(|_| RuntimeError::ForeignAuthority)?;
+        // Edition17 has no field for the compact owner or its pending suffix.
+        // Its old histories must refuse rather than encode a partial capsule.
+        if custody.compact_runtime.is_some() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
         let executable = custody
             .executable_guard
             .as_ref()

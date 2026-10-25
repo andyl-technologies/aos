@@ -261,6 +261,8 @@ impl PacketCompleteReportStartupHolder {
         original: &Rc<RefCell<Self>>,
         selected: usize,
     ) -> Result<(), RuntimeError> {
+        #[cfg(test)]
+        eprintln!("native control: initial member {selected} admission begin");
         let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
         held.authenticate_native_origin_data()?;
         let scene = held.host_initial_lifecycle_owner_data()?;
@@ -320,6 +322,8 @@ impl PacketCompleteReportStartupHolder {
                 .set(RefCell::new(window))
                 .map_err(|_| RuntimeError::DuplicateOperation)?;
         }
+        #[cfg(test)]
+        eprintln!("native control: initial member {selected} admitted; socket acquisition begin");
         if held
             .authority
             .original_initial_callback_active
@@ -357,6 +361,8 @@ impl PacketCompleteReportStartupHolder {
                 &mut streams[selected],
             )?;
         }
+        #[cfg(test)]
+        eprintln!("native control: initial member {selected} socket acquired; Hello begin");
         {
             let launches = held
                 .native_launches
@@ -382,6 +388,8 @@ impl PacketCompleteReportStartupHolder {
                 &mut streams[selected],
             )?;
         }
+        #[cfg(test)]
+        eprintln!("native control: initial member {selected} Hello completed; protocol begin");
         {
             let mut launches = held
                 .native_launches
@@ -408,6 +416,8 @@ impl PacketCompleteReportStartupHolder {
                 &scene.admit_ids()?[selected],
             )?;
         }
+        #[cfg(test)]
+        eprintln!("native control: initial member {selected} protocol completed; recheck begin");
         // All mutable output loans end before Core repeats the actual
         // complete owning conjunction over the resulting preparation.
         drop(window);
@@ -434,6 +444,8 @@ impl PacketCompleteReportStartupHolder {
             held.recheck_original_scene_peer_data(selected, &window, sdks, socket)?;
         }
         scene.initial_completed()[selected].set(true);
+        #[cfg(test)]
+        eprintln!("native control: initial member {selected} recheck completed");
         Ok(())
     }
 

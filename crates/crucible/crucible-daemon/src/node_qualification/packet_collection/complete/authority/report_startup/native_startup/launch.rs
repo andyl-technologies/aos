@@ -403,8 +403,14 @@ impl PacketCompleteReportStartupHolder {
         original: &Rc<RefCell<Self>>,
         initial: Option<fn(&Rc<RefCell<Self>>, usize) -> Result<(), RuntimeError>>,
     ) -> Result<(), RuntimeError> {
+        #[cfg(test)]
+        eprintln!("native control: native startup finalization begin");
         Self::finalize_original_native_startup(original)?;
+        #[cfg(test)]
+        eprintln!("native control: native startup finalization end; host SDK construction begin");
         Self::prepare_original_native_host_sdk(original)?;
+        #[cfg(test)]
+        eprintln!("native control: host SDK construction end");
         let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
         held.authenticate_native_origin_data()?;
         let mut owners = held
@@ -421,6 +427,8 @@ impl PacketCompleteReportStartupHolder {
         let restored_suffix = held.restored_suffix_startup_selected_data()?;
         let mut materials: [Option<PacketCompleteAckPeerBootMaterial<'_>>; 3] = [None, None, None];
         for (member, peer) in owners.peers.iter_mut().enumerate() {
+            #[cfg(test)]
+            eprintln!("native control: native member {member} bootstrap construction begin");
             let inputs = peer.inputs.as_mut().ok_or(RuntimeError::OwnerUnavailable)?;
             let source = &held.authority.roster.sources[member];
             materials[member] = Some(
@@ -454,6 +462,8 @@ impl PacketCompleteReportStartupHolder {
                 )
             }
             .map_err(|_| RuntimeError::OwnerUnavailable)?;
+            #[cfg(test)]
+            eprintln!("native control: native member {member} wire prepared; reservation begin");
             materials[member]
                 .as_ref()
                 .ok_or(RuntimeError::OwnerUnavailable)?
@@ -464,6 +474,8 @@ impl PacketCompleteReportStartupHolder {
                     &mut peer.reservation,
                 )
                 .map_err(|_| RuntimeError::OwnerUnavailable)?;
+            #[cfg(test)]
+            eprintln!("native control: native member {member} reservation prepared");
             let observed = peer
                 .reservation
                 .as_ref()
@@ -505,6 +517,8 @@ impl PacketCompleteReportStartupHolder {
         }
         drop(owners);
         for member in 0..3 {
+            #[cfg(test)]
+            eprintln!("native control: native member {member} launch begin");
             {
                 let mut owners = held
                     .native_launches
@@ -535,12 +549,24 @@ impl PacketCompleteReportStartupHolder {
                     .as_mut()
                     .ok_or(RuntimeError::OwnerUnavailable)?
                     .launch(command.as_mut().ok_or(RuntimeError::OwnerUnavailable)?)
-                    .map_err(|_| RuntimeError::OwnerUnavailable)?;
+                    .map_err(|error| {
+                        #[cfg(test)]
+                        eprintln!(
+                            "native control: native member {member} launch refused: {error:?}"
+                        );
+                        let _ = error;
+                        RuntimeError::OwnerUnavailable
+                    })?;
                 let original_reservation =
                     reservation.take().ok_or(RuntimeError::OwnerUnavailable)?;
                 match original_reservation.into_guard() {
                     Ok(original_guard) => *guard = Some(original_guard),
                     Err(failure) => {
+                        #[cfg(test)]
+                        eprintln!(
+                            "native control: native member {member} guard transfer refused: {:?}",
+                            failure.error
+                        );
                         *reservation = Some(failure.original);
                         return Err(RuntimeError::OwnerUnavailable);
                     }
@@ -567,8 +593,17 @@ impl PacketCompleteReportStartupHolder {
                     }
                     _ => return Err(RuntimeError::ForeignAuthority),
                 }
-                .map_err(|_| RuntimeError::OwnerUnavailable)?;
+                .map_err(|error| {
+                    #[cfg(test)]
+                    eprintln!(
+                        "native control: native member {member} wire publication refused: {error:?}"
+                    );
+                    let _ = error;
+                    RuntimeError::OwnerUnavailable
+                })?;
                 *written = true;
+                #[cfg(test)]
+                eprintln!("native control: native member {member} wire published");
             }
             // No native launch-bank loan crosses the initial lifecycle. The
             // next child has not started its birth deadline while this member
@@ -576,6 +611,8 @@ impl PacketCompleteReportStartupHolder {
             drop(materials[member].take());
             if let Some(complete) = initial {
                 complete(original, member)?;
+                #[cfg(test)]
+                eprintln!("native control: native member {member} initial lifecycle completed");
             }
         }
         held.authenticate_native_origin_data()

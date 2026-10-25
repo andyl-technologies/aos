@@ -125,6 +125,7 @@ impl CnpSemanticProcessCustody {
             provider_pid: _,
             directory,
             controller,
+            compact_runtime,
             protocol_supervisor,
             handshake,
             extension_handshake,
@@ -186,15 +187,31 @@ impl CnpSemanticProcessCustody {
             let supervisor = protocol_supervisor
                 .try_borrow()
                 .map_err(|_| RuntimeError::OwnerBusy)?;
-            match (controller, supervisor.as_ref(), retained_supervisor) {
-                (Some(controller), witness, Some(owner)) => counter.metadata(
+            match (
+                controller,
+                compact_runtime,
+                supervisor.as_ref(),
+                retained_supervisor,
+            ) {
+                (Some(_), Some(_), _, _) => return Err(RuntimeError::ForeignAuthority),
+                (None, Some(runtime), witness, Some(owner)) => counter.metadata(
+                    &runtime
+                        .retained_metadata_facts_with_retained_supervisor(owner, witness)
+                        .map_err(metadata_failure)?,
+                )?,
+                (None, Some(_), _, None) => {
+                    // The opaque owner cannot be priced through an erased callback.
+                    // Refuse rather than hide its banks or surviving failure state.
+                    return Err(RuntimeError::UnsupportedFacet);
+                }
+                (Some(controller), None, witness, Some(owner)) => counter.metadata(
                     &controller
                         .original_restoration_host_metadata_facts_with_retained_supervisor(
                             owner, witness,
                         )
                         .map_err(metadata_failure)?,
                 )?,
-                (Some(controller), _, None) => {
+                (Some(controller), None, _, None) => {
                     // Generic erased callbacks are never called precredit.
                     // The known direct family above supplies actual backing;
                     // an unsupported witness remains an explicit obligation.
@@ -206,8 +223,8 @@ impl CnpSemanticProcessCustody {
                     counter.unknowns.protocol_supervisor_callback = true;
                     counter.unknowns.live_sdk_backing = true;
                 }
-                (None, None, None) => {}
-                (None, _, _) => return Err(RuntimeError::ForeignAuthority),
+                (None, None, None, None) => {}
+                (None, None, _, _) => return Err(RuntimeError::ForeignAuthority),
             }
         }
 
