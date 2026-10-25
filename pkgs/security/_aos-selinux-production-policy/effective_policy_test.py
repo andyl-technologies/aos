@@ -1077,6 +1077,20 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(domain, "security_t", "security", permission)
                     )
 
+    def test_offline_cgroup_metadata_withholds_control_mutation(self) -> None:
+        preparer = effective_policy.owner_policy.OFFLINE_PREPARE
+        self.assert_missing_allow_rejected(
+            effective_policy.Access(preparer, "cgroup_t", "filesystem", "getattr")
+        )
+        for permission in ("mount", "remount", "unmount", "associate"):
+            with self.subTest(permission=permission):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access(preparer, "cgroup_t", "filesystem", permission)
+                )
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access(preparer, "cgroup_t", "file", "write")
+        )
+
     def test_offline_policy_readback_withholds_policy_administration(self) -> None:
         owner = effective_policy.owner_policy
         self.assert_missing_allow_rejected(

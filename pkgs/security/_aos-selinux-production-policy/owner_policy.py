@@ -475,6 +475,7 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         Access(OFFLINE_PREPARE, "init_t", "system", "status"),
         Access(OFFLINE_PREPARE, "systemd_unit_t", "service", "status"),
         Access(OFFLINE_PREPARE, "fs_t", "filesystem", "getattr"),
+        Access(OFFLINE_PREPARE, "cgroup_t", "filesystem", "getattr"),
         Access(OFFLINE_PREPARE, "security_t", "security", "read_policy"),
         Access(OFFLINE_PREPARE_CREDENTIAL, "tmpfs_t", "filesystem", "associate"),
     ))
@@ -538,9 +539,10 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         negative.append(Access(OFFLINE_PREPARE, "*", "service", permission))
     for permission in ("start", "stop", "reload", "reboot", "halt"):
         negative.append(Access(OFFLINE_PREPARE, "*", "system", permission))
-    negative.extend(accesses(
-        OFFLINE_PREPARE, "fs_t", "filesystem", ("mount", "remount", "unmount", "associate"),
-    ))
+    for filesystem in ("fs_t", "cgroup_t"):
+        negative.extend(accesses(
+            OFFLINE_PREPARE, filesystem, "filesystem", ("mount", "remount", "unmount", "associate"),
+        ))
     negative.append(Access(OFFLINE_PREPARE, "*", "file", "execute_no_trans"))
     negative.append(Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "process", "transition"))
     negative.extend(accesses(
