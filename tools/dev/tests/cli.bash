@@ -38,6 +38,10 @@ cat > "$scratch/bin/nix-build" <<'MOCK'
 printf '%s\n' "$*" >> "$AOS_DEV_TEST_LOG"
 printf '%s\n' "${NIX_CONFIG:-}" >> "$AOS_DEV_TEST_NIX_CONFIG_LOG"
 case " $* " in
+  *' -A checks.build.bazel.release-metadata.'*)
+    [[ ${AOS_DEV_TEST_METADATA_STATUS:-0} == 0 ]] || exit "$AOS_DEV_TEST_METADATA_STATUS"
+    printf '%s\n' "$AOS_DEV_TEST_CLI"
+    ;;
   *'cache-mount-smoke.nix'*)
     if [[ -n ${AOS_DEV_TEST_PROBE_STATUS:-} ]]; then
       if [[ ${AOS_DEV_TEST_PROBE_INTERRUPTED:-0} == 1 ]]; then
@@ -166,6 +170,27 @@ export AOS_DEV_TEST_BAZEL_ARGS_LOG="$scratch/bazel-args.log"
 
 bash -n "$root/tools/dev/aos-dev" "$root"/tools/dev/lib/*.bash
 bash "$root/tools/dev/aos-dev" help | grep -Fq 'Usage: aos-dev'
+
+# Regeneration writes only after Nix succeeds; verification preserves the file.
+metadata_root="$scratch/metadata-root"
+mkdir -p "$metadata_root/tools/bazel/metadata"
+cp -R "$root/tools/dev" "$metadata_root/tools/dev"
+printf 'old metadata\n' > "$metadata_root/tools/bazel/metadata/crucible-release-packages.json"
+printf '{"generated":true}\n' > "$scratch/cli/crucible-release-packages.json"
+bash "$metadata_root/tools/dev/aos-dev" bazel release-metadata --check
+grep -Fxq 'old metadata' "$metadata_root/tools/bazel/metadata/crucible-release-packages.json"
+bash "$metadata_root/tools/dev/aos-dev" bazel release-metadata
+cmp "$scratch/cli/crucible-release-packages.json" "$metadata_root/tools/bazel/metadata/crucible-release-packages.json"
+if AOS_DEV_TEST_METADATA_STATUS=17 bash "$metadata_root/tools/dev/aos-dev" bazel release-metadata; then
+  printf 'release metadata regeneration accepted a failed build\n' >&2
+  exit 1
+fi
+cmp "$scratch/cli/crucible-release-packages.json" "$metadata_root/tools/bazel/metadata/crucible-release-packages.json"
+if bash "$metadata_root/tools/dev/aos-dev" bazel release-metadata --unknown 2>/dev/null; then
+  printf 'release metadata command accepted an unknown option\n' >&2
+  exit 1
+fi
+
 bash "$root/tools/dev/aos-dev" bazel build //example:app
 grep -Fxq "$root" "$AOS_DEV_TEST_BAZEL_ENV_LOG"
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--cache><$AOS_DEV_CACHE_DIR/bazel><--><build><//example:app>"

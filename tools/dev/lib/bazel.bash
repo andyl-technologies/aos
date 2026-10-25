@@ -3,6 +3,25 @@
 # by the AOS launcher before Bazel starts.
 aos_dev_bazel() (
   (( $# > 0 )) || aos_dev_error 'bazel requires a command and optional labels'
+  if [[ $1 == release-metadata ]]; then
+    shift
+    [[ $# == 0 || ( $# == 1 && $1 == --check ) ]] || aos_dev_error 'usage: aos-dev bazel release-metadata [--check]'
+    local metadata_output metadata_directory metadata_temporary
+    if (( $# == 1 )); then
+      aos_dev_nix_build_ordinary -A checks.build.bazel.release-metadata.all --no-out-link
+      return
+    fi
+
+    metadata_output=$(aos_dev_nix_build_ordinary -A checks.build.bazel.release-metadata.generated --no-out-link)
+    metadata_directory="$aos_dev_root/tools/bazel/metadata"
+    metadata_temporary=$(mktemp "$metadata_directory/.crucible-release-packages.XXXXXX")
+    trap 'rm -f -- "$metadata_temporary"' EXIT
+    cp "$metadata_output/crucible-release-packages.json" "$metadata_temporary"
+    chmod 644 "$metadata_temporary"
+    mv -f -- "$metadata_temporary" "$metadata_directory/crucible-release-packages.json"
+    return
+  fi
+
   if [[ $1 == update-deps ]]; then
     shift
     [[ $# == 1 && (

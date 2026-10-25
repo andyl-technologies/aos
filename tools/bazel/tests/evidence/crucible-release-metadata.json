@@ -1,0 +1,469 @@
+{
+  "bazel_inputs": {
+    "build": "/nix/store/hybs388m557xq6hd092ldcx7h4qkm8ll-aos-bazel-source-catalog-1",
+    "crates": "/nix/store/b39hw4f4b13nk1cqz4rx5rnjvn0il461-aos-workspace-source-catalog-1",
+    "generated": "/nix/store/cac17k9b52l48y16rl0ap46s7pf8358l-aos-bazel-crucible-release-metadata",
+    "source": "/nix/store/wv5a8s9crg9kwjzv89wwfcshvki53lkc-aos-bazel-workspace"
+  },
+  "cargo_baseline_reader_sha256": "d93c86850852aa0ded25b0a17d7b35f4e1c03786aad882c541a85351765bcea2",
+  "checked_export_sha256": "e437d9accf5e2948a8d835c40a07b2fe3ffef334b5c3a1ca8c2e9e902e5b96c8",
+  "checks": {
+    "bazel-source-catalog-build": {
+      "derivation": "/nix/store/3145zfb0y02fg84x9lvc9qdj76v02vhj-aos-bazel-source-catalog-1.drv",
+      "derivation_sha256": "226229697820ff515e15235abe7c4ff0f0f3c601e86509f3eff7e3a47515026a",
+      "output": "/nix/store/hybs388m557xq6hd092ldcx7h4qkm8ll-aos-bazel-source-catalog-1"
+    },
+    "cli": {
+      "derivation": "/nix/store/5whxxcjddah6d781rd3f7wkrkx9x480d-aos-dev-cli-check-0.drv",
+      "derivation_sha256": "f57ac49ac83d4806a630915695a79c7f2b8816e40ba644d05d2f1220f51e5d26",
+      "output": "/nix/store/3139q4viy7y2zpbf5ha3jq2qnf5d75hf-aos-dev-cli-check-0"
+    },
+    "eval": {
+      "derivation": "/nix/store/88sj4hww8gn863d94bvpsfpdl1p51pln-aos-native-evaluation-checks-0.drv",
+      "derivation_sha256": "e2689b74aa39866857889cb5f10f173db3fb3b0de9d12c3caaa1425cb5a54a5f",
+      "output": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0"
+    },
+    "fresh-export": {
+      "derivation": "/nix/store/n9bcgs5c9lrmhx5flbzkp8hxy6hsvdhi-aos-bazel-crucible-release-metadata.drv",
+      "derivation_sha256": "65b1a23b815ad23027f825929dbb98c1abea0aa6effc2015f5b0dbe38ea5fe53",
+      "output": "/nix/store/cac17k9b52l48y16rl0ap46s7pf8358l-aos-bazel-crucible-release-metadata"
+    },
+    "policy": {
+      "derivation": "/nix/store/zfrarxm7g0k9j9zrxhmlm89xjrfk4ppk-aos-bazel-policy-checks.drv",
+      "derivation_sha256": "f38adbe028463f97090a4e56e5cd92615eb6ae75c8cb4a544ad7a777aee6b7f1",
+      "output": "/nix/store/9xi3xirfx1qpai875iz9cpi9n05mzpkg-aos-bazel-policy-checks"
+    },
+    "release-metadata": {
+      "derivation": "/nix/store/dp7jvymhb9s02gwg19z568qlrafjl8nm-aos-bazel-crucible-release-metadata-check.drv",
+      "derivation_sha256": "b679d1fc6481c589dffa71e371cd93223c4e7c4ccc8300a66cf4553550820727",
+      "output": "/nix/store/sk5dpklj5y0fp8yxsga0mwnbbx1r6fqg-aos-bazel-crucible-release-metadata-check"
+    },
+    "source-catalog": {
+      "derivation": "/nix/store/3l9fbyvyk9kk4q335l75q2j3k52czkgs-aos-bazel-source-catalog-checks.drv",
+      "derivation_sha256": "603f772b9107bc35b0e56127e23f6ef16c7cca2131262e3bba200322b8043c36",
+      "output": "/nix/store/zdrxa8i79g0g7dr6xdh167sv70mycbcb-aos-bazel-source-catalog-checks"
+    }
+  },
+  "cli_controls": [
+    "check preserves metadata",
+    "regeneration copies successful Nix output",
+    "failed generation preserves metadata",
+    "unknown options rejected"
+  ],
+  "complete_manifest_equal_to_cargo_baseline": true,
+  "evaluation": {
+    "cargo_free_source": "/nix/store/i5x65zqywgprnfjbrjaw58508nly7rq4-crucible-release-metadata-without-cargo",
+    "packages": {
+      "aos-linux-project-quota": {
+        "directory": "crates/linux/aos-linux-project-quota",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-campaign": {
+        "directory": "crates/crucible/crucible-campaign",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-cli": {
+        "directory": "crates/crucible/crucible-cli",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-control-api": {
+        "directory": "crates/crucible/crucible-control-api",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-control-client": {
+        "directory": "crates/crucible/crucible-control-client",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-control-server": {
+        "directory": "crates/crucible/crucible-control-server",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-daemon": {
+        "directory": "crates/crucible/crucible-daemon",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-determinism": {
+        "directory": "crates/crucible/crucible-determinism",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-device": {
+        "directory": "crates/crucible/crucible-device",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-engine": {
+        "directory": "crates/crucible/crucible-engine",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-guest": {
+        "directory": "crates/crucible/crucible-guest",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-qemu-debug-gateway": {
+        "directory": "crates/crucible/crucible-qemu-debug-gateway",
+        "edition": "2024",
+        "license": "GPL-2.0-only",
+        "license_domain": "gpl-qemu",
+        "version": "0.1.0"
+      },
+      "crucible-qemu-host": {
+        "directory": "crates/crucible/crucible-qemu-host",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-qemu-plugin": {
+        "directory": "crates/crucible/crucible-qemu-plugin",
+        "edition": "2024",
+        "license": "GPL-2.0-only",
+        "license_domain": "gpl-qemu",
+        "version": "0.1.0"
+      },
+      "crucible-qemu-protocol": {
+        "directory": "crates/crucible/crucible-qemu-protocol",
+        "edition": "2024",
+        "license": "MIT OR Apache-2.0",
+        "license_domain": "permissive-protocol",
+        "version": "0.1.0"
+      },
+      "crucible-qemu-shmem": {
+        "directory": "crates/crucible/crucible-qemu-shmem",
+        "edition": "2024",
+        "license": "MIT OR Apache-2.0",
+        "license_domain": "permissive-protocol",
+        "version": "0.1.0"
+      },
+      "crucible-session": {
+        "directory": "crates/crucible/crucible-session",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-store": {
+        "directory": "crates/crucible/crucible-store",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-store-s3": {
+        "directory": "crates/crucible/crucible-store-s3",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      },
+      "crucible-test-support": {
+        "directory": "crates/crucible/crucible-test-support",
+        "edition": "2024",
+        "license": "Apache-2.0",
+        "license_domain": "apache-host",
+        "version": "0.1.0"
+      }
+    },
+    "rejected_mutations": [
+      "stale-build",
+      "missing-identity",
+      "missing-declaration",
+      "invalid-directory",
+      "unsupported-schema"
+    ],
+    "release_manifest_identical_in_filtered_source": true,
+    "release_manifest_identical_without_cargo": true,
+    "status": "PASS"
+  },
+  "exporter_regressions": 6,
+  "implementation_sha256": {
+    "pkgs/tools/crucible/_release-manifest.nix": "05448dc6ee5d6d6e56f57ca7d68e2a1735ba079566d518e60320503535fb6862",
+    "pkgs/tools/crucible/_release-packages.nix": "6e990626ea8b942a67443f5874f38fe43bd80c37f8207995725378d27ce8a1e6",
+    "pkgs/tools/crucible/_source.nix": "6ee4e0f66419691fb953bbdc15447196a477109fc061169f0ef762fa347e0521",
+    "tests/build/_bazel-release-metadata.nix": "463076269cc4bc72b37e931bea5713e0b8080487a45662298b4bfcb698245e45",
+    "tests/build/_bazel-source-catalog.nix": "bebea207295e7830349d98b697bb42177b05645c0c305141a73075a0e43099a4",
+    "tests/build/bazel.nix": "f3d579c11120fc906f2abd07b12a28d1de163defb3b7b639a797560a633bf06d",
+    "tools/bazel/metadata/crucible-release-packages.json": "e437d9accf5e2948a8d835c40a07b2fe3ffef334b5c3a1ca8c2e9e902e5b96c8",
+    "tools/bazel/metadata/export_release_packages.py": "8873797df6bec31895c3d4903b85769ace0d15c8177a03cca6c6a0d98c6fec27",
+    "tools/bazel/tests/release-metadata.nix": "8157fac138f5c87f048349cdfad132ad824e03deab232c240da79cfe1659c630",
+    "tools/bazel/tests/test_release_packages.py": "10d4aa72f0efe31b97542062f9fb3682517336e5863acf5ffa2016c24feb577c",
+    "tools/dev/lib/bazel.bash": "11aed6a4f3442e37ad40acf7cf3cd39a7e947755ede88ef04323b36fdf0b7e19",
+    "tools/dev/lib/commands.bash": "46113425d07fc40edee3a753f35d2f37856978de36374c5a50ac5891bc6cbeb2",
+    "tools/dev/lib/common.bash": "7a8c9eeda5c7bf859c1aff8595cc69fcf902cbb48655e88b1cff111096ce3cb4",
+    "tools/dev/tests/cli.bash": "4d69ac1d44cb551a7bd5743d796ffcfe8cf3705c81e0838882b4e0bb8b6c60c6"
+  },
+  "manifest_probe": {
+    "envText": "manifest_schema_version=1\ncrucible_version=0.1.0\ncrucible_workspace_packages=crucible-campaign,crucible-store,aos-linux-project-quota,crucible-store-s3,crucible-determinism,crucible-qemu-shmem,crucible-qemu-protocol,crucible-device,crucible-qemu-debug-gateway,crucible-qemu-host,crucible-qemu-plugin,crucible-guest,crucible-engine,crucible-session,crucible-control-api,crucible-control-client,crucible-control-server,crucible-daemon,crucible-cli,crucible-test-support\ncargo_deps=fetchCargoVendor\ncargo_deps_source_root=source\ncargo_deps_hash=metadata-parity-fixed-hash\ncargo_deps_vendored=true\ncrucible_source_store_name=00000000000000000000000000000000-release-metadata-parity-source\ncrucible_source_store_hash=00000000000000000000000000000000\nqemu_package=qemu-crucible\nqemu_version=11.1.1\nqemu_source_url=https://download.qemu.org/qemu-11.1.1.tar.xz\nqemu_source_hash=sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=\nqemu_patch_branch_ref=dplecki/tsc-source-index-diagnostics\nqemu_atomic_patch_hash=3492f9060ed975d4a99531dbcb20db7d65d92b233752a14daa920cae0b8d8e30\nqemu_patch_branch_bundle_hash=b544ec5ef85dfe57d2c79bd65ab4caf423ce0bef9686af02fa7fe9c20d0c1cb2\nqemu_patch_branch_material_hash=e67b5cb2e476a7fb11442871a5aef6f866cc7465aa99c6bda4c8f8fe47d81f8f\nqemu_build_id=b7def134544c7090e6e66b2976a6ba92fd9021e7a50445322daf5ac546d4fa98\ncontroller_package=crucible-controller\ncontroller_path=unavailable\ncontroller_license=Apache-2.0\nqemu_path=/nix/store/9gpdxfijrhgcnklm0a4dcjs8yc0n6qpq-qemu-crucible-11.1.1\nqemu_license=GPL-2.0-only\nqemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT,BSD-2-Clause,BSD-3-Clause\nqemu_combined_work_license=GPL-2.0-only\nqemu_created_source_license=GPL-2.0-or-later\nqemu_generated_boundary_header_license_option=MIT\nqemu_standalone_release=false\nqemu_release_via=crucible\nplugin_package=crucible-qemu-plugin\nplugin_path=unavailable\nplugin_license=GPL-2.0-only\ndebug_gateway_package=crucible-debug-gateway\ndebug_gateway_path=unavailable\ndebug_gateway_license=GPL-2.0-only\ndebug_gateway_boundary=separate-process-qemu-rsp-owner\ngdb_package=gdb\ngdb_path=unavailable\ngdb_license=GPL-3.0-or-later\ngdb_boundary=operator-debugger-client\nssh_package=openssh\nssh_path=unavailable\nssh_license=BSD-2-Clause\nssh_boundary=operator-guest-bridge-client\nboundary_crates=crucible-qemu-protocol,crucible-qemu-shmem\nboundary_crates_license=MIT\nqemu_corresponding_source_package=qemu-crucible-source\nqemu_corresponding_source_path=unavailable\nqemu_corresponding_source_build_id=b7def134544c7090e6e66b2976a6ba92fd9021e7a50445322daf5ac546d4fa98\ncorresponding_source_scope=qemu-crucible,crucible-qemu-plugin\npublication_root_package=crucible\npublication_raw_qemu_allowed=false\npublication_policy=aggregate-direct-reference-pair\naggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause,BSD-3-Clause\naggregate_license_scope=primary-project-components\nthird_party_license_metadata=vendored-source-manifests\nprocess_boundary=unix-socket-control+memfd-shared-memory-data\nshmem_abi_version=30\nshmem_abi=crucible-shmem-abi-v30\nshmem_generated_header_hash=1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd\nguest_host_protocol_version=3\nguest_host_protocol_abi=crucible-guest-host-channel-v3\ndoorbell_instruction_abi_version=4\nrpc_abi_version=8.0.0\nrpc_abi_build=crucible-rpc-abi-v8\nrpc_abi=crucible-rpc-abi-v8.0.0+crucible-rpc-abi-v8\nreproducibility_timestamp_policy=no-wall-clock-timestamps\nreproducibility_host_path_policy=no-host-paths\nreproducibility_pinned_hashes=crucible.cargoDeps.hash,crucible.source.sourceStoreHash,qemu.sourceHash,qemu.atomicPatchHash,qemu.patchBranchBundleHash,qemu.patchBranchMaterialHash,abi.shmem.generatedHeaderHash\nqemu_build_identity_fields=qemu_version,qemu_source_hash,qemu_nix_hash,qemu_configure_flags_hash,qemu_atomic_patch_hash,qemu_patch_branch_bundle_hash,qemu_patch_branch_material_hash,qemu_shmem_abi_version,qemu_shmem_header_hash\n",
+    "jsonText": "{\"abi\":{\"doorbellInstruction\":{\"architectures\":[\"x86_64\",\"aarch64\"],\"version\":\"4\"},\"guestHostChannel\":{\"label\":\"crucible-guest-host-channel-v3\",\"version\":\"3\"},\"rpc\":{\"build\":\"crucible-rpc-abi-v8\",\"label\":\"crucible-rpc-abi-v8.0.0+crucible-rpc-abi-v8\",\"version\":\"8.0.0\"},\"shmem\":{\"generatedHeaderHash\":\"1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd\",\"label\":\"crucible-shmem-abi-v30\",\"version\":\"30\"}},\"components\":{\"boundaryCrates\":{\"license\":\"MIT\",\"packages\":[\"crucible-qemu-protocol\",\"crucible-qemu-shmem\"],\"selection\":\"gpl-plugin-consumption\"},\"controller\":{\"boundary\":\"separate-process-controller\",\"license\":\"Apache-2.0\",\"package\":\"crucible-controller\",\"path\":\"unavailable\"},\"correspondingSource\":{\"licenses\":[\"Apache-2.0\",\"MIT\",\"GPL-2.0-only\",\"GPL-2.0-or-later\",\"BSD-2-Clause\",\"BSD-3-Clause\"],\"package\":\"qemu-crucible-source\",\"path\":\"unavailable\",\"qemuBuildId\":\"b7def134544c7090e6e66b2976a6ba92fd9021e7a50445322daf5ac546d4fa98\",\"scope\":[\"qemu-crucible\",\"crucible-qemu-plugin\"]},\"debugGateway\":{\"boundary\":\"separate-process-qemu-rsp-owner\",\"license\":\"GPL-2.0-only\",\"package\":\"crucible-debug-gateway\",\"path\":\"unavailable\",\"source\":\"crucible.workspace\"},\"gdb\":{\"boundary\":\"operator-debugger-client\",\"license\":\"GPL-3.0-or-later\",\"package\":\"gdb\",\"path\":\"unavailable\"},\"plugin\":{\"boundary\":\"loaded-into-qemu-process\",\"license\":\"GPL-2.0-only\",\"package\":\"crucible-qemu-plugin\",\"path\":\"unavailable\"},\"qemu\":{\"boundary\":\"qemu-process\",\"combinedWorkLicense\":\"GPL-2.0-only\",\"createdSourceLicense\":\"GPL-2.0-or-later\",\"generatedBoundaryHeaderLicenseOption\":\"MIT\",\"licenses\":[\"GPL-2.0-only\",\"GPL-2.0-or-later\",\"MIT\",\"BSD-2-Clause\",\"BSD-3-Clause\"],\"package\":\"qemu-crucible\",\"path\":\"/nix/store/9gpdxfijrhgcnklm0a4dcjs8yc0n6qpq-qemu-crucible-11.1.1\",\"releaseVia\":\"crucible\",\"standaloneRelease\":false},\"ssh\":{\"boundary\":\"operator-guest-bridge-client\",\"license\":\"BSD-2-Clause\",\"package\":\"openssh\",\"path\":\"unavailable\"}},\"crucible\":{\"cargoDeps\":{\"hash\":\"metadata-parity-fixed-hash\",\"kind\":\"fetchCargoVendor\",\"sourceRoot\":\"source\",\"vendored\":true},\"source\":{\"excludedPathBasenames\":[\".git\",\"target\"],\"excludedRootPaths\":[\"result\"],\"rootName\":\"crucible-workspace-src\",\"sourceStoreHash\":\"00000000000000000000000000000000\",\"sourceStoreName\":\"00000000000000000000000000000000-release-metadata-parity-source\"},\"version\":\"0.1.0\",\"workspacePackageVersions\":{\"aos-linux-project-quota\":\"0.1.0\",\"crucible-campaign\":\"0.1.0\",\"crucible-cli\":\"0.1.0\",\"crucible-control-api\":\"0.1.0\",\"crucible-control-client\":\"0.1.0\",\"crucible-control-server\":\"0.1.0\",\"crucible-daemon\":\"0.1.0\",\"crucible-determinism\":\"0.1.0\",\"crucible-device\":\"0.1.0\",\"crucible-engine\":\"0.1.0\",\"crucible-guest\":\"0.1.0\",\"crucible-qemu-debug-gateway\":\"0.1.0\",\"crucible-qemu-host\":\"0.1.0\",\"crucible-qemu-plugin\":\"0.1.0\",\"crucible-qemu-protocol\":\"0.1.0\",\"crucible-qemu-shmem\":\"0.1.0\",\"crucible-session\":\"0.1.0\",\"crucible-store\":\"0.1.0\",\"crucible-store-s3\":\"0.1.0\",\"crucible-test-support\":\"0.1.0\"},\"workspacePackages\":[\"crucible-campaign\",\"crucible-store\",\"aos-linux-project-quota\",\"crucible-store-s3\",\"crucible-determinism\",\"crucible-qemu-shmem\",\"crucible-qemu-protocol\",\"crucible-device\",\"crucible-qemu-debug-gateway\",\"crucible-qemu-host\",\"crucible-qemu-plugin\",\"crucible-guest\",\"crucible-engine\",\"crucible-session\",\"crucible-control-api\",\"crucible-control-client\",\"crucible-control-server\",\"crucible-daemon\",\"crucible-cli\",\"crucible-test-support\"]},\"licensing\":{\"aggregate\":true,\"licenseSetScope\":\"primary-project-components\",\"licenses\":[\"Apache-2.0\",\"MIT\",\"GPL-2.0-only\",\"GPL-2.0-or-later\",\"GPL-3.0-or-later\",\"BSD-2-Clause\",\"BSD-3-Clause\"],\"processBoundary\":\"unix-socket-control+memfd-shared-memory-data\",\"sharedMemoryRole\":\"versioned-process-to-process-protocol\",\"thirdPartyLicenseMetadata\":\"vendored-source-manifests\"},\"publication\":{\"correspondingSourcePath\":\"unavailable\",\"pairedQemuPath\":\"/nix/store/9gpdxfijrhgcnklm0a4dcjs8yc0n6qpq-qemu-crucible-11.1.1\",\"policy\":\"aggregate-direct-reference-pair\",\"rawQemuAllowed\":false,\"rootPackage\":\"crucible\"},\"qemu\":{\"atomicPatchHash\":\"3492f9060ed975d4a99531dbcb20db7d65d92b233752a14daa920cae0b8d8e30\",\"buildId\":\"b7def134544c7090e6e66b2976a6ba92fd9021e7a50445322daf5ac546d4fa98\",\"deterministicBaseDate\":\"2001-01-01T00:00:00Z\",\"deterministicPatchDate\":\"2026-10-06T22:17:47-07:00\",\"package\":\"qemu-crucible\",\"patchBranchBundleHash\":\"b544ec5ef85dfe57d2c79bd65ab4caf423ce0bef9686af02fa7fe9c20d0c1cb2\",\"patchBranchMaterialHash\":\"e67b5cb2e476a7fb11442871a5aef6f866cc7465aa99c6bda4c8f8fe47d81f8f\",\"patchBranchRef\":\"dplecki/tsc-source-index-diagnostics\",\"sourceHash\":\"sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=\",\"sourceUrl\":\"https://download.qemu.org/qemu-11.1.1.tar.xz\",\"version\":\"11.1.1\"},\"reproducibility\":{\"hostPathPolicy\":\"no-host-paths\",\"pinnedHashes\":[\"crucible.cargoDeps.hash\",\"crucible.source.sourceStoreHash\",\"qemu.sourceHash\",\"qemu.atomicPatchHash\",\"qemu.patchBranchBundleHash\",\"qemu.patchBranchMaterialHash\",\"abi.shmem.generatedHeaderHash\"],\"qemuBuildIdentityFields\":[\"qemu_version\",\"qemu_source_hash\",\"qemu_nix_hash\",\"qemu_configure_flags_hash\",\"qemu_atomic_patch_hash\",\"qemu_patch_branch_bundle_hash\",\"qemu_patch_branch_material_hash\",\"qemu_shmem_abi_version\",\"qemu_shmem_header_hash\"],\"timestampPolicy\":\"no-wall-clock-timestamps\"},\"schemaVersion\":1}",
+    "manifest": {
+      "abi": {
+        "doorbellInstruction": {
+          "architectures": [
+            "x86_64",
+            "aarch64"
+          ],
+          "version": "4"
+        },
+        "guestHostChannel": {
+          "label": "crucible-guest-host-channel-v3",
+          "version": "3"
+        },
+        "rpc": {
+          "build": "crucible-rpc-abi-v8",
+          "label": "crucible-rpc-abi-v8.0.0+crucible-rpc-abi-v8",
+          "version": "8.0.0"
+        },
+        "shmem": {
+          "generatedHeaderHash": "1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd",
+          "label": "crucible-shmem-abi-v30",
+          "version": "30"
+        }
+      },
+      "components": {
+        "boundaryCrates": {
+          "license": "MIT",
+          "packages": [
+            "crucible-qemu-protocol",
+            "crucible-qemu-shmem"
+          ],
+          "selection": "gpl-plugin-consumption"
+        },
+        "controller": {
+          "boundary": "separate-process-controller",
+          "license": "Apache-2.0",
+          "package": "crucible-controller",
+          "path": "unavailable"
+        },
+        "correspondingSource": {
+          "licenses": [
+            "Apache-2.0",
+            "MIT",
+            "GPL-2.0-only",
+            "GPL-2.0-or-later",
+            "BSD-2-Clause",
+            "BSD-3-Clause"
+          ],
+          "package": "qemu-crucible-source",
+          "path": "unavailable",
+          "qemuBuildId": "b7def134544c7090e6e66b2976a6ba92fd9021e7a50445322daf5ac546d4fa98",
+          "scope": [
+            "qemu-crucible",
+            "crucible-qemu-plugin"
+          ]
+        },
+        "debugGateway": {
+          "boundary": "separate-process-qemu-rsp-owner",
+          "license": "GPL-2.0-only",
+          "package": "crucible-debug-gateway",
+          "path": "unavailable",
+          "source": "crucible.workspace"
+        },
+        "gdb": {
+          "boundary": "operator-debugger-client",
+          "license": "GPL-3.0-or-later",
+          "package": "gdb",
+          "path": "unavailable"
+        },
+        "plugin": {
+          "boundary": "loaded-into-qemu-process",
+          "license": "GPL-2.0-only",
+          "package": "crucible-qemu-plugin",
+          "path": "unavailable"
+        },
+        "qemu": {
+          "boundary": "qemu-process",
+          "combinedWorkLicense": "GPL-2.0-only",
+          "createdSourceLicense": "GPL-2.0-or-later",
+          "generatedBoundaryHeaderLicenseOption": "MIT",
+          "licenses": [
+            "GPL-2.0-only",
+            "GPL-2.0-or-later",
+            "MIT",
+            "BSD-2-Clause",
+            "BSD-3-Clause"
+          ],
+          "package": "qemu-crucible",
+          "path": "/nix/store/9gpdxfijrhgcnklm0a4dcjs8yc0n6qpq-qemu-crucible-11.1.1",
+          "releaseVia": "crucible",
+          "standaloneRelease": false
+        },
+        "ssh": {
+          "boundary": "operator-guest-bridge-client",
+          "license": "BSD-2-Clause",
+          "package": "openssh",
+          "path": "unavailable"
+        }
+      },
+      "crucible": {
+        "cargoDeps": {
+          "hash": "metadata-parity-fixed-hash",
+          "kind": "fetchCargoVendor",
+          "sourceRoot": "source",
+          "vendored": true
+        },
+        "source": {
+          "excludedPathBasenames": [
+            ".git",
+            "target"
+          ],
+          "excludedRootPaths": [
+            "result"
+          ],
+          "rootName": "crucible-workspace-src",
+          "sourceStoreHash": "00000000000000000000000000000000",
+          "sourceStoreName": "00000000000000000000000000000000-release-metadata-parity-source"
+        },
+        "version": "0.1.0",
+        "workspacePackageVersions": {
+          "aos-linux-project-quota": "0.1.0",
+          "crucible-campaign": "0.1.0",
+          "crucible-cli": "0.1.0",
+          "crucible-control-api": "0.1.0",
+          "crucible-control-client": "0.1.0",
+          "crucible-control-server": "0.1.0",
+          "crucible-daemon": "0.1.0",
+          "crucible-determinism": "0.1.0",
+          "crucible-device": "0.1.0",
+          "crucible-engine": "0.1.0",
+          "crucible-guest": "0.1.0",
+          "crucible-qemu-debug-gateway": "0.1.0",
+          "crucible-qemu-host": "0.1.0",
+          "crucible-qemu-plugin": "0.1.0",
+          "crucible-qemu-protocol": "0.1.0",
+          "crucible-qemu-shmem": "0.1.0",
+          "crucible-session": "0.1.0",
+          "crucible-store": "0.1.0",
+          "crucible-store-s3": "0.1.0",
+          "crucible-test-support": "0.1.0"
+        },
+        "workspacePackages": [
+          "crucible-campaign",
+          "crucible-store",
+          "aos-linux-project-quota",
+          "crucible-store-s3",
+          "crucible-determinism",
+          "crucible-qemu-shmem",
+          "crucible-qemu-protocol",
+          "crucible-device",
+          "crucible-qemu-debug-gateway",
+          "crucible-qemu-host",
+          "crucible-qemu-plugin",
+          "crucible-guest",
+          "crucible-engine",
+          "crucible-session",
+          "crucible-control-api",
+          "crucible-control-client",
+          "crucible-control-server",
+          "crucible-daemon",
+          "crucible-cli",
+          "crucible-test-support"
+        ]
+      },
+      "licensing": {
+        "aggregate": true,
+        "licenseSetScope": "primary-project-components",
+        "licenses": [
+          "Apache-2.0",
+          "MIT",
+          "GPL-2.0-only",
+          "GPL-2.0-or-later",
+          "GPL-3.0-or-later",
+          "BSD-2-Clause",
+          "BSD-3-Clause"
+        ],
+        "processBoundary": "unix-socket-control+memfd-shared-memory-data",
+        "sharedMemoryRole": "versioned-process-to-process-protocol",
+        "thirdPartyLicenseMetadata": "vendored-source-manifests"
+      },
+      "publication": {
+        "correspondingSourcePath": "unavailable",
+        "pairedQemuPath": "/nix/store/9gpdxfijrhgcnklm0a4dcjs8yc0n6qpq-qemu-crucible-11.1.1",
+        "policy": "aggregate-direct-reference-pair",
+        "rawQemuAllowed": false,
+        "rootPackage": "crucible"
+      },
+      "qemu": {
+        "atomicPatchHash": "3492f9060ed975d4a99531dbcb20db7d65d92b233752a14daa920cae0b8d8e30",
+        "buildId": "b7def134544c7090e6e66b2976a6ba92fd9021e7a50445322daf5ac546d4fa98",
+        "deterministicBaseDate": "2001-01-01T00:00:00Z",
+        "deterministicPatchDate": "2026-10-06T22:17:47-07:00",
+        "package": "qemu-crucible",
+        "patchBranchBundleHash": "b544ec5ef85dfe57d2c79bd65ab4caf423ce0bef9686af02fa7fe9c20d0c1cb2",
+        "patchBranchMaterialHash": "e67b5cb2e476a7fb11442871a5aef6f866cc7465aa99c6bda4c8f8fe47d81f8f",
+        "patchBranchRef": "dplecki/tsc-source-index-diagnostics",
+        "sourceHash": "sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=",
+        "sourceUrl": "https://download.qemu.org/qemu-11.1.1.tar.xz",
+        "version": "11.1.1"
+      },
+      "reproducibility": {
+        "hostPathPolicy": "no-host-paths",
+        "pinnedHashes": [
+          "crucible.cargoDeps.hash",
+          "crucible.source.sourceStoreHash",
+          "qemu.sourceHash",
+          "qemu.atomicPatchHash",
+          "qemu.patchBranchBundleHash",
+          "qemu.patchBranchMaterialHash",
+          "abi.shmem.generatedHeaderHash"
+        ],
+        "qemuBuildIdentityFields": [
+          "qemu_version",
+          "qemu_source_hash",
+          "qemu_nix_hash",
+          "qemu_configure_flags_hash",
+          "qemu_atomic_patch_hash",
+          "qemu_patch_branch_bundle_hash",
+          "qemu_patch_branch_material_hash",
+          "qemu_shmem_abi_version",
+          "qemu_shmem_header_hash"
+        ],
+        "timestampPolicy": "no-wall-clock-timestamps"
+      },
+      "schemaVersion": 1
+    }
+  },
+  "manifest_probe_arguments": {
+    "cargoDepsHash": "metadata-parity-fixed-hash",
+    "qemuPackage": "pkgs.qemu-crucible",
+    "src": "/nix/store/00000000000000000000000000000000-release-metadata-parity-source",
+    "version": "0.1.0"
+  },
+  "manifest_probe_sha256": "785055bb210adef800687a0da6b9b9c7379883d2663031d28c6676e85f6b1f7c",
+  "no_cargo_manifests_or_lockfiles_in_independent_source": true,
+  "parent_revision": "e81341936b9b7a33ff0eb81e645a9574660d9ffc",
+  "policy_tests": 392,
+  "schema_version": 1,
+  "scope": "Crucible release package identity discovery; build drivers and all other RFC gates remain independently qualified",
+  "status": "PASS"
+}

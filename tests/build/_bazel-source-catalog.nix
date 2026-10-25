@@ -9,6 +9,7 @@
       "tools/bazel/rules"
       "tools/bazel/metadata"
       "tools/bazel/toolchains"
+      "pkgs/tools/crucible/_packages.nix"
     ];
     analysisTargets = ["//:source_catalog_package" "//crates:source_catalog_package"];
   };

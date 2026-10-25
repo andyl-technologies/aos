@@ -13,14 +13,7 @@
 }: let
   packages = import ./_packages.nix;
   crateRoot = ../../../crates;
-  workspaceMembers = (builtins.fromTOML (builtins.readFile (crateRoot + "/Cargo.toml"))).workspace.members;
-  packageManifests = builtins.listToAttrs (map (member: let
-      manifest = builtins.fromTOML (builtins.readFile (crateRoot + "/${member}/Cargo.toml"));
-    in {
-      name = manifest.package.name;
-      value = manifest;
-    })
-    workspaceMembers);
+  packageMetadata = import ./_release-packages.nix {inherit lib;};
   shmemLib = builtins.readFile (crateRoot + "/crucible/crucible-qemu-shmem/src/lib.rs");
   doorbellAbi = builtins.readFile (crateRoot + "/crucible/crucible-qemu-protocol/src/doorbell_abi.rs");
   apiRpcAbi = builtins.readFile (crateRoot + "/crucible/crucible-control-api/src/rpc_abi.rs");
@@ -39,7 +32,7 @@
   tomlStringConst = label: prefix: content:
     lib.removeSuffix "\""
     (lib.removePrefix prefix (firstLineWith label prefix content));
-  packageVersion = package: packageManifests.${package}.package.version;
+  packageVersion = package: packageMetadata.${package}.version;
   packageVersions =
     builtins.listToAttrs
     (map (package: {

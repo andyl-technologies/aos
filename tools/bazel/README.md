@@ -352,6 +352,19 @@ do not claim that their compilation, tests, or installation have migrated.
 The engine conversion uses this foundation to preserve repository-wide audits
 while replacing manifest-based workspace discovery.
 
+Crucible release package identities also come from this catalog. Run
+`aos-dev bazel release-metadata` after changing their package declarations,
+selection, or metadata rules, then commit the regenerated
+`metadata/crucible-release-packages.json`. Nix checks the selected BUILD and
+rule hashes before evaluating a release manifest. It reads no Cargo manifest
+for these identities. `aos-dev bazel release-metadata --check` compares the
+checked metadata with a fresh Bazel export, exercises stale and invalid input
+rejection, and evaluates the complete release manifest in a source tree with
+no Cargo files. This migrates release identity discovery; the remaining Cargo
+build drivers retain their existing qualification requirements.
+The [release metadata receipt](tests/evidence/crucible-release-metadata.json)
+retains the complete Cargo baseline manifest and observed qualification outputs.
+
 ## Isolated Rust tests
 
 `rules/test.bzl` compiles ordinary `rules_rust` libtest artifacts and runs each
