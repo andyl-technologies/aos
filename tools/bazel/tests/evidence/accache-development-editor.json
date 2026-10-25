@@ -1,0 +1,64 @@
+{
+  "actions": 135,
+  "aggregate_output": "/nix/store/cliigv2hdjrc1j5vpmc5vhdaw5vgafl3-aos-bazel-accache-checks",
+  "cache_hits": 0,
+  "cli_check": "/nix/store/fb61020ma28nywya80gf081ca3145maj-aos-dev-cli-check-0",
+  "command": "nix-build tools/bazel/tests/accache.nix -A development-editor --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "configuration": {
+    "execution_flags": [
+      "-Copt-level=3",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=no",
+      "-Coverflow-checks=no",
+      "-Cstrip=symbols"
+    ],
+    "path": "/nix/store/pn4j21hm1rcq4fv1rf8hkjwngg2qljkg-aos-bazel-configuration.json"
+  },
+  "core_evaluation": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0",
+  "evidence_sha256": "f6f9ceeb6a2ef4e643c50b329d4114581a18485182844457a3c947b1621243f4",
+  "execution_sha256": "82f72025cf2c549499bdb8eeb73b6c88bd13e20a678901a88ea01a52be18b942",
+  "graph": {
+    "crate_count": 48,
+    "proc_macros": [
+      "prost_derive",
+      "serde_derive"
+    ],
+    "roots": {
+      "crates/accache/accache-frontend/src/lib.rs": [],
+      "crates/accache/accache/src/main.rs": []
+    }
+  },
+  "launcher": "/nix/store/0kj5nsl7fxd46sf76bk9n32gb0cxfyaz-aos-bazel",
+  "limits": [
+    "Runs the packaged launcher on an immutable development snapshot with a private batch output base.",
+    "Authenticates exported roots, features and macro bytes; full analyzer diagnostics are qualified separately.",
+    "The temporary sandbox output base is removed after the check. This exported project is evidence, not a persistent editor configuration.",
+    "The subprocess CLI harness verifies dispatch, argument preservation and the real exported derivation. The separate packaged-launcher run executes Bazel and compares actual macro bytes.",
+    "This qualifies two selected editor roots on a conservative immutable development snapshot, not every interactive host session or full conservative family runtime parity.",
+    "The aggregate reused its valid prior unit/feature, lint, format, editor, runtime and cache-integration outputs and adds the new packaged editor gate. Their detailed evidence remains in accache-profile-qualification.json.",
+    "Production builds still use Cargo. Compiler/linker equivalence, performance acceptance, foreign execution and eventual Cargo removal remain independent gates."
+  ],
+  "macro_sha256": {
+    "prost_derive": "d79ba44d14f98c364b5364a107193ea458ef691be90aa0fcf3a818880c6c373e",
+    "serde_derive": "6205fc57e807af59369585d75e42a18ff99f26971e39718585b9562ab666af17"
+  },
+  "mnemonics": {
+    "CargoBuildScriptRun": 13,
+    "ExtractCargoTomlEnvVars": 56,
+    "Rustc": 66
+  },
+  "output": "/nix/store/z6brfijc85li8n5kgx1bzzaazlnmw34a-aos-bazel-accache-development-editor",
+  "qualified_execution_profiles": "/nix/store/ax7sin6alpm88lnypafzficlj32x1z17-aos-bazel-accache-execution-profiles",
+  "runner": "linux-sandbox",
+  "schema_version": 1,
+  "source_sha256": {
+    "pkgs/build-support/_bazel/default.nix": "3af1ea345ef349e60ff256847b476df07d7e38bee2e166cd8dfb72db4c8a7f27",
+    "pkgs/default.nix": "0a5fd98caf70326b5d2f77f114cd031f5e73074a6ff5c5e3adeff58a9a2205bb",
+    "tests/build/_bazel-accache-development-editor.nix": "b9ad236cdb905fa22164474690df3b19ccdb8244cc767c880b4894e992038752",
+    "tests/build/_bazel-accache.nix": "a9be5f767e4ee6f2bd6b422e80a446f849430a8134ddd802f7e0ddfb777eacf5",
+    "tests/build/aos-dev-cli.nix": "7001343b907041eaa61210e5d7f334f17b9668366344863ca9debbb1da746186",
+    "tools/dev/lib/bazel.bash": "08ae5eebc6de9444703a733effac99d6a854db7c592e6de398880e649acf9564",
+    "tools/dev/tests/cli.bash": "91bea3d1588f85e9c3ddfa8738a586134f2088bbfd74fa6855f0e792a92d2c61"
+  },
+  "status": "PASS"
+}

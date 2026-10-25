@@ -70,6 +70,7 @@ case " $* " in
   *' -A pkgs.aosBazelHubConsoleLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelHubConsoleWasmLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelAccacheLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelAccacheEditorLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelRegistryWebLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelRegistryWebWasmLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelHubWorkerLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
@@ -335,6 +336,7 @@ test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//crates/accache/acc
 grep -Fq -- '-A pkgs.aosBazelAccacheLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family accache rust-project //crates/accache/accache:accache
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/accache/accache><--rust-project-package><crates/accache/accache-frontend><--><build><//crates/accache/accache:accache>"
+grep -Fq -- '-A pkgs.aosBazelAccacheEditorLauncher ' "$AOS_DEV_TEST_LOG"
 
 for family in registry-web registry-web-wasm; do
   bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family "$family" build "//example:$family"

@@ -76,6 +76,10 @@ in
       inherit (family) editorWorkspace cargo;
       editorCargoOracle = family.editor-cargo-oracle;
     };
+    development-editor = import ./_bazel-accache-development-editor.nix {
+      inherit pkgs;
+      executionProfiles = execution-profiles;
+    };
     package = pkgs.mkAosBazelPackage {
       pname = "accache";
       version = "0.1.0";
@@ -170,7 +174,7 @@ in
     };
     all =
       pkgs.runCommand "aos-bazel-accache-checks" {
-        buildDeps = [family.all family.editor-parity package installation integration execution-profiles];
+        buildDeps = [family.all family.editor-parity package installation integration execution-profiles development-editor];
       } ''
         mkdir -p "$out"
         ln -s ${family.all} "$out/tests"
@@ -179,5 +183,6 @@ in
         ln -s ${installation} "$out/installation"
         ln -s ${integration} "$out/integration"
         ln -s ${execution-profiles} "$out/execution-profiles"
+        ln -s ${development-editor} "$out/development-editor"
       '';
   }

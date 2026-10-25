@@ -44,8 +44,22 @@ until separately enrolled. Optional compiler tracing captures Cargo test
 compilations and the editor's compiler entry point, which remains observable
 when rust-analyzer replaces `RUSTC_WRAPPER`.
 
-The qualified editor derivation selects this independent workspace. The generic
-development launcher still selects the ordinary workspace; development editor
-routing requires separate enrollment. Full tests, diagnostics, installation,
-cache integration, performance, and production cutover retain their own gates.
-Accache remains daemonless and uses local disk storage.
+`aos-dev bazel --family accache rust-project` selects the independent editor
+launcher. Its distinct launcher identity also selects a separate private output
+base. The packaged-launcher check exports both package roots from the conservative
+development snapshot and requires both macro artifacts to match the qualified
+editor build byte for byte. Its 135 logged actions execute in Linux sandboxes
+without cache hits. The [development report](../tests/evidence/accache-development-editor.json)
+retains the run, CLI dispatch check, package export assertion, aggregate check,
+and core evaluation result.
+The earlier profile reports predate this development routing checkpoint.
+
+```text
+nix-build tools/bazel/tests/accache.nix -A development-editor --no-out-link
+```
+
+The check's temporary output base is removed after execution; its exported
+project records evidence. Ordinary development keeps its persistent output base.
+Full analyzer diagnostics, performance, foreign execution, and production
+cutover retain their separate gates. Accache remains daemonless and uses local
+disk storage.

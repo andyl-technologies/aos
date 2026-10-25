@@ -519,6 +519,11 @@
       inherit pkgs;
       sourceInventory = null;
     }).workspace;
+  aosBazelAccacheEditorWorkspace =
+    (import ../../../tests/build/_bazel-accache.nix {
+      inherit pkgs;
+      sourceInventory = null;
+    }).editorWorkspace;
   aosBazelRegistryWebWorkspace =
     (import ../../../tests/build/_bazel-registry-web.nix {
       inherit pkgs;
@@ -1098,6 +1103,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelAccacheWorkspace;
+    }).launcher;
+  aosBazelAccacheEditorLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelAccacheEditorWorkspace;
     }).launcher;
   aosBazelRegistryWebLauncher =
     (import ./development.nix {

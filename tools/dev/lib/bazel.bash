@@ -153,6 +153,7 @@ aos_dev_bazel() (
     elif [[ $launcher_attribute == pkgs.aosBazelAccacheLauncher ]]; then
       project_options+=(--rust-project-package crates/accache/accache)
       project_options+=(--rust-project-package crates/accache/accache-frontend)
+      launcher_attribute=pkgs.aosBazelAccacheEditorLauncher
     elif [[ $launcher_attribute == pkgs.aosBazelRegistryWebLauncher || $launcher_attribute == pkgs.aosBazelRegistryWebWasmLauncher ]]; then
       project_options+=(--rust-project-package crates/registry/aos-registry-web)
     elif [[ $launcher_attribute == pkgs.aosBazelPackageManagerLauncher ]]; then
