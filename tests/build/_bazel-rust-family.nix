@@ -51,6 +51,7 @@
     then editorRustcFlags
     else ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"],
   retainTestActionGraph ? false,
+  retainEditorActionGraph ? false,
   cargoSource ? import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;},
   cargoManifest ? "crates/Cargo.toml",
   cargoVendor ? pkgs.aos.passthru.cargoDeps,
@@ -60,6 +61,11 @@
   captureCompilerArguments ? false,
 }: let
   names = builtins.attrNames packages;
+  compilerEvidenceTools = builtins.path {
+    path = ../../tools/bazel/tests;
+    name = "aos-rust-family-editor-compiler-evidence-tools";
+    filter = path: type: type == "regular" && pkgs.lib.hasSuffix ".py" path;
+  };
   cargoWorkspace = builtins.dirOf cargoManifest;
   editorOutput =
     if editorDiagnosticContext
@@ -146,11 +152,25 @@ in rec {
       ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
         --config ${workspace.configuration} --workspace "$PWD/workspace" \
         --output-base "$TMPDIR/editor/bazel" --nix-sandbox --batch \
-        --rust-project-output "$PWD/rust-project.json" \
+        ${pkgs.lib.optionalString retainEditorActionGraph "--materialize-action-outputs "}--rust-project-output "$PWD/rust-project.json" \
         ${pkgs.lib.escapeShellArgs (pkgs.lib.concatMap (directory: ["--rust-project-package" directory]) (pkgs.lib.optionals (dependencyPackages != {}) (builtins.attrValues packages)))} \
         -- build ${pkgs.lib.escapeShellArgs targets} \
           --execution_log_json_file="$out/execution.json"
-      # CARGO serves only immutable upstream-library metadata. Proc macros and
+      ${pkgs.lib.optionalString retainEditorActionGraph ''
+        mkdir -p "$out/evidence"
+        ln -s ../execution.json "$out/evidence/execution.json"
+        ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
+          --config ${workspace.configuration} --workspace "$PWD/workspace" \
+          --output-base "$TMPDIR/editor/bazel" --nix-sandbox --batch \
+          --materialize-action-outputs \
+          -- aquery ${pkgs.lib.escapeShellArg ("deps(set(" + pkgs.lib.concatStringsSep " " targets + "))")} \
+          --include_param_files --include_file_write_contents --output=jsonproto > "$out/evidence/actions.json"
+        ${pkgs.python3}/bin/python3 ${compilerEvidenceTools}/retain_compiler_inputs.py \
+          --build "$out" --execution-root "$TMPDIR/editor/bazel/execroot/_main" \
+          --output "$out/evidence/compiler-inputs.json"
+        ${pkgs.python3}/bin/python3 ${compilerEvidenceTools}/reconstruct_compiler_inputs.py \
+          --build "$out" --output "$out/evidence/compiler-invocations.json"
+      ''}# CARGO serves only immutable upstream-library metadata. Proc macros and
       # generated first-party inputs come from the configured Bazel graph above.
       CARGO=${workspace.toolchains}/bin/cargo \
         RUSTC=${workspace.toolchains}/bin/rustc RAYON_NUM_THREADS=4 \

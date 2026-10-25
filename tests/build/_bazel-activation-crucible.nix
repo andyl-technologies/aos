@@ -26,7 +26,8 @@
     };
   triple = pkgs.stdenv.hostPlatform.config;
   targetFlagsVariable = "CARGO_TARGET_${pkgs.lib.toUpper (builtins.replaceStrings ["-"] ["_"] triple)}_RUSTFLAGS";
-  rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
+  rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
+  editorFlags = ["-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
   staticSetup = libraries: ''
     export CARGO_BUILD_TARGET=${pkgs.lib.escapeShellArg triple}
     export ${targetFlagsVariable}="-C target-feature=+crt-static -C relocation-model=static -L ${libraries}/static/lib"
@@ -41,6 +42,16 @@
     extraEditorTargets = ["${label}:aos-ability-crucible" "${label}:bin_aos-ability-crucible_binary"];
     editorComparisonScope = "selected-packages";
     editorDiagnosticContext = true;
+    # Native analyzer target queries inherit static flags. Host macros retain
+    # their independent development profile and dynamic loading requirements.
+    editorTargetRustcFlags = editorFlags;
+    editorCfgFlags = editorFlags;
+    # The actual native analyzer trace retains full macro debug information.
+    # Override opt-mode stripping so that information survives compilation.
+    editorExecRustcFlags = ["-Copt-level=0" "-Cdebuginfo=2" "-Cdebug-assertions=yes" "-Coverflow-checks=yes" "-Cstrip=none"];
+    retainTestActionGraph = true;
+    retainEditorActionGraph = true;
+    captureCompilerArguments = true;
     nativeLibraries = [pkgs.sqliteStatic pkgs.zstdStaticMultithread];
     nativeTools = [pkgs.pkg-config];
     cargoFlags = ["--release"];
@@ -51,11 +62,39 @@
         export LIBSQLITE3_SYS_USE_PKG_CONFIG=1 ZSTD_SYS_USE_PKG_CONFIG=1 PKG_CONFIG_ALL_STATIC=1
       '';
   };
+  execution-profiles = import ./_bazel-rust-test-profiles.nix {
+    inherit pkgs;
+    inherit (family) tests cargo;
+    pname = "aos-bazel-activation-crucible-execution-profiles";
+    targetOptLevel = "3";
+    debugAssertions = false;
+    firstPartyTests = {
+      "${label}:unit_binary" = "aos_activation_crucible";
+      "${label}:bin_aos-ability-crucible_binary" = "aos_ability_crucible";
+    };
+    proceduralMacros = ["curve25519_dalek_derive" "ref_cast_impl" "schemars_derive" "serde_derive" "thiserror_impl" "tracing_attributes" "zerocopy_derive"];
+  };
+  editor-builtin-cfg = import ./_bazel-editor-builtin-cfg.nix {
+    inherit pkgs;
+    inherit (family) editor;
+    pname = "aos-bazel-activation-crucible-editor-builtin-cfg";
+    cargo = family.editor-cargo-oracle;
+    workspace = family.editorWorkspace;
+    flags = editorFlags;
+  };
+  editor-execution-profiles = import ./_bazel-rust-editor-profiles.nix {
+    inherit pkgs;
+    inherit (family) editor;
+    pname = "aos-bazel-activation-crucible-editor-execution-profiles";
+    cargo = family.editor-cargo-oracle;
+    proceduralMacros = ["curve25519_dalek_derive" "ref_cast_impl" "schemars_derive" "serde_derive" "thiserror_impl" "tracing_attributes" "zerocopy_derive"];
+  };
   productionTargets = ["${label}:package" "${label}:production_license_closure"];
   productionLibraries = pkgs.mkAosBazelStaticLibraries {libraries = {};};
   productionWorkspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
     inherit sourceInventory rustcFlags;
+    execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no"];
     dependencyProfile = "activation-crucible";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.activation-crucible // {aos_native = productionLibraries;};
     sourceDirectories =
@@ -66,6 +105,7 @@
 in
   family
   // rec {
+    inherit execution-profiles editor-builtin-cfg editor-execution-profiles;
     inherit packages dependencyPackages productionDependencies productionWorkspace productionLibraries;
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-activation-crucible-inventory";
@@ -149,12 +189,15 @@ in
       '';
     all =
       pkgs.runCommand "aos-bazel-activation-crucible-qualified-checks" {
-        buildDeps = [family.all family.editor-parity production-parity runtime];
+        buildDeps = [family.all family.editor-parity production-parity runtime execution-profiles editor-builtin-cfg editor-execution-profiles];
       } ''
         mkdir -p "$out"
         cp -r ${family.all}/evidence "$out/evidence"
         cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
         cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
+        cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
+        cp ${editor-builtin-cfg}/evidence.json "$out/editor-builtin-cfg.json"
+        cp ${editor-execution-profiles}/evidence.json "$out/editor-execution-profiles.json"
         cp ${production-parity}/parity.json "$out/production-parity.json"
         cp -r ${runtime} "$out/runtime"
       '';

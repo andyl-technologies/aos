@@ -2051,6 +2051,20 @@ comparison pass. The static runtime gate checks the actual sandboxed link and
 archive digests, installed ELF format, five startup-error comparisons with Cargo,
 and a Nix closure retaining only glibc's optional data reference.
 
+The [current compiler/editor checkpoint](tests/evidence/activation-crucible-editor-profile-cfg.json)
+keeps those checks mandatory and audits both release test targets and all seven
+host macros against captured Cargo requests. Target static flags remain absent
+from macro compilation. All 119 configured editor crates match the native cfg
+query. A separate required audit retains the editor's action graph and compiler
+input files: its seven actual macro compilations match the native analyzer's
+optimization 0, debug information 2, unstripped development profile. This
+corrects an observed difference from the earlier debug-information-0 preset;
+the minimal native probe did not qualify this full-family setting. Selected
+diagnostic identities still match with incomplete inference. Test, developer,
+format, editor and production logs retain 1,102 uncached Linux sandbox actions.
+Ordinary development launcher enrollment, complete production compiler
+comparison, foreign targets and performance acceptance remain separate work.
+
 Editor comparison reports zero selected or unattributed diagnostics. The Bazel
 model has complete inference for the selected roots; Cargo retains incomplete
 inference and 2,806 diagnostics outside the selection. Both models' statistics

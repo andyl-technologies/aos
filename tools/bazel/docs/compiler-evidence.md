@@ -40,8 +40,9 @@ reconstruction checkpoint to its exact source and execution inputs.
 The shared Rust-family qualifier selects host-tool profiles independently of
 target flags. Ordinary host tools use optimization level 0 with assertions;
 release host tools keep level 0 and disable assertions. Editor execution tools
-follow explicit global editor flags when present, or the native development
-profile otherwise. Editor target flags have their own selection.
+follow explicit global editor flags when present, or the helper's development
+preset otherwise. Actual family traces must qualify debug and strip settings;
+editor target flags have their own selection.
 The [retained default check](../tests/evidence/rust-family-profile-defaults.json)
 preserves the pre-change declaration identities of eight explicit families.
 The format and static-guest aggregates qualify two actual inherited profiles;
@@ -79,6 +80,16 @@ The [quota cfg checkpoint](../tests/evidence/quota-editor-profile-cfg.json)
 checks all 12 configured crates in both qualification and packaged editor
 routes. Whole-model inference remains complete with no diagnostic rows, and
 the ordinary test compiler profiles and qualified VM identities are unchanged.
+
+The [static activation adapter checkpoint](../tests/evidence/activation-crucible-editor-profile-cfg.json)
+checks all 119 configured editor crates and separately audits the actual seven
+macro compilations. Its native analyzer trace uses optimization 0, debug
+information 2 and no stripping, unlike the earlier helper preset. The family
+now selects those settings explicitly. `retainEditorActionGraph` retains
+digest-checked compiler inputs from the editor's own execution; its required
+profile gate rejects target static flags in host macros. The minimal native
+fixture's debug-information-0 result does not qualify other families. Their
+full native editor traces still need independent checking.
 
 `mkAosBazelWorkspace.editorCfgFlags` selects this adapter; `null` preserves the
 existing exporter during rollout. The adapter currently requires the default
