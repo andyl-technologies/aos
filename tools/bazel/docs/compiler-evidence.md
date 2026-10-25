@@ -257,3 +257,20 @@ settings are checked after role classification. Eight focused tests cover role
 propagation and rejected inputs. This audit qualifies native role assignment;
 Bazel unit matching and complete compiler, linker, ABI, and runtime equivalence
 still require their own checks.
+
+
+CLI ordinary-test profile gates now enroll stripping and complete external
+unit pairing. The [retained comparison](../tests/evidence/cli-strip-profiles.json)
+uses artifact-derived native roles and rejects missing or duplicate dependency
+units. Exact pinned build-system helpers are retained separately and must use
+execution configurations. Extra native C-facing artifact kinds remain explicit;
+the Rust library comparison does not establish their ABI or package behavior.
+
+`qualification/strip-semantics.nix` is a required dependency of profile gates
+that enable strip comparison. Five actual native Rust compilations check the
+implicit `none` default, explicit `none`, debug stripping, and a linked C
+constructor compiled with debug information while Rust emits none. The
+implicit and explicit controls have identical bytes; debug stripping removes
+DWARF while retaining ordinary symbols and program behavior. This establishes
+the specific normalization used by the profile verifier, without normalizing
+application artifacts or qualifying other compiler defaults.

@@ -39,6 +39,8 @@
     '';
     execution-profiles = import ../qualification/rust-profiles.nix {
       inherit pkgs cargo parity;
+      compareStrip = true;
+      externalRepositoryPrefix = "@@+aos_tools_repository+aos_aos_cli_";
       pname = "aos-bazel-aos-cli-${profile}-test-profiles";
       build = candidate.tests;
     };
@@ -52,6 +54,7 @@
         mkdir -p "$out"
         cp ${parity}/parity.json "$out/parity.json"
         cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
+        cp ${execution-profiles}/strip-semantics.json "$out/strip-semantics.json"
       '';
     };
 in {

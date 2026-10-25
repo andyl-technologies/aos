@@ -113,7 +113,9 @@
     dependencyProfile = profile;
     cargoProfile = "debug";
     inherit repositories execRustcFlags;
-    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    # Cargo strips target debug information even when Rust emits none: native
+    # dependencies may contribute debug sections to the final link.
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cstrip=debuginfo" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["${prefix}lib"];
   };
 in {

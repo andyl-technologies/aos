@@ -74,15 +74,36 @@ package, version, crate name, edition, and explicit cfg unit. Distinct versions
 of one macro package remain separate units. Every Rust compiler action must
 execute successfully in a Linux sandbox without an action-cache hit.
 
-Target units require size optimization, zero debug information, and enabled
-assertions and overflow checks. Generators and procedural macros require zero
+Target units require size optimization, zero debug information, debug-information
+stripping, and enabled assertions and overflow checks. Generators and procedural macros require zero
 optimization with the same debug and checking settings. The evidence preserves
 absent native options and checks their profile defaults rather than inventing
 explicit flags. Remaining compiler-option differences stay visible; full
 compiler defaults, native C/C++ and linker settings, ABI/runtime behavior,
 editor/release/foreign profiles, cache behavior, and performance require their
 own qualification. `test-parity` exposes the case comparison separately;
-`oracle` retains both `parity.json` and `execution-profiles.json`.
+`oracle` retains `parity.json`, `execution-profiles.json`, and `strip-semantics.json`.
+
+The ordinary and fleet profile gates also require complete external unit
+inventories, matched by package, version, crate name, Rust library kind,
+feature set, and artifact-derived native target/execution role. They compare
+explicit cfgs, editions, optimization, debug information, assertions, overflow
+checks, and stripping. Duplicate or unmatched units fail the gate. Four exact
+pinned rules_rust helper labels are retained separately as execution tools;
+they implement Bazel's build system and have no Cargo application-unit
+counterpart. Native requests that additionally emit C-facing crate types keep
+those types visible; this comparison does not qualify those extra artifacts.
+
+The [strip/profile qualification](../tests/evidence/cli-strip-profiles.json)
+retains the complete ordinary/fleet case comparisons and the compiler unit
+pairs. Its pre-fix control matches all 552 dependency units but rejects the
+old target `strip=none` setting. A mandatory native compiler probe establishes
+that implicit stripping matches explicit `none` byte for byte, and that
+`strip=debuginfo` removes linked C debug information with Rust debug emission
+disabled. All five probe programs retain their behavior and ordinary symbols.
+The [compiler evidence guide](compiler-evidence.md) describes this bounded
+conformance check. Complete remaining compiler options, native C/linker and
+ABI/runtime/editor/platform/performance qualification remain separate work.
 
 The [retained native test-profile run](../tests/evidence/cli-native-test-profiles.json)
 passes all 543 ordinary and 551 fleet cases. It pairs 79 and 85 first-party

@@ -5,12 +5,27 @@
   build,
   cargo,
   parity,
+  compareStrip ? false,
+  externalRepositoryPrefix ? null,
 }: let
+  arguments =
+    pkgs.lib.optional compareStrip "--compare-strip"
+    ++ pkgs.lib.optionals (externalRepositoryPrefix != null) ["--external-repository-prefix" externalRepositoryPrefix];
+  stripSemantics = import ./strip-semantics.nix {inherit pkgs;};
   verifier = builtins.path {
     path = ./.;
     name = "aos-bazel-family-profile-verifier";
     filter = path: type:
-      type == "regular" && builtins.elem (baseNameOf path) ["rust_profiles.py" "test_rust_profiles.py"];
+      type
+      == "regular"
+      && builtins.elem (baseNameOf path) [
+        "rust_profiles.py"
+        "rust_external_profiles.py"
+        "native_compiler_units.py"
+        "build_script_profiles.py"
+        "test_rust_profiles.py"
+        "test_rust_external_profiles.py"
+      ];
   };
   dependencies = builtins.path {
     path = ../tests;
@@ -28,10 +43,16 @@
       ];
   };
 in
-  pkgs.runCommand pname {buildDeps = [pkgs.python3 parity];} ''
+  pkgs.runCommand pname {
+    buildDeps = [pkgs.python3 parity] ++ pkgs.lib.optional compareStrip stripSemantics;
+  } ''
     mkdir -p "$out"
     export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${verifier}:${dependencies}
     ${pkgs.python3}/bin/python3 -m unittest discover -s ${verifier} -p 'test_*.py'
     ${pkgs.python3}/bin/python3 ${verifier}/rust_profiles.py \
-      --build ${build} --cargo ${cargo} --output "$out/evidence.json"
+      --build ${build} --cargo ${cargo} --output "$out/evidence.json" \
+      ${pkgs.lib.escapeShellArgs arguments}
+    ${pkgs.lib.optionalString compareStrip ''
+      cp ${stripSemantics}/evidence.json "$out/strip-semantics.json"
+    ''}
   ''

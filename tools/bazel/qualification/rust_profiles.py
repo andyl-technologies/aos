@@ -5,6 +5,8 @@ digest-bound compiler inputs. Procedural macros additionally retain package
 versions, crate names and explicit cfg values, so two versions of one macro
 cannot collapse into a single comparison. This checks selected scalar profile
 settings; it does not establish complete compiler or linker equivalence.
+Enrolled external dependencies additionally pair exact package/feature/role
+units through native artifact edges. Stripping is checked only when requested.
 """
 
 import argparse
@@ -66,6 +68,17 @@ def profile(arguments, optimization, explicit):
     return scalar
 
 
+def require_matching_strip(actual, expected):
+    """Compares stripping while retaining absent native flags in evidence."""
+    actual_setting = actual.get("strip", "none")
+    expected_setting = expected.get("strip", "none")
+    supported = {"none", "debuginfo", "symbols"}
+    if actual_setting not in supported or expected_setting not in supported:
+        raise ValueError("unsupported compiler strip setting")
+    if actual_setting != expected_setting:
+        raise ValueError("compiler strip settings differ: " + str((actual_setting, expected_setting)))
+
+
 def macro_key(package, version, arguments):
     """Identifies a macro without losing versions or configured feature units."""
     if not package or not version or option(arguments, "--crate-type") != "proc-macro":
@@ -124,7 +137,7 @@ def generator_sources(messages):
     return sources
 
 
-def match_macros(actions, reports, native):
+def match_macros(actions, reports, native, compare_strip=False):
     """Requires every configured macro action to match an exact native unit."""
     declarations = {}
     for report in reports:
@@ -156,6 +169,8 @@ def match_macros(actions, reports, native):
         native_options = compiler_options(native[key]["arguments"])
         if actual_options["edition"] != native_options["edition"]:
             raise ValueError("procedural macro editions differ: " + str(key))
+        if compare_strip:
+            require_matching_strip(actual_options["effective_scalar_codegen"], native[key]["scalar"])
         selected[key] = {
             "label": label,
             "edition": actual_options["edition"],
@@ -179,7 +194,7 @@ def match_macros(actions, reports, native):
     ]
 
 
-def verify(build, cargo):
+def verify(build, cargo, compare_strip=False, external_repository_prefix=None):
     """Audits every first-party compiler unit and configured procedural macro."""
     evidence = build / "evidence"
     events = execution_events(build)
@@ -203,6 +218,11 @@ def verify(build, cargo):
     for pair in paired["pairs"]:
         generator = pair["source"] in generators
         optimization = "0" if generator else "s"
+        if compare_strip:
+            require_matching_strip(
+                compiler_options(pair["bazel"]["arguments"])["effective_scalar_codegen"],
+                compiler_options(pair["cargo"]["arguments"])["effective_scalar_codegen"],
+            )
         first_party.append({
             "source": pair["source"], "test": pair["test"], "label": pair["bazel"]["label"],
             "role": "generator" if generator else "target",
@@ -218,10 +238,18 @@ def verify(build, cargo):
     trace = cargo / "compiler-arguments.jsonl"
     invocations = [json.loads(line) for line in trace.read_text().splitlines()]
     reports = json.loads((build / "inventory.json").read_text())["configured_targets"]
-    macros = match_macros(actions, reports, native_macros(invocations))
+    macros = match_macros(actions, reports, native_macros(invocations), compare_strip)
+    external = None
+    if external_repository_prefix is not None:
+        from rust_external_profiles import verify_external
+
+        graph = json.loads((evidence / "actions.json").read_text())
+        external = verify_external(actions, graph["configuration"], invocations, messages,
+                                   external_repository_prefix, compare_strip)
     return {
         "schema_version": 1, "status": "PASS", "build": str(build), "cargo": str(cargo),
         "first_party_units": first_party, "procedural_macros": macros,
+        "strip_compared": compare_strip, "external": external,
         "evidence_sha256": {name: hashlib.sha256((evidence / name).read_bytes()).hexdigest()
                             for name in ["actions.json", "execution.json", "compiler-inputs.json"]},
         "native_trace_sha256": hashlib.sha256(trace.read_bytes()).hexdigest(),
@@ -239,8 +267,11 @@ def main():
     parser.add_argument("--build", type=Path, required=True)
     parser.add_argument("--cargo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--compare-strip", action="store_true")
+    parser.add_argument("--external-repository-prefix")
     options = parser.parse_args()
-    options.output.write_text(json.dumps(verify(options.build, options.cargo), indent=2, sort_keys=True) + "\n")
+    report = verify(options.build, options.cargo, options.compare_strip, options.external_repository_prefix)
+    options.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":
