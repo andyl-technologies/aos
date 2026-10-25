@@ -91,7 +91,7 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-25)
 
-Trunk acceptance remains **27/64**. Completed component checks do not establish
+Trunk acceptance is **28/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance. Pack compaction
 (GC-18 to GC-21) is explicitly deferred from T-GC-1 to T-GC-2 on B-jobs;
 that optional workline is outside this agreed trunk completion scope. Full
@@ -116,22 +116,26 @@ The new `integration.native-configured-maintenance` scenario runs the actual
 retained CLI with original two-domain native owners, protected listener inodes,
 two fresh empty-capability UID 843 GC processes, foreign-UID refusal, private
 state denial and stopped-owner refusal. Original SDK snapshot, signed-publication,
-owner-lock and SIGTERM controls remain. The scenario is prepared, not yet
-qualified. Nine pure configuration tests, strict all-target linting of all
+owner-lock and SIGTERM controls remain. Its first diagnostic run proves the
+private-state denial control fails because GC inherits cache group 844. The
+candidate correction isolates socket transport in group 846 and preserves the
+original denial and transport assertions; fresh native qualification is pending.
+Nine pure configuration tests, strict all-target linting of all
 three SDK profiles, both Linux profiles and the CLI, Python syntax checks,
 Nix formatting and evaluation of the new guest derivation pass. Module
 rendering and managed listener-directory lifecycle remain open. These changes
 do not accept a trunk task.
 
-The full structural-index owning gate at `32727e80b3` passes in 1,433.832
-seconds. Complete review checks all 8,229 immutable source files, 82 pure
-selectors, retained codec ELF, two native images, six native Cargo artifacts,
-all prerequisite output links and all eight guest serial results. The
-[requirement audit](acceptance/fuse-index.md) identifies a remaining FUSE-11
-manifest-open evidence gap: the current scoped file oracle explicitly rejects
-manifests. T-FUSE-1 remains open until the owning gate includes an authenticated
-manifest-file open and backing handoff. The current aggregate alone does not
-satisfy the complete requirement range.
+T-FUSE-1 is accepted at `291e811320` against all of FUSE-7 through FUSE-12.
+The strengthened structural-index owning gate passes in 724.607 seconds and
+retains every original prerequisite while adding an independent authenticated
+manifest-open guest. Complete review matches all 8,233 immutable source files,
+82 pure selectors, retained codec ELF, three native images, seven actual Cargo
+executables and all nine guest results. The separate manifest-open guest and
+mandatory application-target compilation also pass with full review. The
+[requirement audit](acceptance/fuse-index.md) records the complete scope and
+evidence. Worker launch, passthrough, writable exposure, broker authority and
+four-role deployment remain separate open obligations.
 
 The actual configured GC CLI at `32727e80b3` passes its native guest in
 650.063 seconds; the separate collector component passes in 638.421 seconds.
@@ -12301,11 +12305,11 @@ conformance tests passing over Terrane.
   `aos-mountd` and that exec of a passthrough-backed binary succeeds. —
   satisfies RISK-10, RISK-11, FUSE-13, FUSE-39;
   `checks.terrane.gates.exec-through-overlay`.
-- [ ] **T-FUSE-1** Structural index compiler and mmap reader. — satisfies
+- [x] **T-FUSE-1** Structural index compiler and mmap reader. — satisfies
   FUSE-7 to FUSE-12; `checks.terrane.gates.fuse-index-roundtrip`.
   The [requirement audit](acceptance/fuse-index.md) records the inspected
-  implementation, reviewed owning-gate result and remaining manifest-open
-  evidence required for acceptance.
+  implementation and complete reviewed owning-gate result at `291e811320`,
+  including authenticated native manifest-open evidence.
 - [ ] **T-FUSE-2** FUSE worker: passthrough, fallback, inode policy,
   attributes, open path, coalescing, mount options, leases, drain. —
   satisfies FUSE-1 to FUSE-6, FUSE-13 to FUSE-31, FUSE-43 to FUSE-50,
@@ -18574,3 +18578,48 @@ crate inputs and the actual retained SDK library-test ELF, including exact
 selectors, UID/GID 840, empty capabilities, no-new-privileges and guest ext4.
 This regression does not qualify the failed startup path. Acceptance stays
 27/64.
+
+
+The complete strengthened structural-index gate at `291e811320` passes in
+724.607 seconds. Review checks all 8,233 immutable source files, seven exact
+prerequisite links, 82 pure selectors and the retained codec ELF, three native
+images with seven actual Cargo executables, and all nine independent guest
+results with their original witnesses and successful VMM exits. The separate
+manifest-open guest passes in 648.045 seconds and complete review verifies
+its deferred signed resolution, original measured inode and exposure binding,
+closing Read, warm reuse and retained descriptor. Mandatory compilation passes
+in 727.920 seconds with all 8,233 immutable files, 190 targets and 59 packages
+reviewed. The complete FUSE-7 through FUSE-12 audit now accepts only T-FUSE-1,
+bringing trunk acceptance to 28/64. Full worker/broker and final T6 integrated
+qualification remain outstanding.
+
+The `1864485857` eleven-case pre-ownership guest separately passes in 1,501.595
+seconds. Complete review matches all 8,230 immutable files, 5,479 inputs and
+the actual retained SDK executable; every original selector passes as UID 840
+on guest ext4 with empty capabilities and no-new-privileges. This regression
+does not qualify the failed required-Meta startup selector.
+
+The startup failure's collector metadata adapter preserves the fresh Live
+catalog row but then tries only its physically missing pack, despite the older
+pack's completed restoration. The candidate correction observes actual absence
+before checking another non-excluded, non-burned, non-tombstoned metadata copy
+from the complete selected inventory. It verifies the original index and full
+container, retains every examined index and missing physical read for closing
+checks, preserves the catalog row and sticky quarantine, and opens no Data
+pack body. Present corrupt primary bytes fail rather than selecting a copy.
+The original native selector now additionally proves failure while the old
+pack is excluded, exact metadata recovery after restoration, retained missing
+and restored physical reads, and refusal of a present corrupt primary despite
+an eligible duplicate. Original same-session, catalog, fresh marking and zero
+Data-read assertions remain. All three SDK profiles, all-feature Linux and CLI
+all-target strict lint checks pass. Fresh native and workspace qualification
+of this production correction remain pending.
+
+The diagnostic maintenance guest at `a496d2fcb1` fails in 654.654 seconds and
+proves that the GC pre-exec private-state denial control fails: supplemental
+cache group 844 can read owner records. No GC CLI or transport exchange occurs.
+The fixture and source-bound launcher now use a distinct maintenance-only group
+846 for the protected socket parent and GC supplementary identity. The original
+private-state denial remains mandatory, with an exact group assertion added.
+No production role-module assembly or managed directory lifecycle is claimed;
+those remain open. Fresh native qualification of this correction is pending.
