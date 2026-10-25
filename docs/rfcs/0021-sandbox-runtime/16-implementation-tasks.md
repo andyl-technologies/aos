@@ -440,6 +440,17 @@ before FloorSeal, failed-Create CAS, or ACK can be enabled.
   staging/install refusal checks. Its non-enforcing composition does not
   qualify the funded initial floor producer, required-mode journal hooks or
   public lifecycle. The expired-namespace variant requires its own VM result.
+- `sandbox-method46-tpm-transport` passes at `b44e212aae` on the exact installed
+  Root kernel, including both endpoints' authenticated initial writes and
+  unclean QEMU/vTPM loss before checkpoint publication. Cold `initialize`,
+  `read` and `recover` probe commands refuse that state; authenticated
+  comparison confirms unchanged NV values and retained inputs. The complete
+  restart, pending-advance and power-loss suite has registered result
+  `/nix/store/nzkl62vnw37ksbscxaycm6h6jlngfqj5-aos-fleet-test-sandbox-method46-tpm-transport-0`
+  (`PASS`, NAR hash
+  `sha256:1sjclmaclh0k8vyyy972j9l5f3y7fyxk9irnvxmbgc59w84a67b1`).
+  These are transport tests under external fixture provisioning authority,
+  not the missing funded production provisioner or installed hook qualification.
 - Grouped Storage snapshots now have authenticated Method 25 in the broker
   profile and production Storage dispatch. The controller advances Snapshot
   and Hibernate Storage effects from a signed predecessor inventory, reserves
