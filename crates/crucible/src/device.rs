@@ -83,12 +83,7 @@ pub struct LinkEmitDecisionRecord {
 ///
 /// The role index is the draw's position in [`FrameDraws`] order, which is the
 /// event-stream position the keyed derivation consumed ([SCHED-50]).
-fn link_rng_draw_decisions(
-    stream: &RngStreamId,
-    direction: NetworkLinkDirection,
-    producer_sequence: u64,
-    draws: &FrameDraws,
-) -> Vec<Decision> {
+fn link_rng_draw_decisions(site: LinkFrameDrawSite<'_>, draws: &FrameDraws) -> Vec<Decision> {
     [draws.jitter, draws.reorder, draws.loss]
         .into_iter()
         .chain(draws.additional_loss.iter().copied())
@@ -97,10 +92,10 @@ fn link_rng_draw_decisions(
         .zip(0_u64..)
         .map(|(value, role)| {
             Decision::RngDraw(RngDecision {
-                stream: stream.clone(),
+                stream: site.stream.clone(),
                 address: RngDrawAddress::LinkFrame {
-                    direction,
-                    producer_sequence,
+                    direction: site.direction,
+                    producer_sequence: site.producer_sequence,
                     role,
                 },
                 value,

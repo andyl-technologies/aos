@@ -394,10 +394,12 @@ impl WorldNetworkLinkRuntime {
         // that producer's own sequence and names the frame's draws.
         crate::device::emit_link_frame_with_keyed_draws(
             seed,
-            &self.rng_stream,
-            self.direction,
-            u64::from(frame.frame_id),
-            rng_position,
+            crate::LinkFrameDrawSite {
+                stream: &self.rng_stream,
+                direction: self.direction,
+                producer_sequence: u64::from(frame.frame_id),
+                rng_position,
+            },
             &mut self.link,
             frame,
             policy,
@@ -411,12 +413,14 @@ impl WorldNetworkLinkRuntime {
         draws: crucible_device::FrameDraws,
         policy: crucible_device::PastDeliveryPolicy,
     ) -> Result<crate::LinkEmitDecisionRecord, crucible_device::DeviceError> {
+        // The injected draws replace the seeded ones at the same addresses.
         crate::device::emit_link_frame_with_injected_draws_at_position(
-            &self.rng_stream,
-            &self.fault_id,
-            self.direction,
-            u64::from(frame.frame_id),
-            rng_position,
+            crate::LinkFrameDrawSite {
+                stream: &self.rng_stream,
+                direction: self.direction,
+                producer_sequence: u64::from(frame.frame_id),
+                rng_position,
+            },
             &mut self.link,
             frame,
             draws,

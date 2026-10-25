@@ -83,7 +83,10 @@ pub use decision::{
     SignalFaultSelectableError, app_random_stream_belongs_to_node,
     validate_app_random_model_selection,
 };
-pub use device::{LinkEmitDecisionRecord, NetworkLinkDirection, device_overlay, device_stream_id};
+pub use device::{
+    LinkEmitDecisionRecord, LinkFrameDrawSite, NetworkLinkDirection, device_overlay,
+    device_stream_id,
+};
 pub use device_subnode::{
     DEFAULT_WORLD_IO_INBOX_CAPACITY, DEFAULT_WORLD_IO_OUTBOX_CAPACITY, DeviceDelivery,
     DeviceSchedulingSubNode, DeviceSchedulingSubNodeCheckpoint,
