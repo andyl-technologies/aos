@@ -349,10 +349,14 @@ before FloorSeal, failed-Create CAS, or ACK can be enabled.
   into the request digest, and rechecks peer liveness before atomic admission.
   The worker registers a caller of this entry point and dispatches method-typed
   effects. The lifecycle, ownership retry, and cancellation paths have
-  production handlers. Public Delete remains closed until a protected
-  dependency plan validates its digest, cascade scope, and force policy;
-  retained unqualified Delete effects are permanently blocked before owner
-  dispatch. `CacheUnpin` now drains every retained partition pin
+  production handlers. Public Delete routes through
+  `admit_public_original_delete_once_v4` into the concrete protected collection
+  and finalizer, retaining authorization, Source/C17, the four exclusive
+  Sessions, Cache and Root through native cleanup and final disposition.
+  Generic retained Delete effects remain permanently blocked before owner
+  dispatch; that rejection is not the public original's route. The concrete
+  route still needs installed lifecycle and recovery qualification.
+  `CacheUnpin` now drains every retained partition pin
   through protected and physical owners, retains ambiguous in-process custody,
   and cold-reconciles released tombstones before completing. Resize and signal
   `ExecutionControl` dispatch through authenticated Host Apply/Query with exact
