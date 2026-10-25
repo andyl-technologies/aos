@@ -18762,3 +18762,21 @@ and independently checks both durable payloads. It does not manufacture
 separate stdout/stderr receipts for the standalone CLI verifier. Full-system
 runtime remains pending while native lifecycle checks in package prerequisites
 are audited. Trunk acceptance remains 28/64.
+
+
+Managed Serve now has explicit `sdkOutputRoots` write grants for existing,
+dedicated SDK snapshot containers under `ProtectSystem=strict`. Validation
+requires canonical endpoints strictly beneath one used container and refuses
+overlapping containers, native content/administration, repository authority and
+bucket, credentials, control endpoints and protected system paths. The module
+never provisions or chowns these operator-owned containers, grants no other
+role their write paths, and adds no runtime TOML field. The actual-systemd
+fixture places its two snapshots in a separate protected output container;
+its original trust, signed views, capabilities and modes remain compared
+exactly, with only the two predetermined destination paths relocated. Completion
+journal and durable payload checks use those independent paths.
+
+The declarative module check passes all 117 cases, including seven new SDK
+write-policy cases. This establishes deployment rendering and refusal behavior,
+not actual systemd runtime or restart recovery. Full-manager execution and the
+remaining role qualification are still pending; acceptance remains 28/64.

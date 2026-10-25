@@ -105,8 +105,12 @@ def configuration(driver, common, repository):
                    and actual["local_repository"] == portable["local_repository"],
                    "managed configuration changed the original repository authority")
     normalize = lambda rows: [{**row, "options": row.get("options", {})} for row in rows]
-    driver.require(normalize(actual["expose"]) == normalize(portable["expose"]),
-                   "managed exposures differ from the original signed setup")
+    # Only the independently declared destination moves. Authority, selected
+    # views, capabilities and modes must still equal the original signed setup.
+    relocated = [{**row, "at": str(ROOT / "managed-sdk" / f"snapshot-{row['id']}")}
+                 for row in portable["expose"]]
+    driver.require(normalize(actual["expose"]) == normalize(relocated),
+                   "managed exposures differ from the original setup and fixed output relocation")
     host = tomllib.loads(common["host_configuration"](driver))["host_tier"]
     host["path"] = str(ROOT / "layout-admin")
     host["publisher"]["socket_path"] = "/run/terrane-publish/publisher.sock"
@@ -133,6 +137,9 @@ def run(driver, image):
     repository = parent / "repository"
     common["actor"](driver, image, "managed-setup",
                     ["configured-sdk-cache-example", "setup-public", repository, 840])
+    output = ROOT / "managed-sdk"
+    output.mkdir(mode=0o700)
+    os.chown(output, 840, 840)
     expected = configuration(driver, common, repository)
     original_state = common["verify_owner_locks"](driver, False)
     sockets = [pathlib.Path("/run/terrane-maintenance") / name for name in ["public.sock", "private.sock"]]
@@ -194,7 +201,7 @@ def run(driver, image):
         commit = (repository / "expected.commit").read_bytes()
         driver.require(len(commit) == 32, "managed original commit witness length differs")
         expected_completion = [f'completed SDK snapshot "{name}": commit {commit.hex()}, state Stopped, '
-                               f'endpoint "{repository}/snapshot-{name}"' for name in ["first", "second"]]
+                               f'endpoint "{output}/snapshot-{name}"' for name in ["first", "second"]]
         driver.require(completion == expected_completion,
                        "managed CLI produced unexpected journal output")
         driver.require(original_inodes == [(path.stat().st_dev, path.stat().st_ino) for path in sockets],
@@ -210,7 +217,7 @@ def run(driver, image):
         common["actor"](driver, image, "managed-publication",
                         ["configured-sdk-cache-example", "verify-reopen-publication", repository, 840])
         for name in ["first", "second"]:
-            driver.require((repository / f"snapshot-{name}/file").read_bytes()
+            driver.require((output / f"snapshot-{name}/file").read_bytes()
                            == b"independent configured SDK snapshot payload\n",
                            "managed shutdown changed an original durable SDK snapshot")
         print("TERRANE_MANAGED_SERVICE_PROOF " + json.dumps({

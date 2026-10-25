@@ -35,6 +35,7 @@
       path = "/var/lib/terrane-private";
       wipe = "none";
     };
+    aos.terrane.sdkOutputRoots = ["/srv"];
     aos.terrane.exposures = [
       {
         id = "sdk";
@@ -736,6 +737,7 @@
       pass =
         lib.hasInfix "mode = {}"
         (evaluate {
+          aos.terrane.sdkOutputRoots = ["/srv"];
           aos.terrane.exposures = [
             {
               id = "default-mode";
@@ -762,6 +764,7 @@
     {
       name = "duplicate-exposure-refused";
       pass = rejected {
+        aos.terrane.sdkOutputRoots = ["/srv"];
         aos.terrane.exposures =
           builtins.genList (_: {
             id = "duplicate";
@@ -930,7 +933,10 @@
   maintenanceAssertions = import ./module-maintenance-eval.nix {
     inherit lib evaluate nativeFixture cacheFixture surfaceIndexFixture checksPass;
   };
-  allAssertions = assertions ++ extraAssertions ++ maintenanceAssertions;
+  sdkOutputAssertions = import ./module-sdk-output-eval.nix {
+    inherit lib evaluate checksPass localFixture;
+  };
+  allAssertions = assertions ++ extraAssertions ++ maintenanceAssertions ++ sdkOutputAssertions;
   failures = map (check: check.name) (builtins.filter (check: !check.pass) allAssertions);
   verified =
     if failures == []

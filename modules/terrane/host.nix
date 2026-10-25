@@ -11,6 +11,7 @@
   localRepository = import ./_local-repository.nix {inherit lib;};
   nativeCache = import ./_cache.nix {inherit lib;};
   maintenance = import ./_maintenance.nix {inherit lib;};
+  sdkOutput = import ./_sdk-output.nix {inherit lib;};
   maintenanceEnabled = cfg.hostTier.maintenance != null;
   # Reject traversal and unit-file metacharacters before paths reach tmpfiles
   # or systemd. Parent ownership is part of the publisher's security boundary.
@@ -176,7 +177,10 @@
     else if role == "publish"
     then ["/run/terrane-publish"] ++ builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots
     else if role == "serve" || role == "gc"
-    then builtins.concatMap (root: ["${root}/state/cache" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots ++ lib.optional (role == "serve" && maintenanceEnabled) maintenance.runtimeRoot
+    then
+      builtins.concatMap (root: ["${root}/state/cache" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots
+      ++ lib.optionals (role == "serve") cfg.sdkOutputRoots
+      ++ lib.optional (role == "serve" && maintenanceEnabled) maintenance.runtimeRoot
     else [];
   # Preserve DOM-18 defaults so an unsupported private policy fails closed.
   effectiveWipe = name: domain:
@@ -333,6 +337,7 @@ in {
       reassembly = option (types.enum ["never" "always"]) "never" "T2 object reassembly policy.";
       domains = option (types.attrsOf domainType) {} "Domain-specific roots; separate filesystems must be provisioned by the operator when isolation requires them.";
     };
+    sdkOutputRoots = option sdkOutput.type [] "Existing dedicated SDK snapshot containers writable by Serve. Provision ownership separately; each SDK endpoint must be a new directory strictly beneath one container. No directories are created or chowned by this option.";
     exposures = option (types.listOf exposureType) [] "Ordered exposures; runtime validation accepts or rejects the complete configuration.";
     tokens = {
       issuerPublicKeys = option (types.listOf (types.strMatching "file:/[^[:space:]]+")) [] "References to issuer public-key files.";
@@ -352,6 +357,17 @@ in {
         value = cfg.localRepository;
         serveEnabled = cfg.roles.serve.enable;
         serveUid = identities.serve;
+      })
+      ++ (sdkOutput.checks {
+        outputRoots = cfg.sdkOutputRoots;
+        inherit (cfg) exposures store localRepository;
+        protectedPaths =
+          declaredRoots
+          ++ builtins.filter (root: root != null) (map (domain: domain.administrativeRoot) (builtins.attrValues cfg.hostTier.domains))
+          ++ ["/var/lib/terrane-host/project-claims" maintenance.runtimeRoot "/run/terrane-publish" "/run/aos-terrane-host"]
+          ++ lib.optional (cfg.hostTier.quota != null) cfg.hostTier.quota.socketPath
+          ++ map (reference: lib.removePrefix "file:" reference) (builtins.filter (lib.hasPrefix "file:")
+            (cfg.tokens.issuerPublicKeys ++ lib.optional (cfg.tokens.hostToken != null) cfg.tokens.hostToken ++ map (exposure: exposure.token) cfg.exposures));
       })
       ++ (import ./_identity-checks.nix {
         inherit config roleNames identities userFor groupsFor reservedGroupIds expectedGroupName;

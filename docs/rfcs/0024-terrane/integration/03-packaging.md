@@ -157,6 +157,26 @@ options.aos.terrane = {
 };
 ```
 
+Managed SDK exposures also require explicit `aos.terrane.sdkOutputRoots`, for
+example `[ "/srv/terrane-sdk" ]` with an endpoint at
+`/srv/terrane-sdk/snapshot-first`. These are dedicated existing containers, not
+snapshot destinations. The operator provisions trusted, non-symlink directories
+and ancestors, grants `terrane` the required traversal and write permissions,
+and keeps unrelated data out of them. The module neither creates nor changes
+ownership of these containers. `ProtectSystem=strict` remains enabled; only
+Serve receives their `ReadWritePaths` grants. Each endpoint must be canonical
+and strictly beneath exactly one declared container, and each container must
+be used by an SDK exposure. Nested endpoint parents must already exist.
+
+Output containers must be distinct and non-overlapping, and stay disjoint from
+native content and administration, local repository authority and bucket,
+credentials, service control endpoints and protected system paths. Managed
+local SDK stores use an exact canonical `bucket(file:///...)` leaf so the
+module can check the bucket boundary without guessing a store expression's
+meaning. These grants are module deployment policy, not new TOML fields.
+The SDK still refuses an existing snapshot destination; output grants do not
+provide snapshot replacement or restart recovery.
+
 Kernel-sealed host tiers reject `wipe = "zero"` during configuration validation
 (D-128). Private domains retain their `zero` default, so an omitted private
 policy is also rejected; the module never substitutes `none` for that default.

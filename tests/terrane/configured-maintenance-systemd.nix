@@ -9,6 +9,7 @@
   testing = import ../../lib/testing {inherit pkgs lib;};
   root = "/var/lib/terrane-enrollment-proof/data";
   repository = "${root}/configured-maintenance/repository";
+  sdkOutput = "${root}/managed-sdk";
   image = initialEnrollmentProof.image;
   sdkImage = configuredSdkProof.image;
   launcher = pkgs.writeTextFile {
@@ -99,11 +100,12 @@
               marginMs = 10000;
             };
           };
+          sdkOutputRoots = [sdkOutput];
           exposures = map (id: {
             inherit id;
             view = "refs/heads/_/main";
             surface = "sdk";
-            at = "${repository}/snapshot-${id}";
+            at = "${sdkOutput}/snapshot-${id}";
             token = "file:${repository}/${id}.cap";
             mode.reader = "pinned";
           }) ["first" "second"];
