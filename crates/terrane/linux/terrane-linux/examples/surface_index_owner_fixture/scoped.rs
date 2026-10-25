@@ -33,28 +33,9 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         );
     };
     stage("source-initialize");
-    // The repositories have independent signing custody and filesystem paths.
-    // Overlap their real setup instead of spending the actor's finite bound on
-    // unrelated source initialization after all native disclosure checks.
-    let source_parent = std::env::temp_dir();
-    let mut zero = Vec::new();
-    terrane_format::cbor::write_text(&mut zero, "zero");
-    let (fixture, foreign, zero_wipe) = tokio::try_join!(
-        Box::pin(RepositoryFixture::new(&inputs.domain)),
-        Box::pin(RepositoryFixture::new("tenant:foreign-surface")),
-        Box::pin(RepositoryFixture::new_with_properties(
-            &inputs.domain,
-            &source_parent,
-            vec![("wipe".into(), zero)],
-            [0; 32],
-        )),
-    )?;
+    let fixture = Box::pin(RepositoryFixture::new(&inputs.domain)).await?;
     stage("source-commit");
-    tokio::try_join!(
-        Box::pin(fixture.commit(b"signed surface source")),
-        Box::pin(foreign.commit(b"signed surface source")),
-        Box::pin(zero_wipe.commit(b"signed zero-wipe source")),
-    )?;
+    Box::pin(fixture.commit(b"signed surface source")).await?;
     stage("root-read");
     let target = ViewTarget::Ref(MAIN.parse()?);
     let selection = fixture
@@ -175,7 +156,44 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         return Err("signed latest index absent from actual cache".into());
     }
 
-    stage("foreign-source");
+    println!("PASS actual signed root admits canonical index and changed policy denies disclosure");
+    println!(
+        "PASS signed-root mapping retains original sealed cache custody, refuses changed policy before disclosure and blocks warm retirement until drop"
+    );
+    println!(
+        "PASS mapped signed root scopes actual sealed file backing; another commit is denied before pin effects and changed policy denies disclosure"
+    );
+    Ok(())
+}
+
+/// Checks independent signed policy refusals on a fresh native cache owner.
+///
+/// # Errors
+/// Refuses a successful foreign-domain or zero-wipe preparation, any durable
+/// native mutation on refusal, or failure to construct the actual signed roots.
+pub(super) async fn verify_policy(
+    owner: &NativeMetadataOwner,
+    inputs: &config::Inputs,
+) -> Result<()> {
+    let source_parent = std::env::temp_dir();
+    let mut zero = Vec::new();
+    terrane_format::cbor::write_text(&mut zero, "zero");
+    let (foreign, zero_wipe) = tokio::try_join!(
+        Box::pin(RepositoryFixture::new("tenant:foreign-surface")),
+        Box::pin(RepositoryFixture::new_with_properties(
+            &inputs.domain,
+            &source_parent,
+            vec![("wipe".into(), zero)],
+            [0; 32],
+        )),
+    )?;
+    tokio::try_join!(
+        Box::pin(foreign.commit(b"signed surface source")),
+        Box::pin(zero_wipe.commit(b"signed zero-wipe source")),
+    )?;
+    let target = ViewTarget::Ref(MAIN.parse()?);
+    let view = View::parse(MAIN)?;
+    let policy = inputs.root.join("state/cache/records.toml");
     let selection = foreign
         .repository
         .prepare_root_read(&target, foreign.authority.token(), "sdk", limits())
@@ -184,7 +202,6 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     if owner.prepare_surface_mapping(selection).await.is_ok() || fs::read(&policy)? != before {
         return Err("foreign signed root changed original physical cache policy".into());
     }
-    stage("zero-wipe-refusal");
     let before = fs::read(&policy)?;
     let selection = zero_wipe
         .repository
@@ -205,15 +222,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     {
         return Err("signed zero-wipe file reached native pin effects".into());
     }
-    println!(
-        "PASS actual signed root admits canonical index; changed policy denies disclosure and foreign domain causes no physical mutation"
-    );
-    println!(
-        "PASS signed-root mapping retains original sealed cache custody, refuses changed policy before disclosure and blocks warm retirement until drop"
-    );
-    println!(
-        "PASS mapped signed root scopes actual sealed file backing; another commit is denied before pin effects and changed policy denies disclosure"
-    );
+    println!("PASS foreign signed root refuses before physical cache policy mutation");
     println!(
         "PASS signed zero-wipe requirements refuse sealed index and file preparation before physical policy mutation"
     );

@@ -125,6 +125,18 @@ publisher, private namespace and actor/guest deadlines. The full configured
 surface check still requires that scenario after all existing controls; a
 separate component result cannot replace the aggregate's recovery obligations.
 
+The owning index gate at `0f180b1201` fails in 1,059.830 seconds when its
+original thirty-second actor bound expires. Timings show three independent
+signed repository setups and commits taking 12.376 seconds before the scoped
+root read, with index retirement reached at 28.162 seconds. The foreign-domain
+and zero-wipe refusal controls now run together on a separate fresh native
+owner and quota project, keeping their exact signed SDK preparations, typed
+refusals and unchanged-policy checks. The positive actor retains original
+mapping, changed-head refusals, sealed-file checks, retirement and latest-head
+recompilation. Both actors retain the same thirty-second bound; the complete
+guest still requires every control under its unchanged overall deadline.
+Strict all-feature/all-target Clippy passes; native qualification is pending.
+
 Complete feature matrices now pass with independent immutable-source, retained
 executable and actual guest review at these checkpoints:
 

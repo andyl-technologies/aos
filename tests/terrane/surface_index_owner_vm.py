@@ -118,8 +118,9 @@ def main():
     support.verify_image()
     verify_surface(image, source)
     # Use the same real provisioning and checked role launchers with three empty
-    # domains. These are fixture inputs, never quota or recovery receipts.
-    support.CASES = ["empty", "pin", "index-closure"]
+    # domains plus an independent signed-policy refusal domain. These are
+    # fixture inputs, never quota or recovery receipts.
+    support.CASES = ["empty", "pin", "index-closure", "policy-refusal"]
     support.BUDGET = support.HARD * len(support.CASES)
     support.administrative_preflight("before")
     support.scaffold()
@@ -230,10 +231,9 @@ def main():
                 "PASS cold recovery retires index names and copy holds while retaining actual mapped bytes and project charge",
                 "PASS cold recompilation creates a distinct inode and final old-index unmap releases exactly its project charge",
                 "PASS warm surface eviction refuses retained receipts without effects and releases exact mapped charge only after final unmap",
-                "PASS actual signed root admits canonical index; changed policy denies disclosure and foreign domain causes no physical mutation",
+                "PASS actual signed root admits canonical index and changed policy denies disclosure",
                 "PASS signed-root mapping retains original sealed cache custody, refuses changed policy before disclosure and blocks warm retirement until drop",
                 "PASS mapped signed root scopes actual sealed file backing; another commit is denied before pin effects and changed policy denies disclosure",
-                "PASS signed zero-wipe requirements refuse sealed index and file preparation before physical policy mutation",
             ],
             "cap": [
                 "PASS surface admission requires actual recovery and acknowledged Resume",
@@ -258,6 +258,19 @@ def main():
             else:
                 require(not list(sealed.iterdir()),
                         "metadata-only cap fixture admitted sealed content")
+        # Independent refusal roots have their own signing custody and fresh
+        # native owner. Keep them outside the retained positive mapping lifetime;
+        # every actor still obeys its original thirty-second deadline.
+        result = actor("policy-refusal", "scoped-policy")
+        require(result.returncode == 0 and result.stdout.splitlines() == [
+            "PASS surface admission requires actual recovery and acknowledged Resume",
+            "PASS foreign signed root refuses before physical cache policy mutation",
+            "PASS signed zero-wipe requirements refuse sealed index and file preparation before physical policy mutation"],
+            "independent signed policy refusal actor failed")
+        require(not list((support.root("policy-refusal") / "chunks").iterdir())
+                and not list((support.root("policy-refusal") / "sealed").iterdir())
+                and not list((support.root("policy-refusal") / "objects").iterdir()),
+                "signed policy refusal created physical cache content")
         # This additional actor observes both actual 30-second release and
         # publisher retirement grace. Existing actors retain their 30s bound.
         result = actor("pin", "file-closure", timeout=120)

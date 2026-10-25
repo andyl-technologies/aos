@@ -159,6 +159,7 @@ fn main() -> Result<()> {
     if !matches!(
         mode.as_str(),
         "run"
+            | "scoped-policy"
             | "cap"
             | "refuse-cold"
             | "exposure"
@@ -260,6 +261,9 @@ fn main() -> Result<()> {
         return runtime.block_on(Box::pin(exposure::verify_index_closure(
             &owner, &inputs, None,
         )));
+    }
+    if mode == "scoped-policy" {
+        return runtime.block_on(Box::pin(scoped::verify_policy(&owner, &inputs)));
     }
     if let Some(launched) = maintenance.as_mut() {
         return maintenance::run(launched, &runtime, &owner, &inputs);
