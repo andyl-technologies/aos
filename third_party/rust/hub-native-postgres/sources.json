@@ -1,7 +1,7 @@
 {
   "contracts": {
     "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
-    "third_party/rust/hub-native.bzl": "19e98921ff22d362557a3394450ab44dda75e7b998873af507050e6a0926bf3e",
+    "third_party/rust/hub-native.bzl": "46972bbe779ce8d57ebb4e75d71ff25e6c5b45318b5a86786a1a0f520ccfdef1",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
     "tools/bazel/metadata/update_rust.py": "6dba4f1b82faf10f246c5cefa1ea2c92a7d075c4cc58b8da9183b9a34080f28c",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
@@ -150,7 +150,7 @@
     "BUILD.generic-array-0.14.7.bazel": "73362128851d2b231a18c6ac733fb5bde80ae8de83049e3d1c2981e66f3ff181",
     "BUILD.getrandom-0.2.17.bazel": "d16ec8a66dbe27690d34b4b1c4e0d8443fd521786760d1f860316fd8045740a3",
     "BUILD.getrandom-0.3.4.bazel": "c5d66a44ece8332ec1e8bb4a579e5cf27a3ae2ad44d4a2958191fcd74b519f3c",
-    "BUILD.getrandom-0.4.2.bazel": "a7130550518e3b6c4c54953934c4b2645cd919b23f6f0e8f8a1616f34a8d29cf",
+    "BUILD.getrandom-0.4.2.bazel": "d39ee0a00cbbdce247e2eebd7a8691edb623bdfffe726fdaa76f96117cfac8a8",
     "BUILD.ghash-0.5.1.bazel": "d5694a314621cea886867784435d53a766058a94fc0d37e11d16330e6b61fd75",
     "BUILD.git2-0.21.0.bazel": "ff1a77b93ef9073b7840968d061181be1ac7c3515d5d42004f979d7286fd846c",
     "BUILD.group-0.13.0.bazel": "5331e864c4ca6acf917d1fcd280e4f71864360fd03b3bb1de51567cf225c764f",
@@ -158,7 +158,7 @@
     "BUILD.h2-0.4.16.bazel": "81987da94e7300d5ad5f616c20b4911603088f52c0cc6f0f4873a74793285f1d",
     "BUILD.half-2.7.1.bazel": "6ebf28644f79af9cb6d23433b38d749bb1b1e8a6e61f3a07131992e56472d4ad",
     "BUILD.hashbrown-0.15.5.bazel": "bc25524a77b5c25f0d2075d5b65353d969dcb76012376c95d176fd88241d55ff",
-    "BUILD.hashbrown-0.17.1.bazel": "634a8d05e78caddc8f06989b5c7ca2bc1375c26009010a83e3cfdae73b3788e1",
+    "BUILD.hashbrown-0.17.1.bazel": "1e2bd0f82795a4eff2b5c12ee32c09250aed4bd17bacc3cfc802d962ab2be682",
     "BUILD.hashlink-0.10.0.bazel": "32f2944fd854bb68f985d1a824c3eed5fdacb262c278f4a0ca61b7c593e5ecdd",
     "BUILD.heck-0.5.0.bazel": "16ddda06ca798210df7ec46b374a40aa79113bf7b041217d1a97e0e5fbc18bbc",
     "BUILD.hex-0.4.3.bazel": "09e1f4cb2961dca6a4e42217b1a3bb440909a5cd3185ace643e0a78a39345431",
@@ -5329,7 +5329,7 @@
     ],
     "contracts": {
       "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
-      "third_party/rust/hub-native.bzl": "19e98921ff22d362557a3394450ab44dda75e7b998873af507050e6a0926bf3e",
+      "third_party/rust/hub-native.bzl": "46972bbe779ce8d57ebb4e75d71ff25e6c5b45318b5a86786a1a0f520ccfdef1",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
     },
@@ -5364,6 +5364,28 @@
           "use_std"
         ],
         "version": "1.16.0"
+      },
+      "getrandom": {
+        "exec_features": [],
+        "features": [
+          "sys_rng"
+        ],
+        "resolved_features": [
+          "sys_rng"
+        ],
+        "version": "0.4.2"
+      },
+      "hashbrown": {
+        "exec_features": [],
+        "features": [
+          "default-hasher",
+          "inline-more"
+        ],
+        "resolved_features": [
+          "default-hasher",
+          "inline-more"
+        ],
+        "version": "0.17.1"
       },
       "indexmap": {
         "features": [

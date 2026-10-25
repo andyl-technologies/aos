@@ -2792,6 +2792,15 @@ PostgreSQL/MariaDB, the native operator VM, Worker execution, full compiler
 argument equivalence, performance acceptance and production migration remain
 separate gates.
 
+The later [execution-feature repair](tests/evidence/hub-native-execution-feature-units.json)
+retains separate featureless generator libraries for `getrandom` 0.4.2 and
+`hashbrown` 0.17.1 in both Native SDKs. Fresh test and production analysis
+preserves all 922 selected source files. The production feature comparator
+matches the retained Cargo oracle across 383 external packages; the old graph
+still fails for both missing units. This checkpoint qualifies that repair,
+while full qualification of the current merged tree remains separate from the
+earlier uncached Native checkpoint above.
+
 ## Worker Cargo baselines
 
 `tests/evidence/hub-worker-cargo-baseline.json` and its `all-features` sibling

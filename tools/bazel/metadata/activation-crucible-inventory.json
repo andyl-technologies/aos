@@ -27159,7 +27159,7 @@
     "third_party/rust/hub-native-postgres/repositories.MODULE.bazel": "4236e5677b7166d1016b19e66b77207f696a9eaa1edb4aa1170f87e2ce1f2028",
     "third_party/rust/hub-native-tests/aliases.bzl": "9362e5edec4eff4598fd721a19b986f8804c87e844d8616fc54d4cc9f4683d67",
     "third_party/rust/hub-native-tests/repositories.MODULE.bazel": "ad6b3037178beb1b3ff47d6540b9d3d754374d8ff88bcc2a72d5e09ee6c2223c",
-    "third_party/rust/hub-native.bzl": "19e98921ff22d362557a3394450ab44dda75e7b998873af507050e6a0926bf3e",
+    "third_party/rust/hub-native.bzl": "46972bbe779ce8d57ebb4e75d71ff25e6c5b45318b5a86786a1a0f520ccfdef1",
     "third_party/rust/hub-portable/aliases.bzl": "15ed0971b01b29a77343c750f1a9bbd917cbc03f2d3e02910ba68506295d6563",
     "third_party/rust/hub-portable/repositories.MODULE.bazel": "70abb23757a84cacebb89703b9f8e1ae290470db48ce84447d6bc414f006b610",
     "third_party/rust/hub-service-all-features-tests/aliases.bzl": "045226babc39d2cda4e78ef4d696c6f38fc8a919f60aa841fc039509fb4b8e73",

@@ -149,6 +149,20 @@ HUB_NATIVE_TESTS_PACKAGES = {
 # Cargo resolves a union of generator and target features. Preserve the
 # distinct compiled units observed in each retained Cargo baseline.
 HUB_NATIVE_POSTGRES_FEATURE_VARIANTS = {
+    # The merged native graph compiles featureless generator dependencies as
+    # well as target libraries with entropy and hash-table defaults enabled.
+    "getrandom": json.encode({
+        "version": "0.4.2",
+        "resolved_features": ["sys_rng"],
+        "features": ["sys_rng"],
+        "exec_features": [],
+    }),
+    "hashbrown": json.encode({
+        "version": "0.17.1",
+        "resolved_features": ["default-hasher", "inline-more"],
+        "features": ["default-hasher", "inline-more"],
+        "exec_features": [],
+    }),
     "bytes": json.encode({
         "version": "1.11.1",
         "resolved_features": [
@@ -434,6 +448,18 @@ HUB_NATIVE_POSTGRES_FEATURE_VARIANTS = {
 }
 
 HUB_NATIVE_TESTS_FEATURE_VARIANTS = {
+    "getrandom": json.encode({
+        "version": "0.4.2",
+        "resolved_features": ["sys_rng"],
+        "features": ["sys_rng"],
+        "exec_features": [],
+    }),
+    "hashbrown": json.encode({
+        "version": "0.17.1",
+        "resolved_features": ["default-hasher", "inline-more"],
+        "features": ["default-hasher", "inline-more"],
+        "exec_features": [],
+    }),
     "bitflags": json.encode({
         "version": "2.13.0",
         "resolved_features": [
