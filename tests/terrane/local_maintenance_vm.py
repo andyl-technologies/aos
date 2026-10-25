@@ -12,6 +12,7 @@ CASES = [
     "configured_local_reopen_prepares_and_starts_actual_read_only_sdk",
     "local_maintenance_reopens_without_secrets_and_resumes_collection",
     "local_maintenance_refuses_foreign_trust_and_corrupt_registration",
+    "local_maintenance_rejects_empty_ambiguous_or_retired_keyrings",
 ]
 
 

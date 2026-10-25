@@ -180,6 +180,25 @@ Tokio/Wasm compile guards and is not a valid qualification profile. New-case
 syntax, touched Nix formatting and PLAN-2 coverage checks pass; runtime success
 is not inferred from these compilation and metadata checks.
 
+The mandatory application-target build at `6570934587` passes in 1,442.656
+seconds. Independent review checks all 8,202 immutable source files, 190 test
+executables and 59 packages. The same build at `5609defd30` passes in 694.319
+seconds; review checks all 8,204 immutable source files and the same executable
+and package counts. These establish compilation, including integration targets;
+the new same-session reconciliation guest remains pending.
+
+Maintenance reopening now retains an explicit nonempty issuer keyring rather
+than one key. It rejects empty issuer/key identifiers and duplicate pairs before
+storage access, including duplicates with different public keys. Each key's
+retirement bound reaches the existing original signature verifier unchanged.
+Ordinary Serve opening and paired recovery still pass their original single
+key. The maintenance guest adds actual empty/ambiguous/retired-key refusal and
+requires successful original collection with an unrelated retired rotation key
+first in the trusted keyring. Strict Tokio/surface, Tokio-only and std-only
+Clippy profiles pass. Native qualification and mandatory workspace compilation
+of this keyring change remain pending; no configured key-file parser, GC role
+service or process confinement is claimed.
+
 The initial maintenance guest at `6570934587` fails in 261.665 seconds before
 executing a Rust case: its separately interpolated Python entry point is absent
 from the guest closure. The corrected guest invokes that same checked-in script

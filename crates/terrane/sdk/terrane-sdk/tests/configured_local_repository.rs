@@ -25,8 +25,12 @@ async fn local_maintenance_reopens_without_secrets_and_resumes_collection() -> T
 
     let fixture = Fixture::new().await?;
     let commit = fixture.commit_bytes(OLD).await?;
+    let mut other_key = fixture.authority.issuer_key().clone();
+    other_key.key_id = "another-rotation".into();
+    other_key.public_key = terrane_format::auth::public_key_from_secret(&[91; 32]);
+    other_key.retirement = Some(0);
     let identity = LocalMaintenanceIdentity {
-        issuer: fixture.authority.issuer_key().clone(),
+        issuer_keys: vec![other_key, fixture.authority.issuer_key().clone()],
         owner_uid: fixture.owner,
     };
     let registration_path = fixture.location.authority.join("registration.cbor");
@@ -99,10 +103,10 @@ async fn local_maintenance_refuses_foreign_trust_and_corrupt_registration() -> T
     let fixture = Fixture::new().await?;
     fixture.commit_bytes(OLD).await?;
     let mut identity = LocalMaintenanceIdentity {
-        issuer: fixture.authority.issuer_key().clone(),
+        issuer_keys: vec![fixture.authority.issuer_key().clone()],
         owner_uid: fixture.owner,
     };
-    identity.issuer.public_key = terrane_format::auth::public_key_from_secret(&[91; 32]);
+    identity.issuer_keys[0].public_key = terrane_format::auth::public_key_from_secret(&[91; 32]);
 
     // Reopen can reject a retained historical binding before collection starts.
     // Otherwise the actual root-snapshot producer must reject the foreign key.
@@ -128,7 +132,7 @@ async fn local_maintenance_refuses_foreign_trust_and_corrupt_registration() -> T
         );
     }
 
-    identity.issuer = fixture.authority.issuer_key().clone();
+    identity.issuer_keys = vec![fixture.authority.issuer_key().clone()];
     let path = fixture.location.authority.join("registration.cbor");
     let mut corrupt = std::fs::read(&path)?;
     corrupt.push(0);
@@ -145,6 +149,70 @@ async fn local_maintenance_refuses_foreign_trust_and_corrupt_registration() -> T
         .is_err()
     );
     assert_eq!(std::fs::read(path)?, corrupt);
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_maintenance_rejects_empty_ambiguous_or_retired_keyrings() -> TestResult {
+    use terrane_sdk::repository::{LocalMaintenanceIdentity, LocalRepositoryLocation, Repository};
+
+    let fixture = Fixture::new().await?;
+    fixture.commit_bytes(OLD).await?;
+    let location = LocalRepositoryLocation {
+        bucket: fixture.parent.join("missing-bucket"),
+        authority: fixture.parent.join("missing-authority"),
+    };
+    let key = fixture.authority.issuer_key().clone();
+    let mut foreign = key.clone();
+    foreign.public_key = terrane_format::auth::public_key_from_secret(&[91; 32]);
+    for issuer_keys in [vec![], vec![key.clone(), key.clone()], vec![key, foreign]] {
+        let identity = LocalMaintenanceIdentity {
+            issuer_keys,
+            owner_uid: fixture.owner,
+        };
+
+        let result = Repository::open_local_maintenance(
+            &location,
+            &identity,
+            fixture::policy()?,
+            TokioLocalFs,
+            TokioClock,
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::Denied)));
+        assert!(!location.bucket.exists() && !location.authority.exists());
+    }
+
+    let mut retired = fixture.authority.issuer_key().clone();
+    retired.retirement = Some(0);
+    let identity = LocalMaintenanceIdentity {
+        issuer_keys: vec![retired],
+        owner_uid: fixture.owner,
+    };
+    // An otherwise genuine signing key cannot bypass its configured retirement
+    // when the original retained history and roots are independently verified.
+    if let Ok(repository) = Repository::open_local_maintenance(
+        &fixture.location,
+        &identity,
+        fixture::policy()?,
+        TokioLocalFs,
+        TokioClock,
+    )
+    .await
+    {
+        assert!(
+            repository
+                .start_local_collection(
+                    "retired-verifier".into(),
+                    1_000,
+                    1,
+                    terrane_format::gc::Windows::new(30, 60, 60, 90)?,
+                )
+                .await
+                .is_err()
+        );
+    }
     Ok(())
 }
 

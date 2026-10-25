@@ -423,7 +423,7 @@ where
     };
     let (coordinator, namespace) = open_local_parts(
         location,
-        authority.issuer_key(),
+        std::slice::from_ref(authority.issuer_key()),
         policy,
         profile,
         fs,
@@ -448,7 +448,7 @@ where
 /// Constructs the exact local bindings without choosing a repository factory.
 async fn open_local_parts<F, C>(
     location: &LocalRepositoryLocation,
-    issuer: &terrane_format::auth::IssuerKey,
+    issuer_keys: &[terrane_format::auth::IssuerKey],
     policy: LocalRepositoryPolicy,
     profile: ChunkProfile,
     fs: F,
@@ -489,7 +489,7 @@ where
     let guard = Guard::new(
         bucket,
         clock,
-        vec![issuer.clone()],
+        issuer_keys.to_vec(),
         GuardConfig {
             store_name: policy.store_name,
             private_domain: policy.default_private_domain,

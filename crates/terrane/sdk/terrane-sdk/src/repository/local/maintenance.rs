@@ -11,12 +11,16 @@ use super::{
     open_local_parts, validate_bucket_owner, validate_policy,
 };
 use crate::bucket::BucketBinding;
+use std::collections::BTreeSet;
 use terrane_format::auth::IssuerKey;
 
 /// Supplies public trust and expected ownership for native maintenance reopening.
 pub struct LocalMaintenanceIdentity {
-    /// Trusted verification key, including its configured retirement bound.
-    pub issuer: IssuerKey,
+    /// Trusted issuer rotation keys, including their configured retirement bounds.
+    ///
+    /// The set must be nonempty and contain distinct issuer/key identifiers.
+    /// Collection verifies each original signature against its matching key.
+    pub issuer_keys: Vec<IssuerKey>,
     /// Expected Unix owner of the original bucket and retained authority records.
     pub owner_uid: u32,
 }
@@ -41,7 +45,7 @@ where
     /// avoiding their use here does not establish role confinement.
     ///
     /// # Errors
-    /// Rejects missing issuer identity, unsafe paths or ownership, invalid policy,
+    /// Rejects empty or ambiguous issuer keyrings, unsafe paths or ownership, invalid policy,
     /// absent or incompatible registered genesis, malformed original controls,
     /// conflicting retained history and actual backend failures.
     pub async fn open_local_maintenance(
@@ -51,11 +55,17 @@ where
         fs: F,
         clock: C,
     ) -> Result<Self, Error> {
-        if identity.issuer.issuer.is_empty()
-            || identity.issuer.key_id.is_empty()
-            || identity.owner_uid == u32::MAX
-        {
+        if identity.issuer_keys.is_empty() || identity.owner_uid == u32::MAX {
             return Err(Error::Denied);
+        }
+        let mut names = BTreeSet::new();
+        for key in &identity.issuer_keys {
+            if key.issuer.is_empty()
+                || key.key_id.is_empty()
+                || !names.insert((key.issuer.as_str(), key.key_id.as_str()))
+            {
+                return Err(Error::Denied);
+            }
         }
         validate_policy(&policy)?;
         crate::repository::local_authority::validate_maintenance_location(
@@ -79,7 +89,7 @@ where
         .await?;
         let (coordinator, namespace) = open_local_parts(
             location,
-            &identity.issuer,
+            &identity.issuer_keys,
             policy,
             ChunkProfile::cdc_1m(registered.seed),
             fs,
