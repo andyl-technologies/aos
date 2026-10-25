@@ -427,6 +427,19 @@ runs against the existing production package. Production installation scripts,
 qualification, cross builds, and Cargo metadata remain unchanged until the
 remaining family acceptance checks pass.
 
+Boot identity also has a native production selector:
+`pkgs.aos-boot-identity.passthru.withBuildDriver "bazel"`, with `"rustc"` selecting
+the ordinary recipe. The default derivation is unchanged. The candidate uses
+declared Bazel inputs, runs unit, installed-command integration, and doctest
+targets, and preserves the production install scripts and module dependencies.
+Its toolchain preserves GCC's ordinary static unwinder search instead of adding
+the shared GCC runtime. `checks.build.bazel.boot-production.all` checks selector
+round trips, all 21 native test cases, script bytes/modes, and ELF dependencies,
+loader, and runtime paths. The [production builder receipt](tests/evidence/boot-production-builder.json)
+also records identical runtime closures and an absent fallback build dependency.
+Default cutover, foreign-platform qualification, and performance acceptance
+remain separate requirements.
+
 Shared compile macros declare a license domain. Package analysis follows
 compiled dependency edges and rejects Apache host/GPL QEMU combinations in
 either direction; protocol code can be consumed by either. Compiler plugins
