@@ -1194,6 +1194,41 @@ fn live_idle_exact_event_short_of_the_timer_advances_without_a_timer_witness() {
 }
 
 #[test]
+fn live_idle_callback_leaves_a_due_timer_to_qemu_without_publishing_a_quiesced_wake() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 56, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(151, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    TEST_CLOCK_DEADLINE_PS.set(0);
+    TEST_IDLE_WAKE_WAIT_CALLS.set(0);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
+
+    // A timer due at the current coordinate needs only QEMU's own timer
+    // pass. An idle wake equal to the current coordinate is the protocol's
+    // quiesced-boundary encoding, so publishing one would tell the host the
+    // node stopped there.
+    let idle = state.on_vcpu_idle(0, 0);
+    TEST_CLOCK_DEADLINE_PS.set(-1);
+    idle.unwrap_or_else(|error| panic!("a due timer should return to QEMU: {error}"));
+
+    let snapshot = slot.snapshot();
+    assert!(
+        snapshot.status != STATUS_IDLE || snapshot.idle_wake_icount != snapshot.current_icount,
+        "a due timer published the quiesced encoding: {snapshot:?}"
+    );
+    assert_eq!(TEST_IDLE_WAKE_WAIT_CALLS.get(), 0);
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), -1);
+    assert!(!state.idle_advance_is_pending());
+    assert!(!state.all_halted_idle_handled.load(Ordering::Acquire));
+}
+
+#[test]
 fn live_idle_callback_publishes_next_idle_without_authorizing_its_deadline() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)

@@ -1445,6 +1445,36 @@ impl LiveVcpuTimeCallbackState {
             device_completion_deadline_tick,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::IdleHotLoop { source })?;
+        if plan.cause() == IdleWakeCause::TimerDeadline
+            && plan.desired_wake_icount() <= current_icount
+        {
+            // RR dispatches an already-due timer after this callback and then
+            // revisits the halted vCPUs. An idle wake equal to the current
+            // coordinate is the protocol's quiesced-boundary encoding, so
+            // publishing this wake would tell the host the node stopped here,
+            // and whether the host saw it before QEMU ran the timer would
+            // depend on host timing. Leave the reached coordinate published
+            // and release the edge for that rescan.
+            self.all_halted_idle_handled.store(false, Ordering::Release);
+            self.note_zero_length_boundary(
+                zero_length_trace::ZeroLengthBoundary::Idle("already-due"),
+                "vcpu-idle",
+                raw_icount,
+            );
+            clock_domain_trace::note_already_due(current_icount, timer_deadline_ps, raw_icount);
+            let observation = self.idle_plan_witness.begin(
+                vcpu_index,
+                raw_icount,
+                plan,
+                exact_deadline,
+                stop_condition,
+            );
+            self.idle_plan_witness.end(
+                observation,
+                idle_plan_witness::Outcome::AlreadyDueReturn(plan.desired_wake_icount()),
+            );
+            return Ok(());
+        }
         if plan.desired_wake_icount() == current_icount {
             clock_domain_trace::note_due_now(
                 plan.cause(),
