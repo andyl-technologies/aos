@@ -56,6 +56,7 @@ mod endpoint;
 mod controller_session_receiving;
 mod entropy;
 pub mod nix_floor_provisioning;
+pub mod method46_initial_provisioning;
 #[cfg(feature = "online-nix")]
 pub mod nix_service;
 mod error;

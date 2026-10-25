@@ -185,6 +185,20 @@ Recent committed startup fixes close narrower prerequisites:
   qualification. The genuine initial-floor producer remains missing, and
   public admission stays closed.
 
+- Initial METHOD46 approval now has canonical `AOSBIP01` request and separate
+  `AOSBII01` intent DATA formats. They bind the fixed endpoint/index/salt
+  handles, salt Name, node, deployment epoch, stable endpoint and canonical
+  generation-one checkpoint. Strict independent Ed25519 verification rejects
+  weak keys and substitutions; cold comparison rejects a changed current
+  request or conflicting Written value and never classifies Written NV as
+  needing another Extend. Seven native regressions and the public rustdoc
+  example pass. The installed-cut staging fixture derives its unsigned request
+  through this same codec. The complete application Rust target build is
+  pending. These records perform no I/O and establish no financial original,
+  independent key-pin provenance, durable publication or authenticated TPM
+  observation. The funded manual producer, installed hooks and connected
+  recovery remain incomplete; public admission stays closed.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they

@@ -12,6 +12,7 @@
 //! salt-name:34 | deployment-epoch:16              (external inputs)
 //! provision:AOSBTD01:160 | checkpoint:AOSBTF01:156
 //! extend-input:32 | expected-nv:32
+//! initial-request:AOSBIP01:322                    (unsigned approval DATA)
 //! ```
 
 use std::error::Error;
@@ -27,6 +28,9 @@ use sha2::{Digest as _, Sha256};
 use super::format::FloorEndpointV1;
 use super::{FloorCheckpointV1, FloorProfileV1};
 use crate::endpoint::{ProtectedBrokerSessionBrokerV1, ProtectedBrokerSessionClientV1};
+use crate::method46_initial_provisioning::{
+    Method46InitialPurposeV1, Method46InitialRequestDataV1,
+};
 use crate::recovery::journal::{
     PROTECTED_SESSION_JOURNAL, ProtectedBrokerSessionFixedEndpointV1,
     ProtectedBrokerSessionJournalV1, fixed_endpoint, protected_session_journal_limits,
@@ -50,6 +54,7 @@ struct InstalledInitialFloor {
     profile: FloorProfileV1,
     checkpoint: FloorCheckpointV1,
     salt_name: [u8; 34],
+    initial_request: Method46InitialRequestDataV1,
 }
 
 fn installed_initial_floor() -> Result<InstalledInitialFloor, Box<dyn Error>> {
@@ -127,7 +132,23 @@ fn installed_initial_floor() -> Result<InstalledInitialFloor, Box<dyn Error>> {
     if prospective.is_some() || cut.sequence() <= 1 {
         return Err("offline floor requires a nonempty complete main journal cut".into());
     }
-    let checkpoint = FloorCheckpointV1::new(1, profile.scope(), cut, [0; 32], [0; 32])?;
+    let purpose = match role {
+        FloorEndpointV1::ControllerStorageClient => {
+            Method46InitialPurposeV1::ControllerStorageClient
+        }
+        FloorEndpointV1::StorageBroker => Method46InitialPurposeV1::StorageBroker,
+    };
+    let initial_request = Method46InitialRequestDataV1::new(
+        purpose,
+        node,
+        epoch,
+        profile.stable_endpoint(),
+        salt_name,
+        cut.sequence(),
+        cut.head(),
+    )?;
+    let checkpoint = FloorCheckpointV1::decode(&initial_request.checkpoint())?;
+    checkpoint.require_profile(profile)?;
 
     Ok(InstalledInitialFloor {
         directory,
@@ -135,6 +156,7 @@ fn installed_initial_floor() -> Result<InstalledInitialFloor, Box<dyn Error>> {
         profile,
         checkpoint,
         salt_name,
+        initial_request,
     })
 }
 
@@ -147,6 +169,7 @@ fn stage_installed_initial_floor() -> Result<(), Box<dyn Error>> {
         profile,
         checkpoint,
         salt_name,
+        initial_request,
     } = installed_initial_floor()?;
 
     let mut provisioning = [0u8; 160];
@@ -158,6 +181,7 @@ fn stage_installed_initial_floor() -> Result<(), Box<dyn Error>> {
     write_new(&directory, "checkpoint", &checkpoint.encode())?;
     write_new(&directory, "extend-input", &checkpoint.extend_input())?;
     write_new(&directory, "expected-nv", &checkpoint.nv_value())?;
+    write_new(&directory, "initial-request", &initial_request.encode())?;
     File::open(&directory)?.sync_all()?;
 
     // All outputs describe the same protected cut, held until the final check.

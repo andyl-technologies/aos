@@ -1,5 +1,57 @@
 # Protocols and portable data formats
 
+## Initial METHOD46 provisioning approval
+
+`AOSBIP01` is the canonical unsigned request for the first Controller
+Storage-client or Storage-broker TPM floor. It is exactly 322 bytes:
+
+```text
+AOSBIP01 | version:u16be=1 | reserved:u16be=0 |
+profile:AOSBTP01:112 | salt-Name:34 | NV-index:u32be | salt-handle:u32be |
+checkpoint:AOSBTF01:156
+```
+
+The Controller purpose fixes NV index `0x0180a046` and salt handle
+`0x8100a046`; Storage fixes `0x0180a047` and `0x8100a047`. The profile
+contains the endpoint role, node, deployment epoch, stable endpoint identity
+and SHA-256 salt-Name commitment. The salt Name must use SHA-256 and have a
+nonzero digest. The checkpoint must be generation one, with zero predecessor
+and transaction digest, the exact profile scope and a complete nonempty main
+journal cut. Its native next sequence must exceed one and cannot be exhausted.
+Its existing canonical Extend equation determines the first target NV value.
+No alternative handle, profile, initial checkpoint or trailing byte is accepted.
+
+An independent Ed25519 signature covers all 322 request bytes. The approval key
+must be independently pinned for this manual purpose; endpoint, Nix and Root
+keys are not substitutes. `AOSBII01` is the distinct 398-byte initial intent:
+
+```text
+AOSBII01 | version:u16be=1 | reserved:u16be=0 |
+request:AOSBIP01:322 | independent-Ed25519-signature:64
+```
+
+Strict signature verification is required on initial acceptance and cold
+decoding. Weak keys, substitutions of any signed claim, another record purpose,
+noncanonical framing and trailing bytes are rejected. Neither record contains
+private index or hierarchy authentication material.
+
+The genuine funded manual producer must hold the actual protected main writer,
+derive and compare this request against that same current cut, and durably
+publish and fsync the separate approved intent before the first encrypted
+Extend. With the same approved intent and current cut, an authenticated exact
+Unwritten public area describes the first Extend as outstanding. An
+authenticated matching Written value describes checkpoint publication as
+outstanding and must never cause another Extend. Any other Written value or
+changed request is a conflict. An already completed checkpoint must fence
+repeated provisioning. Normal daemon startup consumes completed provisioning;
+it cannot adopt this intent or perform initialization.
+
+The canonical records, signature verification and recovery comparison are
+implemented as DATA operations. They do not establish original funding,
+independence of a supplied key pin, stopped owners, protected file custody,
+durability or authenticated TPM observations. The funded producer and its
+installed qualification remain required before METHOD46 admission can open.
+
 ## Compatibility domains
 
 The design has four independent compatibility domains:
