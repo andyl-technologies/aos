@@ -65,6 +65,26 @@ impl<S: Store, C: Clock> PreparedFileRead<'_, S, C> {
         self.size
     }
 
+    /// Checks an external storage restriction against this selected signed path.
+    ///
+    /// A native realizer calls this before accepting physical effects, even when
+    /// repository composition installed no general read-storage policy. The
+    /// restriction only refuses storage; it cannot grant Read, alter signed
+    /// properties or replace the fresh closing check in [`Self::finish`].
+    /// No content body is fetched and no policy witness is disclosed.
+    ///
+    /// # Errors
+    /// Refuses invalid effective property resolution or a storage policy that
+    /// cannot honor this file's root and graft requirements.
+    pub fn validate_storage_policy(
+        &self,
+        policy: &dyn crate::guard::ReadStoragePolicy,
+    ) -> Result<(), Error> {
+        self.guard
+            .validate_read_storage(&self.snapshot, &self.absolute, policy)?;
+        Ok(())
+    }
+
     /// Rechecks current scoped Read after backing preparation and before disclosure.
     ///
     /// The complete live policy reference must equal the one captured at

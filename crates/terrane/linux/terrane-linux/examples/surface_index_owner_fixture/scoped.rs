@@ -29,14 +29,23 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     // The repositories have independent signing custody and filesystem paths.
     // Overlap their real setup instead of spending the actor's finite bound on
     // unrelated source initialization after all native disclosure checks.
-    let (fixture, foreign) = tokio::try_join!(
+    let source_parent = std::env::temp_dir();
+    let mut zero = Vec::new();
+    terrane_format::cbor::write_text(&mut zero, "zero");
+    let (fixture, foreign, zero_wipe) = tokio::try_join!(
         Box::pin(RepositoryFixture::new(&inputs.domain)),
         Box::pin(RepositoryFixture::new("tenant:foreign-surface")),
+        Box::pin(RepositoryFixture::new_with_properties(
+            &inputs.domain,
+            &source_parent,
+            vec![("wipe".into(), zero)],
+        )),
     )?;
     eprintln!("SURFACE_SCOPED_STAGE source-commit");
     tokio::try_join!(
         Box::pin(fixture.commit(b"signed surface source")),
         Box::pin(foreign.commit(b"signed surface source")),
+        Box::pin(zero_wipe.commit(b"signed zero-wipe source")),
     )?;
     eprintln!("SURFACE_SCOPED_STAGE root-read");
     let target = ViewTarget::Ref(MAIN.parse()?);
@@ -164,8 +173,29 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .prepare_root_read(&target, foreign.authority.token(), "sdk", limits())
         .await?;
     let before = fs::read(&policy)?;
-    if owner.prepare_surface_mapping(selection).await.is_ok() || fs::read(policy)? != before {
+    if owner.prepare_surface_mapping(selection).await.is_ok() || fs::read(&policy)? != before {
         return Err("foreign signed root changed original physical cache policy".into());
+    }
+    eprintln!("SURFACE_SCOPED_STAGE zero-wipe-refusal");
+    let before = fs::read(&policy)?;
+    let selection = zero_wipe
+        .repository
+        .prepare_root_read(&target, zero_wipe.authority.token(), "sdk", limits())
+        .await?;
+    if !matches!(owner.prepare_surface_mapping(selection).await,
+        Err(Error::Store(error)) if matches!(error.kind(), StoreErrorKind::Unavailable { .. }))
+    {
+        return Err("signed zero-wipe root admitted a permanently sealed index".into());
+    }
+    let selection = zero_wipe
+        .repository
+        .prepare_file_read(&view, b"file", zero_wipe.authority.token(), "sdk")
+        .await?;
+    if !matches!(owner.prepare_file_backing(selection, files::deadline()?).await,
+        Err(Error::Store(error)) if matches!(error.kind(), StoreErrorKind::Unavailable { .. }))
+        || fs::read(&policy)? != before
+    {
+        return Err("signed zero-wipe file reached native pin effects".into());
     }
     println!(
         "PASS actual signed root admits canonical index; changed policy denies disclosure and foreign domain causes no physical mutation"
@@ -175,6 +205,9 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     );
     println!(
         "PASS mapped signed root scopes actual sealed file backing; another commit is denied before pin effects and changed policy denies disclosure"
+    );
+    println!(
+        "PASS signed zero-wipe requirements refuse sealed index and file preparation before physical policy mutation"
     );
     Ok(())
 }

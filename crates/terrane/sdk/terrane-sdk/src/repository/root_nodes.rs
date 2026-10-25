@@ -91,6 +91,28 @@ impl<S: Store, C: Clock> PreparedRootRead<'_, S, C> {
         &self.snapshot.storage_domain
     }
 
+    /// Checks an external storage restriction across the complete selected root.
+    ///
+    /// The same signed interpretation resolves every expanded path, including
+    /// graft overrides. A restrictive descendant refuses the whole projection
+    /// before an external realizer admits index bytes. This fetches no content
+    /// and grants no Read or enduring physical authority. The realizer must
+    /// still finish the original authorization before disclosure.
+    ///
+    /// # Errors
+    /// Refuses malformed property resolution or any path whose effective
+    /// requirements the supplied storage policy cannot honor.
+    pub fn validate_storage_policy(
+        &self,
+        policy: &dyn crate::guard::ReadStoragePolicy,
+    ) -> Result<(), Error> {
+        for path in &self.paths {
+            self.guard
+                .validate_read_storage(&self.snapshot, path, policy)?;
+        }
+        Ok(())
+    }
+
     /// Rechecks every expanded path before private prepared resources are disclosed.
     ///
     /// Each fresh check must observe the same complete policy reference as the

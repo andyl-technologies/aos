@@ -42,6 +42,16 @@ impl<S: Store, C: Clock> Guard<S, C> {
         let Some(policy) = &self.read_storage_policy else {
             return Ok(());
         };
+        self.validate_read_storage(snapshot, path, policy.as_ref())
+    }
+
+    /// Checks an external storage constraint against the original signed path.
+    pub(crate) fn validate_read_storage(
+        &self,
+        snapshot: &AuthorizedSnapshot,
+        path: &[u8],
+        policy: &dyn ReadStoragePolicy,
+    ) -> Result<(), StoreFailure> {
         let path = snapshot
             .evidence
             .policy_path(path, self.config().min_chunk_size)?;

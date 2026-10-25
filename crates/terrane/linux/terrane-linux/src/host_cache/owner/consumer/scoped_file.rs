@@ -89,7 +89,9 @@ impl NativeMetadataOwner {
     ///
     /// The opaque selection comes from the actual repository guard. Its effective
     /// domain must equal this physical worker's configured domain before pin
-    /// effects begin. The exact typed content identity selects a genuine warm
+    /// effects begin. Effective signed erasure policy must permit permanent
+    /// sealed storage, independently of the repository's installed read driver.
+    /// The exact typed content identity selects a genuine warm
     /// publication or an adopted recovery source after acknowledged Resume;
     /// metadata, chunk ranges and pathname claims cannot supply whole backing.
     /// The actual inode size must equal signed metadata. Only a fresh successful
@@ -143,6 +145,9 @@ impl NativeMetadataOwner {
         expires: u64,
         #[cfg(feature = "surface-fuse")] exposure: Option<&crate::host_cache::NativeExposureLease>,
     ) -> Result<NativeFileBacking, Error> {
+        // A native caller can supply a preparation from a repository without
+        // a read driver. Enforce sealed storage policy at this boundary too.
+        selection.validate_storage_policy(&crate::host_cache::NativeSealedReadPolicy)?;
         let (kind, digest) = match selection.content() {
             ContentRef::Inline(digest) => (IdentityKind::Chunk, digest),
             ContentRef::Manifest(digest) => (IdentityKind::Manifest, digest),

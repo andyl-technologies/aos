@@ -11,6 +11,7 @@ from sdk_contract_proof import captured, require, run_sdk_contract
 
 CASES = [
     "root_preparation_and_closing_check_request_no_content_bodies",
+    "root_storage_constraint_checks_every_selected_path_without_content_reads",
     "root_closing_refuses_a_policy_advance_and_fresh_historical_preparation_succeeds",
     "canonical_nodes_preserve_the_signed_target_without_any_content_read",
     "reopened_and_pinned_reads_preserve_the_selected_immutable_root",
@@ -31,6 +32,7 @@ POLICY_CASES = [
 
 FILE_CASES = [
     "file_preparation_selects_exact_signed_metadata_without_content_reads",
+    "file_storage_constraint_checks_signed_private_policy_without_content_reads",
     "closing_refuses_a_real_policy_advance_and_a_fresh_historical_read_succeeds",
     "a_root_scoped_token_prepares_a_file_without_disclosing_an_unrelated_graft",
     "manifest_file_preparation_requires_no_manifest_or_chunk_body_read",

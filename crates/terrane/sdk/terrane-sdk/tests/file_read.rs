@@ -306,6 +306,74 @@ async fn non_files_invalid_paths_and_wrong_surfaces_never_prepare_a_handle() -> 
     Ok(())
 }
 
+#[tokio::test]
+async fn file_storage_constraint_checks_signed_private_policy_without_content_reads() -> TestResult
+{
+    use terrane_format::properties::{EffectiveProperties, PropertyName, Value};
+    use terrane_sdk::guard::ReadStoragePolicy;
+
+    struct StoragePolicy {
+        refuse: bool,
+        checks: AtomicUsize,
+    }
+
+    impl ReadStoragePolicy for StoragePolicy {
+        fn validate(&self, properties: &EffectiveProperties<'_>) -> Result<(), StoreFailure> {
+            self.checks.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(
+                properties.get(PropertyName::Wipe),
+                Some(&Value::Text("zero"))
+            );
+            if self.refuse {
+                Err(StoreFailure::new(StoreErrorKind::Unavailable {
+                    retry_after: None,
+                }))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    let fixture = Fixture::new().await?;
+    fixture.commit_bytes(OLD).await?;
+    let bodies = Arc::new(AtomicUsize::new(0));
+    let repository = fixture
+        .repository
+        .with_read_driver(|original| MetadataOnly {
+            original: original.clone(),
+            bodies: Arc::clone(&bodies),
+        });
+    let prepared = repository
+        .prepare_file_read(
+            &View::parse(MAIN)?,
+            b"file",
+            fixture.authority.token(),
+            "sdk",
+        )
+        .await?;
+    let refusing = StoragePolicy {
+        refuse: true,
+        checks: AtomicUsize::new(0),
+    };
+    let accepting = StoragePolicy {
+        refuse: false,
+        checks: AtomicUsize::new(0),
+    };
+
+    assert!(matches!(prepared.validate_storage_policy(&refusing),
+        Err(Error::Store(error)) if matches!(error.kind(), StoreErrorKind::Unavailable { .. })));
+    prepared.validate_storage_policy(&accepting)?;
+    assert_eq!(refusing.checks.load(Ordering::Relaxed), 1);
+    assert_eq!(accepting.checks.load(Ordering::Relaxed), 1);
+    assert_eq!(bodies.load(Ordering::Relaxed), 0);
+
+    // A storage refusal grants no alternative authority and does not replace
+    // the ordinary closing check of this still-private preparation.
+    prepared.finish().await?;
+    assert_eq!(bodies.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
 struct MetadataOnly<S> {
     original: S,
     bodies: Arc<AtomicUsize>,

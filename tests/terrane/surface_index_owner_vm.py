@@ -233,6 +233,7 @@ def main():
                 "PASS actual signed root admits canonical index; changed policy denies disclosure and foreign domain causes no physical mutation",
                 "PASS signed-root mapping retains original sealed cache custody, refuses changed policy before disclosure and blocks warm retirement until drop",
                 "PASS mapped signed root scopes actual sealed file backing; another commit is denied before pin effects and changed policy denies disclosure",
+                "PASS signed zero-wipe requirements refuse sealed index and file preparation before physical policy mutation",
             ],
             "cap": [
                 "PASS surface admission requires actual recovery and acknowledged Resume",

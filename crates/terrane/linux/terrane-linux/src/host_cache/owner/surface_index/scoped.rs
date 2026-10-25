@@ -86,8 +86,9 @@ impl NativeMetadataOwner {
     /// Prepares original index backing and closes a fresh complete-root Read.
     ///
     /// The actual SDK selection must match the exposure and mapped commit,
-    /// canonical root and physical domain. A live physical queue check and
-    /// original-incarnation descriptor duplication precede the same selection's
+    /// canonical root and physical domain. Every selected path's signed erasure
+    /// policy must permit permanent sealed storage. A live physical queue check
+    /// and original-incarnation descriptor duplication precede the same selection's
     /// closing authorization. No content bodies are fetched or paths reopened.
     /// Failure drops private descriptors while retaining durable index custody.
     ///
@@ -107,6 +108,7 @@ impl NativeMetadataOwner {
         served: &NativeRootIndex,
         selection: PreparedRootRead<'_, S, C>,
     ) -> Result<NativeExposureRootBacking, Error> {
+        selection.validate_storage_policy(&crate::host_cache::NativeSealedReadPolicy)?;
         let metadata = selection.metadata();
         if exposure.commit() != served.commit
             || exposure.key() != served.key()
@@ -203,8 +205,9 @@ impl NativeMetadataOwner {
     /// The exact signed commit, canonical root and effective physical domain must
     /// match the original mapped selection. Its checked path must name the same
     /// typed content and logical size. These comparisons precede physical pin
-    /// effects. The ordinary native file bridge then checks original backing and
-    /// finishes this file's fresh scoped Read before returning its descriptor.
+    /// effects. The ordinary native file bridge independently enforces signed
+    /// erasure policy, then checks original backing and finishes this file's
+    /// fresh scoped Read before returning its descriptor.
     ///
     /// This supplies object-scope checking, not an exposure ID, durable exposure
     /// lease or local transport credential. The caller must separately verify
@@ -258,6 +261,7 @@ impl NativeMetadataOwner {
         &self,
         selection: &PreparedRootRead<'_, S, C>,
     ) -> Result<NativeSurfaceIndex, Error> {
+        selection.validate_storage_policy(&crate::host_cache::NativeSealedReadPolicy)?;
         let metadata = selection.metadata();
         let identity = root_identity(selection)?;
         if metadata.minimum_chunk_size() != self.chunk_profile.minimum() as u64 {
