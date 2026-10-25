@@ -104,6 +104,7 @@ pub struct HelloRequest {
     )]
     pub resume_session: Option<ResumeSession>,
     /// Carries explicitly negotiated hello extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -178,6 +179,7 @@ pub struct ResumedOperation {
     /// Reports its retained state, including unresolved native uncertainty.
     pub operation_state: OperationState,
     /// Retains the original terminal response, or explicit null while nonterminal.
+    #[serde(deserialize_with = "crate::envelope::deserialize_literal_nullable_object")]
     pub outcome: Nullable<Map<String, Value>>,
 }
 

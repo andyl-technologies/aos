@@ -84,6 +84,7 @@ pub struct FacetSelection {
     /// Binds its explicit guarantee evidence and limitations.
     pub guarantees_ref: ContentRef,
     /// Carries identity-bearing facet extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -111,6 +112,7 @@ pub struct OperatingContract {
     /// Lists selected facets by ID and version.
     pub facets: Vec<FacetSelection>,
     /// Carries identity-bearing timing extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -136,6 +138,7 @@ pub struct GuaranteeProfile {
     /// Binds scope restrictions and future exogenous-input limitations.
     pub limitations_ref: ContentRef,
     /// Carries identity-bearing guarantee extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -153,6 +156,7 @@ pub struct CapabilityProfile {
     /// Binds mandatory host restrictions and allowed mode combinations.
     pub requirements_ref: ContentRef,
     /// Carries identity-bearing capability extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 

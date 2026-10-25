@@ -3,6 +3,9 @@
 use super::*;
 use crate::bodies::ResponseShape;
 use crate::envelope::Envelope;
+use crate::protocol_snapshot::raw_value_reparse::historical_serde::{
+    decode_envelope, decode_response_shape,
+};
 use crate::transport::FrameReader;
 use serde_json::json;
 use std::io::Cursor;
@@ -123,8 +126,8 @@ fn actual_owning_cursor_matches_locked_shallow_response_and_keeps_all_real_outpu
     ] {
         let first = fields(&envelope(body));
         let actual = first.retained_frame_data().unwrap();
-        let locked: Envelope = serde_json::from_value(actual.value.clone()).unwrap();
-        let expected: ResponseShape = serde_json::from_value(Value::Object(locked.body)).unwrap();
+        let locked: Envelope = decode_envelope(actual.value.clone()).unwrap();
+        let expected: ResponseShape = decode_response_shape(Value::Object(locked.body)).unwrap();
         let mut owner = take(canonical(first));
         finish(&mut owner).unwrap();
         assert_eq!(owner.state_data(), (false, true, false));
@@ -214,9 +217,9 @@ fn actual_error_sequence_late_position_keeps_completed_detail_and_original_failu
             json!({"status":"error","operation_state":"not_started","extensions":{},"error":error}),
         ));
         let locked: Envelope =
-            serde_json::from_value(first.retained_frame_data().unwrap().value.clone()).unwrap();
+            decode_envelope(first.retained_frame_data().unwrap().value.clone()).unwrap();
         assert_eq!(
-            serde_json::from_value::<ResponseShape>(Value::Object(locked.body)).is_err(),
+            decode_response_shape(Value::Object(locked.body)).is_err(),
             extra
         );
         let mut owner = take(canonical(first));
@@ -467,8 +470,8 @@ fn structural_raw_keys_and_one_completed_text_result_do_not_acquire_an_extra_pas
         json!({"status":"completed","operation_state":"completed","extensions":{},"result":{"":0,RAW_VALUE_KEY:"null","value":{RAW_VALUE_KEY:protected}}}),
     ));
     let locked: Envelope =
-        serde_json::from_value(first.retained_frame_data().unwrap().value.clone()).unwrap();
-    let expected = serde_json::from_value::<ResponseShape>(Value::Object(locked.body));
+        decode_envelope(first.retained_frame_data().unwrap().value.clone()).unwrap();
+    let expected = decode_response_shape(Value::Object(locked.body));
     let mut owner = take(canonical(first));
     let result = finish(&mut owner);
     assert_eq!(result.is_ok(), expected.is_ok());
@@ -548,8 +551,8 @@ fn both_real_adapters_preserve_locked_shallow_schema_refusals_and_completed_pref
     for body in cases {
         let first = fields(&envelope(body));
         let raw = first.retained_frame_data().unwrap();
-        let locked: Envelope = serde_json::from_value(raw.value.clone()).unwrap();
-        let expected = serde_json::from_value::<ResponseShape>(Value::Object(locked.body));
+        let locked: Envelope = decode_envelope(raw.value.clone()).unwrap();
+        let expected = decode_response_shape(Value::Object(locked.body));
         let borrowed = borrowed_prefix(raw);
         let mut owner = take(canonical(first));
         let result = finish(&mut owner);

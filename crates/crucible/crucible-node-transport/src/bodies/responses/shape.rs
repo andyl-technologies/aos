@@ -2,7 +2,8 @@
 //!
 //! The wire parser has already retained the complete object. Reading its status
 //! selects one closed field schema directly; the remaining fields deserialize
-//! from that same borrowed map. Historical generic Deserialize stays unchanged.
+//! from that same borrowed map. Generic Deserialize retains its tagged enum
+//! representation; both routes preserve arbitrary JSON fields literally.
 
 use super::*;
 use serde::de::{DeserializeOwned, Error, Visitor, value::MapDeserializer};
@@ -48,7 +49,9 @@ impl<'de> Deserialize<'de> for Status {
 #[serde(deny_unknown_fields)]
 struct SuccessfulFields {
     operation_state: OperationState,
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
     result: Map<String, Value>,
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     extensions: Extensions,
 }
 
@@ -57,6 +60,7 @@ struct SuccessfulFields {
 struct ErrorFields {
     operation_state: OperationState,
     error: ErrorRecord,
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     extensions: Extensions,
 }
 
@@ -134,6 +138,7 @@ pub(crate) const fn response_shape_decode_counter_scratch_data() -> usize {
         + size_of::<ResponseShape>()
         + size_of::<Result<ResponseShape, ContractError>>()
         + size_of::<Result<(), ContractError>>()
+        + crucible_node_format::literal_json::deserialization_counter_scratch_data()
 }
 
 #[cfg(test)]

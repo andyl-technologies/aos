@@ -19,7 +19,7 @@ impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for Nullable<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Deserialize a value rather than delegating to Option: serde's
         // missing-field deserializer otherwise silently supplies None.
-        let value = Value::deserialize(deserializer)?;
+        let value = crucible_node_format::literal_json::deserialize_value(deserializer)?;
         if value.is_null() {
             return Ok(Self(None));
         }
@@ -27,6 +27,16 @@ impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for Nullable<T> {
             .map(|value| Self(Some(value)))
             .map_err(serde::de::Error::custom)
     }
+}
+
+/// Preserves explicit null and literal object data without an intermediate tree.
+///
+/// # Errors
+/// Refuses missing fields, nonobject nonnull values and invalid object contents.
+pub(crate) fn deserialize_literal_nullable_object<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Nullable<Map<String, Value>>, D::Error> {
+    crucible_node_format::literal_json::deserialize_optional_object(deserializer).map(Nullable)
 }
 
 pub use crucible_source_birth_data::profile::envelope::MessageKind;
@@ -70,8 +80,10 @@ pub struct Envelope {
     /// Selects a negotiated method's exact semantics.
     pub method: Method,
     /// Contains the method-specific closed request/result/event object.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
     pub body: Map<String, Value>,
     /// Carries only explicitly negotiated envelope extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 

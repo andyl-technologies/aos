@@ -34,6 +34,7 @@ pub struct ErrorRecord {
     /// Permits retry of the same identity only.
     pub retryable: bool,
     /// Carries bounded machine-readable metadata under negotiated schemas.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
     pub details: Map<String, Value>,
 }
 
@@ -93,8 +94,10 @@ pub enum ResponseShape {
         /// States registered running custody.
         operation_state: OperationState,
         /// Contains the selected method's immediate registration result.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
         result: Map<String, Value>,
         /// Carries explicitly negotiated response extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
         extensions: Extensions,
     },
     /// Carries the method's completed result and required evidence.
@@ -102,8 +105,10 @@ pub enum ResponseShape {
         /// States completed method custody.
         operation_state: OperationState,
         /// Contains the selected method's complete result fields.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
         result: Map<String, Value>,
         /// Carries explicitly negotiated response extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
         extensions: Extensions,
     },
     /// Discloses an error and its actual effect certainty.
@@ -113,6 +118,7 @@ pub enum ResponseShape {
         /// Contains the bounded refusal and machine-readable details.
         error: ErrorRecord,
         /// Carries explicitly negotiated response extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
         extensions: Extensions,
     },
 }
@@ -442,8 +448,10 @@ pub struct NotificationBody {
     /// Reports an observation cursor without releasing staged output.
     pub last_observation_sequence: U64,
     /// Contains bounded notification details; poll retrieves actual evidence.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
     pub details: Map<String, Value>,
     /// Carries explicitly negotiated notification extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 

@@ -99,6 +99,7 @@ pub struct Event {
     /// Binds original native receipt and input provenance.
     pub provenance_ref: ContentRef,
     /// Carries event extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -120,6 +121,7 @@ pub struct InputBatch {
     /// Preserves admitted event order.
     pub events: Vec<Event>,
     /// Carries input-batch extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -147,6 +149,7 @@ pub struct InputAuthorization {
     /// Binds complete due-input and upstream closure evidence.
     pub bound_evidence_refs: Vec<ContentRef>,
     /// Carries authorization extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -185,6 +188,7 @@ pub struct ObservationBatch {
     /// Binds physical measurements separately from modeled coordinates.
     pub measurement_ref: ContentRef,
     /// Carries observation-batch extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -225,6 +229,7 @@ pub struct PendingInventory {
     /// Lists all pending entries by ID.
     pub entries: Vec<PendingEntry>,
     /// Carries inventory extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -243,6 +248,7 @@ pub struct PendingEntry {
     /// Binds complete pending state using the selected facet schema.
     pub state_ref: ContentRef,
     /// Carries pending-entry extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 

@@ -24,6 +24,7 @@ pub struct NodeManifest {
     /// Lists supported operation facets by ID and version.
     pub operation_facets: Vec<FacetSelection>,
     /// Carries manifest extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -47,6 +48,7 @@ pub struct ProviderManifest {
     /// Lists exact profile qualification evidence.
     pub qualification_refs: Vec<ContentRef>,
     /// Carries provider manifest extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -70,6 +72,7 @@ pub struct RealizationManifest {
     /// Lists complete owner bindings by owner ID.
     pub owner_bindings: Vec<OwnerBinding>,
     /// Carries realization extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -94,6 +97,7 @@ pub struct ResourceLimits {
     /// Limits accepted operation count.
     pub maximum_operations: U64,
     /// Carries separately admitted resource-limit extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 

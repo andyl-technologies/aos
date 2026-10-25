@@ -26,6 +26,7 @@ impl CnpController {
             + size_of::<Value>()
             + size_of::<serde_json::Map<String, Value>>()
             + size_of::<[&Id; 3]>()
+            + crucible_node_format::literal_json::deserialization_counter_scratch_data()
     }
 
     pub(super) fn prepare_scoped_request(

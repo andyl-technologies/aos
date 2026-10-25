@@ -3,6 +3,8 @@
 //! Module map: [`values`] defines bounded wire scalars, [`time`] owns checked coordinator
 //! coordinates, [`schema`] describes portable graph and binding records, and
 //! [`canonical`] implements strict JSON decoding and CNP/1 content identity.
+//! [`literal_json`] preserves arbitrary JSON field data during schema decoding
+//! without interpreting implementation-private object keys.
 //! These records describe claims; they do not authenticate custody, resolve
 //! referenced content, or establish that a provider is qualified.
 //!
@@ -11,6 +13,7 @@
 #![forbid(unsafe_code)]
 
 pub mod canonical;
+pub mod literal_json;
 pub mod schema;
 pub mod time;
 pub mod values;

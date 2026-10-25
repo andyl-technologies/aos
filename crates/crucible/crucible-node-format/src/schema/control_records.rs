@@ -36,6 +36,7 @@ pub struct InputCustodyRecord {
     /// Binds complete qualified native proof content.
     pub evidence_refs: Vec<ContentRef>,
     /// Carries record extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -92,6 +93,7 @@ pub struct ClosedGateRecord {
     /// Binds complete qualified native proof content.
     pub evidence_refs: Vec<ContentRef>,
     /// Carries record extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -141,6 +143,7 @@ pub struct ActivationReadyRecord {
     /// Binds complete qualified native proof content.
     pub evidence_refs: Vec<ContentRef>,
     /// Carries record extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -193,6 +196,7 @@ pub struct UnchangedCutRecord {
     /// Binds complete qualified native proof content.
     pub evidence_refs: Vec<ContentRef>,
     /// Carries record extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -241,6 +245,7 @@ pub struct CleanupRecord {
     /// Binds complete qualified native proof content.
     pub evidence_refs: Vec<ContentRef>,
     /// Carries record extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -295,6 +300,7 @@ pub struct AdmissionRecord {
     /// Binds complete qualified native proof content.
     pub evidence_refs: Vec<ContentRef>,
     /// Carries record extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 

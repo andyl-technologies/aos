@@ -3,6 +3,9 @@
 use super::*;
 use crate::bodies::ResponseShape;
 use crate::envelope::Envelope;
+use crate::protocol_snapshot::raw_value_reparse::historical_serde::{
+    decode_envelope, decode_response_shape,
+};
 use crate::transport::FrameReader;
 use crucible_node_format::{Validate, canonical as locked_canonical};
 use serde_json::json;
@@ -150,8 +153,8 @@ fn actual_common_validation_matches_locked_shallow_shape_for_all_statuses_and_er
     ] {
         let source = source(&value, true);
         let raw = source.retained_frame_data().unwrap();
-        let locked: Envelope = serde_json::from_value(raw.value.clone()).unwrap();
-        let shape: ResponseShape = serde_json::from_value(Value::Object(locked.body)).unwrap();
+        let locked: Envelope = decode_envelope(raw.value.clone()).unwrap();
+        let shape: ResponseShape = decode_response_shape(Value::Object(locked.body)).unwrap();
         let expected = shape.validate();
         let expected_extent = match &shape {
             ResponseShape::Error { error, .. } if expected.is_ok() => Some(
@@ -359,8 +362,8 @@ fn shallow_nested_raw_oracle_expands_within_one_first_call_and_matches_the_actua
         ));
     }
     let locked: Envelope =
-        serde_json::from_value(source.retained_frame_data().unwrap().value.clone()).unwrap();
-    let shape: ResponseShape = serde_json::from_value(Value::Object(locked.body)).unwrap();
+        decode_envelope(source.retained_frame_data().unwrap().value.clone()).unwrap();
+    let shape: ResponseShape = decode_response_shape(Value::Object(locked.body)).unwrap();
     shape.validate().unwrap();
     let ResponseShape::Error { error, .. } = shape else {
         panic!("error fixture")
@@ -386,8 +389,8 @@ fn actual_next_numeric_unicode_and_empty_details_match_locked_jcs_extent_without
         let value = error_body("INVALID_ARGUMENT", "bad", details, false);
         let source = source(&value, true);
         let locked: Envelope =
-            serde_json::from_value(source.retained_frame_data().unwrap().value.clone()).unwrap();
-        let shape: ResponseShape = serde_json::from_value(Value::Object(locked.body)).unwrap();
+            decode_envelope(source.retained_frame_data().unwrap().value.clone()).unwrap();
+        let shape: ResponseShape = decode_response_shape(Value::Object(locked.body)).unwrap();
         let ResponseShape::Error { error, .. } = shape else {
             panic!("error fixture")
         };
@@ -503,8 +506,8 @@ fn actual_string_copy_paths_cover_empty_utf8_and_full_invalid_code_without_a_new
         let value = error_body(&code, &message, json!({}), false);
         let source = source(&value, true);
         let locked: Envelope =
-            serde_json::from_value(source.retained_frame_data().unwrap().value.clone()).unwrap();
-        let shape: ResponseShape = serde_json::from_value(Value::Object(locked.body)).unwrap();
+            decode_envelope(source.retained_frame_data().unwrap().value.clone()).unwrap();
+        let shape: ResponseShape = decode_response_shape(Value::Object(locked.body)).unwrap();
         let expected = shape.validate();
         let mut owner = take(source);
         owner.quote_into_data(usize::MAX).unwrap();

@@ -195,6 +195,7 @@ pub struct PollResult {
     /// Carries the normative `operation_state` contract field.
     pub operation_state: OperationState,
     /// Retains the original terminal response, or explicit null before completion.
+    #[serde(deserialize_with = "crate::envelope::deserialize_literal_nullable_object")]
     pub outcome: Nullable<Map<String, Value>>,
     /// Carries the normative `observations` contract field.
     pub observations: Vec<ObservationBatch>,

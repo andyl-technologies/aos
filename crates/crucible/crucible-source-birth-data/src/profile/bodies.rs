@@ -74,6 +74,7 @@ pub struct RealizeRequest {
     /// Carries the normative `resource_limits` contract field.
     pub resource_limits: ResourceLimits,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -103,6 +104,7 @@ pub struct ActivateRequest {
     /// Carries the normative `gate_id` contract field.
     pub gate_id: Id,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 

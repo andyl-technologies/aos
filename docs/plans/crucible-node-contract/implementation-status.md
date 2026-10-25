@@ -10,6 +10,64 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Literal JSON fields and borrowed array storage
+
+Baseline CNP envelope bodies, extensions, response results, error details,
+notifications and nullable outcomes now decode through literal JSON visitors.
+The portable schemas and SourceBirth request fields use the same visitors.
+Objects with `$serde_json::private::RawValue` or
+`$serde_json::private::Number` keys remain objects; their strings remain data. The
+native daemon's enabled `raw_value` feature no longer turns these CNP fields
+into hidden nested parsers. This implements the ordinary JSON value and string
+preservation contract in [RFC-0025 section 6.3](../../rfcs/0025-crucible-node-contract/06-provider-protocol-and-security.md#63-portable-value-vocabulary).
+
+The borrowed decoder reserves an array's actual iterator length once and
+refuses changed lengths or unavailable storage. Result values retain their own
+backing, while the original borrowed values remain unchanged. Nullable object
+fields still require explicit null or an object. Duplicate keys, canonical
+geometry, byte ceilings and depth limits remain separately enforced. The new
+visitors' fixed control layouts are included in the shared scoped-request and
+response counters, and therefore in their existing Initial and packet-prefix
+roots. This does not establish a physical stack bound or a complete future SDK
+R/T/S row.
+
+The existing plain-Serde RawValue models retain their predecessor semantics.
+Their test-only remote derives now pin the old envelope, nullable and response
+field hooks instead of silently inheriting the changed live schema hooks.
+Separate controls compare that predecessor behavior with the literal live
+codec. No production reparse model, failed prefix or census control is removed.
+The coordinator's literal-extension control checks the actual preserved object;
+its conservative reset supplement remains charged for other coordinator
+consumers that still use ordinary Value decoding.
+
+Both complete Transport configurations pass 2,253 tests with zero failures and
+twenty ignored. Both complete Format suites pass 44 tests with one ignored;
+SourceBirth passes 62 and Engine passes 2,074 with thirty-four ignored in each
+configuration. The focused literal controls, all 127 predecessor-model controls
+and the coordinator literal-extension control pass in both configurations.
+Scoped formatting of the thirty changed Rust files, five-package
+all-feature/all-target checks and all six architecture checks pass. Format and
+SourceBirth strict Clippy have no warnings or errors. Transport retains the
+exact prior four errors and 1,725 warnings; this is not a strict Transport lint
+pass.
+
+Required application test-target compilation passes with 185 artifacts across
+58 packages and 76 integration targets. All 746 frozen Rust/Cargo inputs match
+the captured build source and the current candidate tree.
+
+The actual source-built original-scene inactive-runtime/reclamation baseline
+passes in 788.48 seconds with size-optimized test-profile companions, normal
+provider stderr handling and unchanged sixty-second Initial deadlines. It
+checks all three Initial lifecycles, InputOwners, CollectingGraph, inactive
+runtime construction and rechecks, exact/one-short census restrictions and
+retirement/reclamation. Rebuilding after the test-only oracle corrections
+produces identical daemon-test, provider and device executable hashes, so the
+successful native result applies to the final Rust candidate. This qualifies
+the inactive lifecycle only. Complete SDK funding, the genuine same-Source
+funded handoff, Native18 production selection, Arm/Capture and the remaining
+full RFC work stay unfinished. User-owned changes remain outside this component;
+no clean whole-PR qualification is claimed.
+
 ## Direct live response-shape decoding
 
 The live response decoder now selects its closed field schema from the original

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::envelope::Envelope;
+use crate::protocol_snapshot::raw_value_reparse::historical_serde::decode_envelope;
 use crate::transport::FrameReader;
 use serde_json::json;
 use std::io::Cursor;
@@ -139,7 +140,7 @@ fn actual_shallow_map_and_sequence_fields_match_locked_envelope_deserialize() {
     ] {
         let mut owner = quoted(&value);
         let raw = owner.retained_frame_data().unwrap();
-        let expected: Result<Envelope, _> = serde_json::from_value(raw.value.clone());
+        let expected: Result<Envelope, _> = decode_envelope(raw.value.clone());
         let result = owner.run_data();
         assert_eq!(result.is_ok(), expected.is_ok());
         assert_censused(&owner, &result);

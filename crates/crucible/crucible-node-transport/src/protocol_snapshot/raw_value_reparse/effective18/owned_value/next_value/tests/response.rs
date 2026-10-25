@@ -3,6 +3,9 @@
 use super::*;
 use crate::bodies::ResponseShape;
 use crate::envelope::Envelope;
+use crate::protocol_snapshot::raw_value_reparse::historical_serde::{
+    decode_envelope, decode_response_shape,
+};
 use crucible_node_format::canonical;
 
 fn envelope(body: Value) -> Value {
@@ -29,9 +32,9 @@ fn actual_response_cut_order_and_jcs_extent_match_the_locked_shallow_boundary() 
         "result": {"value": ["\n\u{0000}", 1.25, "😀", "\u{e000}"]},
         "extensions": {"named": true}
     })));
-    let locked: Envelope = serde_json::from_value(raw.value.clone()).unwrap();
+    let locked: Envelope = decode_envelope(raw.value.clone()).unwrap();
     let expected_bytes = canonical::canonical_json(&Value::Object(locked.body.clone())).unwrap();
-    let expected: ResponseShape = serde_json::from_value(Value::Object(locked.body)).unwrap();
+    let expected: ResponseShape = decode_response_shape(Value::Object(locked.body)).unwrap();
     let first = first_envelope(&raw);
     let row =
         NativeImport18ResponseShapeCutsPreludeData::quote_data(&raw, &first, usize::MAX).unwrap();
@@ -88,8 +91,8 @@ fn error_record_sequence_keeps_its_detail_cut_before_a_late_extra_position_refus
         let raw = frame(envelope(
             json!({"status": "error", "operation_state": "not_started", "error": error, "extensions": {}}),
         ));
-        let locked: Envelope = serde_json::from_value(raw.value.clone()).unwrap();
-        let expected = serde_json::from_value::<ResponseShape>(Value::Object(locked.body));
+        let locked: Envelope = decode_envelope(raw.value.clone()).unwrap();
+        let expected = decode_response_shape(Value::Object(locked.body));
         assert_eq!(expected.is_err(), extra);
         let first = first_envelope(&raw);
         let row = NativeImport18ResponseShapeCutsPreludeData::quote_data(&raw, &first, usize::MAX)
@@ -152,9 +155,9 @@ fn canonical_body_refusal_precedes_any_second_pass_on_a_real_deep_first_result()
 #[test]
 fn internally_tagged_sequence_is_real_but_the_actual_envelope_body_cut_is_a_map() {
     let shape = json!(["completed", "completed", {"value": 1}, {}]);
-    assert!(serde_json::from_value::<ResponseShape>(shape.clone()).is_ok());
+    assert!(decode_response_shape(shape.clone()).is_ok());
     let raw = frame(envelope(shape));
-    assert!(serde_json::from_value::<Envelope>(raw.value.clone()).is_err());
+    assert!(decode_envelope(raw.value.clone()).is_err());
     let row = NativeImport18EnvelopeFieldsConstructionData::quote_data(&raw, usize::MAX).unwrap();
     let mut output = None;
     assert!(

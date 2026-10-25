@@ -14,6 +14,7 @@ pub struct SchemaRef {
     /// Contains the complete verified schema and semantic specification.
     pub definition: ContentRef,
     /// Carries negotiated schema extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -44,6 +45,7 @@ pub struct LaneDescriptor {
     /// Limits queued lane events.
     pub maximum_pending_events: U64,
     /// Carries identity-bearing lane extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -62,6 +64,7 @@ pub struct PortDescriptor {
     /// Binds ordering, flow-control, failure, and state semantics.
     pub configuration_ref: ContentRef,
     /// Carries identity-bearing port extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -85,6 +88,7 @@ pub struct NodeDescriptor {
     /// Lists ports in strictly ascending ID order.
     pub ports: Vec<PortDescriptor>,
     /// Carries identity-bearing descriptor extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -114,6 +118,7 @@ pub struct ConnectionDescriptor {
     /// Identifies the authoritative owner of connection state.
     pub capture_owner_id: Id,
     /// Carries identity-bearing connection extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 

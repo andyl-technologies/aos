@@ -409,6 +409,7 @@ pub struct ExtensionUse {
     /// Selects exact declaration/version/schema identities without implicit upgrades.
     pub selection: ExtensionSelection,
     /// Carries parameters checked against the actual installed schema and semantics.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_value")]
     pub parameters: serde_json::Value,
 }
 

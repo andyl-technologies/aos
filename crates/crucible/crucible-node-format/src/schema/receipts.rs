@@ -109,6 +109,7 @@ pub struct StopReceipt {
     /// Binds selected native proof content.
     pub evidence_refs: Vec<ContentRef>,
     /// Carries stop-receipt extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -121,6 +122,7 @@ pub struct PortBound {
     /// Contains its qualified lower bound or explicit unknown.
     pub bound: Bound,
     /// Carries per-port bound extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -146,6 +148,7 @@ pub struct ActivationManifest {
     /// Binds prepared coordinator state.
     pub coordinator_state_ref: ContentRef,
     /// Carries activation extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -166,6 +169,7 @@ pub struct PreparedOwner {
     /// Binds exact ready-state evidence.
     pub ready_receipt: ContentRef,
     /// Carries preparation extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -196,6 +200,7 @@ pub struct ControlReceipt {
     /// Distinguishes provider claims from host-authenticated records.
     pub issuer: ReceiptIssuer,
     /// Carries control-receipt extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 

@@ -51,6 +51,7 @@ pub struct CaptureManifest {
     /// Binds capture provenance and input history.
     pub provenance_ref: ContentRef,
     /// Carries identity-bearing capture extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -81,6 +82,7 @@ pub struct CapturedOwner {
     /// Binds unchanged-cut and complete-domain proof.
     pub capture_receipt: ContentRef,
     /// Carries owner capture extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 

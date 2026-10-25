@@ -1,7 +1,7 @@
 //! Exercises real first-cut construction, refusal and same-owner census.
 
 use super::*;
-use crate::envelope::Envelope;
+use crate::protocol_snapshot::raw_value_reparse::historical_serde::decode_envelope;
 use serde_json::json;
 
 fn frame(value: Value) -> RetainedFrame {
@@ -185,7 +185,7 @@ fn actual_map_sequence_and_unit_enum_forms_match_locked_envelope_acceptance() {
 
     for value in [object, sequence, bad_sequence, bad_enum, missing] {
         // This control constructs only shallow ordinary comparison values.
-        let expected = serde_json::from_value::<Envelope>(value.clone()).is_ok();
+        let expected = decode_envelope(value.clone()).is_ok();
         let raw = frame(value);
         let row =
             NativeImport18EnvelopeFieldsConstructionData::quote_data(&raw, usize::MAX).unwrap();

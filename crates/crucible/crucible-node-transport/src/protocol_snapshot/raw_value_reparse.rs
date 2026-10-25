@@ -444,3 +444,6 @@ pub(crate) use effective18::{
     NativeImport18OwnedValuePassAttemptData, NativeImport18OwnedValuePassConstructionData,
     NativeImport18OwnedValuePassKindData, NativeImport18OwnedValuePassViewData,
 };
+
+#[cfg(test)]
+mod historical_serde;

@@ -6,6 +6,7 @@ use serde_json::json;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 mod borrowed_typed;
+mod literal_json;
 
 fn preceding<T: DeserializeOwned + Validate>(
     value: &Map<String, Value>,
@@ -67,14 +68,14 @@ fn typed_decoding_preserves_independent_results_and_original_spare_capacity() ->
 }
 
 #[test]
-fn private_marker_fields_keep_the_preceding_feature_dependent_typed_behavior() -> TestResult {
+fn private_marker_fields_match_owned_and_borrowed_literal_decoding() -> TestResult {
     for extension in [
         json!({"$serde_json::private::RawValue": "ordinary DATA"}),
         json!({"$serde_json::private::RawValue": "{\"nested\":true}"}),
         json!({"$serde_json::private::Number": "123"}),
     ] {
-        // Construct the map directly: from_value in fixture setup would apply
-        // the same feature-sensitive Value visitor that this test exercises.
+        // Construct the map directly so fixture setup preserves literal data
+        // independently of serde_json feature-dependent Value decoding.
         let value = body(extension);
         let original = serde_json::to_vec(&value)?;
         let decoded = object::<PollRequest>(&value);

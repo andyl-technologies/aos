@@ -404,12 +404,13 @@ mod tests {
     }
 
     #[test]
-    fn literal_reserved_extension_retains_real_normalization_and_extra_rows() -> TestResult {
+    fn literal_reserved_extension_is_preserved_within_conservative_construction_rows() -> TestResult
+    {
         let (_, mut original) = complete_scope();
         let payload = serde_json::json!({"nested":[0,1,{"kept":"actual"}]});
         let literal =
             serde_json::json!({"$serde_json::private::RawValue": serde_json::to_string(&payload)?});
-        let expected: Value = serde_json::from_value(literal.clone())?;
+        let expected = literal.clone();
         original["participants"][0]["provider"]["extensions"]["coordinator-quote-control"] =
             literal;
         let raw = canonical::canonical_json(&original)?;
@@ -426,8 +427,9 @@ mod tests {
                 > PacketNative5CoordinatorInstallation::decode_construction_counter_scratch_data()
         );
         let complete = PacketNative5CoordinatorInstallation::decode(&raw, &local)?;
-        // This is the real existing decoder's normalization, not a copied body
-        // or a manufactured successful native owner.
+        // The real schema decoder preserves literal extension data. Other
+        // coordinator consumers still use ordinary Value decoding, so the
+        // shared conservative reset supplement remains independently charged.
         assert_eq!(
             complete.participants[0].provider.extensions["coordinator-quote-control"],
             expected

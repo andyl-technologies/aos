@@ -13,6 +13,7 @@ pub struct ArtifactIdentity {
     /// Commits to exact artifact bytes.
     pub content: ContentRef,
     /// Carries identity-bearing artifact extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -32,6 +33,7 @@ pub struct ImplementationIdentity {
     /// Lists complete state or protocol schemas by ID and version.
     pub formats: Vec<SchemaRef>,
     /// Carries identity-bearing implementation extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -65,6 +67,7 @@ pub struct BindingCompatibility {
     /// Lists the exact implementation and profile qualification basis.
     pub qualification_refs: Vec<ContentRef>,
     /// Carries durable identity-bearing extension parameters.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -93,6 +96,7 @@ pub struct LiveAuthority {
     /// Binds the host admission record; syntax alone confers no authority.
     pub host_receipt: ContentRef,
     /// Carries negotiated operational extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -105,6 +109,7 @@ pub struct NodeBinding {
     /// Contains separately authenticated live authority.
     pub authority: LiveAuthority,
     /// Carries operational extensions excluded from durable compatibility.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -117,6 +122,7 @@ pub struct NodeBindingRef {
     /// Commits to its complete durable compatibility projection.
     pub binding_hash: HashRef,
     /// Carries identity-bearing reference extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -136,6 +142,7 @@ pub struct OwnerBinding {
     /// Binds indivisible ownership constraints.
     pub ownership_ref: ContentRef,
     /// Carries identity-bearing owner extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -161,6 +168,7 @@ pub struct WorldBinding {
     /// Binds initialization policy and provenance.
     pub initialization_ref: ContentRef,
     /// Carries identity-bearing world extensions.
+    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 

@@ -16,6 +16,7 @@ pub struct DiscoverRequest {
     )]
     pub cursor: Option<Id>,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -37,6 +38,7 @@ pub struct AdmitRequest {
     /// Carries the normative `admission_receipt` contract field.
     pub admission_receipt: ContentRef,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -76,6 +78,7 @@ pub struct InputRequest {
     /// Carries the normative `batch_hash` contract field.
     pub batch_hash: HashRef,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -121,6 +124,7 @@ pub struct ObserveRequest {
     /// Limits requested observations without authorizing allocation.
     pub maximum_items: U64,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -161,8 +165,10 @@ pub struct BeginRequest {
     /// Identifies the admitted world generation.
     pub world_generation: U64,
     /// Contains the closed argument schema selected by kind.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
     pub arguments: Map<String, Value>,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -185,6 +191,7 @@ pub struct PollRequest {
     /// Carries the normative `after_observation_sequence` contract field.
     pub after_observation_sequence: U64,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -201,6 +208,7 @@ pub struct CancelRequest {
     /// Carries the normative `reason` contract field.
     pub reason: Id,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -239,6 +247,7 @@ pub struct QuantumCloseRequest {
     /// Carries the normative `deadline_disposition` contract field.
     pub deadline_disposition: BudgetOutcome,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -274,6 +283,7 @@ pub struct WorldActivateRequest {
     /// Carries the normative `activation_manifest` contract field.
     pub activation_manifest: ContentRef,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -295,6 +305,7 @@ pub struct AbortRequest {
     /// Carries the normative `reason` contract field.
     pub reason: Id,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -317,6 +328,7 @@ pub struct RetireRequest {
     /// Binds authenticated durable custody; null is legal only for inert abandonment.
     pub custody_receipt: Nullable<ContentRef>,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -351,6 +363,7 @@ pub struct BlobBeginRequest {
     /// Carries the normative `content` contract field.
     pub content: ContentRef,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -372,6 +385,7 @@ pub struct BlobChunkRequest {
     /// Carries the normative `bytes` contract field.
     pub bytes: Bytes,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -394,6 +408,7 @@ pub struct BlobFinishRequest {
     /// Carries the normative `transfer_id` contract field.
     pub transfer_id: Id,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
@@ -410,6 +425,7 @@ pub struct ReleaseRequest {
     /// Carries the normative `realization_id` contract field.
     pub realization_id: Id,
     /// Carries explicitly negotiated method extensions.
+    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
     pub extensions: Extensions,
 }
 
