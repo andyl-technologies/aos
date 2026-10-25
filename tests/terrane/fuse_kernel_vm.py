@@ -211,6 +211,35 @@ def close_fuse_file(descriptor):
             raise
 
 
+def unprivileged_registration(descriptor, backing):
+    """Attempts the original connection ioctl after an actual capability drop."""
+    status = dict(line.split(":", 1) for line in pathlib.Path("/proc/self/status").read_text().splitlines()
+                  if ":" in line)
+    require(os.getresuid() == (848, 848, 848) and os.getresgid() == (848, 848, 848)
+            and os.getgroups() == [] and status["NoNewPrivs"].strip() == "1"
+            and all(int(status[name].strip(), 16) == 0
+                    for name in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]),
+            "registration refusal actor retained privileged authority")
+    device = os.fstat(descriptor)
+    require(stat.S_ISCHR(device.st_mode) and device.st_rdev == os.makedev(10, 229)
+            and stat.S_ISREG(os.fstat(backing).st_mode)
+            and fcntl.fcntl(backing, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY,
+            "registration refusal lacks the actual original native descriptors")
+    measurement = bytearray(68)
+    struct.pack_into("=HH", measurement, 0, 0, 64)
+    fcntl.ioctl(backing, MEASURE_VERITY, measurement)
+    require(struct.unpack_from("=HH", measurement) == (1, 32),
+            "registration refusal backing lacks its actual immutable seal")
+    try:
+        fcntl.ioctl(descriptor, BACKING_OPEN, struct.pack("=iIQ", backing, 0, 0))
+    except OSError as error:
+        require(error.errno == errno.EPERM,
+                "unprivileged backing registration returned another errno")
+    else:
+        raise RuntimeError("capability-free worker registered a passthrough backing")
+    print("PASS actual unprivileged original-connection backing registration refuses EPERM before privileged registration", flush=True)
+
+
 def run(root, executable):
     body = executable.read_bytes()
     require(body.startswith(b"\x7fELF"), "probe executable is not an actual ELF")
@@ -270,6 +299,21 @@ def run(root, executable):
         probe.check()
         require(initialized, "FUSE INIT did not finish")
         print("PROBE negotiated FUSE passthrough", flush=True)
+        # A separate executable drops every real capability. It borrows only
+        # these original test descriptors and exits before privileged setup;
+        # this diagnostic is not a production registration-broker contract.
+        refused = subprocess.run([
+            "setpriv", "--reuid=848", "--regid=848", "--clear-groups",
+            "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
+            "--no-new-privs", sys.executable, __file__, "--unprivileged-registration",
+            str(descriptor), str(backing)], pass_fds=(descriptor, backing),
+            capture_output=True, text=True, timeout=5)
+        print(refused.stdout, end="", flush=True)
+        print(refused.stderr, end="", flush=True)
+        require(refused.returncode == 0 and refused.stdout.splitlines() == [
+            "PASS actual unprivileged original-connection backing registration refuses EPERM before privileged registration"],
+            "actual unprivileged backing registration refusal witness missing")
+
 
         for name in ["true", "control"]:
             opened.append(os.open(mountpoint / name, os.O_RDONLY | os.O_CLOEXEC))
@@ -314,6 +358,7 @@ def run(root, executable):
             "backing_bytes": len(body),
             "backing_verity_sha256": measurement[4:36].hex(),
             "backing_id_closed": True,
+            "capability_free_registration_errno": errno.EPERM,
             "abort_new_lookup_errno": errno.ENOTCONN,
             "abort_direct_read_errno": errno.ENOTCONN,
             "abort_existing_passthrough_readable": True,
@@ -351,4 +396,7 @@ def run(root, executable):
 
 
 if __name__ == "__main__":
-    run(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))
+    if len(sys.argv) == 4 and sys.argv[1] == "--unprivileged-registration":
+        unprivileged_registration(int(sys.argv[2]), int(sys.argv[3]))
+    else:
+        run(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))

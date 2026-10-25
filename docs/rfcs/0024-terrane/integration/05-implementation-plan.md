@@ -220,6 +220,26 @@ The owning gate still requires every original scenario, final verification and
 cleanup; its physical-owner aggregate now has four guests. Fresh qualification
 is required and no task is accepted from the earlier actor witnesses.
 
+The independent kernel-contract probe now also executes a distinct UID/GID-848
+actor after actual passthrough INIT, before privileged backing registration.
+That actor verifies its empty real/permitted/effective/bounding/ambient
+capability sets, no supplementary groups and `NoNewPrivs`, plus the same actual
+FUSE connection and read-only fs-verity backing, then requires exact `EPERM`
+from `FUSE_DEV_IOC_BACKING_OPEN`. The original privileged passthrough, mmap,
+overlay execution, abort, retained-reference and final quota-release controls
+remain unchanged under the same thirty-second probe bound. This is diagnostic
+qualification of the registration privilege contract, not an implementation of
+a registration broker or an RFC amendment. Python syntax and diff checks pass;
+actual guest execution is pending. The proposed scoped broker correction to
+FUSE-13–16/ARCH-9 remains pending user review.
+
+Mandatory application-target compilation also passes at `9b20835594` in
+1,562.024 seconds and at `4229f1d067` in 1,437.791 seconds. Full independent
+review compares all 8,196 immutable source files for each result and verifies
+190 test executables across 59 packages. These are compilation-only results;
+they neither execute those application tests nor qualify the failed owning or
+configured aggregates. Newer joined-worker source compilation remains running.
+
 Complete feature matrices now pass with independent immutable-source, retained
 executable and actual guest review at these checkpoints:
 
