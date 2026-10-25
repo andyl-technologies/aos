@@ -122,6 +122,12 @@ nix-build tools/bazel/tests/gpl-gates.nix -A all --no-out-link
 
 This entry point requests the existing green-before-advance wrappers and their
 prerequisites, preserving the canonical ABI owner counts and zero-match guards.
+Its output retains both gate outputs and `selections.json` with the exact
+component identities. The ABI driver defaults to Cargo; pass
+`--argstr abiDriver bazel` to select its Bazel branch, or `cargo` to roll back.
+The license driver still invokes Cargo. System fixtures created through
+`mkSystem` retain their ordinary package selection, so this comparison does not
+claim every prerequisite VM uses a migrated component.
 The [selected-component gate run](../tests/evidence/selected-gpl-normative-gates.json)
 passed the named license wrapper and its 18 owner cases. The ABI chain failed
 in the production VM-flight prerequisite: reference and hostile runs differed
@@ -144,11 +150,22 @@ logs and passing JUnit inventories. This supports driver migration; it does
 not satisfy the named gate's VM prerequisites or replace its source audits.
 The [retained owner execution](../tests/evidence/abi-owner-executions.json)
 passed all 114 cases, the 310 policy tests, and the source-catalog check.
-Its output retains both gate outputs and `selections.json` with the exact
-component identities. The existing gate drivers still invoke Cargo; migrating
-those drivers remains a separate requirement. System fixtures created through
-`mkSystem` retain their ordinary package selection, so this comparison does not
-claim every prerequisite VM uses a migrated component.
+
+The canonical ABI driver can be qualified independently with:
+
+```text
+nix-build -A checks.build.bazel.abi-owners.driver-comparison --no-out-link
+```
+
+This selects the Bazel execution branch, revalidates the immutable owner
+comparison against the canonical source, and writes its own evidence. It does
+not configure Cargo or build the Cargo test oracle. The package ABI source
+audit retains the rollback checks and also verifies the Bazel wiring and that
+raw and named gates select the same driver. The isolated driver check omits
+the named wrapper's prerequisites and cannot qualify the full ABI gate.
+The [driver checkpoint](../tests/evidence/canonical-abi-driver.json) retains
+both isolated driver executions, the default and rollback selector checks,
+rejected mismatched modes, and the Bazel branch's direct input audit.
 
 To execute a distinct uncached build using only an exported source tree:
 

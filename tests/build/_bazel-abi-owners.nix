@@ -114,4 +114,13 @@ in rec {
     PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 ${verifier}/verify_abi_owners.py \
       --canonical ${../crucible/phase2-abi-conformance.nix} --comparison "$out"
   '';
+
+  # Qualify the canonical driver's Bazel branch independently. The named gate
+  # remains responsible for its license, determinism and other prerequisites.
+  driver-comparison = import ../crucible/phase2-abi-conformance.nix {
+    inherit pkgs;
+    inherit (pkgs) lib;
+    abiOwnerExecutions = all;
+    attrPath = "checks.build.bazel.abi-owners.driver-comparison";
+  };
 }

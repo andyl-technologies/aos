@@ -1,8 +1,11 @@
 """Rejects incomplete or misattributed ABI owner qualification evidence."""
 
 import copy
+import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -63,6 +66,29 @@ class AbiOwnerEvidenceTests(unittest.TestCase):
         self.assertEqual(result["cases"], ["canonical_case", "other_case"])
         self.assertEqual(len(result["junit_sha256"]), 64)
         self.assertEqual(len(result["execution_sha256"]), 64)
+
+    def test_driver_writes_its_own_evidence_from_an_immutable_comparison(self):
+        canonical = self.build / "canonical.nix"
+        canonical.write_text(CANONICAL)
+        comparison = self.build / "comparison"
+        (comparison / "owners").mkdir(parents=True)
+        (comparison / "owners/protocol").symlink_to(self.build, target_is_directory=True)
+        (comparison / "selections.json").write_text(json.dumps({
+            "canonical_gate_sha256": hashlib.sha256(canonical.read_bytes()).hexdigest(),
+            "selections": {"protocol": self.contract},
+        }))
+        comparison.chmod(0o555)
+        self.addCleanup(lambda: comparison.chmod(0o755))
+        output = self.build / "driver-evidence.json"
+
+        subprocess.run([
+            sys.executable, str(Path(__file__).with_name("verify_abi_owners.py")),
+            "--canonical", str(canonical), "--comparison", str(comparison),
+            "--output", str(output),
+        ], check=True, capture_output=True, text=True)
+
+        self.assertEqual(json.loads(output.read_text())["executed_cases"], 2)
+        self.assertFalse((comparison / "evidence.json").exists())
 
     def test_xml_refuses_skip_failure_duplicate_and_incomplete_inventories(self):
         original = self.xml

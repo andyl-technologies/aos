@@ -91,6 +91,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--canonical", required=True, type=Path)
     parser.add_argument("--comparison", required=True, type=Path)
+    parser.add_argument("--output", type=Path)
     options = parser.parse_args()
 
     source = options.canonical.read_text()
@@ -101,7 +102,8 @@ def main():
     validate_selections(source, selections)
     results = {name: verify_owner(options.comparison / "owners" / name, contract)
                for name, contract in sorted(selections.items())}
-    (options.comparison / "evidence.json").write_text(json.dumps({
+    output = options.output or options.comparison / "evidence.json"
+    output.write_text(json.dumps({
         "schema_version": 1,
         "status": "PASS",
         "owners": results,
