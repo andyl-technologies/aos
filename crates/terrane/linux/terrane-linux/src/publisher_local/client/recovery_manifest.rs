@@ -6,9 +6,9 @@
 //! The physical recovery executor retains accepted resources before correlation;
 //! these exchanges grant no Running publisher or serving authority.
 
-use std::{fs::File, io, os::fd::AsFd, sync::Arc};
+use std::{io, os::fd::AsFd, sync::Arc};
 
-use rustix::fs::{FileType, Mode, OFlags, ResolveFlags};
+use rustix::fs::{FileType, OFlags};
 use terrane_sdk::host::{
     cache::HostDomainLocation,
     publication::{PublicationClaim, PublicationRecipe},
@@ -307,13 +307,7 @@ impl Client<HostDomainLocation> {
         body: &PeerPublishedObject<HostDomainLocation>,
     ) -> Result<(), Error> {
         self.layout.recheck()?;
-        let root = File::from(rustix::fs::openat2(
-            rustix::fs::CWD,
-            self.layout.layout().root(),
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS,
-        )?);
+        let root = crate::publisher_io::path::open_directory(self.layout.layout().root())?;
         let root_project = NativeProject::inspect(&root)?;
         let body_project = NativeProject::inspect(body.handle())?;
         let root_stat = rustix::fs::fstat(&root)?;

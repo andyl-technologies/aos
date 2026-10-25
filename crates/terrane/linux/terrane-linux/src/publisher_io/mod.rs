@@ -13,6 +13,7 @@ pub use manifest::NativeManifestWitness;
 #[cfg(feature = "tokio")]
 pub(crate) use manifest::ReceivedManifest;
 mod native;
+pub(crate) mod path;
 #[cfg(feature = "tokio")]
 pub(crate) use native::quarantine_name;
 #[cfg(feature = "tokio")]

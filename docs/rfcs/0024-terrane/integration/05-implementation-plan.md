@@ -348,6 +348,37 @@ confinement, readiness assertions and deadlines remain unchanged. This fixture
 preparation does not qualify production boot ordering; renewed manager runtime
 qualification and complete production role deployment remain required.
 
+The renewed manager prerequisites at `778044fa67` pass in 931.372 seconds;
+independent review verifies the original 49 remote derivations, twelve retained
+runtime checks, fresh sandbox proof and imported image. The unchanged manager
+scenario then fails in 199.581 seconds after fourteen enrollment controls.
+The actual publisher runs as UID/GID 841 with zero capabilities and NNP, but
+exits with `ENOSYS` before its listener. A separate diagnostic guest traces
+the failure to `openat2`; the packaged systemd source confirms that
+`RestrictSUIDSGID` deliberately rejects that syscall. Diagnostic tracing uses
+a temporary guest ptrace-policy change and establishes no qualification.
+
+Publisher preparation, quarantine and client recovery now open directories by
+walking retained parent descriptors with `O_NOFOLLOW | O_DIRECTORY` at each
+component. Intermediate `O_PATH` descriptors preserve search-only access;
+the final descriptor remains read-only and close-on-exec. Parent traversal,
+symlinks and magic links are refused, and existing ownership, filesystem,
+project and original-inode checks remain mandatory. The new ordinary guest
+case checks those refusals and retained identity after an ancestor rename.
+Strict Clippy, Python syntax, PLAN-2 and diff checks pass. Native qualification
+and mandatory application-target compilation remain pending; no service
+hardening, capability or deadline is relaxed.
+
+The six base/all-feature matrix prerequisites at `4914e8a0dc` pass in
+3,307.487 seconds. Complete source/artifact review matches 8,258 immutable
+files and four retained executables per image. The base unit guest executes
+129 ordinary cases; the all-feature guest executes 257, including all five
+maintenance-listener retirement cases. Each profile also executes the five
+original creator cases. Recovery and physical eviction pass independently.
+The remaining two matrix derivations are audited for isolated dispatch, and
+the matrix is running in the native builder. These results predate the
+publisher path correction; acceptance remains 28/64.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement

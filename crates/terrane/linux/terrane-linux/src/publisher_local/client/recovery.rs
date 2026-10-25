@@ -6,7 +6,7 @@
 
 use std::{fs::File, sync::Arc};
 
-use rustix::fs::{FileType, Mode, OFlags, ResolveFlags};
+use rustix::fs::{FileType, OFlags};
 use terrane_sdk::host::{cache::HostReadLocation, publication::PublicationClaim};
 
 use super::super::wire::{BodyKey, BodyKind, Claim, Operation};
@@ -349,17 +349,12 @@ impl<L: HostReadLocation> Client<L> {
             Ok(BodyKind::Pack) => "objects",
             _ => return Err(Error::Invalid("unsealed body kind")),
         };
-        let directory = rustix::fs::openat2(
-            rustix::fs::CWD,
-            self.layout.layout().root().join(label),
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS,
-        )?;
+        let directory =
+            crate::publisher_io::path::open_directory(&self.layout.layout().root().join(label))?;
         let class = rustix::fs::fstat(&directory)?;
         let stat = rustix::fs::fstat(&file)?;
         let flags = rustix::fs::fcntl_getfl(&file)?;
-        let expected_project = crate::host_quota::NativeProject::inspect(&File::from(directory))?;
+        let expected_project = crate::host_quota::NativeProject::inspect(&directory)?;
         let actual_project = crate::host_quota::NativeProject::inspect(&file)?;
         if self.layout.directory_binding(label)? != (class.st_dev, class.st_ino)
             || stat.st_dev != self.layout.directory_binding("layout-root")?.0

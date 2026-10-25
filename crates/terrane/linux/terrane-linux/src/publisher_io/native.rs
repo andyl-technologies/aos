@@ -6,7 +6,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustix::fs::{self, AtFlags, Mode, OFlags, ResolveFlags};
+use rustix::fs::{self, AtFlags, Mode, OFlags};
 #[cfg(feature = "tokio")]
 use terrane_format::identity::Descriptor;
 use terrane_format::properties::Domain;
@@ -40,14 +40,7 @@ pub(super) fn open_directory(path: &Path) -> io::Result<File> {
             "publisher directory must be an absolute path without parent traversal",
         ));
     }
-    let descriptor = fs::openat2(
-        fs::CWD,
-        path,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-        ResolveFlags::NO_SYMLINKS,
-    )?;
-    let file = File::from(descriptor);
+    let file = super::path::open_directory(path)?;
     check_directory(&file)?;
     Ok(file)
 }
@@ -120,13 +113,7 @@ pub(super) fn inspect_layout(config: &super::NativePublisherConfig) -> io::Resul
         ("state/publication", false, true),
     ] {
         let path = config.layout_root.join(relative);
-        let file = File::from(fs::openat2(
-            fs::CWD,
-            &path,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS,
-        )?);
+        let file = super::path::open_directory(&path)?;
         let metadata = file.metadata()?;
         let permissions = metadata.mode() & 0o7777;
         let valid = if content {
@@ -354,13 +341,7 @@ impl NativePublisher {
             ));
         }
         let device = sealed.metadata()?.dev();
-        let quarantine = File::from(fs::openat2(
-            fs::CWD,
-            &quarantine_path,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::NO_SYMLINKS,
-        )?);
+        let quarantine = super::path::open_directory(&quarantine_path)?;
         let quarantine_metadata = quarantine.metadata()?;
         if quarantine_metadata.mode() & 0o002 != 0 || quarantine_metadata.dev() != device {
             return Err(invalid("unsafe domain quarantine directory"));

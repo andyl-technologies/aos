@@ -147,6 +147,7 @@ UNIT_TESTS = (
     'publisher_io::worker::inventory::startup::tests::cleanup_grammar_matches_only_actual_generated_temporary_names',
     'publisher_io::worker::inventory::state::tests::retained_manifest_budget_includes_canonical_and_decoded_payloads',
     'publisher_io::worker::inventory::state::tests::retained_snapshot_rejects_mode_links_and_canonical_inode_replacement',
+    'publisher_io::path::tests::directory_walk_rejects_symlinks_magic_links_and_parent_traversal',
     'publisher_io::worker::inventory::tests::key_parser_refuses_noncanonical_names',
     'publisher_io::worker::inventory::tests::physical_entry_budget_counts_directories_and_bodies',
     'publisher_io::worker::inventory::tests::private_remnant_names_prevent_empty_namespace_classification',
