@@ -1222,6 +1222,7 @@ fn valid_distinct_credentials() -> Result<QemuChildCredentials, QemuSpawnError> 
         distinct_nonzero_id(&supervisor.user_ids),
         distinct_nonzero_id(&supervisor_groups),
     )
+    .map_err(Into::into)
 }
 
 fn distinct_nonzero_id(excluded: &[u32]) -> u32 {

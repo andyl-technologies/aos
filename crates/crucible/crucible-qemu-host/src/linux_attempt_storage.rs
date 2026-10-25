@@ -33,10 +33,12 @@ use rustix::io::fcntl_dupfd_cloexec;
 use rustix::process::{Gid, Uid, getegid, geteuid};
 use thiserror::Error;
 
-use crate::spawn::{QemuChildCredentials, validate_guarded_launch_requirements};
+use crate::spawn::{
+    QemuChildCredentials, QemuPrelaunchError, validate_guarded_launch_requirements,
+};
 use crate::{
     DEFAULT_VMSTATE_FILE_NAME, QemuChildProcessContract, QemuLaunchResourceRequirements,
-    QemuPreparedRunDirectory, QemuSpawnError,
+    QemuPreparedRunDirectory,
 };
 use aos_linux_project_quota::{
     LinuxProjectQuotaError, LinuxProjectQuotaLimits, LinuxProjectQuotaReservation,
@@ -803,11 +805,11 @@ pub(crate) enum LinuxQemuAttemptStorageError {
     ChildCredentials {
         /// Exact guarded-spawn credential validation failure.
         #[source]
-        source: crate::QemuSpawnError,
+        source: QemuPrelaunchError,
     },
     /// Descriptor-pinned guarded-launch preparation failed.
     #[error("QEMU attempt run-directory preparation failed: {0}")]
-    LaunchPreparation(#[source] QemuSpawnError),
+    LaunchPreparation(#[source] QemuPrelaunchError),
     /// The ext4 project-quota transaction failed.
     #[error(transparent)]
     ProjectQuota(#[from] LinuxProjectQuotaError),

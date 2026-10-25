@@ -15,8 +15,9 @@ use super::materialization::{
     PreparedRootOverlayMaterialization,
 };
 use super::{
-    AttemptResourceBinding, QemuChildCredentials, QemuChildProcessContract, QemuSpawnError,
-    invalid_input, validate_guarded_launch_requirements, validate_guarded_launch_resources,
+    AttemptResourceBinding, QemuChildCredentials, QemuChildProcessContract, QemuPrelaunchError,
+    QemuSpawnError, invalid_input, validate_guarded_launch_requirements,
+    validate_guarded_launch_resources,
 };
 use crate::QemuLaunchCommand;
 use crate::launch::{
@@ -159,13 +160,14 @@ impl QemuPreparedRunDirectory {
         })?;
         let vmstate = open_prepared_vmstate(&directory, &path)?;
         Self::from_admitted_descriptors(requirements, &path, directory, vmstate, contract)
+            .map_err(Into::into)
     }
 
     /// Constructs one prepared authority from already-pinned storage descriptors.
     ///
     /// # Errors
     ///
-    /// Returns [`QemuSpawnError`] when the launch profile exceeds the process
+    /// Returns [`QemuPrelaunchError`] when the launch profile exceeds the process
     /// contract or either descriptor has the wrong file type.
     pub(crate) fn from_admitted_descriptors(
         requirements: crate::QemuLaunchResourceRequirements,
@@ -173,25 +175,25 @@ impl QemuPreparedRunDirectory {
         directory: OwnedFd,
         vmstate: OwnedFd,
         contract: &QemuChildProcessContract,
-    ) -> Result<Self, QemuSpawnError> {
+    ) -> Result<Self, QemuPrelaunchError> {
         validate_guarded_launch_requirements(requirements, contract)?;
 
-        let directory_metadata = fstat(&directory).map_err(|source| QemuSpawnError::Io {
+        let directory_metadata = fstat(&directory).map_err(|source| QemuPrelaunchError::Io {
             operation: "inspect prepared QEMU run directory",
             source: source.into(),
         })?;
         if FileType::from_raw_mode(directory_metadata.st_mode) != FileType::Directory {
-            return Err(invalid_input(
+            return Err(QemuPrelaunchError::invalid_input(
                 "validate prepared QEMU run directory",
                 "prepared QEMU run path is not a directory",
             ));
         }
-        let vmstate_metadata = fstat(&vmstate).map_err(|source| QemuSpawnError::Io {
+        let vmstate_metadata = fstat(&vmstate).map_err(|source| QemuPrelaunchError::Io {
             operation: "inspect prepared exact-VMState container",
             source: source.into(),
         })?;
         if FileType::from_raw_mode(vmstate_metadata.st_mode) != FileType::RegularFile {
-            return Err(invalid_input(
+            return Err(QemuPrelaunchError::invalid_input(
                 "validate prepared exact-VMState container",
                 "exact-VMState container path is not a regular file",
             ));
@@ -202,14 +204,14 @@ impl QemuPreparedRunDirectory {
                 .as_ref()
                 .map(fstat)
                 .transpose()
-                .map_err(|source| QemuSpawnError::Io {
+                .map_err(|source| QemuPrelaunchError::Io {
                     operation: "inspect prepared root overlay",
                     source: source.into(),
                 })?;
         if root_overlay_metadata.as_ref().is_some_and(|metadata| {
             FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
         }) {
-            return Err(invalid_input(
+            return Err(QemuPrelaunchError::invalid_input(
                 "validate prepared root overlay",
                 "prepared root overlay path is not a regular file",
             ));
@@ -1393,7 +1395,7 @@ fn widen_link_count(links: impl Into<u64>) -> u64 {
     links.into()
 }
 
-fn open_optional_root_overlay(directory: &OwnedFd) -> Result<Option<OwnedFd>, QemuSpawnError> {
+fn open_optional_root_overlay(directory: &OwnedFd) -> Result<Option<OwnedFd>, QemuPrelaunchError> {
     match openat(
         directory,
         crate::DEFAULT_ROOT_OVERLAY_FILE_NAME,
@@ -1402,7 +1404,7 @@ fn open_optional_root_overlay(directory: &OwnedFd) -> Result<Option<OwnedFd>, Qe
     ) {
         Ok(file) => Ok(Some(file)),
         Err(rustix::io::Errno::NOENT) => Ok(None),
-        Err(source) => Err(QemuSpawnError::Io {
+        Err(source) => Err(QemuPrelaunchError::Io {
             operation: "open optional prepared root overlay",
             source: source.into(),
         }),

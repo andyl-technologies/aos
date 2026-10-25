@@ -1279,7 +1279,10 @@ impl LinuxQemuCgroup {
                 LinuxQemuCgroupError::Io {
                     operation: "validate QEMU child credentials",
                     path: self.path.clone(),
-                    source: io::Error::new(io::ErrorKind::InvalidInput, source),
+                    source: io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        crate::QemuSpawnError::from(source),
+                    ),
                 }
             })?;
         if self.control.watcher_state.load(Ordering::Acquire) != WATCHER_RUNNING {

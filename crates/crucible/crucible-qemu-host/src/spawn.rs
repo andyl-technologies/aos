@@ -39,6 +39,8 @@ mod guarded_preparation_error;
 mod image_launch;
 mod materialization;
 mod plugin_startup;
+mod prelaunch_error;
+pub(crate) use prelaunch_error::QemuPrelaunchError;
 #[cfg(target_os = "linux")]
 pub(crate) mod preexec_setup;
 #[cfg(target_os = "linux")]
@@ -197,13 +199,16 @@ impl QemuChildCredentials {
     ///
     /// # Errors
     ///
-    /// Returns [`QemuSpawnError::InvalidChildCredentials`] when either ID is
+    /// Returns [`QemuPrelaunchError::InvalidChildCredentials`] when either ID is
     /// root, the user ID equals any real, effective, or saved daemon user, or
     /// the group ID equals any real, effective, saved, or supplementary daemon
     /// group. Returns
-    /// [`QemuSpawnError::Io`] when credential inspection fails, or a typed
+    /// [`QemuPrelaunchError::Io`] when credential inspection fails, or a typed
     /// group-bound, group-change or decode-admission refusal before use.
-    pub(crate) fn new(user_id: libc::uid_t, group_id: libc::gid_t) -> Result<Self, QemuSpawnError> {
+    pub(crate) fn new(
+        user_id: libc::uid_t,
+        group_id: libc::gid_t,
+    ) -> Result<Self, QemuPrelaunchError> {
         let supervisor = current_supervisor_credentials()?;
         if user_id == 0
             || group_id == 0
@@ -211,13 +216,13 @@ impl QemuChildCredentials {
             || supervisor.group_ids.contains(&group_id)
             || supervisor.supplementary_group_ids.contains(&group_id)
         {
-            return Err(QemuSpawnError::InvalidChildCredentials { user_id, group_id });
+            return Err(QemuPrelaunchError::InvalidChildCredentials { user_id, group_id });
         }
         Ok(Self { user_id, group_id })
     }
 }
 
-fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuSpawnError> {
+fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuPrelaunchError> {
     let mut real_user_id = 0;
     let mut effective_user_id = 0;
     let mut saved_user_id = 0;
@@ -230,7 +235,9 @@ fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuSpawnEr
         )
     };
     if users_read != 0 {
-        return Err(last_io_error("inspect supervisor user credentials"));
+        return Err(QemuPrelaunchError::last_io_error(
+            "inspect supervisor user credentials",
+        ));
     }
     let mut real_group_id = 0;
     let mut effective_group_id = 0;
@@ -244,7 +251,9 @@ fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuSpawnEr
         )
     };
     if groups_read != 0 {
-        return Err(last_io_error("inspect supervisor group credentials"));
+        return Err(QemuPrelaunchError::last_io_error(
+            "inspect supervisor group credentials",
+        ));
     }
     Ok(SupervisorCredentials {
         user_ids: [real_user_id, effective_user_id, saved_user_id],
@@ -253,22 +262,24 @@ fn current_supervisor_credentials() -> Result<SupervisorCredentials, QemuSpawnEr
     })
 }
 
-fn current_supplementary_groups() -> Result<SupervisorGroups, QemuSpawnError> {
+fn current_supplementary_groups() -> Result<SupervisorGroups, QemuPrelaunchError> {
     let count = unsafe {
         // SAFETY: a zero count permits a null list and returns its required size.
         libc::getgroups(0, std::ptr::null_mut())
     };
     if count < 0 {
-        return Err(last_io_error("inspect supervisor supplementary groups"));
+        return Err(QemuPrelaunchError::last_io_error(
+            "inspect supervisor supplementary groups",
+        ));
     }
     let count = count as usize;
     if count > MAX_SUPERVISOR_GROUPS {
-        return Err(QemuSpawnError::SupervisorGroupLimit);
+        return Err(QemuPrelaunchError::SupervisorGroupLimit);
     }
     let credit = crucible_engine::owned_decode::current_budget()
         .map(|budget| budget.reserve_scratch_array::<libc::gid_t>(count))
         .transpose()
-        .map_err(QemuSpawnError::ConfigurationAdmission)?;
+        .map_err(QemuPrelaunchError::ConfigurationAdmission)?;
     let mut groups = SupervisorGroups {
         values: vec![0; count],
         _credit: credit,
@@ -281,10 +292,12 @@ fn current_supplementary_groups() -> Result<SupervisorGroups, QemuSpawnError> {
         libc::getgroups(count as libc::c_int, groups.values.as_mut_ptr())
     };
     if returned < 0 {
-        return Err(last_io_error("read supervisor supplementary groups"));
+        return Err(QemuPrelaunchError::last_io_error(
+            "read supervisor supplementary groups",
+        ));
     }
     if returned as usize != count {
-        return Err(QemuSpawnError::SupervisorGroupsChanged);
+        return Err(QemuPrelaunchError::SupervisorGroupsChanged);
     }
     Ok(groups)
 }
@@ -1575,20 +1588,22 @@ pub(crate) fn validate_guarded_launch_resources(
     contract: &QemuChildProcessContract,
 ) -> Result<(), QemuSpawnError> {
     validate_guarded_launch_requirements(command.resource_requirements(), contract)
+        .map_err(Into::into)
 }
 
 pub(crate) fn validate_guarded_launch_requirements(
     requirements: crate::QemuLaunchResourceRequirements,
     contract: &QemuChildProcessContract,
-) -> Result<(), QemuSpawnError> {
+) -> Result<(), QemuPrelaunchError> {
     requirements
         .validate_ceiling(
             contract.maximum_vcpus,
             contract.effective_resident_bytes(),
             contract.maximum_writable_bytes,
         )
-        .map_err(|source| QemuSpawnError::LaunchResources { source })
+        .map_err(|source| QemuPrelaunchError::LaunchResources { source })
 }
+
 #[derive(Debug)]
 struct QemuSpawnChildResources {
     control_socket: OwnedFd,
