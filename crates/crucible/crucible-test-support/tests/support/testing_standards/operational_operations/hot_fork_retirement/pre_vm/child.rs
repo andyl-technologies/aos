@@ -107,12 +107,8 @@ pub(crate) fn with_spawned_helper_original<T: HelperOutput>(
             &mut Option<RetainedHelperOutput>,
         ) -> Result<T, crate::QemuSpawnError>,
     ) -> Result<T::Received, crate::spawn::QemuGuardedImagePreparationError> {
-        let refused = || {
-            crate::spawn::QemuGuardedImagePreparationError::issued(
-                crate::spawn::helper_receiver::helper_custody_refusal(),
-                receiver,
-            )
-        };
+        let refused =
+            || crate::spawn::QemuGuardedImagePreparationError::issued_custody_refusal(receiver);
         if !receiver
             .controller()
             .is_ok_and(|current| std::ptr::eq(self, current.as_ref()))
@@ -123,12 +119,7 @@ pub(crate) fn with_spawned_helper_original<T: HelperOutput>(
         }
         let mut slot = self.helper.try_lock().map_err(|_| refused())?;
         if let Some(first) = &slot.first {
-            return Err(crate::spawn::QemuGuardedImagePreparationError::issued(
-                crate::QemuSpawnError::HelperFailure {
-                    first: first.clone(),
-                },
-                receiver,
-            ));
+            return Err(crate::spawn::QemuGuardedImagePreparationError::issued(first.clone(), receiver,));
         }
         if slot.first_journal.is_none()
             || slot.unshared_first.is_some()
@@ -180,12 +171,7 @@ pub(crate) fn with_spawned_helper_original<T: HelperOutput>(
         }
         self.settle_helper(&mut slot, receiver);
         if let Some(first) = &slot.first {
-            return Err(crate::spawn::QemuGuardedImagePreparationError::issued(
-                crate::QemuSpawnError::HelperFailure {
-                    first: first.clone(),
-                },
-                receiver,
-            ));
+            return Err(crate::spawn::QemuGuardedImagePreparationError::issued(first.clone(), receiver,));
         }
         if slot.child.is_none() && slot.first_cleanup.is_none() && slot.output.is_some() {
             // The returned captures keep their original loan independently of

@@ -35,6 +35,7 @@ pub(crate) use process_envelope::{ConfiguredProcessEnvelope, ProcessEnvelopeRefi
 mod control_delivery_trace;
 #[cfg(target_os = "linux")]
 mod device_digest_workspace;
+mod guarded_preparation_error;
 mod image_launch;
 mod materialization;
 mod plugin_startup;
@@ -52,6 +53,7 @@ pub(crate) use device_digest_workspace::{
     DeviceDigestWorkspaceBody, DeviceDigestWorkspaceIssueError, OriginalDeviceDigestWorkspace,
 };
 
+pub use guarded_preparation_error::QemuGuardedImagePreparationError;
 pub(crate) use plugin_startup::OriginalPluginStartup;
 pub use plugin_startup::PluginStartupError;
 #[cfg(target_os = "linux")]
@@ -905,106 +907,6 @@ pub struct QemuSpawnedChild {
     resources: QemuSpawnHostResources,
 }
 
-/// Reports guarded preparation while its issued recipient retains every child.
-///
-/// The error never owns a process. The constructor-bound Source keeps any
-/// unsettled helper in its original preborn slot through later cleanup.
-#[derive(Debug, Error)]
-#[error("{source}")]
-pub struct QemuGuardedImagePreparationError {
-    pub(super) source: QemuSpawnError,
-    #[cfg(target_os = "linux")]
-    receiver: Option<QemuIssuedHelperReceiver>,
-}
-
-impl QemuGuardedImagePreparationError {
-    pub(super) fn local(source: QemuSpawnError) -> Self {
-        Self {
-            source,
-            #[cfg(target_os = "linux")]
-            receiver: None,
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn issued(
-        source: QemuSpawnError,
-        receiver: &crate::linux_attempt_host::SourceCleanupLender,
-    ) -> Self {
-        Self {
-            source,
-            receiver: Some(QemuIssuedHelperReceiver::from_lender(receiver.clone())),
-        }
-    }
-
-    /// Borrows the actual first helper failure without replacing its type.
-    #[must_use]
-    pub fn first_cause(&self) -> &QemuSpawnError {
-        match &self.source {
-            QemuSpawnError::HelperFailure { first } => first.source_ref(),
-            source => source,
-        }
-    }
-
-    /// Clones the saved nominal recipient without inferring current custody.
-    ///
-    /// An unavailable Source remains a retained cleanup obligation. Callers
-    /// must resolve this identity before attempting any recipient operation.
-    #[cfg(target_os = "linux")]
-    #[must_use]
-    pub fn retained_receiver_identity(&self) -> Option<QemuIssuedHelperReceiver> {
-        self.receiver.clone()
-    }
-
-    /// Returns the existing issued recipient that retains helper disposition.
-    ///
-    /// This observer creates neither a process nor an operation or return loan.
-    #[cfg(target_os = "linux")]
-    #[must_use]
-    pub fn retained_receiver(
-        &self,
-    ) -> Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError> {
-        self.receiver
-            .as_ref()
-            .and_then(QemuIssuedHelperReceiver::upgrade)
-    }
-
-    /// Projects the original helper's independent first, post and cleanup causes.
-    ///
-    /// # Errors
-    /// Refuses absent, expired, contended or poisoned issued helper custody.
-    ///
-    /// # Panics
-    /// Propagates a projection panic while retaining the original journal;
-    /// subsequent access refuses its poisoned mutex.
-    #[cfg(target_os = "linux")]
-    pub fn with_retained_history<T>(
-        &self,
-        apply: impl for<'a> FnOnce(crate::linux_attempt_host::QemuIssuedHelperHistory<'a>) -> T,
-    ) -> Result<T, crate::linux_attempt_host::OriginalActorAccountError> {
-        let receiver = self
-            .retained_receiver()
-            .ok_or(crate::linux_attempt_host::OriginalActorAccountError::Unavailable)?;
-        receiver.with_helper_history(apply)
-    }
-
-    /// Observes known helper return without inferring absence from contention.
-    ///
-    /// # Errors
-    /// Refuses unavailable access to the original issued recipient.
-    #[cfg(target_os = "linux")]
-    pub fn retained_helper_process(
-        &self,
-    ) -> Result<Option<u32>, crate::linux_attempt_host::OriginalActorAccountError> {
-        match self.receiver.as_ref() {
-            Some(receiver) => receiver
-                .upgrade()
-                .ok_or(crate::linux_attempt_host::OriginalActorAccountError::Unavailable)?
-                .retained_helper_process(),
-            None => Ok(None),
-        }
-    }
-}
 
 impl QemuSpawnedChild {
     /// Consumes the spawn result into its node child and retained host resources.

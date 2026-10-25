@@ -251,26 +251,70 @@ if !host.belongs_to(normal) || slot.source_control_payer.is_none() {
             ],
         },
         Companion {
-            path: "crates/crucible/crucible-qemu-host/src/spawn.rs",
+            path: "crates/crucible/crucible-qemu-host/src/spawn/guarded_preparation_error.rs",
             required: &[
                 (
+                    r#"pub fn first_cause(&self) -> &QemuSpawnError {
+        match &self.detail {
+            PreparationFailure::Local(QemuSpawnError::HelperFailure { first }) => {
+                first.source_ref()
+            }
+            PreparationFailure::Local(source) => source,
+            #[cfg(target_os = "linux")]
+            PreparationFailure::Issued { first, .. } => first.source_ref(),
+            #[cfg(target_os = "linux")]
+            PreparationFailure::Custody { .. } => &CUSTODY_REFUSAL,
+        }
+    }"#,
+                    1,
+                ),
+                (
                     r#"pub(crate) fn issued(
-    source: QemuSpawnError,
+    first: QemuIssuedHelperFailure,
     receiver: &crate::linux_attempt_host::SourceCleanupLender,
 ) -> Self {
     Self {
-        source,
-        receiver: Some(QemuIssuedHelperReceiver::from_lender(receiver.clone())),
+        detail: PreparationFailure::Issued {
+            first,
+            receiver: QemuIssuedHelperReceiver::from_lender(receiver.clone()),
+        },
+    }
+}"#,
+                    1,
+                ),
+                (
+                    r#"pub(crate) fn issued_custody_refusal(
+    receiver: &crate::linux_attempt_host::SourceCleanupLender,
+) -> Self {
+    Self {
+        detail: PreparationFailure::Custody {
+            receiver: QemuIssuedHelperReceiver::from_lender(receiver.clone()),
+        },
     }
 }"#,
                     1,
                 ),
                 (
                     r#"pub fn retained_receiver_identity(&self) -> Option<QemuIssuedHelperReceiver> {
-    self.receiver.clone()
+    self.receiver().cloned()
 }"#,
                     1,
                 ),
+                (
+                    r#"fn receiver(&self) -> Option<&QemuIssuedHelperReceiver> {
+    match &self.detail {
+        PreparationFailure::Local(_) => None,
+        PreparationFailure::Issued { receiver, .. }
+        | PreparationFailure::Custody { receiver } => Some(receiver),
+    }
+}"#,
+                    1,
+                ),
+            ],
+        },
+        Companion {
+            path: "crates/crucible/crucible-qemu-host/src/spawn.rs",
+            required: &[
                 (
                     r#"process_contract.with_spawned_helper(command, operation, |child, original, _output| {
     helper_receiver::wait_image_tool(child, original, operation)

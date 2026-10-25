@@ -244,12 +244,8 @@ impl OriginalNativeFreshLaunchError {
             &mut Option<RetainedHelperOutput>,
         ) -> Result<T, crate::QemuSpawnError>,
     ) -> Result<T::Received, crate::spawn::QemuGuardedImagePreparationError> {
-        let refused = || {
-            crate::spawn::QemuGuardedImagePreparationError::issued(
-                crate::spawn::helper_receiver::helper_custody_refusal(),
-                receiver,
-            )
-        };
+        let refused =
+            || crate::spawn::QemuGuardedImagePreparationError::issued_custody_refusal(receiver);
         if !receiver
             .controller()
             .is_ok_and(|current| std::ptr::eq(self, current.as_ref()))
@@ -261,9 +257,7 @@ impl OriginalNativeFreshLaunchError {
         let mut slot = self.helper.try_lock().map_err(|_| refused())?;
         if let Some(first) = &slot.first {
             return Err(crate::spawn::QemuGuardedImagePreparationError::issued(
-                crate::QemuSpawnError::HelperFailure {
-                    first: first.clone(),
-                },
+                first.clone(),
                 receiver,
             ));
         }
@@ -318,9 +312,7 @@ impl OriginalNativeFreshLaunchError {
         self.settle_helper(&mut slot, receiver);
         if let Some(first) = &slot.first {
             return Err(crate::spawn::QemuGuardedImagePreparationError::issued(
-                crate::QemuSpawnError::HelperFailure {
-                    first: first.clone(),
-                },
+                first.clone(),
                 receiver,
             ));
         }

@@ -132,11 +132,10 @@ fn retained_source_helper_preserves_original_attempt_and_ready_file_authority()
         GuardedImageToolPurpose::FreshLaunch,
     );
     assert!(matches!(
-        fresh,
-        Err(QemuGuardedImagePreparationError {
-            source: QemuSpawnError::PreparedLaunchAdmissionChanged,
-            ..
-        })
+        fresh
+            .as_ref()
+            .map_err(QemuGuardedImagePreparationError::first_cause),
+        Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
     ));
     run_guarded_image_tool_for_purpose(
         &executable,

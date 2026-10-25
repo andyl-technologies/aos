@@ -69,7 +69,7 @@ failed attempts appear in the dated entries below.
 | Native compiler correction | Signed atomic `cb9a5e825a` and conventional `0d49fac971` preserve the complete integration while correcting declarations, const projections and shadowed locals. Fresh configure, the POSIX thread object and source extraction pass. | The startup Source object still fails on its unchanged uncalled RR birth routine with all warnings retained. No whole QEMU build, Windows compilation, native execution or lifecycle qualification is established. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 465 errors: 445 large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 664 bindings: 645 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 666 bindings: 647 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Integration with origin/master
 
@@ -337,6 +337,45 @@ without adding any. Its remaining 445 large-error returns, seventeen unused-code
 diagnostics and three large enum variants still block release. Mandatory
 application compilation for this increment is running; no current full RFC,
 Native activation or performance qualification is claimed.
+
+#### Guarded helper error alternatives
+
+Guarded preparation now separates a local general spawn error, an issued shared
+first-cause receipt with its exact recipient, and a fixed custody refusal with
+that recipient. The private issued constructor accepts the actual existing
+receipt instead of any general spawn error. Both issued forms preserve the
+same lender identity; local errors acquire none. The public first-cause,
+recipient and retained-history projections remain available from the same
+exported type. The implementation lives in a focused child of the spawn module.
+
+This removes the simultaneous general-error/recipient storage requirement:
+the compiler-reported guarded image/probe payload falls from 232 to 176 bytes.
+No new carrier allocation, Source credit or physical-return observation is
+introduced. The issued error chain retains the prepaid shared receipt and its
+concrete initiating error, omitting the former intermediary enum wrapper.
+
+Two new component controls pass. One moves a pre-existing boxed I/O payload
+through the local report without allocation, preserving its address, concrete
+kernel cause and public first-error projection. The payload's separate funding
+is not qualified by that wrapper test. The other verifies that an unissued
+fixed refusal allocates nothing and acquires no recipient. All five hygiene
+and ninety testing-standard controls pass, including the causal mutations for
+the moved issued constructor, fixed custody constructor and both observers.
+Inventory `37cdb3v613dh72k8956n3zm4lscrbvlr` validates 666 bindings, leaves 142
+requirements uncovered and qualifies none. The expanded hermetic supervision
+gate and mandatory application compilation are running.
+
+The broader helper filter reports 23 passes and three failures; the image
+filter reports six passes and three failures, with five distinct failures
+between them. A production-source comparison against signed predecessor
+`9845fa32fcc5aea664a1ddc1e9a55cf777f1d627` reproduces those exact failed cases
+and counts. The comparison restores both candidate files byte for byte and
+removes its owned scratch directory. These helper-execution, cancellation and
+overlay fixtures still lack genuine retained Source custody; their earlier
+positive expectations are not weakened. Neither broad suite is reported as
+passing. Strict host-library Clippy still fails with the same 465 diagnostics.
+No Native admission, lifecycle or full RFC qualification follows from this
+storage change.
 
 #### Owning QEMU source compiler correction
 
