@@ -1,8 +1,8 @@
-##! Compiles the CLI graph while its runtime and strict-source gates are qualified.
+##! Builds the CLI test graph from its configured source inventory.
 {
   pkgs,
   fleet ? false,
-  sourceInventory ? null,
+  sourceInventory ? ../../tools/bazel/metadata/aos-cli-inventory.json,
 }: let
   lib = pkgs.lib;
   root = ../..;

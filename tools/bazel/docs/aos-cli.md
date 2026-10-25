@@ -113,8 +113,10 @@ workspace's compiler snapshot and the architecture fixture's query snapshot.
 Repository-aware tests still receive their separately declared inputs. A
 verifier edit changes the required qualification gate without invalidating
 compiler or test derivations.
-Configured inventory JSON still enters the conservative test snapshot and can
-change its Nix identity. Precise test-source selection remains a separate step.
+The test configurations default to the checked-in precise source inventory.
+Unrelated configured-inventory JSON is excluded from their compiler source
+identity. The [source-selection guide](cli-source-selection.md) documents the
+qualified default and the conservative regeneration route.
 
 The architecture-consumer checkpoint passes all 543 ordinary and 551 fleet
 cases under both Cargo and Bazel, including all six architecture guards.

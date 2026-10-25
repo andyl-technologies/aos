@@ -8,6 +8,20 @@
     filter = path: type:
       type == "regular" && builtins.elem (baseNameOf path) ["verify_cli.py" "verify_protocol.py" "verify_pilot.py"];
   };
+  regenerationDefault = import ../../../tests/build/_bazel-aos-cli.nix {
+    inherit pkgs;
+    sourceInventory = null;
+  };
+  regenerationFleet = import ../../../tests/build/_bazel-aos-cli.nix {
+    inherit pkgs;
+    fleet = true;
+    sourceInventory = null;
+  };
+  regenerationProduction = import ../../../tests/build/_bazel-aos-cli-production.nix {
+    inherit pkgs;
+    sourceInventory = null;
+  };
+
   testConfiguration = fleet: let
     candidate = import ../../../tests/build/_bazel-aos-cli.nix {inherit pkgs fleet;};
     cargo = import ../../../tests/build/_bazel-aos-cli-cargo.nix {inherit pkgs fleet;};
@@ -49,6 +63,31 @@ in {
       --additional-workspace-directory ${architectureOracleSource}/crates/accache \
       --output "$out/parity.json"
   '';
+  # Regeneration must remain available when declarations make the checked-in
+  # inventory stale. The merge reads only the declared conservative source tree.
+  inventories = {
+    default = regenerationDefault.inventory;
+    fleet = regenerationFleet.inventory;
+    production = regenerationProduction.inventory;
+    merged = let
+      merger = builtins.path {
+        path = ../metadata;
+        name = "aos-cli-inventory-merger";
+        filter = path: type:
+          type == "regular" && builtins.elem (baseNameOf path) ["merge_inventory.py" "export_inventory.py"];
+      };
+    in
+      pkgs.runCommand "aos-bazel-aos-cli-source-inventory" {buildDeps = [pkgs.python3];} ''
+        mkdir -p "$out"
+        export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${merger}
+        ${pkgs.python3}/bin/python3 ${merger}/merge_inventory.py \
+          --root ${regenerationFleet.workspace.source} \
+          --inputs ${regenerationProduction.inventory}/inventory.json \
+            ${regenerationDefault.inventory}/inventory.json \
+            ${regenerationFleet.inventory}/inventory.json \
+          --output "$out/inventory.json"
+      '';
+  };
   default = testConfiguration false;
   fleet = testConfiguration true;
   production = import ../../../tests/build/_bazel-aos-cli-production.nix {inherit pkgs;};
