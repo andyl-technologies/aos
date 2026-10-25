@@ -60,6 +60,13 @@ fn run() -> Result<()> {
     if env::args().nth(6).as_deref() == Some("--host-component-control-v2") {
         return run_component_control();
     }
+    run_legacy()
+}
+
+// Keep each route's resident original owners out of the dispatcher's stack
+// frame. The component path must not also reserve the unused canary assembly.
+#[inline(never)]
+fn run_legacy() -> Result<()> {
     let (_legacy_controller_identity, nspawn_executable, guardian_executable, selinux_policy, selected_canary) =
         arguments()?;
 
@@ -581,6 +588,7 @@ impl Drop for ComponentAssembly {
     }
 }
 
+#[inline(never)]
 fn run_component_control() -> Result<()> {
     let mut arguments = env::args();
     let _program = arguments.next();
