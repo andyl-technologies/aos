@@ -18731,3 +18731,34 @@ The fixture reserves a separate guest data disk and preserves its diagnostics
 in the serial log. The module's writable paths may still prevent SDK output
 creation; this test retains that potential failure. Restart cleanup and full
 role deployment remain open. Acceptance remains 28/64.
+
+
+Orderly configured-maintenance shutdown now explicitly retires its original
+socket names. The complete borrowed accept/request future ends before removal,
+while original cache owners and their locks remain held. The listener closes,
+rechecks every retained ancestor and the bound socket's inode, type, owner,
+original group, mode and link count, then unlinks through its retained parent.
+Replacement or unsafe custody refuses without removing a replacement. Ordinary
+drop and failed startup preserve names for diagnosis; GC and tmpfiles still
+never remove them. This grants no physical-release authority and does not
+implement crash recovery, SDK endpoint reuse or full restart recovery.
+
+Five new native selectors cover clean removal and fresh binding, replacement
+refusal, renamed-parent anchoring, ordinary-drop preservation and newly writable
+parent refusal. They belong to the existing all-feature ext4 guest inventory,
+not host execution. The configured CLI guest retains its active original-inode,
+credential, readiness and exchange controls, and now additionally requires
+retired names after acknowledged SIGTERM plus stopped-GC refusal. Strict Linux
+all-feature/all-target and CLI all-target lint checks pass, as do supervisor
+parsing, exact selector registration, PLAN-2 and diff checks. Fresh native and
+mandatory application qualification of this change remain pending.
+
+The earlier `601cc64863` mandatory application compilation finishes in
+1,533.465 seconds. Complete review matches all 8,237 immutable files and
+190 actual test executables across 59 packages; it does not qualify this later
+shutdown change. The systemd fixture now compares the actual main process's
+combined journal directly against exact original commit/endpoint completions
+and independently checks both durable payloads. It does not manufacture
+separate stdout/stderr receipts for the standalone CLI verifier. Full-system
+runtime remains pending while native lifecycle checks in package prerequisites
+are audited. Trunk acceptance remains 28/64.

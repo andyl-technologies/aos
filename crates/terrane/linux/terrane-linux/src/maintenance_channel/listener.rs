@@ -3,10 +3,11 @@
 use super::{MaintenanceClient, MaintenanceRoles, MaintenanceServer, wire::invalid};
 use crate::publisher_local::socket::{protect_parent, set_bound_socket_mode};
 use rustix::{
-    fs::{Mode, OFlags},
+    fs::{AtFlags, FileType, Mode, OFlags},
     net::{self, AddressFamily, SocketFlags, SocketType},
 };
 use std::{
+    ffi::OsString,
     io,
     os::fd::{AsFd, BorrowedFd, OwnedFd},
     path::Path,
@@ -16,13 +17,16 @@ use std::{
 ///
 /// The operator creates the protected parent before startup. Its setgid group
 /// permits the configured GC role to reach the mode-0660 socket; private cache
-/// state permissions remain independent. Existing names are never replaced or
-/// removed. Dropping the listener closes it without deleting its pathname.
+/// state permissions remain independent. Binding never replaces existing names.
+/// Dropping the listener closes it without deleting its pathname; orderly
+/// shutdown uses [`Self::retire`] after joining every borrowed service future.
 pub struct MaintenanceListener {
     socket: OwnedFd,
     roles: MaintenanceRoles,
-    _directories: Vec<OwnedFd>,
-    _node: OwnedFd,
+    directories: Vec<OwnedFd>,
+    node: OwnedFd,
+    name: OsString,
+    group: u32,
 }
 
 impl MaintenanceListener {
@@ -62,13 +66,76 @@ impl MaintenanceListener {
             Mode::empty(),
         )?;
         set_bound_socket_mode(parent, name, &node, roles.serve_uid).map_err(io::Error::other)?;
+        let group = rustix::fs::fstat(&node)?.st_gid;
         net::listen(&socket, 32)?;
         Ok(Self {
             socket,
             roles,
-            _directories: directories,
-            _node: node,
+            directories,
+            node,
+            name: name.to_owned(),
+            group,
         })
+    }
+
+    /// Closes the listener and removes its checked original socket name.
+    ///
+    /// Callers first stop and join all borrowed accept/request futures. Connected
+    /// endpoints retain their own custody; unlinking grants no cache release
+    /// authority. The retained parent anchors removal even if an ancestor moves.
+    /// Only root and the configured serving UID may write that protected parent;
+    /// another process using that UID shares the service's administrative trust.
+    /// Failed startup and ordinary drop deliberately leave names for diagnosis.
+    ///
+    /// # Errors
+    /// Refuses changed credentials, unsafe retained ancestors, a missing or
+    /// substituted socket, changed type, ownership, links or mode, and native
+    /// metadata or removal failures.
+    /// A refusal closes the listener and leaves the named replacement untouched.
+    pub fn retire(self) -> io::Result<()> {
+        let Self {
+            socket,
+            roles,
+            directories,
+            node,
+            name,
+            group,
+        } = self;
+        drop(socket);
+        roles.check(roles.serve_uid)?;
+
+        for directory in &directories {
+            let metadata = rustix::fs::fstat(directory)?;
+            if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
+                || ![0, roles.serve_uid].contains(&metadata.st_uid)
+                || metadata.st_mode & 0o022 != 0
+                || metadata.st_nlink == 0
+            {
+                return Err(invalid("maintenance socket ancestor custody changed"));
+            }
+        }
+
+        let parent = directories
+            .last()
+            .ok_or_else(|| invalid("maintenance socket parent absent"))?;
+        let original = rustix::fs::fstat(&node)?;
+        let named = rustix::fs::statat(parent, &name, AtFlags::SYMLINK_NOFOLLOW)?;
+        if FileType::from_raw_mode(original.st_mode) != FileType::Socket
+            || original.st_uid != roles.serve_uid
+            || original.st_gid != group
+            || original.st_nlink != 1
+            || original.st_mode & 0o7777 != 0o660
+            || original.st_dev != named.st_dev
+            || original.st_ino != named.st_ino
+            || original.st_mode != named.st_mode
+            || original.st_uid != named.st_uid
+            || original.st_gid != named.st_gid
+            || original.st_nlink != named.st_nlink
+        {
+            return Err(invalid("maintenance socket retirement custody changed"));
+        }
+        rustix::fs::unlinkat(parent, &name, AtFlags::empty())?;
+        Ok(())
     }
 
     /// Accepts an actual GC connection without blocking or reading request data.
@@ -134,3 +201,6 @@ fn authenticate(socket: &OwnedFd, expected_uid: u32) -> io::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

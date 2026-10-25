@@ -179,26 +179,45 @@ def run(driver, image):
         for domain in ["private:fixture", "public"]:
             driver.require(gc_log.splitlines().count(f"domain {domain}: checked 0, completed 0, blocked 0 draining exposures") == 2,
                            "managed GC responses differ from the original owners")
-        serve_log = command(driver, ["journalctl", "--no-pager", "--output=cat", "--unit=terrane-serve.service"])
+        serve_log = command(driver, ["journalctl", "--no-pager", "--output=cat", "--unit=terrane-serve.service",
+                                     "_PID=" + serve["MainPID"]])
         serve_identity = [json.loads(line.removeprefix("TERRANE_MANAGED_ACTOR_IDENTITY ")) for line in serve_log.splitlines()
                           if line.startswith("TERRANE_MANAGED_ACTOR_IDENTITY ")]
         driver.require(len(serve_identity) == 1 and serve_identity[0]["pid"] == int(serve["MainPID"])
                        and len([line for line in serve_log.splitlines() if line.startswith("completed SDK snapshot ")]) == 2,
                        "manager readiness did not belong to the original SDK process")
+        # The journal merges stdout and stderr. Compare that combined stream
+        # directly; do not manufacture separate process-stream receipts for the
+        # standalone CLI verifier. Its independent guest retains that control.
+        completion = [line for line in serve_log.splitlines()
+                      if not line.startswith("TERRANE_MANAGED_ACTOR_IDENTITY ")]
+        commit = (repository / "expected.commit").read_bytes()
+        driver.require(len(commit) == 32, "managed original commit witness length differs")
+        expected_completion = [f'completed SDK snapshot "{name}": commit {commit.hex()}, state Stopped, '
+                               f'endpoint "{repository}/snapshot-{name}"' for name in ["first", "second"]]
+        driver.require(completion == expected_completion,
+                       "managed CLI produced unexpected journal output")
+        driver.require(original_inodes == [(path.stat().st_dev, path.stat().st_ino) for path in sockets],
+                       "managed GC replaced an original listener inode")
         command(driver, ["systemctl", "stop", "terrane-serve.service"])
         driver.require(properties(driver, "serve", ["Result", "MainPID"]) == {"Result": "success", "MainPID": "0"},
                        "managed Serve did not acknowledge shutdown")
         common["verify_owner_locks"](driver, False, original_state)
         common["maintenance_exchange"](driver, image, CONFIG, "managed-gc-stopped", success=False)
-        driver.require(original_inodes == [(path.stat().st_dev, path.stat().st_ino) for path in sockets],
-                       "managed lifecycle replaced original listener inodes")
+        driver.require(all(not path.exists() and not path.is_symlink() for path in sockets),
+                       "managed shutdown retained or replaced listener names")
         command(driver, ["systemctl", "stop", "terrane-publish.service"])
-        for label, selector in [("managed-publication", "verify-reopen-publication"), ("managed-snapshots", "verify-cli")]:
-            common["actor"](driver, image, label, ["configured-sdk-cache-example", selector, repository, 840])
+        common["actor"](driver, image, "managed-publication",
+                        ["configured-sdk-cache-example", "verify-reopen-publication", repository, 840])
+        for name in ["first", "second"]:
+            driver.require((repository / f"snapshot-{name}/file").read_bytes()
+                           == b"independent configured SDK snapshot payload\n",
+                           "managed shutdown changed an original durable SDK snapshot")
         print("TERRANE_MANAGED_SERVICE_PROOF " + json.dumps({
             "source": str(driver.SOURCE), "image": str(image), "serve": serve, "gc": gc,
             "gc_identities": identities, "serve_identity": serve_identity[0],
             "listener_inodes": original_inodes, "original_state_inodes": original_state,
+            "listener_names_retired": True, "cli_combined_journal": completion,
             "units_sha256": {name: hashlib.sha256(text.encode()).hexdigest() for name, text in expected["units"].items()},
             "systemd_pid1": True, "restart_recovery": False, "physical_release": False,
         }, sort_keys=True), flush=True)

@@ -453,8 +453,12 @@ def run_maintenance(driver, image):
         else:
             raise RuntimeError("configured CLI sent repeated readiness notifications")
         maintenance_exchange(driver, image, config, "maintenance-gc-stopped", success=False)
-        driver.require(original_inodes == [(path.stat().st_dev, path.stat().st_ino) for path in sockets],
-                       "failed GC rebound stopped owner listeners")
+        driver.require(all(not path.exists() and not path.is_symlink() for path in sockets),
+                       "acknowledged serving shutdown retained or replaced listener names")
+        print("CONFIGURED_MAINTENANCE_RETIRED " + json.dumps({
+            "listener_inodes": original_inodes, "names_absent": True,
+            "owners_unlocked": True, "stopped_gc_refused": True,
+        }, sort_keys=True), flush=True)
         actor(driver, image, "maintenance-publication",
               ["configured-sdk-cache-example", "verify-reopen-publication", root, 840])
         root.with_suffix(".stdout").write_bytes(stdout)
@@ -462,6 +466,7 @@ def run_maintenance(driver, image):
         actor(driver, image, "maintenance-snapshots",
               ["configured-sdk-cache-example", "verify-cli", root, 840])
         print("PASS configured GC refuses stopped serving owners without rebinding listeners; original owner locks release after acknowledged SIGTERM and signed publication remains intact", flush=True)
+        print("PASS acknowledged Serve shutdown retires only its original maintenance socket names after all borrowed request futures stop", flush=True)
     finally:
         notifier.close()
         notify_path.unlink(missing_ok=True)

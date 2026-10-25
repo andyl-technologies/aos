@@ -37,27 +37,40 @@ pub(super) async fn maintain(
         .map(|plan| plan.bind(owners))
         .transpose()
         .map_err(failed)?;
-    let maintenance = async {
-        #[cfg(feature = "surface-fuse")]
-        if let Some(bindings) = &bindings {
-            return bindings.serve(owners).await;
-        }
-        std::future::pending::<io::Result<()>>().await
-    };
-    tokio::pin!(maintenance);
-    notification(snapshots).map_err(failed)?;
+    let result = {
+        let maintenance = async {
+            #[cfg(feature = "surface-fuse")]
+            if let Some(bindings) = &bindings {
+                return bindings.serve(owners).await;
+            }
+            std::future::pending::<io::Result<()>>().await
+        };
+        tokio::pin!(maintenance);
+        notification(snapshots).map_err(failed)?;
 
-    let mut health = interval(Duration::from_secs(1));
-    health.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    loop {
-        tokio::select! {
-            biased;
-            received = terminate.recv() => return received.ok_or_else(disconnected),
-            received = interrupt.recv() => return received.ok_or_else(disconnected),
-            result = &mut maintenance => return result.map_err(failed),
-            _ = health.tick() => check_owners(installed, owners).await?,
+        let mut health = interval(Duration::from_secs(1));
+        health.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                received = terminate.recv() => break received.ok_or_else(disconnected),
+                received = interrupt.recv() => break received.ok_or_else(disconnected),
+                result = &mut maintenance => break result.map_err(failed),
+                _ = health.tick() => check_owners(installed, owners).await?,
+            }
         }
+    };
+
+    // Leaving the scope drops the complete borrowed accept/request future.
+    // Retire only on acknowledged shutdown while original owner locks remain
+    // held. Errors preserve socket names and never turn into a clean stop.
+    #[cfg(feature = "surface-fuse")]
+    if result.is_ok()
+        && let Some(bindings) = bindings
+    {
+        bindings.retire().map_err(failed)?;
     }
+    result
 }
 
 async fn check_owners(

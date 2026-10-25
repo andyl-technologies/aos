@@ -88,6 +88,20 @@ pub(crate) struct Bindings {
 }
 
 impl Bindings {
+    /// Retires every original name after all borrowed request futures have ended.
+    pub(crate) fn retire(self) -> io::Result<()> {
+        let mut failure = None;
+        for listener in self.listeners.into_values() {
+            if let Err(error) = listener.retire() {
+                failure.get_or_insert(error);
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     /// Borrows the original owners without detached connection tasks.
     pub(crate) async fn serve(
         &self,
