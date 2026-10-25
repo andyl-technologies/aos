@@ -135,6 +135,10 @@ impl NormalNativePool {
         purpose: AuthenticatedNativePoolPurpose,
     ) -> Result<Self, OriginalActorAccountError> {
         let capacity = purpose.node_capacity();
+        let controls =
+            Self::control_extent(capacity).ok_or(OriginalActorAccountError::Unavailable)?;
+        purpose.verify_consumer_controls(controls)?;
+
         let mut worlds = Vec::new();
         worlds
             .try_reserve_exact(capacity)

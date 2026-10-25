@@ -69,7 +69,31 @@ failed attempts appear in the dated entries below.
 | Native compiler correction | Signed atomic `cb9a5e825a` and conventional `0d49fac971` preserve the complete integration while correcting declarations, const projections and shadowed locals. Fresh configure, the POSIX thread object and source extraction pass. | The startup Source object still fails on its unchanged uncalled RR birth routine with all warnings retained. No whole QEMU build, Windows compilation, native execution or lifecycle qualification is established. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 272 errors: 252 large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 668 bindings: 649 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 670 bindings: 651 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+
+#### Original consumer control prepayment
+
+The genuine pool now retains the consumer portion of its originally admitted
+control extent separately from its own structures. Before allocating either
+fixed host array, `NormalNativePool::new` checks its complete existing control
+recipe against that portion. A smaller consumer prepayment refuses before either
+array allocation. Unassigned native headroom, the pool's own storage and a
+permanent worker debit cannot satisfy this check. The observation creates no
+reservation, Original or Native authority; the same purpose retains the
+containing debit. The pool's structure recipe includes the added retained field.
+
+Both new accounting controls pass using checked layouts and the actual component
+ledger. They cover exact and insufficient prepayment, zero consumer prepayment,
+unused native capacity, an already charged permanent worker and a maximum-width
+request. Checks allocate nothing and leave every observed ledger charge intact.
+All 228 host-resource unit tests, strict host-resource library Clippy and all
+95 policy controls pass. The source-bound engineering-hygiene gate passes. The
+ordinary host library compiles with its seventeen existing unused-code warnings.
+
+Inventory `nyyysaj3vjkpkl3ay6in0pxclrhzfiap` retains 670 bindings across 243
+requirements, with 142 uncovered and none qualified. These component accounting
+controls do not authenticate or construct a native Main, execute the launched
+factory, prove physical return or qualify capability activation.
 
 #### Source control admission error scope
 

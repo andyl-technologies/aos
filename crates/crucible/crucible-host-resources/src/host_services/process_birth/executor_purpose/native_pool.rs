@@ -91,6 +91,22 @@ struct PoolState {
     ledger: Mutex<PoolLedger>,
     selection: Mutex<Vec<NativeNodeReservation>>,
     capacity: usize,
+    consumer_controls: ConsumerControls,
+}
+
+/// Records only the consumer extent included in the pool's original debit.
+#[derive(Clone, Copy)]
+struct ConsumerControls(u64);
+
+impl ConsumerControls {
+    fn require(self, bytes: u64) -> Result<(), ServiceBirthError> {
+        if bytes > self.0 {
+            return Err(ServiceBirthError::policy(
+                "native pool consumer exceeds its originally prepaid controls",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Owns one occupied World assignment without duplicating its native bank.
@@ -296,6 +312,7 @@ pub(super) struct PoolLayout {
     capacity: usize,
     controls: u64,
     shared_descriptors: u64,
+    consumer_controls: ConsumerControls,
 }
 
 /// Rejects impossible control geometry before root limit/census effects.
@@ -332,6 +349,7 @@ pub(super) fn checked_layout(
         capacity,
         controls,
         shared_descriptors: consumer_file_descriptors,
+        consumer_controls: ConsumerControls(consumer_control_bytes),
     })
 }
 
@@ -359,6 +377,7 @@ impl AuthenticatedNativePoolPurpose {
                 ledger: Mutex::new(ledger),
                 selection: Mutex::new(selection),
                 capacity: layout.capacity,
+                consumer_controls: layout.consumer_controls,
             }),
         };
         pool.held.root.check()?;
@@ -375,6 +394,20 @@ impl AuthenticatedNativePoolPurpose {
     #[must_use]
     pub fn node_capacity(&self) -> usize {
         self.held.capacity
+    }
+
+    /// Checks that a consumer body fits its originally prepaid control extent.
+    ///
+    /// This compares against the consumer portion of the actual containing
+    /// debit, excluding the pool's own structures and unassigned native or
+    /// worker headroom. It reserves nothing, releases nothing, and grants no
+    /// work or physical-return authority. Callers check before allocating their
+    /// bodies and retain this same purpose through their final control free.
+    ///
+    /// # Errors
+    /// Refuses an extent larger than the consumer portion admitted at birth.
+    pub fn verify_consumer_controls(&self, bytes: u64) -> Result<(), ServiceBirthError> {
+        self.held.consumer_controls.require(bytes)
     }
 
     /// Matches the actual once-admitted Main, never a copied owner coordinate.
@@ -854,3 +887,6 @@ impl AuthenticatedNativeWorldCleanupLoan {
 
 #[cfg(test)]
 mod refusal_tests;
+
+#[cfg(test)]
+mod consumer_control_tests;
