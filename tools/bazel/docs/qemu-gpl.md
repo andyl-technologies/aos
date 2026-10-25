@@ -98,6 +98,21 @@ an unmarked wrapper, and an aggregate paired with the wrong source identity.
 Every preview must leave the fixture registry unchanged. This exercises the
 production validator without publishing artifacts or starting a service.
 
+Run the canonical named ABI and license gates with the selected suite,
+controller, plugin, and gateway:
+
+```text
+nix-build tools/bazel/tests/gpl-gates.nix -A all --no-out-link
+```
+
+This entry point requests the existing green-before-advance wrappers and their
+prerequisites, preserving the canonical ABI owner counts and zero-match guards.
+Its output retains both gate outputs and `selections.json` with the exact
+component identities. The existing gate drivers still invoke Cargo; migrating
+those drivers remains a separate requirement. System fixtures created through
+`mkSystem` retain their ordinary package selection, so this comparison does not
+claim every prerequisite VM uses a migrated component.
+
 To execute a distinct uncached build using only an exported source tree:
 
 ```text
@@ -111,7 +126,7 @@ available for offline use. This entry point imports the exported repository,
 uses a separate build derivation, and disables shared action caching. It does
 not replace the named normative ABI and license gates or foreign-host tests.
 
-The [retained offline rebuild](../tests/evidence/master-gpl-offline-source-rebuild.json)
+The [merged bounded-XZ offline rebuild](../tests/evidence/master-bounded-xz-gpl-offline-source-rebuild.json)
 executes 107 actions in `linux-sandbox`, with zero action-cache hits and no
 shared disk cache. Both installed binaries match the qualified checkout build
 byte for byte. This uses previously realized toolchain and source dependencies;
