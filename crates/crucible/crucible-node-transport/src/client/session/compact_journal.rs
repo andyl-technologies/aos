@@ -538,7 +538,7 @@ impl ClientSession {
         } else {
             false
         };
-        self.send(request.clone())?;
+        self.send_compact(request)?;
         if lose_response {
             // Keep the same fence-before-effect ordering as ordinary exchange.
             self.close();
@@ -613,7 +613,7 @@ impl ClientSession {
             if let Some(mut response) = original.materialize_response()? {
                 custody.pending.take();
                 response.sequence = self.sequence;
-                return self.send(response);
+                return self.send_compact(&response);
             }
         } else {
             if custody.provider.len() >= custody.maximum_requests {
@@ -653,7 +653,15 @@ impl ClientSession {
         pending.envelope.sequence = self.sequence;
         pending.envelope.body = response_body;
         let response = custody.complete_response(&id)?;
-        self.send(response)?;
+        self.send_compact(&response)?;
+        Ok(())
+    }
+
+    fn send_compact(&mut self, envelope: &Envelope) -> Result<(), ProviderError> {
+        self.connection.send_compact(envelope)?;
+        self.sequence = self
+            .sequence
+            .checked_add(crucible_node_format::U64::new(1))?;
         Ok(())
     }
 }

@@ -10,6 +10,36 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Borrowed compact SDK publication
+
+Actual compact ClientSession exchanges now borrow each outgoing envelope through
+Connection validation and canonical encoding. The shared exactly bounded output
+bank writes the complete fixed root and defining nested JCS objects directly.
+Controller requests and provider ACKs no longer create the extra caller clone
+or whole-envelope Value projection, and unbanked sends publish the already
+validated bytes without a second canonicalization and parse.
+
+Typed validation, the strict negotiated-depth parse, original literal retention,
+independent correlation originals and failed response-write custody remain real
+owners and work. Partial writes preserve their complete literal and correlation
+prefixes; successful response publication alone retires transport correlation.
+The explicit Native18 Bootstrap route remains separate from ordinary compact
+publication. This change does not establish complete SDK R/T/S or a Source18
+handoff.
+
+Seven new canonical/publication controls pass in both codec builds, alongside
+all twenty-eight SDK/history and four envelope-history controls. Both complete
+Transport suites pass 2,196 tests with zero failures and twenty ignored, using
+frozen compiler-selected artifacts. Both SourceBirth suites pass all 62 tests.
+All-feature/all-target checking, scoped formatting and six architecture checks
+pass. Strict SourceBirth Clippy passes. Strict Transport Clippy retains the
+exact preceding code/message multiset: four existing errors and 1,725 warnings,
+with no new diagnostics. It is not a strict Transport lint pass.
+
+Application test-target compilation passes. Actual metadata records 185 test
+artifacts across 58 packages, including 76 integration targets; its captured
+source matches all 670 frozen owned Rust/Cargo inputs.
+
 ## Complete compact SDK custody history
 
 The explicit `source-private.compact-custody/18` writer now captures the entire

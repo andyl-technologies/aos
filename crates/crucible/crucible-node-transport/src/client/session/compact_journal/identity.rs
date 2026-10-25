@@ -7,8 +7,8 @@
 //! independent transient admission before Source selection.
 
 use super::{Envelope, HashRef, MessageKind, ProviderError, RequestOrigin, credit};
+use crate::client::compact_json::{Output, field};
 use crucible_node_format::{ContractError, canonical};
-use serde::Serialize;
 use std::io::{self, Write};
 
 mod storage;
@@ -102,44 +102,4 @@ fn write_projection(
     field(output, b",\"session_id\":", session_id)?;
     output.write_all(b"}")?;
     Ok(())
-}
-
-fn field(output: &mut Output, prefix: &[u8], value: &impl Serialize) -> Result<(), ProviderError> {
-    output.write_all(prefix)?;
-    serde_json::to_writer(output, value).map_err(ContractError::from)?;
-    Ok(())
-}
-
-struct Output {
-    bytes: Vec<u8>,
-    refused: bool,
-}
-
-impl Output {
-    fn new(requested: usize) -> Result<Self, ProviderError> {
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(requested).map_err(|_| credit())?;
-        if bytes.capacity() != requested {
-            return Err(credit());
-        }
-        Ok(Self {
-            bytes,
-            refused: false,
-        })
-    }
-}
-
-impl Write for Output {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.bytes.capacity() - self.bytes.len() {
-            self.refused = true;
-            return Err(io::ErrorKind::OutOfMemory.into());
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }

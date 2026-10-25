@@ -18,6 +18,7 @@ use crate::session::CorrelationGuard;
 use crate::transport::{FrameReader, write_frame_with_limits};
 
 mod capture_prefix;
+mod compact_send;
 mod complete_restore_projection;
 mod restore_transfer_projection;
 pub(crate) use restore_transfer_projection::CompleteRestoreTransferProjection;
