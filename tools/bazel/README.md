@@ -176,7 +176,7 @@ using a disposable cache.
 `tests/cache-proof.nix` also accepts a unique `trial` and sandbox `cacheDir`
 for new measurements without substituting a completed qualification output.
 
-The [current default-toolchain cache qualification](tests/evidence/master-local-cache-qualification.json)
+The [earlier default-toolchain cache qualification](tests/evidence/master-local-cache-qualification.json)
 repeats cross-derivation reuse, concurrent builds, all thirteen invalidation
 cases, native/AArch64 target separation, and recovery from missing, corrupt,
 evicted, and interrupted cache writes. The concurrent builds overlap by 4.53
@@ -187,6 +187,17 @@ and match a fresh uncached build byte for byte. All three executions have
 distinct output-base inodes and sandbox namespaces, and start without a Bazel
 server. No cache service is used. Single-run timing and memory records are
 diagnostics; repeated performance acceptance remains a separate requirement.
+
+The [qualification after the build-script toolchain repair](tests/evidence/build-script-profile-local-cache.json)
+repeats all thirteen invalidation cases, native/AArch64 separation, recovery,
+and overlapping independent builds with the current toolchain. The concurrent
+builds overlap by 8.11 seconds. A separate empty disk cache records twelve
+uncached producer actions; its consumer restores nine actions and rebuilds the
+changed applications. Its cached and uncached package bytes and behavior match.
+All three executions have distinct output-base inodes and sandbox namespaces,
+start without a Bazel server, and retain their actual cache settings. The
+disposable cold cache is removed after qualification. This run does not repeat
+the earlier Git-worktree trial or establish numeric performance acceptance.
 
 To repeat the Git-worktree trial, use `tests/worktree-cache.nix` with an
 absolute `checkoutPath`, a sandbox `cacheDir`, and a new `trial`. Start with an
