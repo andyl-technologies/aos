@@ -9,6 +9,7 @@
 }: let
   cfg = config.aos.services.dbus;
   hostStage = (config.aos.boot.stage or "host") == "host";
+  systemBusSocket = "/run/dbus/system_bus_socket";
   registrationConfigurationPath = config.aos.abilities.configuration.operations.file.effects.dbus.input.path;
   registrationConfigurationResource = config.aos.abilities.configuration.operations.file.effects.dbus.outputs.resource;
   command = entryPoint: arguments: {
@@ -120,7 +121,8 @@
       commands = [
         (command "bin/dbus-send" [
           "--print-reply"
-          "--system"
+          # The initrd reloads before /var/run is available.
+          "--bus=unix:path=${systemBusSocket}"
           "--type=method_call"
           "--dest=org.freedesktop.DBus"
           "/"
@@ -157,7 +159,7 @@
         endpoints = [
           {
             kind = "unix";
-            path = "/run/dbus/system_bus_socket";
+            path = systemBusSocket;
           }
         ];
         mode = "0666";

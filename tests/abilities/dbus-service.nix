@@ -109,6 +109,15 @@ in
   assert (builtins.head service.configuration.views).source == file.input.path;
   assert builtins.all builtins.isString service.dependencies.prerequisites;
   assert service.lifecycle.configuration_change_action == "reload";
+  assert (builtins.head service.reload.commands).executable.arguments
+  == [
+    "--print-reply"
+    "--bus=unix:path=/run/dbus/system_bus_socket"
+    "--type=method_call"
+    "--dest=org.freedesktop.DBus"
+    "/"
+    "org.freedesktop.DBus.ReloadConfig"
+  ];
   assert service.manager_identity
   == {
     name = "dbus";
