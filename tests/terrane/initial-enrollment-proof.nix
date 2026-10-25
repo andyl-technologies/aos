@@ -57,6 +57,8 @@
         then "terrane-native-cold-manifest-pressure-ext4"
         else if scenario == "private-release"
         then "terrane-native-private-release-ext4"
+        else if scenario == "manifest-open"
+        then "terrane-native-configured-manifest-open-ext4"
         else if scenario == "surface"
         then "terrane-native-configured-surface-index-ext4"
         else if scenario == "worker-mounted-manifest"
@@ -80,7 +82,7 @@
       rootfsDeps =
         [image verified pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3 pkgs.binutils]
         ++ lib.optional (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "maintenance" "surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest"]) configuredSdkProof.image
-        ++ lib.optional (builtins.elem scenario ["surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest"]) surfaceImage;
+        ++ lib.optional (builtins.elem scenario ["surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest" "manifest-open"]) surfaceImage;
       testScript = ''
         set -eu
         test "$(cat ${verified}/verified-image)" = ${lib.escapeShellArg (toString image)}
@@ -129,7 +131,7 @@
         ${lib.optionalString (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "maintenance" "surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest"]) ''
           export TERRANE_CONFIGURED_SDK_IMAGE=${configuredSdkProof.image}
         ''}
-        ${lib.optionalString (builtins.elem scenario ["surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest"]) ''
+        ${lib.optionalString (builtins.elem scenario ["surface" "worker" "worker-mounted" "worker-mounted-late" "worker-mounted-expiry" "worker-mounted-manifest" "manifest-open"]) ''
           export TERRANE_CONFIGURED_SURFACE_IMAGE=${surfaceImage}
         ''}
         export LD_LIBRARY_PATH="$(cat ${image}/share/runtime-library-path)"
@@ -184,6 +186,7 @@ in {
   };
   sdkWipe = nativeFor "sdk-wipe";
   maintenance = nativeFor "maintenance";
+  manifestOpen = nativeFor "manifest-open";
   surface = nativeFor "surface";
   worker = nativeFor "worker";
   mountedWorker = nativeFor "worker-mounted";

@@ -507,6 +507,35 @@ def verify_funding(driver, directory, before, after):
                        "native SDK dropped consumer funding before its original grace expired")
 
 
+def run_manifest(driver, surface_image):
+    """Checks original native manifest open independently of kernel registration."""
+    verify = runpy.run_path(str(surface_image / "share/surface_index_owner_vm.py"))["verify_surface"]
+    verify(surface_image, driver.SOURCE)
+    parent = driver.ROOT / "manifest-open"
+    parent.mkdir(mode=0o700)
+    os.chown(parent, 840, 840)
+    config = parent / "config.toml"
+    config.write_text('store = "disk(/unused-manifest-source)"\n'
+                      + host_configuration(driver, mode="always") + """
+[host_tier.domains.public.cache.surface_index]
+max_entries = 16
+max_node_bytes = 65536
+max_index_bytes = 65536
+capacity_bytes = 25165824
+future_hold_bytes = 327680
+""")
+    stdout, _ = actor(driver, surface_image, "manifest-open",
+        ["surface-index-owner-fixture", "configured-surface", config, "manifest-open"],
+        mount_policy="readonly")
+    driver.require(stdout.decode().splitlines() == [
+        "PASS signed manifest index compiles and maps with zero manifest or chunk reads",
+        "PASS authenticated manifest open resolves original CDC ranges and closes Read around the measured sealed inode and durable exposure binding",
+        "PASS warm manifest open reuses the original measured inode without another manifest or chunk read; retained descriptor survives consumer release",
+    ], "manifest open lacks its exact original-owner witnesses")
+    verify(surface_image, driver.SOURCE)
+    print("PASS native configured manifest open defers signed resolution until file open and preserves original sealed custody", flush=True)
+
+
 def run_surface(driver, image, surface_image, service_only=False,
                 mounted_only=False, late_only=False, expiry_only=False,
                 manifest_only=False):

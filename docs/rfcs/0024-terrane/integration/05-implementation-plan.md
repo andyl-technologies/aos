@@ -18509,3 +18509,24 @@ These are completed, reviewed component qualifications. The complete feature
 matrices remain pending; configured Realize/Gc, production worker/broker
 integration, writable exposure, protocol and CI surface work and T6 remain
 outstanding. Accepted trunk tasks remain 27/64.
+
+
+The isolated required-Meta checkpoint `1864485857` passes mandatory application
+target compilation in 669.070 seconds. Independent review matches all 8,230
+immutable source files, 190 test executables and 59 packages. This establishes
+compilation only; the startup, session and pre-ownership native jobs remain
+pending, with the original failed startup evidence preserved.
+
+The FUSE-11 manifest-open candidate strengthens the owning structural-index
+gate with a separate native scenario while retaining all six existing
+prerequisites and all eight existing guests. The actual configured owner must
+compile and map signed manifest metadata with zero content reads, resolve the
+manifest only during actual file open, close the original Read around the
+measured sealed whole-file inode and durable exposure binding, and reuse that
+same inode without another manifest or chunk read. The retained descriptor
+must remain readable after consumer lease release. All-feature/all-target
+Linux Clippy, both guest supervisor AST checks, Nix scenario evaluation and
+plan ownership checks pass. The new native scenario, complete strengthened
+gate and mandatory workspace target compilation remain pending. The detailed
+T-FUSE-1 acceptance audit records the evidence boundary. Acceptance stays
+27/64; production worker/broker and four-role deployment remain outstanding.

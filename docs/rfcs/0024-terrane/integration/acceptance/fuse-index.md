@@ -3,7 +3,8 @@
 This audit covers the complete T-FUSE-1 requirement range, FUSE-7 through
 FUSE-12. The task remains **open**. The owning gate passes at frozen checkpoint
 `32727e80b301da6733fee47fd7298e4384e655f8`, with the complete evidence review
-recorded below. FUSE-11 still needs direct manifest-open evidence; a green
+recorded below. FUSE-11 now has a direct manifest-open candidate wired into the owning gate.
+Its native qualification and evidence review remain pending; the earlier green
 aggregate does not establish that missing clause.
 
 The normative requirements are in
@@ -25,7 +26,7 @@ Implementation paths in this table are relative to
 
 ## Qualification boundary
 
-The owning gate has six prerequisites: `codec`, `sealed-mapping`,
+The reviewed checkpoint has six prerequisites: `codec`, `sealed-mapping`,
 `physical-owner`, `scoped-disclosure`, `exposure-pressure` and
 `admission-pressure`. The physical-owner aggregate contains four independent
 native scenarios, so the complete gate requires eight native guest results as
@@ -50,6 +51,22 @@ backing handoff, with the manifest read deferred until that open and no chunk
 ranges embedded in the index. That proof must keep the complete existing gate
 as prerequisites. Until its native result and source/artifact review pass,
 T-FUSE-1 stays open despite the green current aggregate.
+
+The strengthened gate adds `manifest-open` as a seventh prerequisite while
+retaining all six original prerequisites and their eight guests. Its independent
+`native-configured-manifest-open` guest uses the actual configured physical
+owner and a genuinely signed, multi-chunk repository. It requires zero manifest
+and chunk reads during index compilation, mapping and file selection; exactly
+one manifest resolution at actual native file open; verified complete bytes;
+the original measured fs-verity inode and durable exposure binding; closing
+Read before handoff; and warm reuse without another manifest or chunk read.
+It also reads the retained descriptor after releasing both consumer leases.
+The guest retains the original actor, guest and supervisor bounds. This covers
+the Serve-side open independently of privileged kernel registration, which
+remains a separate outstanding obligation. Strict all-feature/all-target Linux
+Clippy, both supervisor AST checks, Nix derivation evaluation and plan ownership
+checks pass. Native results, the complete strengthened gate and their full
+source/artifact reviews are still pending; no task acceptance changes.
 
 This task does not establish complete FUSE-worker startup, passthrough, writable
 exposures, privileged broker registration or the four-role deployment. Their

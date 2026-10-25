@@ -21,6 +21,9 @@ mod cold;
 #[path = "configured/paused_lower.rs"]
 mod paused_lower;
 
+#[path = "configured/manifest.rs"]
+mod manifest;
+
 #[path = "configured/mounted.rs"]
 pub(super) mod mounted;
 
@@ -42,7 +45,7 @@ pub(super) fn run() -> Result<()> {
     if arguments.next().is_some()
         || !matches!(
             mode.as_str(),
-            "disabled" | "bound" | "admit" | "recover-draining"
+            "disabled" | "bound" | "admit" | "recover-draining" | "manifest-open"
         )
     {
         return Err("invalid configured surface control".into());
@@ -72,6 +75,9 @@ async fn verify(
     mode: &str,
     source_parent: &Path,
 ) -> Result<()> {
+    if mode == "manifest-open" {
+        return Box::pin(manifest::verify(plan, host, confinement, source_parent)).await;
+    }
     if mode == "recover-draining" {
         return Box::pin(recovery::verify(plan, host, confinement, source_parent)).await;
     }

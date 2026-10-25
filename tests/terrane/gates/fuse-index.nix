@@ -3,6 +3,7 @@
   pkgs,
   lib,
   sourceGateWithInputs,
+  initialEnrollmentProof,
   ...
 }: let
   structural = import ../structural-index.nix {inherit pkgs sourceGateWithInputs;};
@@ -22,6 +23,7 @@
   # Each guest retains its existing actor deadlines and private disk filesystem.
   prerequisites = {
     codec = structural;
+    manifest-open = initialEnrollmentProof.manifestOpen;
     sealed-mapping = mapping;
     physical-owner = owner.native;
     scoped-disclosure = scoped {};
@@ -51,6 +53,9 @@ in {
           sorted lookup and direct-child iteration, original sealed read-only
           mappings, separate native index capacity and exposure pin custody,
           typed content references and recursively expanded graft metadata.
+          Actual Serve file open resolves the signed manifest only after index
+          mapping, closes Read around the measured original sealed inode and
+          reuses that same inode without repeated lower content reads.
           Worker launch, passthrough, writable exposures and mount authority
           remain separate obligations.
           EOF

@@ -376,6 +376,7 @@
             forkPrerequisites = builtins.attrValues nativeForkPrerequisites;
           }
           // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "surfaces.nix" "shared-dir.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
+          // lib.optionalAttrs (file == "fuse-index.nix") {inherit initialEnrollmentProof;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
           // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix" "fuse-index.nix"]) {inherit sourceGateWithInputs;}
           // lib.optionalAttrs (builtins.elem file ["bucket.nix" "ref_advance.nix"]) {inherit bucketSdkGate;}
@@ -500,6 +501,7 @@ in {
   integration.native-sdk-refusals = initialEnrollmentProof.sdkRefusals;
   integration.native-sdk-wipe = initialEnrollmentProof.sdkWipe;
   integration.native-configured-maintenance = initialEnrollmentProof.maintenance;
+  integration.native-configured-manifest-open = initialEnrollmentProof.manifestOpen;
   integration.native-configured-surface-index = initialEnrollmentProof.surface;
   integration.native-configured-worker = initialEnrollmentProof.worker;
   integration.native-configured-mounted-worker = initialEnrollmentProof.mountedWorker;

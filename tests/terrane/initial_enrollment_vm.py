@@ -215,7 +215,7 @@ def sealed_snapshot():
 
 def configured_publication():
     """Requires the real two-domain publisher and actual content-role preparation."""
-    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-refusals", "sdk-wipe", "maintenance", "surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest"] else "publisher-positive"
+    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-refusals", "sdk-wipe", "maintenance", "surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest", "manifest-open"] else "publisher-positive"
     publisher = subprocess.Popen(role_command(publisher_selector, 841, [845]),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  start_new_session=True)
@@ -226,7 +226,10 @@ def configured_publication():
             require(publisher.poll() is None and time.monotonic() < deadline,
                     "configured publisher failed before binding actual listener")
             time.sleep(0.02)
-        if SCENARIO in ["surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest"]:
+        if SCENARIO == "manifest-open":
+            runpy.run_path(str(IMAGE / "share/configured_sdk_cache_vm.py"))["run_manifest"](
+                sys.modules[__name__], pathlib.Path(os.environ["TERRANE_CONFIGURED_SURFACE_IMAGE"]))
+        elif SCENARIO in ["surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest"]:
             runpy.run_path(str(IMAGE / "share/configured_sdk_cache_vm.py"))["run_surface"](
                 sys.modules[__name__], pathlib.Path(os.environ["TERRANE_CONFIGURED_SDK_IMAGE"]),
                 pathlib.Path(os.environ["TERRANE_CONFIGURED_SURFACE_IMAGE"]),
@@ -351,7 +354,7 @@ def configured_publication():
 
 def main():
     """Runs real same-process enrollment, authenticated queries and credential refusals."""
-    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-refusals", "sdk-wipe", "maintenance", "surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest"],
+    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-refusals", "sdk-wipe", "maintenance", "surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest", "manifest-open"],
             "requires a registered native proof scenario")
     verify_inputs()
     # Fixture TOML publication intentionally respects the caller's umask. Fix
@@ -362,7 +365,7 @@ def main():
     for selector in ADMIN_CASES:
         run_case(selector, admin_command(selector))
 
-    if SCENARIO in ["maintenance", "surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest"]:
+    if SCENARIO in ["maintenance", "surface", "worker", "worker-mounted", "worker-mounted-late", "worker-mounted-expiry", "worker-mounted-manifest", "manifest-open"]:
         # Host administration explicitly funds the bounded original-inode
         # census before starting the real authenticated quota helper.
         host_config = ROOT / "positive/host.toml"
