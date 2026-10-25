@@ -18543,3 +18543,17 @@ No timeout, identity, transport or success assertion is relaxed. The original
 failed derivation and frozen source remain preserved; a fresh diagnostic guest
 must establish the cause before changing production behavior. This does not
 change the separate manifest-open qualification or task acceptance.
+
+
+Two independent regressions at maintenance checkpoint `19ec1e5c92` pass with
+complete source/artifact review. The maintained SDK guest passes in 703.938
+seconds; review matches all 8,232 immutable source files, both native images,
+five actual Cargo executables, all 15 initial controls and seven original
+namespace observations, retaining every original cache, circuit, snapshot,
+owner-lock and SIGTERM witness. The local GC CLI guest passes in 672.688
+seconds; review matches the same 8,232 immutable files, 5,481 bound crate inputs
+and four actual retained Cargo artifacts. Its UID/GID-840 actor runs on ext4
+with empty capabilities, no-new-privileges and seccomp; initial readiness,
+full-D reclamation, real grace, original Done, fresh cycles and unchanged live
+signed reads pass. These regressions qualify neither the failed configured
+host-maintenance exchange nor complete role deployment. Acceptance stays 27/64.
