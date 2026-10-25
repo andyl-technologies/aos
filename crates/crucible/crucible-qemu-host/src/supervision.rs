@@ -71,9 +71,9 @@ pub(crate) use node_step_gate::launch_qemu_original_fresh_node;
 pub(crate) use node_step_gate::prepare_qemu_original_fresh_node;
 pub use node_step_gate::{
     QemuLiveHotForkChildReport, QemuLiveHotForkChildStressReport, QemuLiveNodeIdentity,
-    QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuProductionFreshLaunchAdmission,
-    launch_qemu_production_fresh_node, run_qemu_live_hot_fork_child_gate,
-    run_qemu_live_hot_fork_child_stress_gate,
+    QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuNodeStepOperation,
+    QemuProductionFreshLaunchAdmission, launch_qemu_production_fresh_node,
+    run_qemu_live_hot_fork_child_gate, run_qemu_live_hot_fork_child_stress_gate,
 };
 pub use rr_control_boundary_trace::{
     QemuRrControlBoundaryTraceError, QemuRrControlBoundaryTracePhase,

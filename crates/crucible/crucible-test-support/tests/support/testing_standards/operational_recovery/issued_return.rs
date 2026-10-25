@@ -32,7 +32,7 @@ pub(super) const FAILURE_RETURN: &str = r##"fn cleanup_failure_returns_actual_bo
     let (owner, receiver, process_id) = component_owner(&supervisor)?;
     let before = supervisor.operation_statuses()?.len();
     let primary = crate::QemuLiveNodeStepGateError::Step {
-        operation: "component exact-resume refusal",
+        operation: const { &crate::QemuNodeStepOperation::new("component exact-resume refusal") },
         source: QemuNodeError::RamCleanupPending,
     };
 

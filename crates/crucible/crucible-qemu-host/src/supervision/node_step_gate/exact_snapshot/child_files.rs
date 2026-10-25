@@ -172,7 +172,12 @@ pub fn run_qemu_live_hot_fork_child_gate(
         &identity,
         exact_gate_checkpoint(&identity, quantum.completion_icount, false),
     )
-    .map_err(|source| QemuLiveNodeStepGateError::node_op("save source VMState", source))?;
+    .map_err(|source| {
+        QemuLiveNodeStepGateError::node_op(
+            const { &QemuNodeStepOperation::new("save source VMState") },
+            source,
+        )
+    })?;
     let source_before = file_identity(&source_vmstate_path)?;
     if source_before.length == 0 {
         return Err(invariant("source VMState container stayed empty"));
@@ -180,12 +185,20 @@ pub fn run_qemu_live_hot_fork_child_gate(
 
     let held = node
         .prepare_hot_fork_template_barriers(&[])
-        .map_err(|source| qmp_operation("prepare retained template", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("prepare retained template") },
+                source,
+            )
+        })?;
     require_vmstate_source(&held)?;
     let template_generation = held.generation();
-    let observed = node
-        .query_hot_fork_template()
-        .map_err(|source| qmp_operation("query retained template", source))?;
+    let observed = node.query_hot_fork_template().map_err(|source| {
+        qmp_operation(
+            const { &QemuNodeStepOperation::new("query retained template") },
+            source,
+        )
+    })?;
     require_vmstate_source(&observed)?;
     if observed.generation() != template_generation {
         return Err(invariant(
@@ -198,7 +211,10 @@ pub fn run_qemu_live_hot_fork_child_gate(
     let graph = node
         .query_hot_fork_source_graph(i64::from(node.process_id()), template_generation)
         .map_err(|source| {
-            QemuLiveNodeStepGateError::node_op("authenticate retained source graph", source)
+            QemuLiveNodeStepGateError::node_op(
+                const { &QemuNodeStepOperation::new("authenticate retained source graph") },
+                source,
+            )
         })?;
     source_set::require_vmstate_graph(&graph, &source_file, source_before)?;
     drop(source_file);
@@ -249,7 +265,10 @@ pub fn run_qemu_live_hot_fork_child_gate(
         exercise_restored_source_lifecycle(&mut node, &identity, template_generation)?;
 
     node.force_crash_and_reap_for_gate().map_err(|source| {
-        QemuLiveNodeStepGateError::node_op("reap hot-fork child flight source", source)
+        QemuLiveNodeStepGateError::node_op(
+            const { &QemuNodeStepOperation::new("reap hot-fork child flight source") },
+            source,
+        )
     })?;
     drop(node);
     drop(source_directory);
@@ -301,7 +320,10 @@ fn exercise_restored_source_lifecycle(
 
     abort_vmstate_source_transaction(node, first_generation)?;
     node.resume_after_exact_snapshot().map_err(|source| {
-        QemuLiveNodeStepGateError::node_op("resume first restored native source", source)
+        QemuLiveNodeStepGateError::node_op(
+            const { &QemuNodeStepOperation::new("resume first restored native source") },
+            source,
+        )
     })?;
     retained_transactions = retained_transactions
         .checked_add(1)
@@ -313,7 +335,10 @@ fn exercise_restored_source_lifecycle(
         exact_gate_checkpoint(identity, restored.completion_icount, false),
     )
     .map_err(|source| {
-        QemuLiveNodeStepGateError::node_op("save first restored native VMState", source)
+        QemuLiveNodeStepGateError::node_op(
+            const { &QemuNodeStepOperation::new("save first restored native VMState") },
+            source,
+        )
     })?;
     vmstate_saves = vmstate_saves
         .checked_add(1)
@@ -321,16 +346,24 @@ fn exercise_restored_source_lifecycle(
 
     let held = node
         .prepare_hot_fork_template_barriers(&[])
-        .map_err(|source| qmp_operation("prepare second retained native source", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("prepare second retained native source") },
+                source,
+            )
+        })?;
     require_vmstate_source(&held)?;
     if held.generation() <= first_generation {
         return Err(invariant(
             "retained source transaction generation did not advance",
         ));
     }
-    let observed = node
-        .query_hot_fork_template()
-        .map_err(|source| qmp_operation("query second retained native source", source))?;
+    let observed = node.query_hot_fork_template().map_err(|source| {
+        qmp_operation(
+            const { &QemuNodeStepOperation::new("query second retained native source") },
+            source,
+        )
+    })?;
     require_vmstate_source(&observed)?;
     if observed.generation() != held.generation() {
         return Err(invariant(
@@ -340,7 +373,10 @@ fn exercise_restored_source_lifecycle(
 
     abort_vmstate_source_transaction(node, held.generation())?;
     node.resume_after_exact_snapshot().map_err(|source| {
-        QemuLiveNodeStepGateError::node_op("resume second restored native source", source)
+        QemuLiveNodeStepGateError::node_op(
+            const { &QemuNodeStepOperation::new("resume second restored native source") },
+            source,
+        )
     })?;
     retained_transactions = retained_transactions
         .checked_add(1)
@@ -351,7 +387,10 @@ fn exercise_restored_source_lifecycle(
         exact_gate_checkpoint(identity, suffix.completion_icount, false),
     )
     .map_err(|source| {
-        QemuLiveNodeStepGateError::node_op("save second restored native VMState", source)
+        QemuLiveNodeStepGateError::node_op(
+            const { &QemuNodeStepOperation::new("save second restored native VMState") },
+            source,
+        )
     })?;
     vmstate_saves = vmstate_saves
         .checked_add(1)
@@ -444,7 +483,12 @@ fn fork_one_child(
             source_before.length.saturating_mul(4).max(1 << 20),
             template_generation,
         )
-        .map_err(|source| qmp_operation("stage child-private VMState destination", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("stage child-private VMState destination") },
+                source,
+            )
+        })?;
 
     let fork_started = monotonic_nanoseconds();
     let forked = node.fork_prepared_hot_fork_template_into(&mut target_owner, |owner| {
@@ -459,7 +503,10 @@ fn fork_one_child(
     let launch = match forked {
         Ok(launch) => launch,
         Err(QemuHotForkLaunchError::Rejected { source }) => {
-            return Err(qmp_operation("fork retained template", source));
+            return Err(qmp_operation(
+                const { &QemuNodeStepOperation::new("fork retained template") },
+                source,
+            ));
         }
         Err(QemuHotForkLaunchError::ParentDispositionFailed {
             child_pid,
@@ -568,7 +615,12 @@ fn fork_one_child(
     }
     let inherited_plan = child_channel
         .query_hot_fork_child_files()
-        .map_err(|source| qmp_operation("query child-file plan in child", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("query child-file plan in child") },
+                source,
+            )
+        })?;
     if inherited_plan.staged() || inherited_plan.consumed() {
         return Err(invariant("child inherited a retained child-file plan"));
     }
@@ -619,25 +671,61 @@ fn fork_one_child(
         .map_err(|source| realization("kill hot-fork child", source))?;
     let child_generation = parent_state.request().child_process_contract_generation();
     wait_for_child_exit(node, child_generation)?;
-    node.release_hot_fork_plugin_endpoints()
-        .map_err(|source| qmp_operation("release plugin endpoints", source))?;
-    node.release_hot_fork_child_console()
-        .map_err(|source| qmp_operation("release child console", source))?;
-    node.release_hot_fork_child_qmp()
-        .map_err(|source| qmp_operation("release child QMP", source))?;
+    node.release_hot_fork_plugin_endpoints().map_err(|source| {
+        qmp_operation(
+            const { &QemuNodeStepOperation::new("release plugin endpoints") },
+            source,
+        )
+    })?;
+    node.release_hot_fork_child_console().map_err(|source| {
+        qmp_operation(
+            const { &QemuNodeStepOperation::new("release child console") },
+            source,
+        )
+    })?;
+    node.release_hot_fork_child_qmp().map_err(|source| {
+        qmp_operation(
+            const { &QemuNodeStepOperation::new("release child QMP") },
+            source,
+        )
+    })?;
     let _capture = node
         .release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)
-        .map_err(|source| qmp_operation("release child diagnostics", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("release child diagnostics") },
+                source,
+            )
+        })?;
     drop(
         node.release_hot_fork_private_ring_mapping()
-            .map_err(|source| qmp_operation("release private ring", source))?,
+            .map_err(|source| {
+                qmp_operation(
+                    const { &QemuNodeStepOperation::new("release private ring") },
+                    source,
+                )
+            })?,
     );
     node.release_hot_fork_child_process(child_generation)
-        .map_err(|source| qmp_operation("release reaped child record", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("release reaped child record") },
+                source,
+            )
+        })?;
     node.release_hot_fork_child_process_contract()
-        .map_err(|source| qmp_operation("release child process contract", source))?;
-    node.release_hot_fork_child_files()
-        .map_err(|source| qmp_operation("release child file plan", source))?;
+        .map_err(|source| {
+            qmp_operation(
+                const { &QemuNodeStepOperation::new("release child process contract") },
+                source,
+            )
+        })?;
+    node.release_hot_fork_child_files().map_err(|source| {
+        qmp_operation(
+            const { &QemuNodeStepOperation::new("release child file plan") },
+            source,
+        )
+    })?;
     drop(authority);
     drop(private_file);
     drop(target_directory);

@@ -50,13 +50,26 @@ pub(super) fn advance_to_busy_ceiling(
     let mut reissue_count = 0;
     let mut last_icount = node
         .current_icount()
-        .map_err(|source| QemuLiveNodeStepGateError::node_op("read pre-advance icount", source))?
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::node_op(
+                const { &QemuNodeStepOperation::new("read pre-advance icount") },
+                source,
+            )
+        })?
         .retired;
     loop {
         node.advance_to_ceiling(Icount { retired: ceiling })
-            .map_err(|source| QemuLiveNodeStepGateError::node_op("advance to ceiling", source))?;
+            .map_err(|source| {
+                QemuLiveNodeStepGateError::node_op(
+                    const { &QemuNodeStepOperation::new("advance to ceiling") },
+                    source,
+                )
+            })?;
         let idle = node.idle_state().map_err(|source| {
-            QemuLiveNodeStepGateError::node_op("read post-advance idle state", source)
+            QemuLiveNodeStepGateError::node_op(
+                const { &QemuNodeStepOperation::new("read post-advance idle state") },
+                source,
+            )
         })?;
         let current = idle.current_icount.retired;
 

@@ -141,7 +141,7 @@ impl PausedLiveNodeLaunch<'_> {
             child
                 .child_mut()
                 .map_err(|first| QemuLiveNodeStepGateError::node_op(
-                    "borrow issued startup completion",
+                    const { &QemuNodeStepOperation::new("borrow issued startup completion") },
                     first
                 ))?
                 .complete_original_plugin_startup()
@@ -237,7 +237,10 @@ impl PausedLiveNodeLaunch<'_> {
         }
         .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })?;
         let node = child.node_mut().map_err(|first| {
-            QemuLiveNodeStepGateError::node_op("borrow assembled issued Node", first)
+            QemuLiveNodeStepGateError::node_op(
+                const { &QemuNodeStepOperation::new("borrow assembled issued Node") },
+                first,
+            )
         })?;
 
         macro_rules! node_try {
@@ -259,7 +262,10 @@ impl PausedLiveNodeLaunch<'_> {
             node_try!(
                 node.retain_priming_network_outputs(priming.emitted_frames)
                     .map_err(|source| {
-                        QemuLiveNodeStepGateError::node_op("retain priming network outputs", source)
+                        QemuLiveNodeStepGateError::node_op(
+                            const { &QemuNodeStepOperation::new("retain priming network outputs") },
+                            source,
+                        )
                     })
             );
         }
@@ -270,14 +276,21 @@ impl PausedLiveNodeLaunch<'_> {
                 node.restore_network_transport_for_gate(network)
                     .map_err(|source| {
                         QemuLiveNodeStepGateError::node_op(
-                            "bind retained priming network continuation",
+                            const {
+                                &QemuNodeStepOperation::new(
+                                    "bind retained priming network continuation",
+                                )
+                            },
                             source,
                         )
                     })
             );
         }
         let ready_boundary = node_try!(node.synchronize_observed_time().map_err(|source| {
-            QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)
+            QemuLiveNodeStepGateError::node_op(
+                const { &QemuNodeStepOperation::new("synchronize primed icount") },
+                source,
+            )
         }));
         if !restoring_checkpoint {
             node.set_priming_observable_events(priming.observable_events, ready_boundary);

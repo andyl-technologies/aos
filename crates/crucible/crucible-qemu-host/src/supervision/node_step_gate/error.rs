@@ -4,6 +4,45 @@ use super::*;
 use crate::QemuAsyncDriverRuntimeError;
 use thiserror::Error;
 
+/// Names an immutable operation retained by a bounded node-step failure.
+///
+/// Failures borrow this static metadata while retaining the complete node error
+/// inline. The label is diagnostic and grants no execution or retry authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuNodeStepOperation {
+    label: &'static str,
+}
+
+impl QemuNodeStepOperation {
+    /// Creates diagnostic metadata for a statically named operation.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use crucible_qemu_host::QemuNodeStepOperation;
+    ///
+    /// const ADVANCE: QemuNodeStepOperation =
+    ///     QemuNodeStepOperation::new("advance to ceiling");
+    /// assert_eq!(ADVANCE.as_str(), "advance to ceiling");
+    /// ```
+    #[must_use]
+    pub const fn new(label: &'static str) -> Self {
+        Self { label }
+    }
+
+    /// Returns the unchanged operation label.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        self.label
+    }
+}
+
+impl std::fmt::Display for QemuNodeStepOperation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.label)
+    }
+}
+
 /// Error returned by the live [`QemuNode`] bounded-step gate.
 #[derive(Debug, Error)]
 pub enum QemuLiveNodeStepGateError {
@@ -254,8 +293,8 @@ pub enum QemuLiveNodeStepGateError {
     /// A bounded node step failed.
     #[error("{operation} failed")]
     Step {
-        /// Node operation that failed.
-        operation: &'static str,
+        /// Statically retained diagnostic operation that failed.
+        operation: &'static QemuNodeStepOperation,
         /// Underlying node error.
         source: QemuNodeError,
     },
@@ -310,12 +349,85 @@ impl QemuLiveNodeStepGateError {
     }
 
     /// Builds a [`QemuLiveNodeStepGateError::Step`] for a node operation.
-    pub(super) fn node_op(operation: &'static str, source: QemuNodeError) -> Self {
+    pub(super) fn node_op(
+        operation: &'static QemuNodeStepOperation,
+        source: QemuNodeError,
+    ) -> Self {
         Self::Step { operation, source }
     }
 
     /// Builds a [`QemuLiveNodeStepGateError::Prime`] for a priming operation.
     pub(super) fn prime(operation: &'static str, source: QemuNodeChannelError) -> Self {
         Self::Prime { operation, source }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::borrow::Cow;
+    use std::error::Error as _;
+
+    #[test]
+    fn static_operation_preserves_actual_node_causes_without_allocating() {
+        const OPERATION: QemuNodeStepOperation =
+            QemuNodeStepOperation::new("read pre-advance icount");
+        let operation = &OPERATION;
+        let supervisor =
+            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+        let original = supervisor.begin(HostOperationClass::Preparation).unwrap();
+        supervisor.cancel().unwrap();
+        let first = original.wait_slice().unwrap_err();
+        let message = String::from("original owned channel refusal");
+        let payload = message.as_ptr();
+        let cases = [
+            QemuNodeError::ChannelSupervision {
+                plane: crate::QemuNodeChannelPlane::QmpMachineControl,
+                operation: "observe retained QMP channel",
+                source: first,
+            },
+            QemuNodeError::Channel {
+                plane: crate::QemuNodeChannelPlane::QmpMachineControl,
+                operation: "observe retained QMP channel",
+                message: Cow::Owned(message),
+            },
+        ];
+
+        for source in cases {
+            let (error, counts) = TestAllocationObserver::count(|| {
+                QemuLiveNodeStepGateError::node_op(operation, source)
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert!(!counts.overflow);
+            let QemuLiveNodeStepGateError::Step {
+                operation: retained_operation,
+                source,
+            } = &error
+            else {
+                panic!("node operation must retain its original typed refusal");
+            };
+            assert!(std::ptr::eq(*retained_operation, operation));
+            assert_eq!(retained_operation.as_str(), "read pre-advance icount");
+            assert!(std::ptr::eq(
+                error
+                    .source()
+                    .unwrap()
+                    .downcast_ref::<QemuNodeError>()
+                    .unwrap(),
+                source,
+            ));
+            match source {
+                QemuNodeError::ChannelSupervision { source, .. } => assert_eq!(*source, first),
+                QemuNodeError::Channel { message, .. } => assert_eq!(message.as_ptr(), payload),
+                _ => panic!("node cause cannot change during static operation adaptation"),
+            }
+            assert_eq!(error.to_string(), "read pre-advance icount failed");
+        }
     }
 }

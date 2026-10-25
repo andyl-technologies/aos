@@ -97,7 +97,7 @@ use crate::{
 use super::QemuLiveHostIoRuntimeError;
 
 mod error;
-pub use error::QemuLiveNodeStepGateError;
+pub use error::{QemuLiveNodeStepGateError, QemuNodeStepOperation};
 mod exact_snapshot;
 mod paused_launch;
 mod plugin_resources;
@@ -1593,7 +1593,10 @@ fn prepare_paused_live_node<'a>(
         child
             .child_mut()
             .map_err(|first| {
-                QemuLiveNodeStepGateError::node_op("retain issued child startup", first)
+                QemuLiveNodeStepGateError::node_op(
+                    const { &QemuNodeStepOperation::new("retain issued child startup") },
+                    first,
+                )
             })?
             .retain_original_plugin_startup(startup);
     }
@@ -1642,7 +1645,12 @@ fn prepare_paused_live_node<'a>(
     #[cfg(target_os = "linux")]
     match child
         .child_mut()
-        .map_err(|first| QemuLiveNodeStepGateError::node_op("borrow issued child startup", first))?
+        .map_err(|first| {
+            QemuLiveNodeStepGateError::node_op(
+                const { &QemuNodeStepOperation::new("borrow issued child startup") },
+                first,
+            )
+        })?
         .device_digest_workspace_setup_view()
     {
         Ok(Some(body)) => resources.retain_device_digest_workspace(body),
@@ -1723,7 +1731,10 @@ fn prepare_paused_live_node<'a>(
         child
             .child_mut()
             .map_err(|source| {
-                QemuLiveNodeStepGateError::node_op("borrow issued child Source", source)
+                QemuLiveNodeStepGateError::node_op(
+                    const { &QemuNodeStepOperation::new("borrow issued child Source") },
+                    source,
+                )
             })
             .and_then(|child| {
                 child
@@ -2106,7 +2117,7 @@ pub(crate) fn resume_restored_exact_node(
     let result = owner.node_mut().and_then(QemuNode::resume_after_restore);
     if let Err(source) = result {
         let primary = QemuLiveNodeStepGateError::Step {
-            operation: "resume repository-restored exact node",
+            operation: const { &QemuNodeStepOperation::new("resume repository-restored exact node") },
             source,
         };
         return Err(reap_failed_live_node_child(owner, primary));

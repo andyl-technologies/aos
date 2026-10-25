@@ -244,7 +244,7 @@ pub(super) const EXACT_RESUME_BOUNDARY: &str = r##"pub(crate) fn resume_restored
     let result = owner.node_mut().and_then(QemuNode::resume_after_restore);
     if let Err(source) = result {
         let primary = QemuLiveNodeStepGateError::Step {
-            operation: "resume repository-restored exact node",
+            operation: const { &QemuNodeStepOperation::new("resume repository-restored exact node") },
             source,
         };
         return Err(reap_failed_live_node_child(owner, primary));
