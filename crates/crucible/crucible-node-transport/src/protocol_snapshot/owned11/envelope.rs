@@ -44,6 +44,28 @@ impl<'input, 'records> ValidatedHistoricalEnvelope<'input, 'records> {
     /// capacity disagreement, malformed JSON or excess data limits.
     pub fn validate(
         input: &'input [u8],
+        records: MetadataRecordRows<'records>,
+        limits: HistoricalJsonLimits,
+    ) -> Result<Self, ProviderError> {
+        Self::validate_with_method::<false>(input, records, limits)
+    }
+
+    /// Selects the explicit compact-custody18 vocabulary without widening old11.
+    ///
+    /// # Errors
+    /// Refuses malformed fields, mismatched capacities or exceeded JSON limits.
+    pub(crate) fn validate_compact_custody18(
+        input: &'input [u8],
+        records: MetadataRecordRows<'records>,
+        limits: HistoricalJsonLimits,
+    ) -> Result<Self, ProviderError> {
+        Self::validate_with_method::<true>(input, records, limits)
+    }
+
+    // The edition is a compile-time choice, so old11's existing named controls
+    // do not acquire an unpriced runtime selector or a changed owner layout.
+    fn validate_with_method<const COMPACT_CUSTODY18: bool>(
+        input: &'input [u8],
         mut records: MetadataRecordRows<'records>,
         limits: HistoricalJsonLimits,
     ) -> Result<Self, ProviderError> {
@@ -105,7 +127,10 @@ impl<'input, 'records> ValidatedHistoricalEnvelope<'input, 'records> {
                 .ok_or_else(invalid)?;
         }
         cursor.field(b"method")?;
-        let method = method(cursor.string()?)?;
+        let method = match cursor.string()? {
+            "native_import18_bootstrap" if COMPACT_CUSTODY18 => Method::NativeImport18Bootstrap,
+            text => method(text)?,
+        };
         cursor.field(b"body")?;
         let body_bytes = cursor.object_span()?;
         let body = ValidatedHistoricalJson::validate(body_bytes, records, limits)?;

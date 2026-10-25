@@ -58,6 +58,9 @@ pub use content::compact_cursor;
 /// Exposes the explicit data-only content-eight metadata capacity grammar.
 pub use content::compact_metadata8;
 
+/// Exposes the complete inert compact SDK custody history grammar.
+pub use session::physical18 as compact_custody18;
+
 pub(crate) mod host_startup;
 pub use host_startup::{
     OriginalPacketHostStartup, PacketNativeHostStartupInputs, PacketNativeHostStartupStorageData,

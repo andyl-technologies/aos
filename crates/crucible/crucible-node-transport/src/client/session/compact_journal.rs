@@ -18,6 +18,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 mod identity;
+pub mod physical18;
 mod storage;
 
 /// Retains one complete compact original and its last authentic response.
@@ -170,6 +171,15 @@ impl CompactClientCustody {
     pub fn retained_metadata_facts(
         &self,
     ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        self.observe_owned_metadata(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    fn observe_owned_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
         let Self {
             maximum_requests,
             maximum_bytes,
@@ -181,14 +191,13 @@ impl CompactClientCustody {
             pending,
             unexpected,
         } = self;
-        let mut observer = crate::retained_metadata::MetadataObserver::new();
         observer.observe(maximum_requests)?;
         observer.observe(maximum_bytes)?;
         observer.observe(retained_bytes)?;
         observer.observe(maximum_envelope_bank_bytes)?;
         observer.observe(controller)?;
         observer.observe(provider)?;
-        content.observe_owned_metadata(&mut observer)?;
+        content.observe_owned_metadata(observer)?;
         if let Some(PendingEnvelope {
             origin: _,
             envelope,
@@ -197,9 +206,9 @@ impl CompactClientCustody {
             observer.observe(envelope)?;
         }
         if let Some(frame) = unexpected {
-            observe_unexpected_frame(frame, &mut observer)?;
+            observe_unexpected_frame(frame, observer)?;
         }
-        Ok(observer.finish())
+        Ok(())
     }
 
     /// Constructs empty journals under unchanged request and content ceilings.

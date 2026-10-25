@@ -88,6 +88,50 @@ impl<'a> ValidatedCompactMetadata8<'a> {
         })
     }
 
+    /// Checks the complete aligned content8 prefix for compact-custody18.
+    ///
+    /// # Errors
+    /// Refuses changed capacities, entry layouts, alignments or missing rows.
+    pub(crate) fn validate_compact_custody18_capacity_rows<'records>(
+        &self,
+        records: crate::retained_metadata::records::MetadataRecordRows<'records>,
+    ) -> Result<crate::retained_metadata::records::MetadataRecordRows<'records>, ProviderError>
+    {
+        use crate::retained_metadata::records::MetadataRecordKind;
+        use std::mem::align_of;
+
+        let remaining = self.validate_owned11_capacity_rows(records.clone())?;
+        let mut aligned = records;
+        for (entries, tree_alignment) in [
+            (
+                self.data.transfer_count(),
+                align_of::<crucible_node_format::Id>().max(align_of::<super::Transfer>()),
+            ),
+            (
+                self.data.object_count(),
+                align_of::<String>().max(align_of::<(ContentRef, std::rc::Rc<Vec<u8>>)>()),
+            ),
+        ] {
+            if aligned.next().ok_or_else(invalid)??.alignment != tree_alignment {
+                return Err(invalid());
+            }
+            for _ in 0..entries {
+                for _ in 0..7 {
+                    let row = aligned.next().ok_or_else(invalid)??;
+                    let expected = if row.kind == MetadataRecordKind::Shared {
+                        align_of::<Vec<u8>>()
+                    } else {
+                        1
+                    };
+                    if row.alignment != expected {
+                        return Err(invalid());
+                    }
+                }
+            }
+        }
+        Ok(remaining)
+    }
+
     pub(crate) fn validate_owned11_capacity_rows<'records>(
         &self,
         mut records: crate::retained_metadata::records::MetadataRecordRows<'records>,

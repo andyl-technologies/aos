@@ -16,13 +16,13 @@ use crucible_node_format::{Bytes, Extensions, U64, canonical};
 use serde_json::{Value, json};
 use std::{io::Read, os::unix::net::UnixStream, rc::Rc, time::Duration};
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
+pub(super) type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 mod identity;
 mod identity_work;
 
 const CONTENT_BYTES: usize = 262_144;
-const BANK_BYTES: usize = 9 * CONTENT_BYTES;
+pub(super) const BANK_BYTES: usize = 9 * CONTENT_BYTES;
 
 struct Supervisor;
 
@@ -43,7 +43,7 @@ impl BodySchemaVerifier for Schemas {
     }
 }
 
-fn fixture(
+pub(super) fn fixture(
     bank_limit: usize,
 ) -> (
     Handshake,
@@ -135,6 +135,7 @@ fn failed_send_keeps_compact_original_and_caller_spare_capacity() -> TestResult 
     );
     assert!(!retained.has_response());
     check_physical18_pair(retained)?;
+    physical18::tests::roundtrip(&custody)?;
     assert!(custody.pending_envelope().is_none());
     assert_eq!(request.protocol.capacity(), caller_capacity);
     assert_eq!(request, original);
@@ -247,6 +248,7 @@ fn response_compaction_failure_preserves_received_envelope_and_pending_fence() -
     );
     let facts = custody.retained_metadata_facts()?;
     assert!(facts.string_capacity_bytes >= 4096);
+    physical18::tests::roundtrip(&custody)?;
     Ok(())
 }
 
@@ -388,6 +390,11 @@ fn actual_content_transfer_keeps_namespaces_distinct_and_recovers_original_ack()
     for original in custody.originals() {
         check_physical18_pair(original)?;
     }
+    let historical = physical18::tests::roundtrip(&custody)?;
+    assert_eq!(
+        historical.content_data().get(&expected_reference)?,
+        b"actual compact SDK content"
+    );
     Ok(())
 }
 
@@ -684,6 +691,7 @@ fn unsupported_notification_keeps_complete_frame_and_fences_stream() -> TestResu
     assert_eq!(custody.unexpected_frame().unwrap().envelope, event);
     assert_eq!(custody.retained_journal_bytes(), charged);
     assert_eq!(custody.originals().count(), 1);
+    physical18::tests::roundtrip(&custody)?;
     Ok(())
 }
 
@@ -838,6 +846,7 @@ fn bootstrap_failed_data_census_counts_typed_banks_without_eligibility() -> Test
         } else {
             assert!(facts.string_capacity_bytes >= 4096);
         }
+        physical18::tests::roundtrip(&custody)?;
     }
     Ok(())
 }

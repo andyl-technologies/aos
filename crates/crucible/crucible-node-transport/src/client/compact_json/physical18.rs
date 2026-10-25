@@ -60,6 +60,11 @@ pub struct HistoricalCompactEnvelope18 {
 }
 
 impl HistoricalCompactEnvelope18 {
+    /// Moves an already checked bank into the private enclosing historical owner.
+    pub(in crate::client) fn into_historical_bank(self) -> CompactJson {
+        self.bank
+    }
+
     /// Reconstructs one explicit physical18 bank under independent DATA limits.
     ///
     /// The complete outer and compact-byte framing is checked before requesting

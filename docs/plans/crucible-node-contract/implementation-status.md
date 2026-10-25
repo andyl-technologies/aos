@@ -10,6 +10,46 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Complete compact SDK custody history
+
+The explicit `source-private.compact-custody/18` writer now captures the entire
+actual compact SDK custody through its defining metadata walk. It preserves both
+original namespaces, every request/response bank, independent identity capacities,
+lifetime ceilings and consumed credit, content8 byte aliases and metadata,
+pending origin/envelope, and independent raw/typed quarantine populations.
+The caller owns the bounded capacity-record bank before walking; a refused
+capture leaves its partial records and the original custody unchanged.
+
+The paired reader checks the complete aligned roster and all nested grammar
+before final construction. Its preflight decodes and drops one envelope bank at
+a time; it is not an allocation-free preflight. Ordinary typed fields rebuild
+directly from borrowed JSON and capacity rows, while content8 reconstructs its
+original Rc graph. Native Bootstrap18 quarantine preserves independently owned
+common and typed results, including ineligible saved schema/funding prefixes.
+The explicit18 envelope vocabulary does not widen old11 readers. Imported
+history has no conversion into live custody or Source/native authority.
+
+Twenty-eight SDK/history controls and four envelope-bank codec controls pass in
+both codec builds, including actual failed-send, response-compaction failure,
+Blob/duplicate-ACK and notification quarantine round trips. Both complete
+Transport suites pass 2,189 tests with zero failures and twenty ignored, using
+frozen compiler-selected artifacts. Both SourceBirth suites pass 62 tests with
+zero failures or ignored tests. All-feature/all-target checking, scoped
+formatting and six architecture checks pass. The session export's content-bound
+source review was refreshed after its stale digest was detected. Strict
+SourceBirth Clippy passes. Strict Transport Clippy retains the exact preceding
+code/message multiset: four existing errors and 1,725 warnings, with no added
+diagnostics. It is not a strict Transport lint pass.
+
+Application test-target compilation passes. Actual metadata records 185 test
+artifacts across 58 packages, including 76 integration targets; its captured
+source matches all 666 frozen owned Rust/Cargo inputs.
+
+Complete future SDK R/T/S, Source18 construction and funded handoff, specialized
+Native18 capsule histories, the five-phase recipe producer and full lifecycle
+qualification remain unfinished. No production Source selection, quota or
+native admission changed.
+
 ## Paired compact SDK envelope-bank history
 
 Actual compact originals now lend request and cached-response banks through the

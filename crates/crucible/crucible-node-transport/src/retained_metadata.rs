@@ -51,7 +51,6 @@ impl<'a> MetadataObserver<'a> {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn recording(records: &'a mut MetadataRecordBank) -> Self {
         records.clear();
         Self {
