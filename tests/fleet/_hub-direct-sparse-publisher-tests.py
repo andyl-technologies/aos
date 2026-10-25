@@ -4,6 +4,7 @@ SQLite rows below are explicitly controlled records. They are never VM,
 authenticated issuer, provider or runtime qualification evidence.
 """
 
+import ast
 import contextlib
 import copy
 import hashlib
@@ -578,7 +579,33 @@ class StageTimingDiagnostics(unittest.TestCase):
         self.assertEqual((row["count"], row["failures"], row["totalMillis"]), (2, 1, 8))
         self.assertEqual(row["maximumMillis"], 8)
         self.assertEqual(sum(row["powerOfTwoMillisBuckets"]), 2)
+        self.assertEqual([name for name, _ in self.receipts], [
+            "actual-stage-timings-000000000001.json",
+            "actual-stage-timings-000000000002.json",
+        ])
         self.assertNotIn("unit-only-private-body", json.dumps(self.receipts))
+
+    def test_snapshots_use_the_real_write_once_evidence_writer(self):
+        selected = Path(__file__).with_name("_hub-direct-flow.py")
+        writer = next(node for node in ast.parse(selected.read_text()).body
+                      if isinstance(node, ast.FunctionDef) and node.name == "retain_direct_flow")
+        exec(compile(ast.Module(body=[writer], type_ignores=[]), str(selected), "exec"),
+             self.namespace)
+        self.namespace["os"] = os
+
+        with tempfile.TemporaryDirectory() as directory:
+            self.namespace["Path"] = lambda value: Path(directory) / value
+            timings = {}
+            collect = self.namespace["retain_direct_stage_timings"]
+            collect("direct_stage_timing phase=stage_begin elapsed_millis=1 success=true\n", timings)
+            collect("direct_stage_timing phase=stage_begin elapsed_millis=2 success=true\n", timings)
+
+            receipts = sorted((Path(directory) / "external-direct-flow").glob("*.json"))
+            self.assertEqual(len(receipts), 2)
+            self.assertEqual([json.loads(path.read_text())["phases"]["stage_begin"]["count"]
+                              for path in receipts], [1, 2])
+            with self.assertRaises(FileExistsError):
+                self.namespace["retain_direct_flow"](receipts[-1].name, {})
 
     def test_unknown_labels_malformed_lines_and_excessive_durations_are_ignored(self):
         collect = self.namespace["retain_direct_stage_timings"]

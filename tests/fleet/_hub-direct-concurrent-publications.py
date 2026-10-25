@@ -284,7 +284,10 @@ def retain_direct_stage_timings(body, timings):
         row["powerOfTwoMillisBuckets"][elapsed.bit_length()] += 1
         changed = True
     if changed:
-        retain_direct_flow("actual-stage-timings.json", {
+        # Evidence files are immutable. Each cumulative snapshot commits a
+        # strictly larger observation count instead of replacing prior bytes.
+        count = sum(row["count"] for row in timings.values())
+        retain_direct_flow(f"actual-stage-timings-{count:012d}.json", {
             "version": 1, "phases": timings,
             "scope": "diagnostic setup timings before the genuine Visibility rendezvous; no authority",
         })
