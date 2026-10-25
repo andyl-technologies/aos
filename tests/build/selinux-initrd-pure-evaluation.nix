@@ -69,6 +69,13 @@ in
           == ($policy + "/etc/selinux/aos/contexts/files/file_contexts")
       and $effects["selinux-initrd-file-context-substitutions"].input.fragments[0].storePath
           == ($policy + "/etc/selinux/aos/contexts/files/file_contexts.subs_dist")
+      and $effects["selinux-initrd-dbus-contexts"].input.path
+          == "/etc/selinux/aos/contexts/dbus_contexts"
+      and $effects["selinux-initrd-dbus-contexts"].input.mode == "0444"
+      and $effects["selinux-initrd-dbus-contexts"].input.fragments == [{
+        storePath: ($policy + "/etc/selinux/aos/contexts/dbus_contexts"),
+        maximumBytes: 1048576
+      }]
     ' module.json > /dev/null
 
     mkdir -p "$out"

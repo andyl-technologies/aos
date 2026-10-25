@@ -6,8 +6,9 @@
   selection = import ./_selinux-initrd-policy.nix;
 
   # PID 1 opens a userspace labeling handle as soon as SELinux is detected.
-  # Copy the exact selected text and substitutions without evaluation-time
-  # reads of derivation outputs or large text in provider invocations.
+  # Native configuration also starts D-Bus before switch-root, where it reads
+  # the selected bus contexts. Retain each consumer's canonical policy input
+  # without reading derivation outputs during evaluation.
   contextFiles = [
     {
       name = "file-contexts";
@@ -16,6 +17,10 @@
     {
       name = "file-context-substitutions";
       path = "files/file_contexts.subs_dist";
+    }
+    {
+      name = "dbus-contexts";
+      path = "dbus_contexts";
     }
   ];
   contextEffects = lib.listToAttrs (map (file: {
