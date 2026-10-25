@@ -26,7 +26,7 @@ PROFILE = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
 UNIT_NAME = "terrane-fs-unit"
 # The five creator fixtures require the actual guest administrator; every other
 # library case runs as an isolated ordinary user on ext4.
-UNIT_PREFIXES = ("configured::", "configured_sdk::", "host_cache::", "host_quota::socket::",
+UNIT_PREFIXES = ("configured::", "configured_gc::", "configured_sdk::", "host_cache::", "host_quota::socket::",
                  "publisher_io::", "publisher_local::", "quota_confinement::")
 ROOT_UNIT_TESTS = (
     'host_quota::initial_enrollment::tests::actual_initial_receipt_refuses_shared_and_other_root_guards_before_effects',
@@ -46,6 +46,10 @@ UNIT_TESTS = (
     'configured::tests::configured_preflight_rejects_later_domain_policy_before_any_open',
     'configured::tests::configured_preflight_rejects_unrepresentable_unix_socket',
     'configured::tests::configured_preflight_requires_real_quota_inputs_before_startup',
+    'configured_gc::preflight::tests::pure_preflight_accepts_unopened_local_inputs',
+    'configured_gc::preflight::tests::pure_preflight_refuses_instance_credentials_and_missing_public_keys',
+    'configured_gc::preflight::tests::pure_preflight_refuses_overlapping_authority_and_missing_settings',
+    'configured_gc::preflight::tests::pure_preflight_refuses_remote_composite_and_conflicting_roles',
     'configured_sdk::tests::actual_original_profile_mismatch_requires_process_exit',
     'configured_sdk::tests::complete_exposure_list_rejects_late_unsupported_credentials_without_effects',
     'configured_sdk::tests::credential_references_have_no_provider_or_path_normalization_fallback',

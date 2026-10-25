@@ -37,7 +37,7 @@ FLAGS = ["--frozen", "--offline", "-p", "terrane-linux",
          "--features", "tokio,terrane-sdk/surface-sdk"]
 FS_FEATURES = ["tokio"]
 REPOSITORY_FEATURES = ["send", "std", "surface-sdk", "tokio"]
-KINDS = ["unit", "example", "cli"]
+KINDS = ["unit", "example", "cli", "gc"]
 PACKAGE_PATHS = {
     "terrane-cli": "terrane/cli/terrane-cli",
     "terrane-linux": "terrane/linux/terrane-linux",
@@ -79,7 +79,8 @@ def select_artifact(events, packages, workspace, target, kind):
     repository = [item for item in packages
                   if pathlib.Path(item["manifest_path"]) == workspace / "terrane/sdk/terrane-sdk/Cargo.toml"]
     require(len(package) == len(repository) == 1, "ambiguous source packages")
-    name = {"unit": "terrane_linux", "example": "configured_sdk_fixture", "cli": "terrane"}[kind]
+    name = {"unit": "terrane_linux", "example": "configured_sdk_fixture", "cli": "terrane",
+            "gc": "configured_gc_fixture"}[kind]
     candidates = [event for event in events if event.get("reason") == "compiler-artifact"
                   and event.get("target", {}).get("name") == name
                   and event.get("executable")]
@@ -87,13 +88,15 @@ def select_artifact(events, packages, workspace, target, kind):
     artifact = candidates[0]
     source = {"unit": "terrane/linux/terrane-linux/src/lib.rs",
               "example": "terrane/linux/terrane-linux/examples/configured_sdk_fixture.rs",
-              "cli": "terrane/cli/terrane-cli/src/main.rs"}[kind]
+              "cli": "terrane/cli/terrane-cli/src/main.rs",
+              "gc": "terrane/linux/terrane-linux/examples/configured_gc_fixture.rs"}[kind]
     profile = artifact["profile"]
     executable = pathlib.Path(artifact["executable"])
     test = kind == "unit"
     require(package[0]["name"] == package_name
             and artifact["package_id"] == package[0]["id"]
-            and artifact["target"]["kind"] == {"unit": ["lib"], "example": ["example"], "cli": ["bin"]}[kind]
+            and artifact["target"]["kind"] == {"unit": ["lib"], "example": ["example"],
+                                               "cli": ["bin"], "gc": ["example"]}[kind]
             and pathlib.Path(artifact["target"]["src_path"]) == workspace / source
             and sorted(artifact["features"]) == ([] if kind == "cli" else FS_FEATURES)
             and profile["test"] is test and profile["debug_assertions"] is True
@@ -146,6 +149,7 @@ def discover(artifact, executable, kind, workspace, target, temporary, target_li
         "unit": ["cargo", "test", *FLAGS, "--lib", "--", "--list"],
         "example": ["cargo", "run", *FLAGS, "--example", "configured_sdk_fixture", "--", "--discover"],
         "cli": ["cargo", "run", "--frozen", "--offline", "-p", "terrane-cli", "--bin", "terrane", "--", "--discover"],
+        "gc": ["cargo", "run", *FLAGS, "--example", "configured_gc_fixture", "--", "--discover"],
     }[kind]
     before = digest(executable)
     with (temporary / f"configured-sdk-{kind}-discovery.log").open("w") as log:
@@ -348,7 +352,7 @@ def launch(image, kind, arguments, native_cache=False):
     identity = json.loads((image / "share/identity.json").read_text())
     verify(image, pathlib.Path(identity["source"]))
     require(kind in KINDS, "unknown configured SDK launcher")
-    if kind in ["example", "cli"]:
+    if kind in ["example", "cli", "gc"]:
         status = dict(line.split(":", 1) for line in
                       pathlib.Path("/proc/self/status").read_text().splitlines() if ":" in line)
         require(os.getuid() == os.geteuid() == 840 and os.getgid() == os.getegid() == 840

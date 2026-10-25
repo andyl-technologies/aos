@@ -469,6 +469,11 @@ in {
   integration.wasm-host-profile = wasmHostProof;
   integration.configured-sdk-unit = configuredSdkProof.unit;
   integration.native-configured-sdk = configuredSdkProof.native;
+
+  integration.native-configured-gc = import ./configured-gc-proof.nix {
+    inherit pkgs lib;
+    image = configuredSdkProof.image;
+  };
   integration.host-cache-image = hostCacheProof.image;
   integration.native-host-cache = hostCacheProof.native;
   integration.native-host-cache-all-features = hostCacheAllFeatureProof.native;

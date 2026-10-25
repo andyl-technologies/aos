@@ -30,6 +30,10 @@ name = "configured_sdk_fixture"
 required-features = ["tokio"]
 
 [[example]]
+name = "configured_gc_fixture"
+required-features = ["tokio"]
+
+[[example]]
 name = "host_cache_fixture"
 required-features = ["native-test-fixtures"]
 

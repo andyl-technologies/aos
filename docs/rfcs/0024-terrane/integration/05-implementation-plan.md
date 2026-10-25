@@ -94,6 +94,32 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+A configured local collector component now performs pure whole-configuration
+preflight, installs the irreversible quota boundary before constructing Tokio
+or opening public issuer files, and retains one original collector session.
+Bounded marking, ordinary retirement/deletion, exact-incarnation local intent
+recovery, permanent-owner reconciliation, copied first ownership and older
+exclusion refresh delegate to their existing checked native producers. Fresh
+cycles keep the same live whole lease. SIGINT/SIGTERM cancel the original active
+operation; executor shutdown joins queued native work while the confinement
+receipt remains retained. Readiness means durable first sweep, not completed
+maintenance. Unsupported remote/composite stores, exposures, host tiers and
+instance/workload credentials are refused before effects.
+
+Four pure preflight cases, the fixture's exact pure configuration case and both
+supported strict Linux profiles pass. The explicit guest fixture creates
+genuine Original history and an unreferenced pack, removes all three private
+authority files, waits real grace, then invokes the confined component in a
+fresh empty-capability actor. Its independent verifier requires exact native
+Done after full D, physical pack/index/Trash absence, multiple selected cycles
+under the original lease, and an unchanged live head with an authenticated
+payload read. The source-bound image retains a fourth actual Cargo artifact
+for this fixture. Its guest harness is registered with a 420-second bound;
+native and mandatory compilation qualification remain pending. The CLI remains
+unchanged. Compaction, startup restoration of excluded required metadata,
+complete role filesystem isolation and other GC backends remain outstanding;
+this component does not establish full GC-role or task acceptance.
+
 The fresh-cycle missing-Trash guest at `3075f98717` fails in 1,552.164
 seconds: the new test expected unchanged source-lineage digests across a new
 retirement. Retirement deliberately carries the signed dependencies into the
