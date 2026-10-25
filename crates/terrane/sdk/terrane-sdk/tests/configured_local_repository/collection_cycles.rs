@@ -12,10 +12,9 @@ async fn fresh_cycles_retain_the_live_session_and_authenticate_changed_roots() -
     let first = fixture.commit_bytes(OLD).await?;
     let mut collection = fixture
         .repository
-        .start_local_collection(
+        .start_next_local_collection(
             "repeating-collector".into(),
             1_000,
-            1,
             Windows::new(30, 60, 60, 90)?,
         )
         .await?;
@@ -44,6 +43,10 @@ async fn fresh_cycles_retain_the_live_session_and_authenticate_changed_roots() -
     assert_eq!(collection.state(), &initial_state);
 
     let refreshed = collection.lease().clone();
+    assert!(collection.begin_next_cycle().await.is_err());
+    assert_eq!(collection.state(), &initial_state);
+    assert_eq!(collection.roots(), &original_roots);
+    assert_eq!(collection.lease(), &refreshed);
     assert!(collection.begin_cycle(2).await.is_err());
     assert_eq!(collection.state(), &initial_state);
     assert_eq!(collection.roots(), &original_roots);
@@ -108,5 +111,26 @@ async fn fresh_cycles_retain_the_live_session_and_authenticate_changed_roots() -
     collection.mark_batch(32).await?;
     assert!(collection.state().pending.is_empty());
     collection.finish_mark().await?;
+    let retained = (1..=3)
+        .flat_map(|cycle| [format!("gc/{cycle}/roots"), format!("gc/{cycle}/state")])
+        .map(|key| {
+            let path = fixture.location.bucket.join(key);
+            std::fs::read(&path).map(|bytes| (path, bytes))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let before_next = collection.lease().clone();
+    collection.begin_next_cycle().await?;
+
+    assert_eq!(collection.state().cycle, 4);
+    assert_eq!(collection.state().phase, Phase::Mark);
+    assert_eq!(collection.lease().holder, before_next.holder);
+    assert_eq!(collection.lease().epoch, before_next.epoch);
+    assert!(collection.lease().expiry >= before_next.expiry);
+    collection.mark_batch(32).await?;
+    assert!(collection.state().pending.is_empty());
+    collection.finish_mark().await?;
+    for (path, bytes) in retained {
+        assert_eq!(std::fs::read(path)?, bytes);
+    }
     Ok(())
 }

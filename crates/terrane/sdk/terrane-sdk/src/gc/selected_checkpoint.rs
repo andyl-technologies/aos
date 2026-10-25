@@ -68,7 +68,34 @@ where
     V: ContentValidator + BucketBinding,
     C: Clock,
 {
-    execute(guard, authority, session, cycle, windows, Action::Begin).await
+    execute(
+        guard,
+        authority,
+        session,
+        Some(cycle),
+        windows,
+        Action::Begin,
+    )
+    .await
+}
+
+/// Selects a fresh cycle from the same held publication used for its checkpoint.
+///
+/// # Errors
+/// Preserves genuine begin failures and rejects malformed or exhausted cycle keys.
+pub(crate) async fn begin_next<F, B, V, C>(
+    guard: &Guard<FileBucket<F, B, V>, C>,
+    authority: &OriginalAuthority,
+    session: &Session,
+    windows: Windows,
+) -> Result<(GcRoots, GcState), CollectionError>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+    C: Clock,
+{
+    execute(guard, authority, session, None, windows, Action::Begin).await
 }
 
 /// Replays persisted mark contexts against freshly checked historical metadata.
@@ -88,7 +115,15 @@ where
     V: ContentValidator + BucketBinding,
     C: Clock,
 {
-    execute(guard, authority, session, cycle, windows, Action::Resume).await
+    execute(
+        guard,
+        authority,
+        session,
+        Some(cycle),
+        windows,
+        Action::Resume,
+    )
+    .await
 }
 
 /// Advances only the exact whole checkpoint previously acknowledged by the session.
@@ -118,7 +153,7 @@ where
         guard,
         authority,
         session,
-        roots.cycle,
+        Some(roots.cycle),
         windows,
         Action::Advance {
             roots,
@@ -135,7 +170,7 @@ async fn execute<F, B, V, C>(
     guard: &Guard<FileBucket<F, B, V>, C>,
     authority: &OriginalAuthority,
     session: &Session,
-    cycle: u64,
+    cycle: Option<u64>,
     windows: Windows,
     action: Action<'_>,
 ) -> Result<(GcRoots, GcState), CollectionError>
@@ -173,6 +208,10 @@ where
         session.clock()?,
     )?;
     let observation = HistoryObservation::held(observed.identity()).tracked(&consumed);
+    let cycle = match cycle {
+        Some(cycle) => cycle,
+        None => crate::gc::runner::cycle::next(observed.logical().keys().map(String::as_str))?,
+    };
     let root_key = format!("gc/{cycle}/roots");
     let state_key = format!("gc/{cycle}/state");
     let previous_roots = observed.logical().get(&root_key).cloned().flatten();

@@ -16,6 +16,10 @@ pub(crate) mod roots;
 /// Retains actual lease ownership, clock continuity and cancellation poison.
 pub(crate) mod session;
 
+/// Selects fresh cycle numbers from retained registered publication keys.
+#[path = "cycle.rs"]
+pub(crate) mod cycle;
+
 #[path = "local_ownership.rs"]
 mod local_ownership;
 
@@ -220,6 +224,37 @@ where
         cycle: u64,
         windows: Windows,
     ) -> Result<Self, CollectionError> {
+        Self::start_with_cycle(guard, authority, holder, duration, Some(cycle), windows).await
+    }
+
+    /// Acquires ownership and starts above every retained selected cycle number.
+    ///
+    /// Selection and initial checkpoint publication share the actual held namespace
+    /// after whole-lease acquisition. No clock-derived or random cycle is used.
+    /// Retained absent-key entries and copied cycle reservations remain occupied.
+    ///
+    /// # Errors
+    /// Preserves all [`Self::start`] failures and rejects exhausted cycle numbers
+    /// or malformed registered cycle keys. Unselected physical leftovers can still
+    /// cause the original create-once checkpoint publication to fail closed.
+    pub async fn start_next(
+        guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+        authority: &'configuration OriginalAuthority,
+        holder: String,
+        duration: u64,
+        windows: Windows,
+    ) -> Result<Self, CollectionError> {
+        Self::start_with_cycle(guard, authority, holder, duration, None, windows).await
+    }
+
+    async fn start_with_cycle(
+        guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+        authority: &'configuration OriginalAuthority,
+        holder: String,
+        duration: u64,
+        cycle: Option<u64>,
+        windows: Windows,
+    ) -> Result<Self, CollectionError> {
         let lease = Collector::new(guard, authority)
             .acquire(holder, duration)
             .await?
@@ -227,10 +262,20 @@ where
         let clock = guard.clock().retain_native_clock().map_err(|_| denied())?;
         let session = session::Session::new(lease, duration, clock)?;
         let operation = session.operation()?;
-        let (roots, state) = crate::selected_bridge::native_collection_checkpoints::begin(
-            guard, authority, &session, cycle, windows,
-        )
-        .await?;
+        let (roots, state) = match cycle {
+            Some(cycle) => {
+                crate::selected_bridge::native_collection_checkpoints::begin(
+                    guard, authority, &session, cycle, windows,
+                )
+                .await?
+            }
+            None => {
+                crate::selected_bridge::native_collection_checkpoints::begin_next(
+                    guard, authority, &session, windows,
+                )
+                .await?
+            }
+        };
         operation.complete();
         Ok(Self {
             guard,
@@ -346,6 +391,38 @@ where
             self.authority,
             &self.session,
             cycle,
+            self.windows,
+        )
+        .await?;
+
+        self.roots = roots;
+        self.state = state;
+        operation.complete();
+        Ok(())
+    }
+
+    /// Starts above every retained selected cycle using this same live session.
+    ///
+    /// Requires completed marking and selects current authenticated roots. Cycle
+    /// selection and publication share the original held namespace; old checkpoints
+    /// and cycle reservations remain unchanged.
+    ///
+    /// # Errors
+    /// Rejects unfinished marking without effects. Lost ownership, exhausted cycle
+    /// numbers, malformed keys and checkpoint failures stop the original session.
+    pub async fn begin_next_cycle(&mut self) -> Result<(), CollectionError> {
+        if self.state.phase != terrane_format::gc::Phase::Sweep {
+            return Err(denied().into());
+        }
+
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let (roots, state) = crate::selected_bridge::native_collection_checkpoints::begin_next(
+            self.guard,
+            self.authority,
+            &self.session,
             self.windows,
         )
         .await?;

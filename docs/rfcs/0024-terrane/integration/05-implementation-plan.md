@@ -94,6 +94,28 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+Collector startup now has an automatic-cycle API on the original `Collection`
+and repository-retained `LocalCollection`. After actual singleton-lease
+acquisition, the held publication supplies the greatest registered cycle across
+GC checkpoints, ordinary deletion keys, copied cycle reservations and Trash.
+Selection includes retained absent-key entries and checks numeric overflow.
+The same held observation then authenticates current roots and publishes the
+original create-once checkpoint; no caller-chosen clock or random cycle is
+required. Unselected physical leftovers still fail original publication checks.
+A completed collection can select its next cycle under its original live session.
+Unfinished marking is rejected before renewal or checkpoint effects.
+
+The existing native fresh-cycle case now starts through this API, retains its
+original explicit-cycle/root-change/competitor assertions, and adds a fourth
+automatically selected cycle with unchanged holder/epoch and byte-preserved
+roots/state for all three earlier cycles. Native qualification and mandatory
+application-target compilation remain pending. Both supported Tokio all-target
+strict lint profiles and the std-only library profile pass. Six pure tests pass
+for numeric ordering, copied reservations, Trash/deletion keys, retained absent
+entries, malformed keys and overflow; they execute no native lifecycle effects.
+PLAN-2 ownership and diff checks pass. This is a configured collector
+prerequisite, not a full GC runtime or new task acceptance.
+
 The focused permanent-owner hint guest at `9eb645ff25` passes in 1,589.028
 seconds. Full review compares all 8,211 immutable source files, 5,463 crate inputs,
 the actual retained Cargo library-test executable and its installed hash. The

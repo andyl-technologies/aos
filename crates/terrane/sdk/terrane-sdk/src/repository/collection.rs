@@ -60,6 +60,40 @@ where
         })
     }
 
+    /// Starts a genuine collection above every retained selected cycle number.
+    ///
+    /// Acquires the actual singleton lease before selecting a cycle and checking
+    /// current roots. This requires no signing capability or caller-chosen cycle.
+    /// Retained absent entries and copied cycle reservations remain occupied.
+    ///
+    /// # Errors
+    /// Preserves [`Self::start_local_collection`] failures and rejects exhausted
+    /// cycle numbers or malformed registered cycle keys. Unselected physical
+    /// leftovers still fail the original create-once publication checks.
+    pub async fn start_next_local_collection(
+        &self,
+        holder: String,
+        duration: u64,
+        windows: Windows,
+    ) -> Result<LocalCollection<'_, F, C>, CollectionError> {
+        let retention = self
+            .local_retention
+            .as_ref()
+            .ok_or_else(crate::gc::runner::denied)?;
+        let collection = Collection::start_next(
+            self.coordinator.guard(),
+            &retention.authority,
+            holder,
+            duration,
+            windows,
+        )
+        .await?;
+        Ok(LocalCollection {
+            collection,
+            coordinator: &self.coordinator,
+        })
+    }
+
     /// Resumes selected progress under its exact freshly renewed collector lease.
     ///
     /// Decoded progress and the supplied lease grant no authority themselves.
@@ -167,6 +201,15 @@ where
     /// cancellation stops the session; phase/number preflight has no effects.
     pub async fn begin_cycle(&mut self, cycle: u64) -> Result<(), CollectionError> {
         self.collection.begin_cycle(cycle).await
+    }
+
+    /// Starts a fresh cycle selected under this collector's original held lease.
+    ///
+    /// # Errors
+    /// Rejects unfinished marking, lost ownership, exhausted cycle numbers and
+    /// original authenticated checkpoint failures. Work failure stops the session.
+    pub async fn begin_next_cycle(&mut self) -> Result<(), CollectionError> {
+        self.collection.begin_next_cycle().await
     }
 
     /// Selects bounded recurring hints under this collection's original session.
