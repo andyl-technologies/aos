@@ -137,6 +137,17 @@ recompilation. Both actors retain the same thirty-second bound; the complete
 guest still requires every control under its unchanged overall deadline.
 Strict all-feature/all-target Clippy passes; native qualification is pending.
 
+The native host-cache aggregate at `0f180b1201` passes in 1,561.241 seconds.
+Independent review verifies its actual units, recovery and eviction guest
+outputs, all 8,194 immutable source files and 5,467 bound inputs, four retained
+Cargo/installed executables, the exact 130-case base inventory and 92 fixture
+selectors. Reviewed native witnesses include permanent encoded/metadata alias
+denial, quarantine with original funding, cancelled source cleanup, independent
+consumers, producer cache handoff, whole-file lease expiry and retained
+descriptors. This qualifies the weak-observation ownership correction against
+the existing cache regressions; it does not resolve the separate configured
+exposure custody comparison or qualify the later worker service.
+
 Complete feature matrices now pass with independent immutable-source, retained
 executable and actual guest review at these checkpoints:
 
