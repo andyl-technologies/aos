@@ -166,6 +166,25 @@ The full-system image passthru passes evaluation and dry-run only. Native
 provider checks and actual manager runtime remain unexecuted at this checkpoint.
 The probe grants no Terrane gate or task acceptance.
 
+A follow-up audit finds that the two shared-directory owning gates still
+execute their thirteen ordinary filesystem selectors in the build process.
+Two attempted renewals at `2ff796d82a` are cancelled before either final gate
+starts (247.204 and 244.988 seconds); their unchanged-source receipts and logs
+remain failures, not qualifications. One existing enrollment guest had begun
+its controls. The independent systemd-prerequisite build remains isolated.
+
+The correction moves all seven read-only and six domain-isolation selectors,
+in original order with exact nonignored execution, into dedicated ext4 guests.
+The guest verifies actual UID/GID 840, empty groups and all capability sets,
+no-new-privileges, complete immutable crate inputs and the retained Cargo
+artifact before and after execution. Every selector receives fresh private
+storage. The original setgid-mode guest and all three original private-release
+guests remain mandatory prerequisites of their owning gates. Host gate phases
+only check completed proof outputs; they invoke no native test selector.
+Syntax, selector preservation, formatting, PLAN-2 and derivation evaluation
+are checked before committed-source qualification. Runtime qualification is
+pending; no task acceptance changes.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement

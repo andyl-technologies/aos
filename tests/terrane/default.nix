@@ -178,6 +178,10 @@
     inherit pkgs lib;
     image = bucketSdkTestImage;
   };
+  sharedDirectoryProof = import ./shared-directory-proof.nix {
+    inherit pkgs lib;
+    image = nativeSdkTestImage;
+  };
   # Pack gates retain their original default features without selecting Tokio.
   defaultSdkTestImage = import ./native-sdk-test-image.nix {
     variant = "default";
@@ -375,12 +379,12 @@
             inherit pkgs lib sourceGate structureGate;
             forkPrerequisites = builtins.attrValues nativeForkPrerequisites;
           }
-          // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "surfaces.nix" "shared-dir.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
+          // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "surfaces.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
           // lib.optionalAttrs (file == "fuse-index.nix") {inherit initialEnrollmentProof;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
           // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix" "fuse-index.nix"]) {inherit sourceGateWithInputs;}
           // lib.optionalAttrs (builtins.elem file ["bucket.nix" "ref_advance.nix"]) {inherit bucketSdkGate;}
-          // lib.optionalAttrs (file == "shared-dir.nix") {inherit portableSharedModes initialEnrollmentProof;}
+          // lib.optionalAttrs (file == "shared-dir.nix") {inherit portableSharedModes initialEnrollmentProof sharedDirectoryProof;}
           // lib.optionalAttrs (file == "store.nix") {inherit hostCacheProof hostCacheAllFeatureProof wasmHostProof sourceGateWithInputs;}
           // lib.optionalAttrs (file == "auth.nix") {inherit workloadIssuerProof instanceIssuerProof configuredIssuerProof;}
           // lib.optionalAttrs (file == "pack.nix") {inherit defaultSdkGate;}
