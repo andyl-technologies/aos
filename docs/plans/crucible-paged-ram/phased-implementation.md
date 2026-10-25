@@ -68,7 +68,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The subsequent daemon dependency check reports 622 host-library errors, predominantly large error carriers. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 657 bindings: 638 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 662 bindings: 643 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Integration with origin/master
 
@@ -199,6 +199,40 @@ Independent verification checks its registered output, exact case records and
 155 successful nonempty summaries. All 5,475 retained Rust/TOML inputs and the
 complete lockfile match signed revision
 `daa4fbd60af42756c3d28444a3705b7a02c94b7d`.
+
+#### Codec entry-point refusal custody
+
+Envelope, page, tree and root publication, and envelope read preparation now
+retain their explicit caller when child admission refuses. Five finite-account
+controls reproduce early return of all 4,675 caller bytes with the preceding
+conversion. The correction retains those bytes through caller close until error
+close, preserving the actual typed revocation. Transient operation credit and
+the unrelated ambient account close independently; no backend or retention
+callback runs. Signed revision `e312ecea3d395bcc0d738644f64f881094917dfc`
+contains the five corrections and controls.
+
+All 788 ordinary Store tests pass, along with strict Store/RAM Clippy across all
+targets and all 95 hygiene/testing-standard controls. The checked-read source
+obligation now requires the original-aware conversion at both preparation
+sites; existing removal and duplication mutations reject either count change.
+Those source-obligation controls are separately verified at signed revision
+`56d0a6a78c4324407dc6794bd4ab17ece668e14d`.
+Inventory `j5l5z5hz406wq76pdfcx2zpzjrw465z4` validates all 662 bindings,
+with 142 requirements uncovered and none qualified.
+
+The expanded hermetic Store gate passes all 139 bound cases at
+`f8w3m06sxjhbchbazc7grqjyq4z1msf6-crucible-gate-ram-store-transfer-0`.
+Independent verification checks registration, the frozen inventory, every case
+listing and 160 successful nonempty summaries. All 5,476 retained Rust/TOML
+inputs, including the new refusal controls, and the complete lockfile match
+signed revision `e312ecea3d395bcc0d738644f64f881094917dfc`.
+
+The earlier full Store run at `76faeb2713f229de0c43f95bbb57e02f64754a61`
+passes all three 512 MiB stress cases: incompressible and shared
+capture/archive/restore/repack, and depth-first repack read costs. Its complete
+result is 785 passes and the one poisoned-account fixture failure corrected
+above. The subsequent ordinary runs pass that corrected control. The large
+cases are results for that earlier source snapshot and storage components.
 
 #### Current-toolchain component checks
 
