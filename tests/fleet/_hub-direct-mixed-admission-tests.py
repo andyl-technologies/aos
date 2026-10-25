@@ -1,6 +1,10 @@
 """Controlled commitment and ownership regressions; no fleet/provider effects."""
 
+import ast
 import copy
+import ctypes
+import io
+import itertools
 import importlib.util
 import json
 import os
@@ -15,7 +19,7 @@ from unittest.mock import patch
 from pathlib import Path
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 
 
 spec = importlib.util.spec_from_file_location("mixed", Path(__file__).with_name("_hub-direct-mixed-admission.py"))
@@ -190,6 +194,50 @@ class MixedBarrierPublication(unittest.TestCase):
             self.assertEqual(list(root.iterdir()), [target])
 
 
+class SupervisorPublication(unittest.TestCase):
+    def test_live_reader_sees_only_complete_create_only_supervisor_records(self):
+        function = next(node for node in ast.parse(mixed.MIXED_SUPERVISOR).body
+                        if isinstance(node, ast.FunctionDef) and node.name == "save")
+        for name in ("mixed-child.json", "mixed-outcome.json"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                namespace = {"os": os, "json": json, "ctypes": ctypes,
+                             "tempfile": tempfile, "root": root}
+                exec(compile(ast.Module(body=[function], type_ignores=[]),
+                             "actual-supervisor-save", "exec"), namespace)
+                target = root / name
+                value = {"version": 1, "exitCode": 0, "childReaped": True}
+                opened = threading.Event()
+                release = threading.Event()
+                real_fdopen = os.fdopen
+
+                @contextmanager
+                def paused_output(*args, **kwargs):
+                    with real_fdopen(*args, **kwargs) as output:
+                        opened.set()
+                        if not release.wait(5):
+                            raise TimeoutError("controlled supervisor publication was not released")
+                        yield output
+
+                with patch.object(os, "fdopen", side_effect=paused_output), \
+                        ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(namespace["save"], name, value)
+                    try:
+                        self.assertTrue(opened.wait(3))
+                        self.assertFalse(target.exists(), "an unfinished supervisor record became visible")
+                    finally:
+                        release.set()
+                        future.result(timeout=5)
+
+                self.assertEqual(json.loads(target.read_bytes()), value)
+                self.assertEqual(target.stat().st_nlink, 1)
+                self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+                with self.assertRaises(FileExistsError):
+                    namespace["save"](name, {"exitCode": 1})
+                self.assertEqual(json.loads(target.read_bytes()), value)
+                self.assertEqual(list(root.iterdir()), [target])
+
+
 class SupervisorOwnership(unittest.TestCase):
     def run_owner(self, mode):
         with tempfile.TemporaryDirectory() as directory:
@@ -334,6 +382,54 @@ class OriginalCleanupBounds(unittest.TestCase):
         self.assertIsNone(outcome["exitCode"])
         self.assertEqual(len(child.waits), 2)
         self.assertTrue(all(0 <= value <= 2 for value in child.waits))
+
+    def test_snapshot_observes_committed_outcome_when_owner_exits_during_read(self):
+        for committed, exit_read in itertools.product((True, False), (1, 2)):
+            with self.subTest(committed=committed, exit_read=exit_read), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "evidence").mkdir(mode=0o700)
+                child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                         stdin=subprocess.DEVNULL)
+                try:
+                    stat_path = Path("/proc") / str(child.pid) / "stat"
+                    fields = stat_path.read_text().rpartition(") ")[2].split()
+                    process = {"pid": child.pid, "startTicks": fields[19], "ownerUid": os.getuid()}
+                    original_read = Path.read_text
+                    calls = 0
+
+                    def read_stat(path, *args, **kwargs):
+                        nonlocal calls
+                        if path == stat_path:
+                            calls += 1
+                            if calls == exit_read:
+                                if committed:
+                                    outcome = root / "mixed-outcome.json"
+                                    outcome.write_text(json.dumps({"exitCode": 0}))
+                                    outcome.chmod(0o600)
+                                child.terminate()
+                                child.wait(timeout=3)
+                        return original_read(path, *args, **kwargs)
+
+                    def guest(_machine, _python, body, selected, timeout):
+                        output = io.StringIO()
+                        with redirect_stdout(output), \
+                                patch.object(Path, "read_text", new=read_stat):
+                            exec(textwrap.dedent(body), {"selected": selected, "json": json})
+                        return output.getvalue()
+
+                    with patch.object(mixed, "direct_guest_python", create=True, side_effect=guest):
+                        if committed:
+                            result = mixed.mixed_guest_snapshot(None, {"python": sys.executable},
+                                str(root), process, cutoff=time.monotonic() + 5)
+                            self.assertEqual(result["outcome"]["value"], {"exitCode": 0})
+                        else:
+                            with self.assertRaisesRegex(ValueError, "supervisor lifetime unavailable"):
+                                mixed.mixed_guest_snapshot(None, {"python": sys.executable},
+                                    str(root), process, cutoff=time.monotonic() + 5)
+                finally:
+                    if child.poll() is None:
+                        child.terminate()
+                    child.wait(timeout=3)
 
     def test_actual_emitted_snapshot_reads_fixed_authentication_capture_reference(self):
         with tempfile.TemporaryDirectory() as directory:

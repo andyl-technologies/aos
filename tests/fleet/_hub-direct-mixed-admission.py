@@ -233,7 +233,7 @@ def mixed_owner_command(s3, tools, request, *, cutoff):
 # SIGTERM is cooperative, with a real child wait and a fixed cleanup reserve
 # inside the original 2100s subprocess budget. No detached signing/driver child.
 MIXED_SUPERVISOR = r"""
-import hashlib, json, os, signal, subprocess, sys, time
+import ctypes, hashlib, json, os, signal, subprocess, sys, tempfile, time
 from pathlib import Path
 root = Path(sys.argv[1])
 arguments = json.loads(sys.argv[2])
@@ -253,13 +253,31 @@ signal.signal(signal.SIGTERM, cancel)
 signal.signal(signal.SIGINT, cancel)
 
 def save(name, value):
-    fd = os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as output:
-        json.dump(value, output, sort_keys=True, separators=(',', ':'))
-        output.flush(); os.fsync(output.fileno())
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try: os.fsync(fd)
-    finally: os.close(fd)
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix='.' + name + '-pending-', dir='/proc/self/fd/' + str(directory))
+        temporary_name = os.path.basename(temporary)
+        try:
+            with os.fdopen(descriptor, 'w') as output:
+                json.dump(value, output, sort_keys=True, separators=(',', ':'))
+                output.flush()
+                os.fsync(output.fileno())
+
+            # A live reader must see the complete single-link record. Preserve
+            # create-only publication even if the final name already exists.
+            rename = ctypes.CDLL(None, use_errno=True).renameat2
+            rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            rename.restype = ctypes.c_int
+            if rename(directory, os.fsencode(temporary_name), directory, os.fsencode(name), 1) != 0:
+                code = ctypes.get_errno()
+                raise OSError(code, os.strerror(code), name)
+            os.fsync(directory)
+        finally:
+            try: os.unlink(temporary_name, dir_fd=directory)
+            except FileNotFoundError: pass
+    finally:
+        os.close(directory)
 
 def bounded_hash(name):
     with (root / name).open('rb') as source:
@@ -331,10 +349,26 @@ def mixed_guest_snapshot(worker, tools, root, process, *, cutoff):
         try:
             outcome = read_at(root_fd, 'mixed-outcome.json', 16384)
             pin = selected['process']; proc = Path('/proc') / str(pin['pid'])
-            if outcome is None:
-                before = (proc / 'stat').read_text().rpartition(') ')[2].split()
-                if before[19] != pin['startTicks'] or before[0] == 'Z' or proc.stat().st_uid != pin['ownerUid']:
+            def owner_running():
+                try:
+                    fields = (proc / 'stat').read_text().rpartition(') ')[2].split()
+                    owner = proc.stat().st_uid
+                except FileNotFoundError:
+                    return False
+                if fields[19] != pin['startTicks'] or owner != pin['ownerUid']:
+                    raise ValueError('mixed supervisor identity changed')
+                return fields[0] != 'Z'
+
+            def completed_outcome():
+                # Publication precedes normal supervisor exit. A process can
+                # disappear during this snapshot, but missing evidence stays unknown.
+                value = read_at(root_fd, 'mixed-outcome.json', 16384)
+                if value is None:
                     raise ValueError('mixed supervisor lifetime unavailable')
+                return value
+
+            if outcome is None and not owner_running():
+                outcome = completed_outcome()
             child = read_at(root_fd, 'mixed-child.json', 65536)
             evidence_fd = os.open('evidence', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
             try:
@@ -351,9 +385,9 @@ def mixed_guest_snapshot(worker, tools, root, process, *, cutoff):
                             raise ValueError('mixed capture authentication absent')
                     result[name] = item
             finally: os.close(evidence_fd)
-            if outcome is None:
-                after = (proc / 'stat').read_text().rpartition(') ')[2].split()
-                if before[19] != after[19]: raise ValueError('mixed supervisor identity changed')
+            if outcome is None and not owner_running():
+                outcome = completed_outcome()
+            result['outcome'] = outcome
             print(json.dumps(result))
         finally: os.close(root_fd)
     """, {"root": root, "process": process}, timeout=mixed_remaining(cutoff)))
