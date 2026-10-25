@@ -9,7 +9,9 @@
 
 use std::sync::Mutex;
 
-use crucible_host_resources::host_services::process_birth::AuthenticatedSourceHostPurpose;
+use crucible_host_resources::host_services::process_birth::{
+    AuthenticatedSourceHostPurpose, ServiceBirthError,
+};
 use crucible_host_resources::host_supervision::{
     FundedSourcePublisher, HostDeferredCleanupIssuer, HostSupervisionError,
 };
@@ -439,10 +441,7 @@ impl InstalledSourceAdmission {
     ///
     /// # Errors
     /// Refuses changed/expired physical custody or an unrelated node supervisor.
-    pub(crate) fn check(&self) -> Result<(), OriginalActorAccountError> {
-        self.held
-            .host
-            .verify_supervisor(&self.held.supervisor)
-            .map_err(Into::into)
+    pub(crate) fn check(&self) -> Result<(), ServiceBirthError> {
+        self.held.host.verify_supervisor(&self.held.supervisor)
     }
 }

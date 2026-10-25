@@ -615,7 +615,7 @@ impl Drop for AtomicPublication {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SourceSupervisionError {
     #[error("Source admission refused: {0}")]
-    Admission(#[source] crate::linux_attempt_host::OriginalActorAccountError),
+    Admission(#[source] crucible_host_resources::host_services::process_birth::ServiceBirthError),
     #[error("Source host funding refused: {0}")]
     Host(#[source] crucible_host_resources::host_services::process_birth::ServiceBirthError),
     #[error("Source supervision refused: {0}")]

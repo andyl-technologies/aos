@@ -1546,6 +1546,7 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
                 selected
                     .startup
                     .admission()
+                    .map_err(OriginalPluginStartup::state_refusal)
                     .map_err(|source| QemuSpawnError::PluginStartup { source })?,
             )
             .map_err(|source| QemuSpawnError::SourceAdmission { source })?;
@@ -1559,6 +1560,7 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
                 .map(|admission| admission.host_purpose().clone())
         })
         .transpose()
+        .map_err(OriginalPluginStartup::state_refusal)
         .map_err(|source| QemuSpawnError::PluginStartup { source })?;
     let image_pins = GuardedLaunchImagePins::new(run_directory)?;
     let launch_args = guarded_launch_args(

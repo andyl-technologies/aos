@@ -290,7 +290,10 @@ impl PreparedPreexecSetup {
                         contract,
                         supervisor,
                         registration,
-                        admission: startup.admission().map_err(PreexecSetupCause::Startup)?,
+                        admission: startup
+                            .admission()
+                            .map_err(OriginalPluginStartup::state_refusal)
+                            .map_err(PreexecSetupCause::Startup)?,
                         standing: startup.standing().map_err(PreexecSetupCause::Startup)?,
                         process_generation: startup_record.fields().process_generation,
                         setup_region_bytes: region_len,

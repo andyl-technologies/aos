@@ -9,7 +9,9 @@ use std::io::Read;
 use std::mem::ManuallyDrop;
 use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 
-use crucible_host_resources::host_services::process_birth::{ServiceBirthError, SourceHostControlLease};
+use crucible_host_resources::host_services::process_birth::{
+    ServiceBirthError, SourceHostControlLease,
+};
 use crucible_host_resources::host_supervision::HostSupervisionError;
 use crucible_qemu_protocol::publisher_subscription::{
     PUBLISHER_HEADER_BYTES, PUBLISHER_REGION_BYTES, PublisherHeader, PublisherPurpose,
@@ -67,7 +69,7 @@ pub(crate) struct PublisherSessionError {
 #[derive(Debug, thiserror::Error)]
 enum SessionCause {
     #[error("the actual startup owner refused: {0}")]
-    Startup(#[source] crate::spawn::PluginStartupError),
+    Startup(#[source] HostSupervisionError),
     #[error("publisher funding refused: {0}")]
     Funding(#[source] ServiceBirthError),
     #[error(transparent)]
@@ -553,7 +555,7 @@ pub(super) fn unavailable() -> PublisherSessionError {
     geometry_error()
 }
 
-pub(super) fn startup_refusal(cause: crate::spawn::PluginStartupError) -> PublisherSessionError {
+pub(super) fn startup_refusal(cause: HostSupervisionError) -> PublisherSessionError {
     PublisherSessionError {
         cause: SessionCause::Startup(cause),
         original_after: None,

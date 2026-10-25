@@ -12,7 +12,9 @@ use std::fmt::{self, Write as _};
 use std::fs::File;
 use std::io::{self, Read};
 
-use crucible_host_resources::host_services::process_birth::{ServiceBirthError, SourceHostControlLease};
+use crucible_host_resources::host_services::process_birth::{
+    ServiceBirthError, SourceHostControlLease,
+};
 use crucible_host_resources::host_supervision::{
     HostOperationClass, HostOperationGuard, HostOperationSupervisor, HostSupervisionError,
 };
@@ -408,10 +410,11 @@ impl OriginalPluginStartup {
         check_receiver_under_original(&state.original, || {
             #[cfg(target_os = "linux")]
             {
-                state
-                    .source
-                    .check()
-                    .map_err(|source| PluginStartupCause::Purpose(source.into()))?;
+                state.source.check().map_err(|source| {
+                    PluginStartupCause::Purpose(
+                        crate::linux_attempt_host::OriginalActorAccountError::from(source).into(),
+                    )
+                })?;
                 state
                     .source
                     .receiver_artifact()
@@ -435,10 +438,8 @@ impl OriginalPluginStartup {
     #[cfg(target_os = "linux")]
     pub(crate) fn admission(
         &self,
-    ) -> Result<&crate::linux_attempt_host::InstalledSourceAdmission, PluginStartupError> {
-        self.state()
-            .map(|state| &state.source)
-            .map_err(Self::state_refusal)
+    ) -> Result<&crate::linux_attempt_host::InstalledSourceAdmission, HostSupervisionError> {
+        self.state().map(|state| &state.source)
     }
 
     pub(crate) fn record(&self) -> Result<StartupOperation, PluginStartupError> {
@@ -506,7 +507,7 @@ impl OriginalPluginStartup {
             .ok_or(HostSupervisionError::Unavailable)
     }
 
-    fn state_refusal(source: HostSupervisionError) -> PluginStartupError {
+    pub(super) fn state_refusal(source: HostSupervisionError) -> PluginStartupError {
         PluginStartupError {
             source: PluginStartupCause::Original(source),
             original_after: None,
