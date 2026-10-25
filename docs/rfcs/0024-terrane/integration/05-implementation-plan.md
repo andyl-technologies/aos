@@ -94,6 +94,19 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+Checkpoint `0f180b1201` passes mandatory application-target compilation in
+828.199 seconds. Independent review compares all 8,194 immutable source files
+and verifies 190 test executables across 59 packages; this is compilation only.
+Its configured surface guest fails in 728.794 seconds after genuine funded
+reopen and Resume, at the combined custody comparison. The next fixture splits
+that comparison into exact exposure, pin, lease, namespace, status and mapping
+checks without removing an invariant. Its mounted worker guest fails in
+679.859 seconds after authenticated startup, coalesced reads and durable drain:
+closing the retained fallback descriptor returns `ENOTCONN` from disconnected
+FLUSH. The fixture now requires that exact errno and an actually closed
+descriptor, then continues unmount and original-owner closure checks. Both
+original failures remain failed qualifications; fresh guest evidence is pending.
+
 Complete feature matrices now pass with independent immutable-source, retained
 executable and actual guest review at these checkpoints:
 

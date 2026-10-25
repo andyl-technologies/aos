@@ -125,7 +125,13 @@ def run(support, executable, environment, source):
                     "durably drained production mount returned another errno")
             else:
                 raise RuntimeError("drained production worker still serves metadata")
-            retained.close()
+            try:
+                retained.close()
+            except OSError as error:
+                # Fallback FLUSH needs the disconnected worker even though the
+                # kernel still releases this original descriptor on close.
+                support.require(error.errno == errno.ENOTCONN and retained.closed,
+                    "drained backing close lost its original release semantics")
             retained = None
             transport.unmount(target)
             mounted = False

@@ -157,17 +157,26 @@ pub(super) async fn verify(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    if recovered.exposures.iter().find(|row| row.id == id) != Some(&expected)
-        || pins(&recovered) != pins(&original)
-        || leases(&recovered) != leases(&original)
-        || root
-            .join(format!("objects/.terrane-surface:2:{digest}"))
-            .exists()
-        || status.active_exposures != 0
-        || status.draining_exposures != 1
-        || mapping.index().lookup(b"file").is_none()
+    if recovered.exposures.iter().find(|row| row.id == id) != Some(&expected) {
+        return Err("configured recovery changed the original exposure binding".into());
+    }
+    if pins(&recovered) != pins(&original) {
+        return Err("configured recovery changed the original pin obligations".into());
+    }
+    if leases(&recovered) != leases(&original) {
+        return Err("configured recovery changed the original lease obligations".into());
+    }
+    if root
+        .join(format!("objects/.terrane-surface:2:{digest}"))
+        .exists()
     {
-        return Err("configured new Running owner lost original draining custody".into());
+        return Err("configured recovery retained the disposable index name".into());
+    }
+    if status.active_exposures != 0 || status.draining_exposures != 1 {
+        return Err("configured Running status lost the original draining exposure".into());
+    }
+    if mapping.index().lookup(b"file").is_none() {
+        return Err("configured recovery invalidated the original mapped file".into());
     }
     let durable = fs::read(&records)?;
     if owner.reconcile_surface_exposure(&id, generation).await? || fs::read(&records)? != durable {
