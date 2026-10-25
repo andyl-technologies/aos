@@ -250,6 +250,24 @@ session, despite the explicit early mutation refusal. The failed result is
 retained for localization and correction; the complete surface gates and
 T-SURF-1 remain unaccepted.
 
+The cache-read case now requires `Denied` from read-only session creation.
+It independently retains commit refusal using a genuine session from the
+original writable repository. Signed reads, cache-use observations, SDK
+checkout and unchanged publication assertions remain. Focused formatting and
+strict Clippy pass for the corrected test; renewed guest qualification and
+mandatory application-target compilation remain pending. Production authoring
+capabilities are unchanged. Workspace formatting is separately blocked by
+pre-existing unrelated differences and an absent Crucible module file.
+
+Both shared-directory owning gates at `279f861ffa` pass in 3,161.213 seconds.
+Complete review binds all 8,254 immutable source files, three retained Cargo
+executables and six actual guest proofs: all thirteen original ordinary
+selectors plus the original setgid, private-release, cold-inline-release and
+cold-manifest-release prerequisites. The selector guests execute as UID/GID
+840 with empty groups and capabilities, no-new-privileges and ext4 storage.
+This qualifies the guest migration; complete cross-surface domain deployment
+and T-STORE-3 remain unaccepted. Trunk acceptance remains 28/64.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement

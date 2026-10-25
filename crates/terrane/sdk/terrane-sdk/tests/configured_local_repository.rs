@@ -613,7 +613,16 @@ async fn configured_read_cache_preserves_original_authority_and_refuses_writes()
     assert_eq!(contents, (commit, OLD.to_vec()));
     assert!(calls.load(Ordering::Relaxed) > 0);
 
-    let mut session = repository
+    assert!(matches!(
+        repository
+            .begin(MAIN, fixture.authority.token(), "sdk")
+            .await,
+        Err(Error::Denied)
+    ));
+
+    // Also refuse commit through an ordinary session from the original repository.
+    let mut session = fixture
+        .repository
         .begin(MAIN, fixture.authority.token(), "sdk")
         .await?;
     assert!(
