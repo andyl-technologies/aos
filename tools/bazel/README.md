@@ -2013,6 +2013,20 @@ production migration, and Cargo removal remain separate qualification.
 
 ## CLI support libraries
 
+The [profile qualification](tests/evidence/cli-support-profile-qualification.json)
+passes all 62 cases, Clippy, documentation, formatting, production feature parity
+and the three-root editor comparison. Fourteen actual compiler actions verify
+the three unit binaries and all eleven macros against Cargo's ordinary test
+profiles. The selected editor diagnostic matches; inference remains incomplete,
+and raw multiplicity and aggregate Cargo statistics are not comparable. Editor
+macros retain the oracle's global flags independently of ordinary test macros.
+All 1,299 retained actions execute in Linux sandboxes without cache hits.
+
+The configured inventory now includes the six production library and license
+targets that its strict aggregate requests. The refresh preserves all existing
+source files and contract hashes. Ordinary `aos-dev` enrollment, complete
+production compiler/linker parity, cutover and performance remain separate.
+
 `aos-dev bazel --family cli-support` selects `aos-cli-ui`,
 `aos-closure-analysis`, and `aos-nix-docs`. Build, test, Clippy, formatting,
 documentation, license, and editor targets use the same configured family.

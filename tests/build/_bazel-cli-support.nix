@@ -15,22 +15,50 @@
     aos-transfer = "crates/transfer/aos-transfer";
   };
   rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+  execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   family = import ./_bazel-rust-family.nix {
-    inherit pkgs packages dependencyPackages sourceInventory rustcFlags;
+    inherit pkgs packages dependencyPackages sourceInventory rustcFlags execRustcFlags;
     pname = "aos-bazel-cli-support";
     dependencyProfile = "cli-support";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.cli-support;
     extraSourceDirectories = builtins.attrValues dependencyPackages;
     editorComparisonScope = "selected-packages";
     editorRustcFlags = rustcFlags;
+    # The editor's global flags also reach its host procedural macros.
+    editorExecRustcFlags = rustcFlags;
+    retainTestActionGraph = true;
+    captureCompilerArguments = true;
     editorDiagnosticContext = true;
+  };
+  execution-profiles = import ./_bazel-rust-test-profiles.nix {
+    inherit pkgs;
+    inherit (family) tests cargo;
+    pname = "aos-bazel-cli-support-execution-profiles";
+    firstPartyTests = {
+      "//crates/cli/aos-cli-ui:unit_binary" = "aos_cli_ui";
+      "//crates/cli/aos-closure-analysis:unit_binary" = "aos_closure_analysis";
+      "//crates/cli/aos-nix-docs:unit_binary" = "aos_nix_docs";
+    };
+    proceduralMacros = [
+      "curve25519_dalek_derive"
+      "darling_macro"
+      "derive_more_impl"
+      "document_features"
+      "indoc"
+      "instability"
+      "rustversion"
+      "serde_derive"
+      "strum_macros"
+      "thiserror_impl"
+      "tokio_macros"
+    ];
   };
   productionTargets = pkgs.lib.concatMap (path:
     map (target: "//${path}:${target}") ["lib" "production_license_closure"])
   (builtins.attrValues packages);
   productionWorkspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
-    inherit sourceInventory rustcFlags;
+    inherit sourceInventory rustcFlags execRustcFlags;
     dependencyProfile = "cli-support";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.cli-support;
     sourceDirectories =
@@ -41,14 +69,16 @@
 in
   family
   // rec {
-    inherit packages dependencyPackages productionWorkspace;
+    inherit packages dependencyPackages productionWorkspace execution-profiles;
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-cli-support-inventory";
       workspace = family.workspace;
       inventoryOnly = true;
-      targets = pkgs.lib.concatMap (path:
-        map (target: "//${path}:${target}") ["license_closure" "unit" "doc" "clippy" "documentation" "format"])
-      (builtins.attrValues packages);
+      targets =
+        productionTargets
+        ++ pkgs.lib.concatMap (path:
+          map (target: "//${path}:${target}") ["license_closure" "unit" "doc" "clippy" "documentation" "format"])
+        (builtins.attrValues packages);
     };
     production = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-cli-support-production";
@@ -102,12 +132,13 @@ in
       '';
     all =
       pkgs.runCommand "aos-bazel-cli-support-qualified-checks" {
-        buildDeps = [family.all family.editor-parity production-parity];
+        buildDeps = [family.all family.editor-parity production-parity execution-profiles];
       } ''
         mkdir -p "$out"
         cp -r ${family.all}/evidence "$out/evidence"
         cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
         cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
         cp ${production-parity}/parity.json "$out/production-parity.json"
+        cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
       '';
   }
