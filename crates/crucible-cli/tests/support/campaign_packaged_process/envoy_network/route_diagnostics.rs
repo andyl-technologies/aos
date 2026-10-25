@@ -116,14 +116,29 @@ pub(super) fn attempt_log_trace_window(fixture: &FlightFixture, rows: &str) -> S
 }
 
 /// Collects the service rows that explain a branch attempt's replay route.
+///
+/// A node that stalls with a due frame still queued names it only in traced
+/// plugin rows. Those rows can sit far behind the bounded tail, so the newest
+/// ones are read from the whole stream.
 pub(super) fn service_failure_rows(service: &CampaignServiceChild) -> String {
-    service
+    let mut rows = service
         .stderr_tail()
         .lines()
         .filter(|line| {
             line.starts_with("CRUCIBLE-HOT-FORK-DECLINE-V1 ")
                 || line.starts_with("CRUCIBLE-REPLAY-DIVERGENCE-V1 ")
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for (prefix, maximum_lines) in [
+        ("CRUCIBLE-INBOUND-STALL-V1 ", 64),
+        ("CRUCIBLE-IDLE-PLAN-RECENT-V1 ", 160),
+        ("CRUCIBLE-ZERO-LENGTH-QUERY-V1 ", 16),
+    ] {
+        match service.stderr_recent_lines_with_prefix(prefix, maximum_lines, 1024) {
+            Ok(lines) => rows.extend(lines),
+            Err(error) => rows.push(format!("stall rows `{prefix}` unavailable: {error}")),
+        }
+    }
+    rows.join("\n")
 }
