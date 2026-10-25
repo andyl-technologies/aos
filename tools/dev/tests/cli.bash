@@ -187,6 +187,10 @@ if bash "$root/tools/dev/aos-dev" --release bazel rust-project //example:lib 2>/
 fi
 bash "$root/tools/dev/aos-dev" bazel update-deps core
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/core/Cargo.lock><--output><$root/third_party/rust/core>"
+for family in aos-cli-tests aos-cli-fleet-tests aos-cli-production; do
+  bash "$root/tools/dev/aos-dev" bazel update-deps "$family"
+  test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/$family/Cargo.lock><--output><$root/third_party/rust/$family>"
+done
 bash "$root/tools/dev/aos-dev" bazel update-deps device
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/device/Cargo.lock><--output><$root/third_party/rust/device>"
 bash "$root/tools/dev/aos-dev" bazel update-deps store
