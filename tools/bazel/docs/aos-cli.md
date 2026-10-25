@@ -163,6 +163,10 @@ Bazel package's six runtime dependency paths, loader results, and CLI help
 results. The verifier's eight synthetic control cases pass within the 320-test
 policy suite; they test rejection behavior rather than compiler parity.
 
+The [mapped-toolchain Clippy check](../tests/evidence/cli-native-source-clippy.json)
+also passes all fifteen CLI targets, retaining 1,075 uncached Linux-sandbox
+actions over the same 761 selected source files.
+
 Run the reusable comparison with:
 
 ```sh

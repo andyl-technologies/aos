@@ -143,6 +143,10 @@ the earlier unmapped Bazel installation. This does not compare every
 intermediate native build file or qualify native ABI, runtime services,
 shared-cache restoration, or performance.
 
+The separate [Clippy qualification](../tests/evidence/cli-native-source-clippy.json)
+passes with the same mapped toolchain and selected source bytes. Its fifteen
+Clippy actions and dependencies retain 1,075 uncached Linux-sandbox executions.
+
 ```text
 nix-build tools/bazel/tests/native-source-paths.nix -A cli-repeatability --no-out-link
 ```
