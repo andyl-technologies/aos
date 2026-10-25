@@ -2,6 +2,7 @@
 {
   pkgs,
   executionProfiles,
+  editorBuiltinCfg,
 }: let
   scripts = builtins.path {
     path = ../../tools/bazel/tests;
@@ -21,7 +22,7 @@ in
       -- build //crates/accache/accache:accache //crates/accache/accache-frontend:unit_binary \
         --execution_log_json_file="$out/execution.json"
     PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${scripts} ${pkgs.python3}/bin/python3 - \
-      ${executionProfiles}/evidence.json "$out" <<'PYTHON'
+      ${executionProfiles}/evidence.json ${editorBuiltinCfg}/evidence.json "$out" <<'PYTHON'
     from collections import Counter
     import hashlib
     import json
@@ -33,7 +34,9 @@ in
 
     baseline = json.loads(Path(sys.argv[1]).read_text())
     build = Path(baseline["profiles"]["editor"]["path"])
-    output = Path(sys.argv[2])
+    builtin_cfg = json.loads(Path(sys.argv[2]).read_text())
+    assert builtin_cfg["status"] == "PASS"
+    output = Path(sys.argv[3])
     expected = {}
     for event in execution_events(build):
         if event["mnemonic"] != "Rustc":
@@ -47,6 +50,16 @@ in
     assert set(expected) == {"serde_derive", "prost_derive"}, expected
 
     project = json.loads((output / "rust-project.json").read_text())
+    cfgs = builtin_cfg["native_cfg"]
+    names = ({cfg.partition("=")[0] for cfg in cfgs}
+             - {"feature", "test", "rust_analyzer", "proc_macro"}) | {"debug_assertions"}
+    for crate in project["crates"]:
+        actual_cfg = sorted(cfg for cfg in crate["cfg"]
+                            if cfg.partition("=")[0] in names or cfg.startswith("target_"))
+        assert actual_cfg == cfgs, (crate["root_module"], actual_cfg, cfgs)
+        if crate["is_workspace_member"]:
+            assert "rust_analyzer" in crate["cfg"], crate
+
     packages = {"accache": "crates/accache/accache", "accache-frontend": "crates/accache/accache-frontend"}
     graph = verify(project, json.loads((build / "inventory.json").read_text()),
                    packages, Path("${pkgs.aosBazelAccacheEditorWorkspace.source}"))
@@ -69,6 +82,8 @@ in
     (output / "evidence.json").write_text(json.dumps({
         "schema_version": 1, "status": "PASS", "graph": graph,
         "macro_sha256": actual, "qualified_execution_profiles": str(Path(sys.argv[1]).parent),
+        "qualified_builtin_cfg": str(Path(sys.argv[2]).parent),
+        "builtin_cfg_matches_native": True,
         "launcher": "${pkgs.aosBazelAccacheEditorLauncher}",
         "actions": len(events), "mnemonics": dict(Counter(event["mnemonic"] for event in events)),
         "cache_hits": 0, "runner": "linux-sandbox",

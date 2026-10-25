@@ -54,6 +54,20 @@ retains the run, CLI dispatch check, package export assertion, aggregate check,
 and core evaluation result.
 The earlier profile reports predate this development routing checkpoint.
 
+The [built-in cfg qualification](../tests/evidence/accache-editor-builtin-cfg.json)
+enrolls both the qualification editor and ordinary packaged editor launcher in
+the compiler-backed exporter. All 48 configured crates match the captured native
+compiler query, which omits `debug_assertions` under these global flags. Both
+selected roots retain `rust_analyzer`; package features and macro profiles remain
+independent. The packaged route again executes 135 uncached sandbox actions and
+authenticates both macro artifacts against the qualified editor build. Both
+models still produce the same 253 raw diagnostic rows and 161 distinct
+identities, with incomplete inference. The required package, installation and
+cache integration outputs are reused unchanged in this checkpoint; their
+integration fixture suite was not reexecuted. Persistent editor lifecycle,
+complete effective analyzer cfg behavior and foreign targets remain separate
+qualification work.
+
 ```text
 nix-build tools/bazel/tests/accache.nix -A development-editor --no-out-link
 ```

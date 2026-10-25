@@ -36,6 +36,7 @@
     execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no" "-Cstrip=symbols"];
     # The editor oracle's global flags also apply to its native macro tools.
     editorExecRustcFlags = rustcFlags;
+    editorCfgFlags = rustcFlags;
     pname = "aos-bazel-accache";
     dependencyProfile = "accache";
     packageTargets = {
@@ -76,9 +77,18 @@ in
       inherit (family) editorWorkspace cargo;
       editorCargoOracle = family.editor-cargo-oracle;
     };
+    editor-builtin-cfg = import ./_bazel-editor-builtin-cfg.nix {
+      inherit pkgs;
+      inherit (family) editor;
+      pname = "aos-bazel-accache-editor-builtin-cfg";
+      cargo = family.editor-cargo-oracle;
+      workspace = family.editorWorkspace;
+      flags = rustcFlags;
+    };
     development-editor = import ./_bazel-accache-development-editor.nix {
       inherit pkgs;
       executionProfiles = execution-profiles;
+      editorBuiltinCfg = editor-builtin-cfg;
     };
     package = pkgs.mkAosBazelPackage {
       pname = "accache";
@@ -174,7 +184,7 @@ in
     };
     all =
       pkgs.runCommand "aos-bazel-accache-checks" {
-        buildDeps = [family.all family.editor-parity package installation integration execution-profiles development-editor];
+        buildDeps = [family.all family.editor-parity package installation integration execution-profiles editor-builtin-cfg development-editor];
       } ''
         mkdir -p "$out"
         ln -s ${family.all} "$out/tests"
@@ -183,6 +193,7 @@ in
         ln -s ${installation} "$out/installation"
         ln -s ${integration} "$out/integration"
         ln -s ${execution-profiles} "$out/execution-profiles"
+        ln -s ${editor-builtin-cfg} "$out/editor-builtin-cfg"
         ln -s ${development-editor} "$out/development-editor"
       '';
   }

@@ -62,10 +62,17 @@ generated inputs and macro artifacts. Local source roots receive the native
 built-in cfg fields with the captured native query, alongside ordinary editor
 diagnostic parity. All three host-macro artifacts retain their previous bytes.
 
+The [accache cfg qualification](../tests/evidence/accache-editor-builtin-cfg.json)
+also enrolls its qualification editor and ordinary packaged editor route. All
+48 configured crates match the native query, both roots retain their expected
+features, and both macro artifacts match the independent editor profile build.
+The ordinary route executes 135 uncached sandbox actions. Its selected
+diagnostic rows still match, with incomplete inference.
+
 `mkAosBazelWorkspace.editorCfgFlags` selects this adapter; `null` preserves the
 existing exporter during rollout. The adapter currently requires the default
 native target and rejects foreign target configurations. Other families and
-ordinary development launchers still require enrollment. Complete effective
+their ordinary development launchers still require enrollment. Complete effective
 analyzer cfg behavior for arbitrary flags remains a separate acceptance check.
 
 The selected compiler audit also supports release targets and source-qualified
