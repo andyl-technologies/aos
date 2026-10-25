@@ -10,6 +10,25 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Independent kernel census polling in process tests
+
+The process-reclamation test helper now polls its independent kernel-resource
+census under the existing three-second polling bound. The production census
+can legitimately return inconclusive when an unrelated task disappears during
+its `/proc` scan. The helper still requires both successful reclamation and a
+separate positive kernel observation. Production process behavior, timeouts,
+quotas and permissions are unchanged. This addresses a mismatch with the
+existing census contract; it does not establish the cause of the earlier
+intermittent assertion failure.
+
+Both complete Engine codec modes pass 2,072 tests with zero failures and 34
+ignored. Scoped formatting, engineering hygiene and application test-target
+compilation pass. The application source matches all 643 frozen owned
+Rust/Cargo inputs; metadata records 185 test artifacts across 58 packages,
+including 76 integration targets. No additional native or VM qualification is
+claimed. Full SDK funding, runtime handoff, live Native18 and the full RFC
+remain unfinished.
+
 ## Runtime7 staging and acknowledgement custody
 
 Runtime7 metadata now refuses completed input transfer without its original

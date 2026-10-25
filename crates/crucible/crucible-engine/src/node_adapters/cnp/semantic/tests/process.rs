@@ -35,7 +35,11 @@ impl CnpSemanticProcessSlot for Slot {
 
 fn reclaim(original: &mut CnpSemanticProcessCustody) {
     super::operational_poll::original_poll(|| original.poll_reclamation().unwrap().then_some(()));
-    assert!(original.kernel_resources_reclaimed().unwrap());
+    // An unrelated task can disappear during this independent /proc census.
+    // Require a conclusive positive observation under the same polling bound.
+    super::operational_poll::original_poll(|| {
+        original.kernel_resources_reclaimed().unwrap().then_some(())
+    });
 }
 
 #[test]
