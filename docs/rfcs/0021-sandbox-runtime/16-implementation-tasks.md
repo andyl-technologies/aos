@@ -11691,10 +11691,10 @@ either installed journal hook.
 
 ### Unit publication before SELinux policy load
 
-The isolated installed startup retry reaches its enrollment agent, then fails
-normal activation because the native unit publisher attempts a file-context
-lookup before any SELinux policy is loaded. A mounted selinuxfs and its
-`enforce` file do not establish loaded policy. This failure prevents the
+The earlier isolated installed startup retry reached its enrollment agent,
+then failed normal activation because native unit publication looked up file
+contexts before any SELinux policy was loaded. A mounted selinuxfs and its
+`enforce` file do not establish loaded policy. This failure prevented the
 dependent Host, Root, offline provisioning and lifecycle-enclosure test bodies
 from running.
 
@@ -11714,5 +11714,13 @@ the backend artifact check at
 `/nix/store/9al90zq4nxxwixk81fj21am1rq07wccy-aos-systemd-backend-policy-artifact-check`,
 and the verity check at
 `/nix/store/5axgdkhdn578idh98q8kp4lif1svkqnx-systemd-verity-check-0`.
-These are compilation and package receipts. The isolated installed retries
-remain pending; no startup, floor or public lifecycle qualification is claimed.
+These are compilation and package receipts. The isolated retry at `0cea2acf84`
+with the uncommitted networkd unit-control policy patch now passes enrollment:
+`/nix/store/spsb7r4qa61s7yqjy90xgwz42q11pl5g-aos-fleet-test-secure-boot-enrolled-vars-0`
+(`PASS`, NAR hash
+`sha256:16ivw6xa3cqi4ps9llmh8qllhsdrdifrz253b8z5b2r2k66n20s5`).
+It reaches normal startup before enrollment and after reboot, confirms Secure
+Boot enforcement, and refuses the unfunded sandbox unit on both boots. The
+pending production policy change remains uncommitted. Host, Root, offline
+provisioning and lifecycle-enclosure results remain separate; this receipt does
+not qualify their startup, a physical floor producer or public lifecycle.
