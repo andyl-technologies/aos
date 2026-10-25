@@ -3,7 +3,8 @@
     "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
     "third_party/rust/package-manager.bzl": "5cdbe87615fd786afffa60a31c5db5edf807952c4a9efb9c810fd25cf719195c",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-    "tools/bazel/metadata/update_rust.py": "69b8bd4161c4d79ccaa22bbc68132a71bdd30991679a1608ed1002214c541a76",
+    "tools/bazel/metadata/optional_dependencies.py": "2007e426ae0ded0be48d7b2c8d8d7492e8d8cb166603c597a4b6208fea51a7a4",
+    "tools/bazel/metadata/update_rust.py": "550638605ab7e116e5d2835bc42e2ae31a8a931e81cdbc262570ca2f58d83280",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
   },
   "family": "package-manager",

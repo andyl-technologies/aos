@@ -21,6 +21,7 @@ pkgs.mkDerivation {
       script = ''
         mkdir -p "$out/bin" "$out/libexec"
         cp ${../../../tools/bazel/metadata/update_rust.py} "$out/libexec/update_rust.py"
+        cp ${../../../tools/bazel/metadata/optional_dependencies.py} "$out/libexec/optional_dependencies.py"
         jq -cS \
           --arg generator '${generator}/bin/cargo-bazel' \
           --arg cargo '${pkgs.rust}/bin/cargo' \

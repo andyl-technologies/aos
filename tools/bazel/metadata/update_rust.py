@@ -14,8 +14,11 @@ import re
 import shutil
 import subprocess
 import tempfile
+import tarfile
 import tomllib
 from urllib.parse import urlparse
+
+from optional_dependencies import inactive_optional_dependencies, prune_library_dependencies
 
 
 def digest(path):
@@ -190,7 +193,13 @@ def rewrite_features(rendered, expected, features, suffix="", repository=""):
                         edits.append((*span(node), json.dumps(node.value + suffix)))
             if call.func.id in {"rust_library", "rust_proc_macro"} and "crate_name" not in keywords:
                 # The rule name changes, but rustc's crate identity must not.
-                edits.append((end - 1, end - 1, "    crate_name = " + json.dumps(name) + ",\n"))
+                declaration = "    crate_name = " + json.dumps(name) + ",\n"
+                preceding = rendered[start:end - 1]
+                if not preceding.rstrip().endswith(","):
+                    declaration = ",\n" + declaration
+                elif not preceding.endswith("\n"):
+                    declaration = "\n" + declaration
+                edits.append((end - 1, end - 1, declaration))
         block = rendered[start:end]
         for left, right, value in sorted(edits, reverse=True):
             block = block[:left - start] + value + block[right - start:]
@@ -207,7 +216,7 @@ def rewrite_features(rendered, expected, features, suffix="", repository=""):
     return rendered
 
 
-def execution_feature_graph(rendered, expected, target_features, exec_features, repository):
+def execution_feature_graph(rendered, expected, target_features, exec_features, repository, unit_renderer=None):
     """Selects complete feature units while keeping each build script constant.
 
     Selecting features on a build-script executable would observe its exec
@@ -233,8 +242,12 @@ def execution_feature_graph(rendered, expected, target_features, exec_features, 
         start = offsets[call.lineno - 1] + call.col_offset
         end = offsets[call.end_lineno - 1] + call.end_col_offset
         prelude = prelude[:start] + prelude[end:]
-    variants = [rewrite_features(rendered, expected, features, "__aos_" + role, repository)
-                for role, features in [("target", target_features), ("exec", exec_features)]]
+    variants = []
+    for role, features in [("target", target_features), ("exec", exec_features)]:
+        suffix = "__aos_" + role
+        variant = (rewrite_features(rendered, expected, features, suffix, repository)
+                   if unit_renderer is None else unit_renderer(features, suffix))
+        variants.append(variant)
     aliases = [
         "alias(\n    name = " + json.dumps(name) + ",\n    actual = select({\n"
         '        "@//tools/bazel/rules:exec_compilation": ' + json.dumps(":" + name + "__aos_exec") + ",\n"
@@ -245,7 +258,39 @@ def execution_feature_graph(rendered, expected, target_features, exec_features, 
     return prelude.rstrip() + "\n\n" + "\n".join(variants + aliases)
 
 
-def specialize_feature_graph(specification, context, builds, repository):
+def disabled_dependency_labels(manifest, features, crate, context, repository, rendered):
+    """Binds inactive source-manifest aliases to actually rendered library labels."""
+    inactive = inactive_optional_dependencies(manifest, features)
+    labels = set()
+    for field in ["deps", "proc_macro_deps"]:
+        selection = crate["common_attrs"].get(field, {})
+        dependencies = list(selection.get("common", []))
+        for selected in selection.get("selects", {}).values():
+            dependencies.extend(selected)
+        for dependency in dependencies:
+            package = context["crates"][dependency["id"]]
+            alias = dependency.get("alias") or package["name"]
+            if alias in inactive:
+                label = "@" + crate_repository(repository, package["name"], package["version"])
+                labels.add(label + "//:" + dependency["target"])
+
+    # The resolver retains platforms outside this SDK's supported platform set.
+    # Only rendered edges can be removed; platform selections remain intact.
+    present = set()
+    for statement in ast.parse(rendered).body:
+        if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+            continue
+        call = statement.value
+        if not isinstance(call.func, ast.Name) or call.func.id not in {"rust_library", "rust_proc_macro"}:
+            continue
+        for keyword in call.keywords:
+            if keyword.arg in {"deps", "proc_macro_deps"}:
+                present.update(node.value for node in ast.walk(keyword.value)
+                               if isinstance(node, ast.Constant) and isinstance(node.value, str))
+    return labels & present
+
+
+def specialize_feature_graph(specification, context, builds, repository, manifests=None):
     """Applies version-checked feature units and redirects explicit consumer edges."""
     policies = []
     identities = set()
@@ -270,19 +315,32 @@ def specialize_feature_graph(specification, context, builds, repository):
             raise ValueError(f"reviewed feature resolution changed: {identifier}")
         original = builds[identifier]
         own_repository = crate_repository(repository, *identifier)
+        prune_optional = policy.get("prune_optional_dependencies", False)
+        if not isinstance(prune_optional, bool):
+            raise ValueError("optional dependency pruning must be a boolean")
+        if prune_optional and (manifests is None or identifier not in manifests):
+            raise ValueError("reviewed optional dependencies require an authenticated source manifest")
+
+        def render_unit(features, suffix=""):
+            rendered = rewrite_features(original, expected, features, suffix, own_repository)
+            if prune_optional:
+                labels = disabled_dependency_labels(
+                    manifests[identifier], features, crate, context, repository, rendered)
+                rendered = prune_library_dependencies(rendered, labels)
+            return rendered
+
         if "exec_features" in policy:
             if policy.get("variants"):
                 raise ValueError("execution feature units cannot also redirect explicit consumers")
             builds[identifier] = execution_feature_graph(
-                original, expected, policy["features"], policy["exec_features"], own_repository)
+                original, expected, policy["features"], policy["exec_features"], own_repository, render_unit)
             continue
-        builds[identifier] = rewrite_features(original, expected, policy["features"])
+        builds[identifier] = render_unit(policy["features"])
         for variant, settings in policy.get("variants", {}).items():
             if not re.fullmatch(r"[a-z][a-z0-9_]*", variant) or not settings["dependents"]:
                 raise ValueError("feature variant requires a safe name and explicit dependents")
             suffix = "__aos_" + variant
-            builds[identifier] += "\n# Reviewed Cargo feature unit: " + variant + "\n" + rewrite_features(
-                original, expected, settings["features"], suffix, own_repository)
+            builds[identifier] += "\n# Reviewed Cargo feature unit: " + variant + "\n" + render_unit(settings["features"], suffix)
             label = f"@{own_repository}//:{crate['library_target_name']}"
             for consumer, version in settings["dependents"].items():
                 key = (consumer, version)
@@ -344,6 +402,10 @@ def prepare_sources(specification, scratch, repository, staged):
         "",
     ]
     builds = {}
+    manifests = {}
+    manifest_targets = {(key.partition("@")[0], policy["version"])
+                        for key, policy in specification.get("feature_variants", {}).items()
+                        if policy.get("prune_optional_dependencies", False)}
     for crate in context["crates"].values():
         if crate["repository"] is None:
             continue
@@ -361,6 +423,16 @@ def prepare_sources(specification, scratch, repository, staged):
         checksum = digest(archives[0])
         if checksum != checksums[name, version] or checksum != source["sha256"]:
             raise ValueError(f"source checksum disagrees with resolved locks: {name}-{version}")
+        if (name, version) in manifest_targets:
+            with tarfile.open(archives[0]) as archive:
+                manifest_file = archive.extractfile(f"{name}-{version}/Cargo.toml")
+                if manifest_file is None:
+                    raise ValueError("reviewed crate source manifest is absent: " + name)
+                with manifest_file:
+                    manifest = tomllib.loads(manifest_file.read().decode("utf-8"))
+            if (manifest["package"]["name"], manifest["package"]["version"]) != (name, version):
+                raise ValueError("reviewed source manifest identity differs: " + name)
+            manifests[name, version] = manifest
         license_domain = validate_license(specification, crate)
         filename = f"BUILD.{name}-{version}.bazel"
         rendered = (scratch / "rendered" / filename).read_text()
@@ -378,7 +450,7 @@ def prepare_sources(specification, scratch, repository, staged):
             "license": crate["license"], "license_domain": license_domain,
         }
         declarations.append(f'aos_crate(name = "{label}")')
-    builds = specialize_feature_graph(specification, context, builds, repository)
+    builds = specialize_feature_graph(specification, context, builds, repository, manifests)
     for (name, version), rendered in builds.items():
         (staged / f"BUILD.{name}-{version}.bazel").write_text(rendered)
     (staged / "repositories.MODULE.bazel").write_text("\n".join(declarations) + "\n")
@@ -440,8 +512,9 @@ def main():
     if specification["schema_version"] != 1 or not re.fullmatch(r"[a-z][a-z0-9-]*", specification["family"]):
         parser.error("unsupported Rust family specification")
     tools = json.loads(options.tool_config.read_text())
-    if digest(Path(__file__)) != digest(options.root / "tools/bazel/metadata/update_rust.py"):
-        parser.error("installed Rust updater is stale; rebuild its package")
+    for filename in ["update_rust.py", "optional_dependencies.py"]:
+        if digest(Path(__file__).with_name(filename)) != digest(options.root / "tools/bazel/metadata" / filename):
+            parser.error("installed Rust updater is stale; rebuild its package: " + filename)
     for name, expected in specification["contracts"].items():
         if digest(options.root / name) != expected:
             parser.error("stale Rust specifications; rebuild their Bazel package: " + name)
@@ -454,8 +527,10 @@ def main():
         staged = scratch / "staged"
         staged.mkdir()
         sources = prepare_sources(specification, scratch, repository, staged)
-        contracts = {**specification["contracts"],
-                     "tools/bazel/metadata/update_rust.py": digest(options.root / "tools/bazel/metadata/update_rust.py")}
+        contracts = dict(specification["contracts"])
+        for filename in ["update_rust.py", "optional_dependencies.py"]:
+            name = "tools/bazel/metadata/" + filename
+            contracts[name] = digest(options.root / name)
         inventory = {
             "schema_version": 1, "family": specification["family"],
             "specifications": specification, "sources": sources,

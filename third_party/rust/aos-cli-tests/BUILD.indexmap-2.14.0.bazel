@@ -22,11 +22,7 @@ cargo_toml_env_vars(
 
 rust_library(
     name = "indexmap",
-    deps = [
-        "@aos_aos_cli_tests_crates__equivalent-1.0.2//:equivalent",
-        "@aos_aos_cli_tests_crates__hashbrown-0.17.1//:hashbrown",
-        "@aos_aos_cli_tests_crates__serde_core-1.0.228//:serde_core",
-    ],
+    deps = ["@aos_aos_cli_tests_crates__equivalent-1.0.2//:equivalent", "@aos_aos_cli_tests_crates__hashbrown-0.17.1//:hashbrown"],
     compile_data = glob(
         allow_empty = True,
         include = ["**"],

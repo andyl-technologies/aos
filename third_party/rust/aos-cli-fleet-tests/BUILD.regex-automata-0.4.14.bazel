@@ -71,11 +71,7 @@ rust_library(
 
 rust_library(
     name = "regex_automata__aos_exec",
-    deps = [
-        "@aos_aos_cli_fleet_tests_crates__aho-corasick-1.1.4//:aho_corasick",
-        "@aos_aos_cli_fleet_tests_crates__memchr-2.8.2//:memchr",
-        "@aos_aos_cli_fleet_tests_crates__regex-syntax-0.8.11//:regex_syntax",
-    ],
+    deps = ["@aos_aos_cli_fleet_tests_crates__regex-syntax-0.8.11//:regex_syntax"],
     compile_data = glob(
         allow_empty = True,
         include = ["**"],

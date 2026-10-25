@@ -102,10 +102,11 @@ The [rerun with corrected build-script metadata](../tests/evidence/cli-native-te
 also passes all 543 ordinary and 551 fleet cases and the selected first-party
 and procedural-macro profile checks. Its external-unit diagnostic matches cfgs
 and editions for all 552 paired dependency units in each configuration. Four
-additional Bazel execution libraries remain unmatched. Source-manifest auditing
-identifies disabled optional dependency edges; removing them from the explicit
-SDK updater and qualifying the resulting graph remain pending. The diagnostic
-does not qualify complete external compiler or native C/linker profiles.
+additional Bazel execution libraries remain unmatched. Those four units are retained as the control for the
+[optional-dependency comparison](../tests/evidence/cli-optional-dependencies.json).
+The new graph pairs all 552 external units in each configuration, including
+features, explicit cfg, and edition. Complete external compiler and native
+C/linker profiles remain separate qualification work.
 
 Qualification scripts and retained reports are excluded from both the test
 workspace's compiler snapshot and the architecture fixture's query snapshot.
@@ -262,3 +263,21 @@ reviewed CLI package BUILD files change in each test SDK. These inventory
 checks do not establish compilation or runtime parity for every family.
 The refresh also passes the full native evaluation aggregate, the 339-test Bazel
 policy suite, and the registered source-selection check.
+
+Reviewed feature policies can also set `prune_optional_dependencies` to remove
+normal library dependencies disabled by that exact feature unit. The updater
+reads Cargo feature activation from the source manifest after authenticating
+its archive against both locks. It supports renamed optional dependencies,
+explicit `dep:` activation, dependency feature activation, and weak dependency
+features. Required platform dependencies and build-script dependency edges
+remain intact. The ordinary and fleet SDKs opt in; production policies retain
+their existing graphs. Both updater source files are installed and checked
+against the checkout before any dependency resolution. The retained comparison passes all 543 ordinary and
+551 fleet cases, their selected first-party/procedural-macro profiles, and the
+complete 552-unit external cfg/edition inventories. Native roles come from
+compiler artifact dependency edges. All 1,261 ordinary and 1,270 fleet actions
+execute in Linux sandboxes without cache hits. The 85 refreshed analysis
+outputs preserve all prior source and feature units across the 45 families;
+registered evaluation, policy, source-selection, and architecture checks pass.
+Complete compiler defaults, native C/linker settings, ABI/runtime/editor/foreign
+parity, caches, and numeric performance still require their own qualification.

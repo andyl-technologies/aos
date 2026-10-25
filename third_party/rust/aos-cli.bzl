@@ -276,6 +276,7 @@ AOS_CLI_PRODUCTION_PACKAGES = {
 # distinct compiled units observed in each retained Cargo baseline.
 AOS_CLI_TESTS_FEATURE_VARIANTS = {
     "base64": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.22.1",
         "resolved_features": [
             "alloc",
@@ -292,6 +293,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "bytes": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.11.1",
         "resolved_features": [
             "default",
@@ -308,6 +310,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "either": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.16.0",
         "resolved_features": [
             "default",
@@ -327,6 +330,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "hashbrown": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.15.5",
         "resolved_features": [
             "allocator-api2",
@@ -352,6 +356,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "indexmap": json.encode({
+        "prune_optional_dependencies": True,
         "version": "2.14.0",
         "resolved_features": [
             "default",
@@ -364,6 +369,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "linux-raw-sys": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.12.1",
         "resolved_features": [
             "auxvec",
@@ -401,6 +407,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "memchr": json.encode({
+        "prune_optional_dependencies": True,
         "version": "2.8.2",
         "resolved_features": [
             "alloc",
@@ -418,6 +425,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "regex": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.12.4",
         "resolved_features": [
             "default",
@@ -463,6 +471,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "regex-automata": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.4.14",
         "resolved_features": [
             "alloc",
@@ -527,6 +536,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "regex-syntax": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.8.11",
         "resolved_features": [
             "default",
@@ -558,6 +568,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "rustix": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.1.4",
         "resolved_features": [
             "alloc",
@@ -589,6 +600,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "serde": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.0.228",
         "resolved_features": [
             "alloc",
@@ -614,6 +626,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "serde_core": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.0.228",
         "resolved_features": [
             "alloc",
@@ -636,6 +649,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "serde_json": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.0.150",
         "resolved_features": [
             "alloc",
@@ -655,6 +669,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "sqlx-core": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.8.6",
         "resolved_features": [
             "_rt-tokio",
@@ -681,6 +696,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "thiserror": json.encode({
+        "prune_optional_dependencies": True,
         "version": "2.0.18",
         "resolved_features": [
             "default",
@@ -696,6 +712,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
     }),
     # Preserve the versioned target and execution units in the native CLI oracle.
     "getrandom": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.4.2",
         "resolved_features": [
             "sys_rng"
@@ -706,6 +723,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         "exec_features": []
     }),
     "hashbrown@0.17.1": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.17.1",
         "resolved_features": [
             "allocator-api2",
@@ -726,6 +744,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         "exec_features": []
     }),
     "itertools": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.14.0",
         "resolved_features": [
             "default",
@@ -743,6 +762,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "rand": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.8.6",
         "resolved_features": [
             "alloc",
@@ -766,6 +786,7 @@ AOS_CLI_TESTS_FEATURE_VARIANTS = {
 
 AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
     "base64": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.22.1",
         "resolved_features": [
             "alloc",
@@ -782,6 +803,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "bytes": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.11.1",
         "resolved_features": [
             "default",
@@ -798,6 +820,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "either": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.16.0",
         "resolved_features": [
             "default",
@@ -817,6 +840,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "hashbrown": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.15.5",
         "resolved_features": [
             "allocator-api2",
@@ -842,6 +866,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "indexmap": json.encode({
+        "prune_optional_dependencies": True,
         "version": "2.14.0",
         "resolved_features": [
             "default",
@@ -854,6 +879,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "linux-raw-sys": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.12.1",
         "resolved_features": [
             "auxvec",
@@ -891,6 +917,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "memchr": json.encode({
+        "prune_optional_dependencies": True,
         "version": "2.8.2",
         "resolved_features": [
             "alloc",
@@ -908,6 +935,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "regex": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.12.4",
         "resolved_features": [
             "default",
@@ -953,6 +981,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "regex-automata": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.4.14",
         "resolved_features": [
             "alloc",
@@ -1017,6 +1046,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "regex-syntax": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.8.11",
         "resolved_features": [
             "default",
@@ -1048,6 +1078,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "rustix": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.1.4",
         "resolved_features": [
             "alloc",
@@ -1079,6 +1110,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "serde": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.0.228",
         "resolved_features": [
             "alloc",
@@ -1104,6 +1136,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "serde_core": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.0.228",
         "resolved_features": [
             "alloc",
@@ -1126,6 +1159,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "serde_json": json.encode({
+        "prune_optional_dependencies": True,
         "version": "1.0.150",
         "resolved_features": [
             "alloc",
@@ -1145,6 +1179,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "sqlx-core": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.8.6",
         "resolved_features": [
             "_rt-tokio",
@@ -1171,6 +1206,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "thiserror": json.encode({
+        "prune_optional_dependencies": True,
         "version": "2.0.18",
         "resolved_features": [
             "default",
@@ -1186,6 +1222,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
     }),
     # Preserve the versioned target and execution units in the native CLI oracle.
     "getrandom": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.4.2",
         "resolved_features": [
             "sys_rng"
@@ -1196,6 +1233,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         "exec_features": []
     }),
     "hashbrown@0.17.1": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.17.1",
         "resolved_features": [
             "allocator-api2",
@@ -1216,6 +1254,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         "exec_features": []
     }),
     "itertools": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.14.0",
         "resolved_features": [
             "default",
@@ -1233,6 +1272,7 @@ AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS = {
         ]
     }),
     "rand": json.encode({
+        "prune_optional_dependencies": True,
         "version": "0.8.6",
         "resolved_features": [
             "alloc",

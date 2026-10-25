@@ -1,9 +1,10 @@
 {
   "contracts": {
     "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
-    "third_party/rust/aos-cli.bzl": "1da4747a107507b873fd9ad946a2151f29bf0e482dccff02cfd60b0f9e1ac746",
+    "third_party/rust/aos-cli.bzl": "5092880bcdd757f86471fbb17283b906ce397292b616b9154fdf76cc0f4ce466",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-    "tools/bazel/metadata/update_rust.py": "69b8bd4161c4d79ccaa22bbc68132a71bdd30991679a1608ed1002214c541a76",
+    "tools/bazel/metadata/optional_dependencies.py": "2007e426ae0ded0be48d7b2c8d8d7492e8d8cb166603c597a4b6208fea51a7a4",
+    "tools/bazel/metadata/update_rust.py": "550638605ab7e116e5d2835bc42e2ae31a8a931e81cdbc262570ca2f58d83280",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
   },
   "family": "aos-cli-tests",
@@ -83,7 +84,7 @@
     "BUILD.by_address-1.2.1.bazel": "d29d52670b6699e02e03e262a47be59c0f2af91b76c6c139be532e5334894cb7",
     "BUILD.bytemuck-1.25.2.bazel": "635561beed7eae535d0d2a78d2d4d1b7006c02390f8300bad82b1117e378bd6c",
     "BUILD.byteorder-1.5.0.bazel": "4d248abd2de65d731c06283b82e7a5239b5566fe38cd2a087ce0696c469d9d20",
-    "BUILD.bytes-1.11.1.bazel": "a4dfcc8da1c8bc3bd250d581de433389f20710b587525890fa4fb48be2a40d14",
+    "BUILD.bytes-1.11.1.bazel": "b8969dc69498e68df17a91da02ae3acbb4a7bbc54d09b694c6788c502032e400",
     "BUILD.bytes-utils-0.1.4.bazel": "8cbfdda28b35d004bd5a34651bc34965c7ede9536b90a4927e67e1d2168834c4",
     "BUILD.bzip2-rs-0.1.2.bazel": "15990da6cc756fcf947fe0b0523177e6ef32c74e6640d6b0b2ccab08f8f93064",
     "BUILD.castaway-0.2.4.bazel": "942a5c8d8575c1991daa1a2bae6b6a93420699c7f9dad4886dda4dd0be873c74",
@@ -160,7 +161,7 @@
     "BUILD.ecdsa-0.17.0.bazel": "e1cf38b4bb206532ce7ebc7248d3cf7496c2206de197264cb45386e87b9fa307",
     "BUILD.ed25519-2.2.3.bazel": "1bde87b8605e4d66936ad1d7899ff2a05404a657014997510184ca5d21ad4a35",
     "BUILD.ed25519-dalek-2.2.0.bazel": "328ab0c5ff7a547b73429f64b824539e7b409b482b6a5f0d28fe1d98a2b96714",
-    "BUILD.either-1.16.0.bazel": "f6640b5a3bc9425a4ccd3624df7e3d60716f6e92931e0ec0118a2481567cec66",
+    "BUILD.either-1.16.0.bazel": "a4913316d0d4c048bd49eaf823a204b30da7e37e918330c84dcf54fe7853e56f",
     "BUILD.elliptic-curve-0.13.8.bazel": "3591e78564f53fcee2dd63703645246585d7cc0a56b5315c8943c47c0e507939",
     "BUILD.elliptic-curve-0.14.1.bazel": "6ec1ed5e207183d94e9d568a59dc01dbb1c156cc1804e0c8d83417f8eb43ecbc",
     "BUILD.encode_unicode-1.0.0.bazel": "b8bac24ea53d6b451e573c3e404e62c6f0ad95bbc79acf5bba839dea0c563bd0",
@@ -201,7 +202,7 @@
     "BUILD.generic-array-0.14.7.bazel": "00131eabfe45509f12075242da95e2b1001ff4d44ac4c08308736a4e3c8e153b",
     "BUILD.getrandom-0.2.17.bazel": "977e2556007443ca599d8c2af18d47eb2184b593cc13c0d68dfa87daf4903263",
     "BUILD.getrandom-0.3.4.bazel": "e6a174756eeb6dce16eff9a615ecf07bc2dd36c71bbafee6c55e04b328d50742",
-    "BUILD.getrandom-0.4.2.bazel": "8df29b83ab589a8652354fac21d5a2234f5df71f5757068b3bdffc99638a1bb7",
+    "BUILD.getrandom-0.4.2.bazel": "c60b5a6546403ad70bbe65323a91458e11de677ea12cde75b5335f471a1fb2ff",
     "BUILD.ghash-0.5.1.bazel": "ae09de6ad40073ea754f086f953e729854efb3c8caec25e242ecfe12f02e6a2f",
     "BUILD.git2-0.21.0.bazel": "190e30cab057fcff94f1d744b40638e53674e548e98e2f23127eccba21f0b1ae",
     "BUILD.glob-0.3.3.bazel": "deab61127d4a346cba704bd137013aeb98724490c6eee4ae0e102354253d6e7c",
@@ -211,8 +212,8 @@
     "BUILD.h2-0.4.16.bazel": "54191c53f1146e82e28efd34853e63efa2c1d5d83a95e3d8b88d9853899cd22d",
     "BUILD.half-2.7.1.bazel": "f5344534885f08d53fb58f590ada2d9709f4342d50703749aaf0c52ce230b91f",
     "BUILD.hashbrown-0.14.5.bazel": "ed05eece5ff9bf8e19ffb30f7826e8f489b0928451e82517a1c674e3b6eea9c9",
-    "BUILD.hashbrown-0.15.5.bazel": "3962410e1ca86cdfe7580cb83a497f95413bc66c3b301294a7541c7e7747c2df",
-    "BUILD.hashbrown-0.17.1.bazel": "40de2809d72188f678154968a3aab6b20d2e43beedc715e0f12a0847e08d135a",
+    "BUILD.hashbrown-0.15.5.bazel": "ebe98f3a73e937506d0d5f859a652101123e635f6ee09967eee0a363780d157d",
+    "BUILD.hashbrown-0.17.1.bazel": "5dd30ab37f232a2a23cf7b6b6e2c81b2e51e6d40a9b404361bd4f49f3223df54",
     "BUILD.hashbrown-0.9.1.bazel": "d8d30a1b749327acc9efe694bc190f5eaaccee1a8644434274fec1876e8441ee",
     "BUILD.hashlink-0.10.0.bazel": "3c183bce5f26b999470f2009ec56bb9e96c4afb2017ea240e58f89af3bf496e3",
     "BUILD.hashlink-0.9.1.bazel": "dba99f988bda0edb37e9f46d56f7307f619e1bdd7b6b754800fa35ce0cc8d6a8",
@@ -244,7 +245,7 @@
     "BUILD.idna-1.1.0.bazel": "ad760647b835977a7875b5114a35420b308012f75a5d911ea0989f710c68c67a",
     "BUILD.idna_adapter-1.2.2.bazel": "3d50f26a53e8403d46173b629f8233be2fd266ccde14c4439da345b8382b7093",
     "BUILD.ignore-0.4.25.bazel": "600d8c14c9c73f2e0ab1fc42016f13961713c489bf2159fa30efcd9232eab2cd",
-    "BUILD.indexmap-2.14.0.bazel": "d014719aaa47cf772472ed93528d0dcd95cf881aad44305500fdef35a53ad1ce",
+    "BUILD.indexmap-2.14.0.bazel": "cd6edfd931193c3229df7eb850558b3d4ebe1ad55b72cf0226bdefe196961c67",
     "BUILD.indicatif-0.17.11.bazel": "7ec7c21f7a69f85e38623bfa9ea08492fdd3f88c517ac604d94ae5f7bf31c7ca",
     "BUILD.indoc-2.0.7.bazel": "074d37ca42418ab26223e8216b14d7db3ce595c0178a9e67b6bd6d8dcffe7d0d",
     "BUILD.inout-0.1.4.bazel": "79ef4c29ef00bd65a503216269173e2c3759664a873c387f43dea4293e930395",
@@ -389,8 +390,8 @@
     "BUILD.redox_syscall-0.5.18.bazel": "e7189ea86b35ff8e1b31c6222a208a091b72943216fb042958918603d1c73698",
     "BUILD.ref-cast-1.0.27.bazel": "4f8bc3239bcd1323f4a90ad86b4d9e6dacd2ff1eeb7cc758c45d7dfd6234ae16",
     "BUILD.ref-cast-impl-1.0.27.bazel": "57ce2144bda049611e1af88255b16e3b421029162ff5b5e6032014885847bc98",
-    "BUILD.regex-1.12.4.bazel": "52459e5719fb7fd33760c7af423d359a7ce706550df95e49c9c277f643fd9c97",
-    "BUILD.regex-automata-0.4.14.bazel": "77e545bd9e76cdc7ac0cc8edbaa61b179341a28932f26426423b03453be3690f",
+    "BUILD.regex-1.12.4.bazel": "b209243ab61b907b30b8da6d74ee61538434642409955abcff8bde28f0ecd915",
+    "BUILD.regex-automata-0.4.14.bazel": "1b9d68f1a896c06f46b9caabbee80d239ee64e6909294b4212012069425b3f00",
     "BUILD.regex-lite-0.1.9.bazel": "1737977be323ef9f88838d0251bf49d1bf091b41542e4b93b7cca249f0f9bfb9",
     "BUILD.regex-syntax-0.8.11.bazel": "e74faa05ef679656d70f429cb8fd8c991b24d560930be3eb600fe678c5a0cede",
     "BUILD.reqwest-0.12.28.bazel": "62b41a85cbebb7f67a41e9c0a4bbe72770316538ef0ab8632749ef06fa0249c4",
@@ -6792,7 +6793,7 @@
     ],
     "contracts": {
       "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
-      "third_party/rust/aos-cli.bzl": "1da4747a107507b873fd9ad946a2151f29bf0e482dccff02cfd60b0f9e1ac746",
+      "third_party/rust/aos-cli.bzl": "5092880bcdd757f86471fbb17283b906ce397292b616b9154fdf76cc0f4ce466",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
     },
@@ -6807,6 +6808,7 @@
           "default",
           "std"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "alloc",
           "default",
@@ -6823,6 +6825,7 @@
           "serde",
           "std"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "default",
           "serde",
@@ -6841,6 +6844,7 @@
           "std",
           "use_std"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "default",
           "serde",
@@ -6854,6 +6858,7 @@
         "features": [
           "sys_rng"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "sys_rng"
         ],
@@ -6873,6 +6878,7 @@
           "raw-entry",
           "serde"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "allocator-api2",
           "default",
@@ -6894,6 +6900,7 @@
           "inline-more",
           "raw-entry"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "allocator-api2",
           "default",
@@ -6909,6 +6916,7 @@
           "default",
           "std"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "default",
           "serde",
@@ -6926,6 +6934,7 @@
           "use_alloc",
           "use_std"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "default",
           "use_alloc",
@@ -6955,6 +6964,7 @@
           "prctl",
           "xdp"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "auxvec",
           "elf",
@@ -6980,6 +6990,7 @@
           "default",
           "std"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "alloc",
           "default",
@@ -6996,6 +7007,7 @@
           "std",
           "std_rng"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "alloc",
           "getrandom",
@@ -7031,6 +7043,7 @@
           "unicode-script",
           "unicode-segment"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "default",
           "perf",
@@ -7088,6 +7101,7 @@
           "unicode-segment",
           "unicode-word-boundary"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "alloc",
           "dfa-onepass",
@@ -7133,6 +7147,7 @@
           "unicode-script",
           "unicode-segment"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "default",
           "std",
@@ -7165,6 +7180,7 @@
           "stdio",
           "termios"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "alloc",
           "default",
@@ -7193,6 +7209,7 @@
           "serde_derive",
           "std"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "alloc",
           "default",
@@ -7216,6 +7233,7 @@
           "result",
           "std"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "alloc",
           "default",
@@ -7236,6 +7254,7 @@
           "raw_value",
           "std"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "alloc",
           "default",
@@ -7256,6 +7275,7 @@
           "tokio",
           "tokio-stream"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "_rt-tokio",
           "any",
@@ -7278,6 +7298,7 @@
           "default",
           "std"
         ],
+        "prune_optional_dependencies": true,
         "resolved_features": [
           "default",
           "std"

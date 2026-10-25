@@ -72,12 +72,7 @@ rust_library(
 
 rust_library(
     name = "hashbrown__aos_exec",
-    deps = [
-        "@aos_aos_cli_fleet_tests_crates__allocator-api2-0.2.21//:allocator_api2",
-        "@aos_aos_cli_fleet_tests_crates__equivalent-1.0.2//:equivalent",
-        "@aos_aos_cli_fleet_tests_crates__foldhash-0.1.5//:foldhash",
-        "@aos_aos_cli_fleet_tests_crates__serde-1.0.228//:serde",
-    ],
+    deps = ["@aos_aos_cli_fleet_tests_crates__foldhash-0.1.5//:foldhash", "@aos_aos_cli_fleet_tests_crates__serde-1.0.228//:serde"],
     compile_data = glob(
         allow_empty = True,
         include = ["**"],

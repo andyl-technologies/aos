@@ -1463,7 +1463,11 @@
         "@@rules_rust+//cargo/settings:emit_build_script_warnings",
         "@@rules_rust+//cargo/settings:experimental_symlink_execroot",
         "@@rules_rust+//cargo/settings:out_dir_volatile_file_basenames",
-        "@@rules_rust+//cargo/settings:use_default_shell_env"
+        "@@rules_rust+//cargo/settings:use_default_shell_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags"
       ],
       "edition": "",
       "external": false,
@@ -1509,7 +1513,11 @@
         "@@rules_rust+//cargo/settings:emit_build_script_warnings",
         "@@rules_rust+//cargo/settings:experimental_symlink_execroot",
         "@@rules_rust+//cargo/settings:out_dir_volatile_file_basenames",
-        "@@rules_rust+//cargo/settings:use_default_shell_env"
+        "@@rules_rust+//cargo/settings:use_default_shell_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags"
       ],
       "edition": "",
       "external": false,
@@ -2325,7 +2333,11 @@
         "@@rules_rust+//cargo/settings:emit_build_script_warnings",
         "@@rules_rust+//cargo/settings:experimental_symlink_execroot",
         "@@rules_rust+//cargo/settings:out_dir_volatile_file_basenames",
-        "@@rules_rust+//cargo/settings:use_default_shell_env"
+        "@@rules_rust+//cargo/settings:use_default_shell_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags"
       ],
       "edition": "",
       "external": false,
@@ -2373,7 +2385,11 @@
         "@@rules_rust+//cargo/settings:emit_build_script_warnings",
         "@@rules_rust+//cargo/settings:experimental_symlink_execroot",
         "@@rules_rust+//cargo/settings:out_dir_volatile_file_basenames",
-        "@@rules_rust+//cargo/settings:use_default_shell_env"
+        "@@rules_rust+//cargo/settings:use_default_shell_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags"
       ],
       "edition": "",
       "external": false,
@@ -2421,7 +2437,11 @@
         "@@rules_rust+//cargo/settings:emit_build_script_warnings",
         "@@rules_rust+//cargo/settings:experimental_symlink_execroot",
         "@@rules_rust+//cargo/settings:out_dir_volatile_file_basenames",
-        "@@rules_rust+//cargo/settings:use_default_shell_env"
+        "@@rules_rust+//cargo/settings:use_default_shell_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags"
       ],
       "edition": "",
       "external": false,
@@ -2469,7 +2489,11 @@
         "@@rules_rust+//cargo/settings:emit_build_script_warnings",
         "@@rules_rust+//cargo/settings:experimental_symlink_execroot",
         "@@rules_rust+//cargo/settings:out_dir_volatile_file_basenames",
-        "@@rules_rust+//cargo/settings:use_default_shell_env"
+        "@@rules_rust+//cargo/settings:use_default_shell_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags"
       ],
       "edition": "",
       "external": false,
@@ -6151,7 +6175,11 @@
         "@@rules_rust+//cargo/settings:emit_build_script_warnings",
         "@@rules_rust+//cargo/settings:experimental_symlink_execroot",
         "@@rules_rust+//cargo/settings:out_dir_volatile_file_basenames",
-        "@@rules_rust+//cargo/settings:use_default_shell_env"
+        "@@rules_rust+//cargo/settings:use_default_shell_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags"
       ],
       "edition": "",
       "external": false,
@@ -6195,7 +6223,11 @@
         "@@rules_rust+//cargo/settings:emit_build_script_warnings",
         "@@rules_rust+//cargo/settings:experimental_symlink_execroot",
         "@@rules_rust+//cargo/settings:out_dir_volatile_file_basenames",
-        "@@rules_rust+//cargo/settings:use_default_shell_env"
+        "@@rules_rust+//cargo/settings:use_default_shell_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags"
       ],
       "edition": "",
       "external": false,
@@ -182631,7 +182663,7 @@
     "third_party/rust/aos-cli-production/repositories.MODULE.bazel": "51516a255c450de9e761e7bee76061018de879de4f47b08d499ea8193f0d89e3",
     "third_party/rust/aos-cli-tests/aliases.bzl": "8a18398e3ee495efd33b8234241bb84ebc6d4c1cd440ebc8c4b2789283eda425",
     "third_party/rust/aos-cli-tests/repositories.MODULE.bazel": "2ab1fd6b8daef09b53fade5775aa3696a3b20e1d27368dde445ae3b6dbc8026c",
-    "third_party/rust/aos-cli.bzl": "1da4747a107507b873fd9ad946a2151f29bf0e482dccff02cfd60b0f9e1ac746",
+    "third_party/rust/aos-cli.bzl": "5092880bcdd757f86471fbb17283b906ce397292b616b9154fdf76cc0f4ce466",
     "third_party/rust/boot-preparation-minimal/aliases.bzl": "827fef667c2bdf831bf938fc55de70b506952681a8ad884c8704c66c7bea3264",
     "third_party/rust/boot-preparation-minimal/repositories.MODULE.bazel": "816836b347668a9d45a85c1972c8cac906318c374489ef0b2a39398fb669678d",
     "third_party/rust/boot-preparation.bzl": "02d479afe427f1310b99018dd9d1eaecf3789150e4a4a92e85628b0e20f34427",

@@ -5,10 +5,12 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 
 
 path = Path(__file__).resolve().parents[1] / "metadata/update_rust.py"
+sys.path.insert(0, str(path.parent))
 spec = importlib.util.spec_from_file_location("update_rust", path)
 updater = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(updater)

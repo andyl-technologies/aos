@@ -69,9 +69,7 @@ rust_library(
 
 rust_library(
     name = "either__aos_exec",
-    deps = [
-        "@aos_aos_cli_fleet_tests_crates__serde-1.0.228//:serde",
-    ],
+    deps = [],
     compile_data = glob(
         allow_empty = True,
         include = ["**"],
