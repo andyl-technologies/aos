@@ -77,3 +77,14 @@ project records evidence. Ordinary development keeps its persistent output base.
 Full analyzer diagnostics, performance, foreign execution, and production
 cutover retain their separate gates. Accache remains daemonless and uses local
 disk storage.
+
+The [release-root production preview](../tests/evidence/accache-production-release-preview.json)
+qualifies an explicit `release` root profile with separate target and execution
+compiler flags. It executes 114 unit cases, all 924 integration fixtures, and
+534 cache-command checks, and compares the installed loader, libraries, runtime
+dependencies and help with the independent Cargo package. A second prototype
+runs the tests and emits the package in one Bazel invocation; its installed
+binary matches the separately built prototype byte for byte. All recorded
+actions execute uncached in Linux sandboxes. These are retained pre-cutover
+prototypes: the production selector, platform and editor qualification, and
+numeric performance remain separate work.
