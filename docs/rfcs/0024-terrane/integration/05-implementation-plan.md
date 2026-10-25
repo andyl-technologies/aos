@@ -148,6 +148,37 @@ descriptors. This qualifies the weak-observation ownership correction against
 the existing cache regressions; it does not resolve the separate configured
 exposure custody comparison or qualify the later worker service.
 
+At `9b20835594`, the mounted production fallback component passes in 697.951
+seconds. Independent review compares all 8,196 immutable source files, 5,469
+base and 5,452 surface inputs, four retained base executables and the exact
+surface fixture ELF. Actual guest witnesses join signed-owner grants,
+authenticated index startup, coalesced kernel opens, responsive metadata and
+durable drain with unchanged original backing bindings and pins. The corrected
+disconnected descriptor close passes. Production launch, broker factory,
+passthrough and physical release acknowledgement remain outside this result.
+
+The same source's independent configured retained-service guest passes in
+728.120 seconds; its service actor completes in 14.454 seconds within the
+original thirty-second bound. Full review verifies all 8,196 immutable source
+files, all three source-bound images and nine actual Cargo/installed executables,
+plus the actual UID-840 original-inode readonly namespace observation. The
+distinct worker receives no cold backing after acknowledged drain; the original
+preparation completes cache handoff and a later ordinary grant reads sealed
+plaintext without another lower read. This is service component evidence,
+without a kernel-open, production worker or mount-broker claim.
+
+Its full configured aggregate still fails in 750.252 seconds. The admit actor
+passes both exact cold-file/bounds witnesses in 27.991 seconds; funded reopen
+and Resume then pass, as does the exact exposure comparison. The new diagnostic
+identifies the subsequent global pin comparison. Source inspection shows
+`recovery_manifest_state::reconstruct` legitimately adds funded metadata pins
+from independently verified recovered backing. The index-custody scenario now
+runs before the independent cold-publication scenario, preserving all its exact
+pin/lease, namespace, mapping and final-closure assertions, every cold control,
+and all original actor/guest deadlines. The service scenario still follows cold
+publication and requires genuine populated-cache recovery. Fresh aggregate
+qualification remains required; neither individual pass changes acceptance.
+
 Complete feature matrices now pass with independent immutable-source, retained
 executable and actual guest review at these checkpoints:
 

@@ -404,7 +404,10 @@ def run_surface(driver, image, surface_image, service_only=False):
     store = tomllib.loads(config.read_text())["store"]
     original = 'role = "serve"\nstore = ' + json.dumps(store) + "\n"
 
-    modes = ["service"] if service_only else ["disabled", "bound", "admit", "recover-draining", "service"]
+    # Index recovery measures unchanged original exposure pins and leases. Run
+    # it before cold manifest publication: later recovery legitimately funds
+    # independently verified reconstruction metadata with additional pins.
+    modes = ["service"] if service_only else ["disabled", "bound", "recover-draining", "admit", "service"]
     for mode in modes:
         text = original + host_configuration(driver,
             mode="always" if mode in {"admit", "service"} else "never")
