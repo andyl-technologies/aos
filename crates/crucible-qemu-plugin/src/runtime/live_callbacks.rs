@@ -1439,6 +1439,14 @@ impl LiveVcpuTimeCallbackState {
             device_completion_deadline_tick,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::IdleHotLoop { source })?;
+        if plan.desired_wake_icount() == current_icount {
+            clock_domain_trace::note_due_now(
+                plan.cause(),
+                current_icount,
+                timer_deadline_ps,
+                raw_icount,
+            );
+        }
         let futex_wait = PluginShmemOrdering::publish_idle_wait(
             self.slot.get(),
             current_icount,

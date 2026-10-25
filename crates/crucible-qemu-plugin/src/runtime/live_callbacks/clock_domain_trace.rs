@@ -6,11 +6,12 @@
 //! not against the plugin's coordinate. If the two disagree, QEMU never runs
 //! the timer, the vCPU halts again at the same point, and the host sees the
 //! same pause twice. This trace reads QEMU's clock terms through a read-only
-//! export and prints them when QEMU disagrees, or when the same already-due
-//! point repeats:
+//! export and prints them when QEMU disagrees, when the same already-due
+//! point repeats, or when an inbound frame or device completion is due at the
+//! current coordinate:
 //!
 //! ```text
-//! CRUCIBLE-CLOCK-DOMAIN-V1 pid=4242 reason=qemu-not-due count=1 plugin_ps=587001000000 deadline_ps=587001000000 raw=1213 virtual_ps=587000999950 qemu_deadline_ps=587001000000 qemu_raw=1213 sim_tick_bias=586940350000 icount_bias_ps=0 warp_start=-1
+//! CRUCIBLE-CLOCK-DOMAIN-V1 pid=4242 reason=qemu-not-due cause=timer count=1 plugin_ps=587001000000 deadline_ps=587001000000 raw=1213 virtual_ps=587000999950 qemu_deadline_ps=587001000000 qemu_raw=1213 sim_tick_bias=586940350000 icount_bias_ps=0 warp_start=-1
 //! ```
 //!
 //! Each reason prints on its 1st, 2nd, 4th, 8th, ... occurrence. The rows are
@@ -20,6 +21,8 @@ use std::ffi::c_void;
 use std::io::Write as _;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::IdleWakeCause;
 
 /// NUL-terminated name of QEMU's read-only clock diagnostic export.
 const QEMU_PLUGIN_CRUCIBLE_CLOCK_DIAGNOSTIC_SYMBOL_C: &[u8] =
@@ -46,6 +49,9 @@ enum Reason {
     QemuNotDue,
     /// The same already-due coordinate and deadline returned again.
     Repeated,
+    /// An inbound frame or device completion woke the node at its current
+    /// coordinate, so the idle pass asks QEMU for a zero-length advance.
+    DueNowOther,
 }
 
 impl Reason {
@@ -53,6 +59,7 @@ impl Reason {
         match self {
             Self::QemuNotDue => 0,
             Self::Repeated => 1,
+            Self::DueNowOther => 2,
         }
     }
 
@@ -60,11 +67,12 @@ impl Reason {
         match self {
             Self::QemuNotDue => "qemu-not-due",
             Self::Repeated => "repeated",
+            Self::DueNowOther => "due-now",
         }
     }
 }
 
-static COUNTS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+static COUNTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
 /// Last already-due `(coordinate, deadline)` pair. Only the all-halted idle
 /// callback writes it, so the two words never interleave with another writer.
@@ -88,13 +96,41 @@ pub(super) fn note_already_due(plugin_ps: u64, deadline_ps: Option<u64>, raw: u6
         (Reason::Repeated, repeated),
     ] {
         if hit {
-            print_row(reason, plugin_ps, deadline_ps, raw, read);
+            print_row(reason, "timer", plugin_ps, deadline_ps, raw, read);
         }
     }
 }
 
+/// Records an idle pass whose non-timer wake is the current coordinate.
+pub(super) fn note_due_now(
+    cause: IdleWakeCause,
+    plugin_ps: u64,
+    deadline_ps: Option<u64>,
+    raw: u64,
+) {
+    let cause = match cause {
+        IdleWakeCause::InboundFrame => "inbound",
+        IdleWakeCause::DeviceIoCompletion => "device",
+        IdleWakeCause::TimerDeadline
+        | IdleWakeCause::DeviceIoFreeze
+        | IdleWakeCause::SchedulerCeiling => return,
+    };
+    let Some(read) = read_qemu_clock() else {
+        return;
+    };
+    print_row(
+        Reason::DueNowOther,
+        cause,
+        plugin_ps,
+        deadline_ps,
+        raw,
+        read,
+    );
+}
+
 fn print_row(
     reason: Reason,
+    cause: &str,
     plugin_ps: u64,
     deadline_ps: Option<u64>,
     raw: u64,
@@ -109,7 +145,7 @@ fn print_row(
     let deadline = deadline_ps.map_or_else(|| String::from("none"), |value| value.to_string());
     let _ = writeln!(
         std::io::stderr().lock(),
-        "CRUCIBLE-CLOCK-DOMAIN-V1 pid={} reason={} count={count} plugin_ps={plugin_ps} deadline_ps={deadline} raw={raw} virtual_ps={} qemu_deadline_ps={} qemu_raw={} sim_tick_bias={} icount_bias_ps={} warp_start={}",
+        "CRUCIBLE-CLOCK-DOMAIN-V1 pid={} reason={} cause={cause} count={count} plugin_ps={plugin_ps} deadline_ps={deadline} raw={raw} virtual_ps={} qemu_deadline_ps={} qemu_raw={} sim_tick_bias={} icount_bias_ps={} warp_start={}",
         std::process::id(),
         reason.name(),
         read.virtual_ps,

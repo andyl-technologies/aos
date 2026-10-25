@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn a_child_fatal_line_and_its_clock_rows_survive_the_summary() {
-        let clock = "CRUCIBLE-CLOCK-DOMAIN-V1 pid=153 reason=repeated count=1 plugin_ps=587001000000 deadline_ps=587001000000 raw=1213 virtual_ps=587001000000 qemu_deadline_ps=587001000000 qemu_raw=1213 sim_tick_bias=586940350000 icount_bias_ps=0 warp_start=-1";
+        let clock = "CRUCIBLE-CLOCK-DOMAIN-V1 pid=153 reason=repeated cause=timer count=1 plugin_ps=587001000000 deadline_ps=587001000000 raw=1213 virtual_ps=587001000000 qemu_deadline_ps=587001000000 qemu_raw=1213 sim_tick_bias=586940350000 icount_bias_ps=0 warp_start=-1";
         let foreign_clock = clock.replace("pid=153", "pid=132");
         let qemu_fatal = "qemu-system-x86_64: Crucible sim idle warp exceeds the clock";
         let plugin_fatal =

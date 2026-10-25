@@ -41,6 +41,12 @@ pub(super) fn assert_hot_fork_tier(
         "CRUCIBLE-HOT-FORK-SOURCE-MEASUREMENT-V1 ",
         "CRUCIBLE-HOT-FORK-CHILD-MEMORY-V1 ",
         "CRUCIBLE-REPLAY-DIVERGENCE-V1 ",
+        // A replay that stalls on an already-due idle timer, or a QEMU that
+        // exits on an error, names the cause only in these plugin and QEMU
+        // lines on the inherited service stream.
+        "CRUCIBLE-CLOCK-DOMAIN-V1 ",
+        "qemu-system-",
+        "crucible-qemu-plugin: ",
     ] {
         rows.extend(service.stderr_lines_with_prefix(prefix, 32, 4096)?);
     }
