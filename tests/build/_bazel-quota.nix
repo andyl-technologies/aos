@@ -11,6 +11,18 @@
     dependencyProfile = "quota";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.quota;
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    # Native analyzer cfg queries are optimized independently of test targets.
+    editorTargetRustcFlags = [];
+    retainTestActionGraph = true;
+    captureCompilerArguments = true;
+  };
+  execution-profiles = import ./_bazel-rust-test-profiles.nix {
+    inherit pkgs;
+    inherit (family) tests cargo;
+    pname = "aos-bazel-quota-execution-profiles";
+    firstPartyTests = {"${label}:unit_binary" = "aos_linux_project_quota";};
+    proceduralMacros = ["thiserror_impl"];
   };
   flightBuild = pkgs.mkAosBazelBuild {
     pname = "aos-bazel-project-quota-flight";
@@ -20,6 +32,7 @@
 in
   family
   // rec {
+    inherit execution-profiles;
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-quota-inventory";
       workspace = family.workspace;
@@ -77,7 +90,7 @@ in
       inherit (pkgs) lib;
       bazelProbe = flight;
     };
-    all = pkgs.runCommand "aos-bazel-quota-qualified-checks" {buildDeps = [family.all family.editor-parity flight installation];} ''
+    all = pkgs.runCommand "aos-bazel-quota-qualified-checks" {buildDeps = [family.all family.editor-parity flight installation execution-profiles];} ''
       mkdir -p "$out/editor"
       cp -r ${family.all}/evidence "$out/evidence"
       cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
@@ -86,5 +99,6 @@ in
       cp -r ${family.editor-cargo-oracle} "$out/editor/cargo"
       cp ${flight}/nix-support/bazel-package.json "$out/flight-package.json"
       cp ${installation}/installation.json "$out/installation.json"
+      cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
     '';
   }

@@ -1199,6 +1199,17 @@ its numeric measurement files.
 
 ## Linux project-quota family
 
+The [profile qualification](tests/evidence/quota-profile-qualification.json)
+retains all eight passing cases after selecting unoptimized host macros for
+tests. The size-optimized target profile still enables assertions and overflow
+checks. A digest-checked audit verifies the unit compiler and `thiserror` macro
+against actual Cargo invocations. Clippy, formatting, documentation, flight
+installation, and whole-model editor parity pass; all 135 retained actions
+execute in Linux sandboxes without cache hits. Editor inference is complete
+with no diagnostics. Its optimized target cfg query is selected independently
+of unoptimized host macros. The ordinary `aos-dev` workspace, current ext4 VM
+enforcement, production cutover, and performance acceptance remain separate.
+
 The quota family owns `aos-linux-project-quota`, its unit tests and the
 `project-quota-flight` example. Its separate `quota` dependency profile retains
 Cargo's small libc/rustix/thiserror feature graph rather than inheriting the
