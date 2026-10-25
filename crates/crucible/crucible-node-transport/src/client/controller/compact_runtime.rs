@@ -241,10 +241,12 @@ impl CompactRuntimeController {
     /// pending failure owners. Shared views are charged independently. Enclosing
     /// inline headers, future growth and physical stack remain separate terms.
     /// The caller admits [`Self::retained_metadata_counter_scratch_data`] before
-    /// this walk. Reading facts supplies no Source admission.
+    /// this walk. Fencing and registration revocation retain the same owning
+    /// allocations; observing them does not renew live registration or effects.
+    /// Reading facts supplies no Source admission.
     ///
     /// # Errors
-    /// Refuses a foreign or revoked actor, unsupported codec/supervisor backing,
+    /// Refuses a foreign creator, changed registration or codec/supervisor backing,
     /// conflicting loans, metadata exhaustion or checked observation overflow.
     pub fn retained_metadata_facts_with_retained_supervisor(
         &self,
@@ -254,18 +256,19 @@ impl CompactRuntimeController {
         self.original.protocol_owner.ensure_current()?;
         self.original
             .session
-            .authenticate_original_retained_supervisor(owner)?;
+            .authenticate_original_retained_supervisor_data(owner)?;
         if let Some(witness) = witness {
             self.original
                 .session
-                .authenticate_original_protocol_supervisor(witness)?;
+                .authenticate_original_protocol_supervisor_data(witness)?;
         }
         let mut observer = crate::retained_metadata::MetadataObserver::new();
-        self.original.observe_owned11_metadata(&mut observer)?;
+        self.original
+            .observe_compact_runtime_legacy_metadata(&mut observer)?;
         self.journal.observe_runtime_metadata(&mut observer)?;
         self.original
             .session
-            .observe_original_host_live_metadata_extras(&mut observer)?;
+            .observe_original_restoration_metadata_extras(&mut observer)?;
         owner.observe_retained_metadata(&mut observer)?;
         if let Some(witness) = witness {
             witness.observe_original_header(&mut observer)?;
@@ -273,7 +276,7 @@ impl CompactRuntimeController {
         }
         self.original
             .session
-            .authenticate_original_retained_supervisor(owner)?;
+            .authenticate_original_retained_supervisor_data(owner)?;
         self.original.protocol_owner.ensure_current()?;
         Ok(observer.finish())
     }
@@ -282,10 +285,10 @@ impl CompactRuntimeController {
     ///
     /// These declared layouts precede the metadata walk. They provide no
     /// physical stack bound, allocation admission or future growth allowance.
-    pub const fn retained_metadata_counter_scratch_data() -> usize {
+    pub fn retained_metadata_counter_scratch_data() -> usize {
         use std::mem::size_of;
 
-        CnpController::original_live_host_metadata_counter_scratch_data()
+        CnpController::original_restoration_host_metadata_counter_scratch_data()
             + size_of::<&Self>()
             + size_of::<&CnpController>()
             + size_of::<&CompactClientJournal>()

@@ -16,6 +16,8 @@ use std::{io::Read, os::unix::net::UnixStream, rc::Rc};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+mod retained;
+
 struct Supervisor;
 
 impl ConnectionSupervisor for Supervisor {

@@ -148,6 +148,19 @@ fn observe_assigned(
 }
 
 impl CnpController {
+    /// Observes the original controller retained behind the compact boundary.
+    ///
+    /// The compact constructor excludes future operation assignments, and its
+    /// opaque owner never exposes a mutable legacy controller. This raw walk
+    /// preserves registration/codec identity after fencing or revocation;
+    /// ownership observation cannot renew an effect permission.
+    pub(super) fn observe_compact_runtime_legacy_metadata(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        Fields::borrow(self)?.observe(observer)
+    }
+
     /// Names actual raw transfer field, observer and partial-state cursor views.
     ///
     /// This includes the old direct-supervisor counter and the additional exact

@@ -10,6 +10,38 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Runtime census after stream fencing
+
+The compact runtime's whole metadata census now authenticates original
+registration, immutable codec and actual supervisor identity without requiring
+live protocol permission. It visits the retained legacy owner through the
+existing raw field walker, adds the compact journal and pending/typed failure
+owners, and includes the raw observer's fixed controls in its counter. Fencing
+or registration revocation therefore leaves those allocations observable.
+Changed identities, unsupported codecs and unknown supervisor callbacks still
+refuse; observing ownership does not reopen the stream or issue a Source action.
+
+Five controls cover real socket notification failure, provider namespace
+exhaustion with a retained pending envelope, unchanged legacy content and history,
+revocation, foreign supervisor/witness identities, erased callbacks and unknown
+codecs. They use the actual immutable codec and retained supervisor where those
+identities are claimed, with modeled registration and no native permission.
+
+All nine compact runtime controls pass in both codec builds. Both complete
+Transport suites pass 2,238 tests with zero failures and twenty ignored using
+frozen compiler-selected artifacts. Scoped formatting, all-feature/all-target
+checking and all six architecture checks pass. Strict Transport Clippy retains
+the exact preceding diagnostic multiset: four existing errors and 1,725 warnings;
+it is not a strict lint pass. Application test-target compilation passes with
+185 artifacts across 58 packages, including 76 integration targets. Its captured
+source matches all 699 frozen owned Rust/Cargo inputs. Protected user work stays
+outside this commit; no clean published-PR or native lifecycle qualification is
+claimed.
+
+This corrects failure-state ownership evidence needed by Source funding. The
+complete future SDK R/T/S row and genuine Source18 runtime action, handoff,
+production selection and full native lifecycle remain unfinished.
+
 ## Opaque compact SDK runtime owner
 
 `CompactRuntimeController` now retains the original controller behind an API
