@@ -24,6 +24,10 @@
       "docs/rfcs/0020-crucible-campaigns"
     ];
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core;
+    # Match the native Cargo test profile while keeping procedural macros and
+    # build scripts in its independent, unoptimized execution profile.
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["${protocol}:unit" "${shmem}:unit"];
   };
 in rec {
@@ -32,6 +36,7 @@ in rec {
   tests = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-protocol-tests";
     inherit workspace;
+    retainActionGraph = true;
     targets =
       ["${protocol}:license_closure" "${shmem}:license_closure" "${protocol}:unit" "${protocol}:doc" "${shmem}:unit" "${shmem}:doc" "${shmem}:crucible-shmem-abi-header"]
       ++ integrationTargets "crucible-qemu-protocol"
@@ -51,6 +56,7 @@ in rec {
     inherit pkgs;
     pname = "aos-bazel-protocol-cargo-oracle";
     packages = ["crucible-qemu-protocol" "crucible-qemu-shmem"];
+    captureCompilerArguments = true;
   };
   oracle = let
     verifier = builtins.path {
@@ -65,10 +71,12 @@ in rec {
         --tests ${tests}/evidence/tests --inventory ${tests}/inventory.json \
         --messages ${cargo}/cargo-messages.jsonl --cargo-log ${cargo}/cargo-tests.log --output "$out/parity.json"
     '';
-  all = pkgs.runCommand "aos-bazel-protocol-checks" {buildDeps = [tests oracle developer-build developer-tests];} ''
+  execution-profiles = import ./_bazel-protocol-execution-profiles.nix {inherit pkgs tests cargo;};
+  all = pkgs.runCommand "aos-bazel-protocol-checks" {buildDeps = [tests oracle developer-build developer-tests execution-profiles];} ''
     mkdir -p "$out"
     cp -r ${tests}/evidence "$out/evidence"
     cp ${tests}/inventory.json "$out/inventory.json"
     cp ${oracle}/parity.json "$out/parity.json"
+    cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
   '';
 }

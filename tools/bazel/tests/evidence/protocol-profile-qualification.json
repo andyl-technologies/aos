@@ -1,0 +1,183 @@
+{
+  "cargo_oracle": "/nix/store/8yn74b8d9v9yy6mkzsq9xhi7f17lqy3s-aos-bazel-protocol-cargo-oracle-1",
+  "cargo_profiles": {
+    "crucible_qemu_protocol": {
+      "debug-assertions": "on",
+      "embed-bitcode": "no",
+      "extra-filename": "-2e3de56846101d5f",
+      "incremental": "/build/target/debug/incremental",
+      "opt-level": "s",
+      "strip": "debuginfo"
+    },
+    "crucible_qemu_shmem": {
+      "debug-assertions": "on",
+      "embed-bitcode": "no",
+      "extra-filename": "-8530790673e45290",
+      "incremental": "/build/target/debug/incremental",
+      "opt-level": "s",
+      "strip": "debuginfo"
+    },
+    "serde_derive": {
+      "embed-bitcode": "no",
+      "extra-filename": "-4053155b06e2c403",
+      "strip": "debuginfo"
+    },
+    "thiserror_impl": {
+      "embed-bitcode": "no",
+      "extra-filename": "-e8cf5e400c92e407",
+      "strip": "debuginfo"
+    }
+  },
+  "cargo_trace_sha256": "73cecd35d3bae19b800b8cc367e37343e87d9ea466f0b3e3f1e739c03dba97c5",
+  "checkout_parent": "35a2f614a4",
+  "core_evaluation_check": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0",
+  "declarations_sha256": {
+    "tests/build/_bazel-cargo-oracle.nix": "9ad7f0a2a247717f1db73907807bda7ca0ed25f40bfb3080aa9427f86deeb90d",
+    "tests/build/_bazel-protocol-execution-profiles.nix": "137759b57d4116bef87eddc131fd602aa17447b32e3606a7fbaaef390e1a4c28",
+    "tests/build/_bazel-protocol.nix": "b1e84aff2da4bb86b45c19c7ba9f97cb6a936bf9212701d9dc7e937386fcad99",
+    "tools/bazel/metadata/protocol-inventory.json": "0cb3339e63848497196b8f62597dfc7ef7e182c7f6210f898fc5adedfdc72187"
+  },
+  "empty_doctest_inventories": {
+    "//crates/crucible/crucible-qemu-protocol:doc": {},
+    "//crates/crucible/crucible-qemu-shmem:doc": {}
+  },
+  "evidence_sha256": {
+    "execution-profiles.json": "682cb6feede75883876a1c04677d6df90fe7a5bba8993a53cd18dd336d598505",
+    "inventory.json": "f7865a72d9f495fd5535a4c91913625a176072dbbe0572d800f2060abe0e0122",
+    "parity.json": "1ac361a5b0106549f94dbb0221898953d33b5fdad291f3c7e015a33aaa4067be"
+  },
+  "examples": [
+    "//crates/crucible/crucible-qemu-shmem:crucible-shmem-abi-header"
+  ],
+  "first_party_features": {
+    "crucible-qemu-protocol": [
+      []
+    ],
+    "crucible-qemu-shmem": [
+      []
+    ]
+  },
+  "ignored_cases": 0,
+  "libtest_reports": 24,
+  "limits": [
+    "Native x86_64 qualification only; the existing AArch64 shared-memory allocation-policy restriction is unchanged.",
+    "Checks the selected scalar profiles on two libtests and both procedural macros; compiler/default equivalence, native ABI, and linker closure remain separate.",
+    "The generic aos-dev workspace and editor configuration have not been enrolled by this checkpoint.",
+    "Does not qualify production cutover, canonical ABI prerequisites, shared-cache concurrency, or performance acceptance."
+  ],
+  "profile_gate": "/nix/store/lchlc1sfx7fim1ybnsbwyy7b960q5yhi-aos-bazel-protocol-execution-profiles",
+  "profiles": {
+    "//crates/crucible/crucible-qemu-protocol:unit_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1142237787",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "s",
+        "overflow-checks": "yes",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "//crates/crucible/crucible-qemu-shmem:unit_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1562601281",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "s",
+        "overflow-checks": "yes",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_core_crates__serde_derive-1.0.228//:serde_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-265462186",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_core_crates__thiserror-impl-2.0.18//:thiserror_impl": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-3694994226",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    }
+  },
+  "qualified_checks": "/nix/store/dz8fhx82b3c4i7qjmbw3icxi6z825k0k-aos-bazel-protocol-checks",
+  "runs": {
+    "developer": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 10,
+        "Clippy": 26,
+        "ExtractCargoTomlEnvVars": 42,
+        "Rustc": 50,
+        "Rustdoc": 2
+      },
+      "action_runners": {
+        "linux-sandbox": 130
+      },
+      "build": "/nix/store/3bckqzsc61jmd8z548an4vvlv6l7kc77-aos-bazel-protocol-developer-tools-1",
+      "executed_actions": 130,
+      "execution_sha256": "e7e702dee18f51343de7f94d2ce7d0660badf6300dba5286c11fbba56cdf170e"
+    },
+    "format": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "Rustc": 5,
+        "TestRunner": 4
+      },
+      "action_runners": {
+        "linux-sandbox": 9
+      },
+      "build": "/nix/store/p2ra9pdws1b4l3yp831760vjlps72zds-aos-bazel-protocol-format-1",
+      "executed_actions": 9,
+      "execution_sha256": "ff570913ae11d3b64200c0e1435a42bae8996af14eb801ae7799e5836dff4e74"
+    },
+    "tests": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 10,
+        "ExtractCargoTomlEnvVars": 42,
+        "Rustc": 77,
+        "RustdocTestWriter": 2,
+        "TestRunner": 28
+      },
+      "action_runners": {
+        "linux-sandbox": 159
+      },
+      "build": "/nix/store/w2ypk9zmpsri9cbx2s2b265mxpcfsl0g-aos-bazel-protocol-tests-1",
+      "executed_actions": 159,
+      "execution_sha256": "8226faa9e2b3a783536746a9acedf8b4b27ac132f59e80aff790825ecfed9c72"
+    }
+  },
+  "schema_version": 1,
+  "status": "PASS",
+  "test_cases": 302,
+  "upstream_feature_identities": 34
+}

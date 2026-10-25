@@ -697,6 +697,16 @@ compares discovered test names, and checks each resolved dependency feature set
 against the configured Bazel inventory. Distinct compilation variants remain
 distinct sets; a union cannot hide a missing feature configuration.
 
+The [profile qualification](tests/evidence/protocol-profile-qualification.json)
+aligns this check with Cargo's native test profile: target code uses size
+optimization with assertions and overflow checks enabled; execution tools use
+optimization level zero with those checks enabled. The audit authenticates
+actual compiler actions for both unit binaries and both procedural macros,
+then compares their selected options with captured native Cargo calls. All
+302 cases, 34 upstream feature identities, Clippy, documentation, formatting,
+and the generated-header example pass. This enrollment covers the qualification
+graph; the generic development launcher and editor retain separate profiles.
+
 The shared `core` dependency family retains the versions and features from the
 existing workspace, including BLAKE3's `std,pure` configuration. Its sources keep
 their original license expressions. The updater admits sources to the shared
