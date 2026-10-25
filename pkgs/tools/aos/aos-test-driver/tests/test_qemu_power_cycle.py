@@ -124,5 +124,62 @@ class PowerCycleTests(unittest.TestCase):
             machine.agent.wait_ready.assert_called_once()
 
 
+class RebootTests(unittest.TestCase):
+    """Requires a new kernel boot even when an agent answers readiness."""
+
+    original_boot = "11111111-1111-4111-8111-111111111111"
+    next_boot = "22222222-2222-4222-8222-222222222222"
+
+    def test_ready_tpm_agent_from_original_boot_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            machine = machine_fixture(directory)
+            machine.execute = MagicMock()
+            machine.succeed = MagicMock(return_value=self.original_boot + "\n")
+
+            with self.assertRaisesRegex(RuntimeError, "reboot did not change guest boot ID"):
+                machine.reboot(timeout=3)
+
+            machine.agent.wait_ready.assert_called_once()
+            machine._launch.assert_not_called()
+
+    def test_tpm_reset_accepts_new_boot_without_replacing_tpm(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            machine = machine_fixture(directory)
+            machine.execute = MagicMock()
+            machine.succeed = MagicMock(side_effect=[self.original_boot, self.next_boot])
+            tpm = machine.swtpm_proc
+
+            machine.reboot(timeout=3)
+
+            self.assertIs(machine.swtpm_proc, tpm)
+            machine.agent.wait_down.assert_called_once()
+            machine.agent.wait_ready.assert_called_once()
+            machine._launch.assert_not_called()
+
+    def test_non_tpm_relaunch_also_requires_new_boot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            machine = machine_fixture(directory, tpm=False)
+            machine.execute = MagicMock()
+            machine.succeed = MagicMock(return_value=self.original_boot)
+
+            with self.assertRaisesRegex(RuntimeError, "reboot did not change guest boot ID"):
+                machine.reboot(timeout=3)
+
+            machine._launch.assert_called_once()
+
+    def test_invalid_initial_identity_refuses_before_requesting_reboot(self) -> None:
+        for invalid in ("", "not-a-boot-id", "00000000-0000-0000-0000-000000000000"):
+            with self.subTest(boot_id=invalid), tempfile.TemporaryDirectory() as directory:
+                machine = machine_fixture(directory)
+                machine.execute = MagicMock()
+                machine.succeed = MagicMock(return_value=invalid)
+
+                with self.assertRaisesRegex(RuntimeError, "invalid guest boot ID"):
+                    machine.reboot(timeout=3)
+
+                machine.execute.assert_not_called()
+                machine.agent.close.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

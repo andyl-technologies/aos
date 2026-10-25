@@ -16,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 from typing import IO, ClassVar, override
+from uuid import UUID
 
 from .agent import Driver
 from .fs import clone_or_copy
@@ -778,14 +779,17 @@ class QemuMachine(Machine):
 
     # ------------------------------------------------------------------
     def reboot(self, timeout: float = 600.0) -> None:
-        """Reboot the guest and wait for the agent to come back.
+        """Requests an orderly reboot and verifies a new kernel boot.
 
-        ``-no-reboot`` makes a guest-initiated reboot exit the QEMU
-        process, so a reboot is: ask the guest to reboot (detached, so
-        the agent's framed reply gets out first), wait for QEMU to
-        exit, relaunch against the same on-disk state — second boot,
-        not first boot — and re-handshake with the agent.
+        vTPM guests reset in place, preserving the live TPM connection.
+        Other guests exit QEMU and relaunch against the same disk. Both
+        paths require the kernel boot ID to change after agent readiness;
+        an old agent answering again cannot establish a completed reboot.
         """
+        if self.qemu_proc is None:
+            raise RuntimeError(f"[{self.name}] reboot before start()")
+        original_boot = self._read_boot_id()
+
         # The trailing `&` detaches the reboot so the agent can frame
         # its reply before PID 1 starts an orderly shutdown. Do not use
         # `reboot -f` here: it bypasses systemd, so journald and /var do
@@ -793,8 +797,6 @@ class QemuMachine(Machine):
         self.execute("(sleep 1; systemctl reboot) >/dev/null 2>&1 &", timeout=30)
         self.agent.close()
 
-        if self.qemu_proc is None:
-            raise RuntimeError(f"[{self.name}] reboot before start()")
         deadline = time.monotonic() + timeout
 
         # vTPM machines reset in place (no -no-reboot): QEMU keeps running
@@ -813,6 +815,7 @@ class QemuMachine(Machine):
             # reboot completing.
             self.agent.wait_down(time.monotonic() + 90)
             self.agent.wait_ready(deadline)
+            self._require_new_boot(original_boot)
             return
 
         try:
@@ -837,6 +840,23 @@ class QemuMachine(Machine):
             self.qemu_proc.pid if self.qemu_proc else "?",
         )
         self.agent.wait_ready(deadline)
+        self._require_new_boot(original_boot)
+
+    def _read_boot_id(self) -> UUID:
+        """Reads the guest kernel's boot identity through the live agent."""
+        value = self.succeed("cat /proc/sys/kernel/random/boot_id", timeout=30).strip()
+        try:
+            boot_id = UUID(value)
+        except ValueError as error:
+            raise RuntimeError(f"[{self.name}] invalid guest boot ID: {value!r}") from error
+        if str(boot_id) != value or boot_id.int == 0:
+            raise RuntimeError(f"[{self.name}] invalid guest boot ID: {value!r}")
+        return boot_id
+
+    def _require_new_boot(self, original_boot: UUID) -> None:
+        """Rejects an old agent that becomes ready without a kernel reboot."""
+        if self._read_boot_id() == original_boot:
+            raise RuntimeError(f"[{self.name}] reboot did not change guest boot ID {original_boot}")
 
     def shutdown_for_firmware_export(self, timeout: float = 120.0) -> None:
         """Shuts down and proves QEMU closed its writable firmware pflash.
