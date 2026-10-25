@@ -94,6 +94,20 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+The migrated restoration guest at `c8e84fe13e` finishes in 1,578.609 seconds
+with all ten original exact cases passing as the isolated ext4 actor. The added
+eleventh case fails on the same lineage-digest assertion documented below;
+the aggregate remains failed. Correction `127be00d39` preserves signed carried
+dependencies instead of requiring unchanged encoding. Native collector and
+corrected eleven-case restoration qualifications are running from the frozen
+`ea10cabb8d` source alongside mandatory application compilation.
+
+Mandatory workspace compilation at `c8e84fe13e` and `83cd177fbc` passes in
+1,567.318 and 1,289.360 seconds respectively. Complete independent reviews
+verify all 8,218 immutable source files, 190 test executables and 59 packages
+for each checkpoint. These are compilation results only; they do not change
+the retained restoration failure or establish native exact-intent acceptance.
+
 A configured local collector component now performs pure whole-configuration
 preflight, installs the irreversible quota boundary before constructing Tokio
 or opening public issuer files, and retains one original collector session.
