@@ -47,8 +47,21 @@ Recent committed startup fixes close narrower prerequisites:
   offline preparation remains a separate check and cannot establish method-46
   initialization or public readiness.
 
-Candidate Host credential-custody preparation and retained initrd wiring are
-not qualified by these commits. Installed results that include pending
+- `7450b28e7c` retains the image-selected protected-root provisioner, owner
+  preparation and durable state-root label in the authenticated native initrd
+  replay. The producer remains an explicit admitted input. Default, protected
+  and measured-boot restricted-evaluator checks pass, including rejection of
+  unadmitted imports; isolated core evaluation also passes. This preserves the
+  existing Controller/Storage/Network preparation and labels freshly baked
+  protected VM state disks. It does not qualify the candidate Host custody path.
+- `abf8752744` allows PID 1 to stat, open and read the fixed provisioner's
+  immutable bytes for NAR admission. Direct execution, execution without a
+  transition and executable mapping remain forbidden. The isolated production
+  policy passes 173 unit tests, its linked-policy guard and negative fixtures.
+  Installed admission and owner startup remain separate checks.
+
+Candidate Host credential-custody preparation and its selected initrd wiring
+are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they
 cannot be reported as clean committed-branch qualification.
 
