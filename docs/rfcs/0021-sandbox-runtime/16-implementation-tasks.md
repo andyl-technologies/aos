@@ -426,8 +426,10 @@ Recent committed startup fixes close narrower prerequisites:
   the provisioning deployment epoch. All 48 focused Broker, Domain and Security
   tests pass, including refusal before credential admission/payment and negative
   dispatch through Source after. The separate normal-owner canonical role/salt
-  regression also passes. Exact-source complete Rust target compilation is
-  running. No positive
+  regression also passes. Exact-source complete Rust targets compile
+  (`/nix/store/dg1j7f1mjw7zr95zl2j3jjjcllbpvc39-aos-test-targets-0.1.0`),
+  without running the targets. That frozen source predates confinement, SDK
+  and stopped-owner additions. No positive
   installed initial producer, independent key/endpoint provenance, protected
   writer, signed-intent durability or physical TPM authority is qualified.
 
@@ -444,7 +446,10 @@ Recent committed startup fixes close narrower prerequisites:
   fifty-property tables and the finite expanded schedule: two 67-call samples,
   160 outgoing/176 incoming ceilings and 11 MiB cumulative materialization.
   All 51 focused Broker, Domain and Security tests pass. Exact-source complete
-  Rust target compilation is running. These are selected-unit comparisons,
+  Rust targets compile
+  (`/nix/store/fg3jmgsfnsn50x4ipmmi06j971x597if-aos-test-targets-0.1.0`),
+  without running the targets. That frozen source predates the SDK and
+  stopped-owner additions. These are selected-unit comparisons,
   not live kernel/device proof, complete unit-input admission, installed
   production qualification or writer/TPM authority.
 
@@ -466,6 +471,23 @@ Recent committed startup fixes close narrower prerequisites:
   native empty/absent cgroups, exclusive protected writer custody, job exclusion,
   installed producers and physical TPM operations remain unqualified.
 
+- The initial startup now also prepays six native stopped-owner cgroup
+  observations through that same genuine Source. Controller and both canonical
+  Storage coordinates independently require an empty recursive population or
+  an actually observed absence beneath Source's validated hierarchy. The
+  shared strict native acquisition recipe retains original active probes,
+  event bytes and parse/read failures. All three final observations remain
+  independently owed after a primary or property-post refusal; successful
+  final cuts cannot heal an incomplete or failed initial cut. All 60 focused
+  Broker, Domain and Security tests plus four native cgroup-reader regressions
+  pass. Complete Rust target compilation is running for the runtime changes.
+  A dedicated AOS Nix QEMU test now selects the exact feature-gated kernel
+  fixture; it checks absence, emptiness, recursive population, immutable failure
+  and fresh observations at all three coordinates, and is running. The broader
+  local-identity VM also selects it. Neither test supplies a genuine installed
+  manual producer, prevents later jobs/migrations, or grants protected writer
+  or physical TPM custody. Those gates remain closed.
+
 - The latest installed offline key-preparation candidate passes its service
   property stage, then exits with the stopped-runtime invalid-unit class 95.
   Its Controller is inactive/dead with PID zero and an empty InvocationID.
@@ -477,8 +499,11 @@ Recent committed startup fixes close narrower prerequisites:
   checks native empty/absent cgroups. Active, starting and successful-oneshot
   phases retain their nonzero sixteen-byte invocation requirement. All seven
   focused SDK regressions pass, including cross-phase rejection and malformed
-  widths. Complete Rust target compilation and the corrected hardware-free
-  enforcing QEMU preparation test are running. The failed frozen candidate
+  widths. Exact-source complete Rust targets compile
+  (`/nix/store/nj0561s0wilxk57z0zpvih28fnkvflv7-aos-test-targets-0.1.0`),
+  without running the targets. That snapshot predates the new stopped-unit
+  and native-cgroup readers. The corrected hardware-free enforcing QEMU
+  preparation test is running. The failed frozen candidate
   includes pending combined policy/custody changes and older Parent05;
   this finding does not qualify that candidate, physical floor initialization
   or the public lifecycle.

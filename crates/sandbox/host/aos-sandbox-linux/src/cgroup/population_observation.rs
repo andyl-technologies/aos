@@ -63,7 +63,10 @@ impl CgroupPopulationObservationV1 {
         }
     }
 
-    fn capture_once(&mut self, events: &File) -> std::result::Result<(), CgroupPopulationObservationRefusalV1> {
+    pub(in crate::cgroup) fn capture_once(
+        &mut self,
+        events: &File,
+    ) -> std::result::Result<(), CgroupPopulationObservationRefusalV1> {
         if self.entered {
             self.first.get_or_insert(First::Closed);
             return Err(CgroupPopulationObservationRefusalV1);

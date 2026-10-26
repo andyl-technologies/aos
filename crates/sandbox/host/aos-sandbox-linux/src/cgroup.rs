@@ -31,6 +31,11 @@ pub use active_original::CgroupActiveOriginalV2;
 mod single_task;
 pub use single_task::CgroupSingleTaskObservationV1;
 
+mod method46_stopped_owner;
+pub use method46_stopped_owner::{
+    Method46StoppedOwnerCgroupOriginalV1, Method46StoppedOwnerCgroupV1,
+};
+
 mod population_observation;
 mod issued_quiescence;
 pub use issued_quiescence::{IssuedCgroupQuiescenceAttemptV2, IssuedCgroupQuiescenceRefusalV2};
@@ -1449,12 +1454,21 @@ impl NixOfflineStoppedCgroupReadbackV5 {
     }
 
     fn capture(&mut self, root: &CgroupV2Root, relative: &Path) -> Result<()> {
+        self.capture_with_population(root, relative, None)
+    }
+
+    fn capture_with_population(
+        &mut self,
+        root: &CgroupV2Root,
+        relative: &Path,
+        population: Option<&mut CgroupPopulationObservationV1>,
+    ) -> Result<()> {
         if self.attempted {
             self.complete = false;
             return Err(Error::invalid("offline Nix cgroup observation", "already attempted"));
         }
         self.attempted = true;
-        match self.capture_once(root, relative) {
+        match self.capture_once(root, relative, population) {
             Ok(()) => {
                 self.complete = true;
                 Ok(())
@@ -1466,7 +1480,12 @@ impl NixOfflineStoppedCgroupReadbackV5 {
         }
     }
 
-    fn capture_once(&mut self, root: &CgroupV2Root, relative: &Path) -> Result<()> {
+    fn capture_once(
+        &mut self,
+        root: &CgroupV2Root,
+        relative: &Path,
+        population: Option<&mut CgroupPopulationObservationV1>,
+    ) -> Result<()> {
         root.anchor.validate_active_retaining(&mut self.probes[0])?;
         match root.anchor.root.resolve_directory_retaining(relative, &mut self.resolution) {
             Err(error) if is_missing(&error) => {
@@ -1498,7 +1517,17 @@ impl NixOfflineStoppedCgroupReadbackV5 {
         let events = self.events.as_ref().ok_or_else(|| {
             Error::invalid("offline Nix cgroup observation", "original events file is absent")
         })?;
-        self.state = Some(read_population_state(events)?);
+        self.state = Some(match population {
+            Some(original) => {
+                original.capture_once(events).map_err(|_| {
+                    Error::invalid("stopped cgroup observation", "original population failure retained")
+                })?;
+                original.state().ok_or_else(|| {
+                    Error::invalid("stopped cgroup observation", "population result is absent")
+                })?
+            }
+            None => read_population_state(events)?,
+        });
         anchor.validate_active_retaining(&mut self.probes[4])
     }
 }

@@ -36,6 +36,7 @@ pub use credentials::{
 };
 mod images;
 mod policy;
+mod stopped_cgroups;
 mod unit;
 
 #[derive(Clone, Copy)]
@@ -49,6 +50,7 @@ enum First {
     Policy,
     Unit,
     Credentials,
+    StoppedOwners,
     Order,
 }
 
@@ -87,6 +89,7 @@ struct StartupRolesOriginalV1 {
     runtime: images::InitialRuntimeOriginalV1,
     policy: policy::InitialPolicyOriginalV1,
     unit: unit::InitialUnitOriginalV1,
+    stopped_cgroups: stopped_cgroups::InitialStoppedCgroupsOriginalV1,
     credentials: RefCell<credentials::InitialCredentialsOriginalV1>,
     profile_original: Option<File>,
     profile: ImmutableFileAcquisitionOriginalV1,
@@ -113,6 +116,7 @@ impl StartupRolesOriginalV1 {
             runtime: images::InitialRuntimeOriginalV1::new(),
             policy: policy::InitialPolicyOriginalV1::new(),
             unit: unit::InitialUnitOriginalV1::new(),
+            stopped_cgroups: stopped_cgroups::InitialStoppedCgroupsOriginalV1::new(),
             credentials: RefCell::new(credentials::InitialCredentialsOriginalV1::new()),
             profile_original: None,
             profile: ImmutableFileAcquisitionOriginalV1::new(),
@@ -475,6 +479,9 @@ impl Method46InitialStartupOriginalV1 {
                 .is_err()
             {
                 self.fail(First::Unit);
+            }
+            if body.stopped_cgroups.finish_post(self).is_err() {
+                self.fail(First::StoppedOwners);
             }
             match body.credentials.try_borrow_mut() {
                 Ok(mut credentials) => {

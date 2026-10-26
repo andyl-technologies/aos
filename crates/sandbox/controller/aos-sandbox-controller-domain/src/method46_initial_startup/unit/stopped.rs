@@ -138,6 +138,17 @@ pub(super) fn receiving_memory_bytes() -> Option<usize> {
 }
 
 impl InitialUnitOriginalV1 {
+    pub(in crate::method46_initial_startup) fn stopped_units_before_completed(&self) -> bool {
+        self.stopped.entered.get()
+            && self.stopped.samples[0].iter().all(|sample| {
+                sample.try_borrow().is_ok_and(|sample| {
+                    matches!(sample.result, Some(Ok(())))
+                        && sample.original.service_values_v2().is_some()
+                        && sample.original.unit_values_v2().is_some()
+                })
+            })
+    }
+
     pub(super) fn finish_stopped_post(&self) -> Result<(), Method46InitialStartupClosedV1> {
         if !self.stopped.entered.get() {
             return Ok(());

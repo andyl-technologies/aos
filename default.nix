@@ -2419,6 +2419,9 @@ in rec {
         sandbox-local-identity = import ./tests/vm/sandbox-local-identity.nix {
           inherit testing pkgs lib;
         };
+        sandbox-method46-stopped-cgroups = import ./tests/vm/sandbox-method46-stopped-cgroups.nix {
+          inherit testing pkgs lib;
+        };
         sandbox-openssh-attach-profile = import ./tests/vm/sandbox-openssh-attach-profile.nix {
           inherit testing pkgs lib;
         };

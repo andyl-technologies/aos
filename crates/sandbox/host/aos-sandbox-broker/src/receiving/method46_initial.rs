@@ -13,6 +13,7 @@ use std::os::fd::OwnedFd;
 use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitorOriginalV3, ExactCgroupMembershipReadbackV1,
+    Method46StoppedOwnerCgroupOriginalV1, Method46StoppedOwnerCgroupV1,
 };
 use aos_sandbox_model::ResourceVector;
 
@@ -179,6 +180,7 @@ enum First {
     After,
     Helper,
     Population,
+    StoppedOwner,
     Order,
 }
 
@@ -518,6 +520,61 @@ impl Method46InitialSourceCaptureV1 {
         result
     }
 
+    /// Observes a fixed stopped owner beneath this Source's actual hierarchy.
+    ///
+    /// The enclosing owner prepays the complete destination and native recipe
+    /// before entry. The coordinate is DATA; no caller root, path, descriptor
+    /// or copied identity can replace the original validated hierarchy.
+    ///
+    /// # Errors
+    /// Refuses an unavailable Source or native acquisition/population failure.
+    /// All reached originals and the actual cause remain in the destination.
+    pub fn observe_stopped_owner_cgroup_once_v1(
+        &mut self,
+        owner: Method46StoppedOwnerCgroupV1,
+        destination: &mut Method46StoppedOwnerCgroupOriginalV1,
+    ) -> Result<(), Method46InitialReceivingClosedV1> {
+        self.require_current_v1()?;
+        self.observe_stopped_owner_cgroup_destination(owner, destination)
+    }
+
+    /// Performs an independently prepaid stopped-owner post after body refusal.
+    ///
+    /// This performs no new debit. The same captured, entered interval must
+    /// remain held; its final Source after is still independently owed.
+    ///
+    /// # Errors
+    /// Refuses an unentered or ended Source, missing original hierarchy,
+    /// destination reentry or the actual retained native failure.
+    pub fn observe_stopped_owner_cgroup_owed_once_v1(
+        &mut self,
+        owner: Method46StoppedOwnerCgroupV1,
+        destination: &mut Method46StoppedOwnerCgroupOriginalV1,
+    ) -> Result<(), Method46InitialReceivingClosedV1> {
+        if !self.before_attempted || self.after_attempted || self.origin.is_none() {
+            self.first.get_or_insert(First::Order);
+            return Err(self.closed);
+        }
+        self.observe_stopped_owner_cgroup_destination(owner, destination)
+    }
+
+    fn observe_stopped_owner_cgroup_destination(
+        &mut self,
+        owner: Method46StoppedOwnerCgroupV1,
+        destination: &mut Method46StoppedOwnerCgroupOriginalV1,
+    ) -> Result<(), Method46InitialReceivingClosedV1> {
+        let result = (|| {
+            let hierarchy = self.original.hierarchy.as_ref().ok_or(self.closed)?;
+            destination
+                .observe_once_v1(hierarchy, owner)
+                .map_err(|_| self.closed)
+        })();
+        if result.is_err() {
+            self.first.get_or_insert(First::StoppedOwner);
+        }
+        result
+    }
+
     /// Borrows the earliest retained source-specific cause without another IO.
     #[must_use]
     pub fn failure_v1(&self) -> Option<&(dyn Error + 'static)> {
@@ -526,7 +583,7 @@ impl Method46InitialSourceCaptureV1 {
             First::Funding | First::Before | First::After => {
                 self.original.service_startup_failure_v4()
             }
-            First::Helper | First::Population | First::Order => None,
+            First::Helper | First::Population | First::StoppedOwner | First::Order => None,
         }
         .or(Some(&self.closed as &(dyn Error + 'static)))
     }
@@ -535,6 +592,44 @@ impl Method46InitialSourceCaptureV1 {
 #[cfg(test)]
 mod tests {
     use super::{Method46InitialServiceRoleV1, Method46InitialSourceCaptureV1};
+
+    #[test]
+    fn method46_initial_stopped_cgroups_cannot_borrow_a_missing_source_hierarchy() {
+        use aos_sandbox_linux::cgroup::{
+            Method46StoppedOwnerCgroupOriginalV1, Method46StoppedOwnerCgroupV1,
+        };
+
+        for role in [
+            Method46InitialServiceRoleV1::ControllerStorageClient,
+            Method46InitialServiceRoleV1::StorageBroker,
+        ] {
+            let mut source =
+                std::mem::ManuallyDrop::new(Method46InitialSourceCaptureV1::new(role, 0));
+            let mut destination = Method46StoppedOwnerCgroupOriginalV1::new();
+
+            assert!(
+                source
+                    .observe_stopped_owner_cgroup_once_v1(
+                        Method46StoppedOwnerCgroupV1::Controller,
+                        &mut destination,
+                    )
+                    .is_err()
+            );
+            assert!(
+                source
+                    .observe_stopped_owner_cgroup_owed_once_v1(
+                        Method46StoppedOwnerCgroupV1::Controller,
+                        &mut destination,
+                    )
+                    .is_err()
+            );
+
+            assert!(source.original.hierarchy.is_none());
+            assert!(destination.failure_v1().is_none());
+            assert!(!destination.is_empty_or_absent_data_v1());
+            assert!(source.failure_v1().is_some());
+        }
+    }
 
     #[test]
     fn manual_role_selection_cannot_supply_a_source_or_startup_descriptors() {

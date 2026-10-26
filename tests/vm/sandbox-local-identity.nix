@@ -180,6 +180,7 @@ in
 
       run_tests ${fixtures}/bin/aos_sandbox_linux cgroup::tests::real_readonly_hierarchy_resolves_exact_current_membership
       run_tests ${fixtures}/bin/aos_sandbox_linux cgroup::tests::retained_population_distinguishes_empty_retired_and_recreated_cgroups
+      run_tests ${fixtures}/bin/aos_sandbox_linux cgroup::method46_stopped_owner::kernel_tests::fixed_stopped_owners_retain_absence_empty_and_recursive_population exact
       run_tests ${fixtures}/bin/aos_sandbox_linux pidfd::tests::cross_uid_pidfd_liveness_does_not_require_signal_permission
       run_tests ${fixtures}/bin/aos_sandbox_linux seqpacket::descriptor_subject::tests::
       run_tests ${fixtures}/bin/aos_sandbox runtime_scope::kernel_tests::
