@@ -9,7 +9,7 @@ use std::{
     task::{Poll, Waker},
 };
 
-use anyhow::{Result, ensure};
+use anyhow::{ensure, Result};
 
 /// One-use transfers of actual reserved source capacity within the same pool.
 pub(crate) mod transfer;
@@ -314,15 +314,35 @@ pub(crate) async fn acquire_class_checked<F: Fn() -> Result<()>>(
 
     #[cfg(target_arch = "wasm32")]
     {
-        let mut pending = Box::pin(pending);
-        loop {
-            // Runtime I/O keeps a capacity-only waiter alive and checks its
-            // original cutoff while an unrelated provider request is pending.
-            let tick = Box::pin(worker::Delay::from(std::time::Duration::from_millis(50)));
-            match futures_util::future::select(pending, tick).await {
-                futures_util::future::Either::Left((result, _)) => return result,
-                futures_util::future::Either::Right((_, next)) => pending = next,
-            }
+        let phase = match class {
+            Class::Foreground => super::observation::TimingPhase::ProviderForegroundCapacity,
+            Class::Bulk => super::observation::TimingPhase::ProviderBulkCapacity,
+            Class::Metadata => super::observation::TimingPhase::ProviderMetadataCapacity,
+        };
+        super::observation::timed(phase, poll_with_runtime_ticks(pending, worker::Delay::from))
+            .await
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+async fn poll_with_runtime_ticks<F, T>(
+    pending: F,
+    mut tick: impl FnMut(std::time::Duration) -> T,
+) -> F::Output
+where
+    F: std::future::Future,
+    T: std::future::Future<Output = ()>,
+{
+    let mut pending = Box::pin(pending);
+    loop {
+        // Runtime I/O keeps the wait in its original context and repeats the
+        // caller's cutoff check when another object releases provider capacity.
+        // Short metadata requests must not leave an eligible FIFO head asleep
+        // for tens of milliseconds after its provider slot becomes available.
+        let timer = Box::pin(tick(std::time::Duration::from_millis(5)));
+        match futures_util::future::select(pending, timer).await {
+            futures_util::future::Either::Left((result, _)) => return result,
+            futures_util::future::Either::Right((_, next)) => pending = next,
         }
     }
 }
@@ -358,6 +378,42 @@ mod tests {
     use std::{future::Future as _, task::Context};
 
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn runtime_tick_reuses_released_capacity_without_a_foreign_context_wakeup() {
+        use std::time::Duration;
+
+        configure(3).unwrap();
+        let occupied = acquire_class(3, Class::Foreground).await.unwrap();
+        let mut acquisition = Box::pin(acquire_class(1, Class::Metadata));
+        let without_foreign_wakeup = futures_util::future::poll_fn(|_| {
+            let waker = futures_util::task::noop_waker();
+            acquisition.as_mut().poll(&mut Context::from_waker(&waker))
+        });
+        let waiting = poll_with_runtime_ticks(without_foreign_wakeup, tokio::time::sleep);
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            drop(occupied);
+        };
+
+        // Only the waiter's own timer can resume it after the foreign release.
+        // A short metadata operation should not lose its remaining request
+        // window while the entire provider pool is already idle.
+        let (permit, ()) = tokio::select! {
+            biased;
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {
+                panic!("idle capacity was not reused within the metadata request window");
+            }
+            result = futures_util::future::join(waiting, release) => result,
+        };
+        let permit = permit.unwrap();
+
+        assert_eq!(observation().active, 1);
+        assert_eq!(observation().peak_active, 3);
+        drop(permit);
+        assert_eq!(observation().active, 0);
+        configure(2).unwrap();
+    }
 
     #[tokio::test]
     async fn metadata_borrows_idle_capacity_without_exceeding_the_same_total() {

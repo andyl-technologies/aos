@@ -185,6 +185,9 @@ pub(crate) fn digest(value: &str) -> String {
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy)]
 pub(crate) enum TimingPhase {
+    ProviderForegroundCapacity,
+    ProviderBulkCapacity,
+    ProviderMetadataCapacity,
     Qualification,
     OriginalAdmission,
     ProtectedMaterial,
@@ -214,6 +217,9 @@ pub(crate) async fn timed<T, E>(
     #[cfg(all(feature = "do-e2e", target_arch = "wasm32"))]
     {
         let phase = match phase {
+            TimingPhase::ProviderForegroundCapacity => "provider_foreground_capacity",
+            TimingPhase::ProviderBulkCapacity => "provider_bulk_capacity",
+            TimingPhase::ProviderMetadataCapacity => "provider_metadata_capacity",
             TimingPhase::Qualification => "qualification",
             TimingPhase::OriginalAdmission => "original_admission",
             TimingPhase::ProtectedMaterial => "protected_material",

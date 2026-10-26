@@ -112,5 +112,5 @@ zstd.workspace = true
 aos-module-docs.workspace = true
 aos-hub-native = { workspace = true, features = ["test-support"] }
 aos-hub-api.workspace = true
-# Drives the native unit test for the pure Worker request-routing seam.
-tokio = { workspace = true, features = ["macros", "rt"] }
+# Runs native request-routing and deterministic capacity-timer tests.
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
