@@ -10,6 +10,56 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Object-only baseline records and provider replay
+
+All 108 named baseline records now require an object at their defining
+Deserialize entry point: 53 Format records, 54 Transport records and the shared
+SourceBirth Limits record. One field roster defines both each public record and
+its private map decoder, preserving field attributes, literal JSON handling,
+required nullable fields and unknown-field refusal without an intermediate DOM
+or byte bank. Complete positional records also refuse after an internally
+tagged enum buffers its contents. Scalar newtypes and literal JSON arrays keep
+their existing grammar. Private extension and artifact records remain a separate
+audit; this is not a claim that every private format is object-only. The existing
+conservative typed-vector quote is unchanged.
+
+A new allocation-free original-controller DATA query measures the actual largest
+Provider-origin canonical response and its fresh clone backing. Controller-only
+history contributes zero; unresolved Provider history refuses the row. The
+measurement includes complete envelope extensions and survives a smaller later
+frame ceiling, fencing and revocation without changing original custody or
+journal debit. Later serialization must separately allow replacement-sequence
+growth. This supplies the Provider replay input to future SDK funding, without
+authorizing a Source handoff.
+
+Both codec configurations pass all three object-record controls, eight vector
+controls, twenty-four compact-runtime owner controls and two runtime-session
+controls. Both complete Transport suites pass 2,277 tests with twenty ignored;
+both Format suites pass forty-nine with one ignored, SourceBirth passes
+sixty-two, and both Engine suites pass 2,078 with thirty-four ignored. Five-package
+all-feature/all-target checks, thirty-file formatting, the Format doctest and
+all six architecture gates pass. Strict Format and SourceBirth Clippy are clean.
+Transport retains exactly the preceding four errors and 1,725 warnings; this is
+not a strict Transport lint pass.
+
+Required application test-target compilation passes with 185 artifacts across
+58 packages and 76 integration targets. All 761 selected frozen Rust/Cargo
+inputs match current and captured source. User-owned changes are preserved;
+this is not clean whole-PR or full RFC qualification.
+
+The rebuilt uninstrumented native inactive-lifecycle control passes in 701.48
+seconds with source-built provider/device companions, the unchanged
+size-optimized, no-DWARF test profile and sixty-second Initial deadline. It
+reaches InputOwners, CollectingGraph and InactiveRuntime, verifies exact and
+one-byte-short census restrictions, then retires and reclaims the actual kernel
+resources. This qualifies the inactive lifecycle only, without establishing
+Source18 handoff, Arm/Capture or full RFC completion.
+
+Complete SDK R/T/S, its dedicated metadata population profile, genuine
+same-Source one-use admission and funded ownership handoff, Source18/Node18
+physical histories, Native18 production selection, the five-phase recipe and
+the remaining full RFC work are unfinished.
+
 ## Process-group census races
 
 Process-group reclamation now retries the complete census when a task departs
@@ -64,9 +114,9 @@ both codecs yield 4,849,664 bytes (4.625 MiB) for completed vector backing and
 10,420,224 bytes (9.9375 MiB) during construction at a 65,536-byte frame ceiling.
 Failed-prefix initial reservations remain included. These are per-population
 vector components, excluding literal JSON, strings, Bytes and other SDK owners.
-Pricing positional records covers current decoder behavior; the RFC requires
-core wire objects, so nested positional-record refusal remains a separate
-conformance gap to close before full completion.
+That stage priced the then-current positional decoder behavior. The object-only
+baseline record work above now closes that named-record gap while preserving
+this conservative vector quote.
 
 Two additional allocation-free original-controller DATA queries price complete
 retry identity work and one fresh legacy response clone. The identity window

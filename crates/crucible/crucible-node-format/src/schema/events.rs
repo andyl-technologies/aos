@@ -68,188 +68,194 @@ pub enum PendingKind {
     NativeOperation,
 }
 
-/// Preserves publication and delivery coordinates with causal lineage.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Event {
-    /// Selects baseline event schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the event within its logical producer.
-    pub id: Id,
-    /// Identifies the original logical producer lane.
-    pub source: Endpoint,
-    /// Identifies the admitted consumer lane.
-    pub destination: Endpoint,
-    /// Locates the current publication or delivery stage.
-    pub position: Position,
-    /// Selects publication or delivery semantics.
-    pub stage: EventStage,
-    /// Retains the original publication coordinate.
-    pub publication_position: Position,
-    /// Locates admitted delivery, or explicit null before conversion.
-    #[serde(deserialize_with = "required_nullable")]
-    pub delivery_position: Option<Position>,
-    /// Identifies the unique captured producer sequence across all ports.
-    pub source_sequence: U64,
-    /// Lists same-time causal lineage; roots use an empty set.
-    pub causal_parent_ids: IdSet,
-    /// Binds exact payload bytes under the selected connection schema.
-    pub payload: ContentRef,
-    /// Binds original native receipt and input provenance.
-    pub provenance_ref: ContentRef,
-    /// Carries event extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Preserves publication and delivery coordinates with causal lineage.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct Event {
+        /// Selects baseline event schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the event within its logical producer.
+        pub id: Id,
+        /// Identifies the original logical producer lane.
+        pub source: Endpoint,
+        /// Identifies the admitted consumer lane.
+        pub destination: Endpoint,
+        /// Locates the current publication or delivery stage.
+        pub position: Position,
+        /// Selects publication or delivery semantics.
+        pub stage: EventStage,
+        /// Retains the original publication coordinate.
+        pub publication_position: Position,
+        /// Locates admitted delivery, or explicit null before conversion.
+        #[serde(deserialize_with = "required_nullable")]
+        pub delivery_position: Option<Position>,
+        /// Identifies the unique captured producer sequence across all ports.
+        pub source_sequence: U64,
+        /// Lists same-time causal lineage; roots use an empty set.
+        pub causal_parent_ids: IdSet,
+        /// Binds exact payload bytes under the selected connection schema.
+        pub payload: ContentRef,
+        /// Binds original native receipt and input provenance.
+        pub provenance_ref: ContentRef,
+        /// Carries event extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Commits to an ordered batch without changing consumer timestamps.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InputBatch {
-    /// Selects baseline input-batch schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the receiving execution owner.
-    pub execution_owner_id: Id,
-    /// Identifies the admitted input custody epoch.
-    pub input_epoch: Id,
-    /// Identifies this input batch.
-    pub batch_id: Id,
-    /// Orders batches within the admitted input stream.
-    pub batch_sequence: U64,
-    /// Preserves admitted event order.
-    pub events: Vec<Event>,
-    /// Carries input-batch extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Commits to an ordered batch without changing consumer timestamps.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct InputBatch {
+        /// Selects baseline input-batch schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the receiving execution owner.
+        pub execution_owner_id: Id,
+        /// Identifies the admitted input custody epoch.
+        pub input_epoch: Id,
+        /// Identifies this input batch.
+        pub batch_id: Id,
+        /// Orders batches within the admitted input stream.
+        pub batch_sequence: U64,
+        /// Preserves admitted event order.
+        pub events: Vec<Event>,
+        /// Carries input-batch extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Binds evidence justifying a closed input prefix.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InputAuthorization {
-    /// Selects baseline input-authorization schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the execution owner.
-    pub execution_owner_id: Id,
-    /// Identifies the live owner generation.
-    pub owner_generation: U64,
-    /// Identifies the authenticated input epoch.
-    pub input_epoch: Id,
-    /// Records input custody progress without proving absence by itself.
-    pub input_watermark: U64,
-    /// Locates the justified closed input prefix.
-    pub closed_input_prefix: Position,
-    /// Selects exclusive or inclusive prefix semantics.
-    pub closure_kind: ClosureKind,
-    /// Binds the complete arbitration policy.
-    pub arbitration_ref: ContentRef,
-    /// Binds complete due-input and upstream closure evidence.
-    pub bound_evidence_refs: Vec<ContentRef>,
-    /// Carries authorization extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Binds evidence justifying a closed input prefix.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct InputAuthorization {
+        /// Selects baseline input-authorization schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the execution owner.
+        pub execution_owner_id: Id,
+        /// Identifies the live owner generation.
+        pub owner_generation: U64,
+        /// Identifies the authenticated input epoch.
+        pub input_epoch: Id,
+        /// Records input custody progress without proving absence by itself.
+        pub input_watermark: U64,
+        /// Locates the justified closed input prefix.
+        pub closed_input_prefix: Position,
+        /// Selects exclusive or inclusive prefix semantics.
+        pub closure_kind: ClosureKind,
+        /// Binds the complete arbitration policy.
+        pub arbitration_ref: ContentRef,
+        /// Binds complete due-input and upstream closure evidence.
+        pub bound_evidence_refs: Vec<ContentRef>,
+        /// Carries authorization extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Binds ordered observations to complete owner and activation custody.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ObservationBatch {
-    /// Selects baseline observation-batch schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the producing execution owner.
-    pub execution_owner_id: Id,
-    /// Commits to complete owner compatibility.
-    pub owner_binding_hash: HashRef,
-    /// Commits to world compatibility.
-    pub world_binding_hash: HashRef,
-    /// Identifies the admitted activation.
-    pub activation_id: Id,
-    /// Identifies the committed world generation.
-    pub world_generation: U64,
-    /// Identifies the live owner generation.
-    pub owner_generation: U64,
-    /// Identifies the originating operation.
-    pub operation_id: Id,
-    /// Identifies the originating grant, or explicit null for a nongrant operation.
-    #[serde(deserialize_with = "required_nullable")]
-    pub grant_id: Option<Id>,
-    /// Starts the contiguous observation range, or zero for an empty batch.
-    pub first_sequence: U64,
-    /// Ends the contiguous observation range, or zero for an empty batch.
-    pub last_sequence: U64,
-    /// Preserves every observation in admitted order.
-    pub events: Vec<Event>,
-    /// States whether publication remains staged or is committed.
-    pub visibility: Visibility,
-    /// Binds physical measurements separately from modeled coordinates.
-    pub measurement_ref: ContentRef,
-    /// Carries observation-batch extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Binds ordered observations to complete owner and activation custody.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ObservationBatch {
+        /// Selects baseline observation-batch schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the producing execution owner.
+        pub execution_owner_id: Id,
+        /// Commits to complete owner compatibility.
+        pub owner_binding_hash: HashRef,
+        /// Commits to world compatibility.
+        pub world_binding_hash: HashRef,
+        /// Identifies the admitted activation.
+        pub activation_id: Id,
+        /// Identifies the committed world generation.
+        pub world_generation: U64,
+        /// Identifies the live owner generation.
+        pub owner_generation: U64,
+        /// Identifies the originating operation.
+        pub operation_id: Id,
+        /// Identifies the originating grant, or explicit null for a nongrant operation.
+        #[serde(deserialize_with = "required_nullable")]
+        pub grant_id: Option<Id>,
+        /// Starts the contiguous observation range, or zero for an empty batch.
+        pub first_sequence: U64,
+        /// Ends the contiguous observation range, or zero for an empty batch.
+        pub last_sequence: U64,
+        /// Preserves every observation in admitted order.
+        pub events: Vec<Event>,
+        /// States whether publication remains staged or is committed.
+        pub visibility: Visibility,
+        /// Binds physical measurements separately from modeled coordinates.
+        pub measurement_ref: ContentRef,
+        /// Carries observation-batch extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Binds complete pending custody to an owner generation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PendingInventory {
-    /// Selects baseline pending-inventory schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the execution owner.
-    pub execution_owner_id: Id,
-    /// Commits to complete owner compatibility.
-    pub owner_binding_hash: HashRef,
-    /// Commits to world compatibility.
-    pub world_binding_hash: HashRef,
-    /// Identifies activation, or explicit null before activation.
-    #[serde(deserialize_with = "required_nullable")]
-    pub activation_id: Option<Id>,
-    /// Identifies the selected world generation.
-    pub world_generation: U64,
-    /// Identifies scope, or explicit null only for unscoped stopped inventory.
-    #[serde(deserialize_with = "required_nullable")]
-    pub operation_id: Option<Id>,
-    /// Retains grant identity when grant-originated.
-    #[serde(deserialize_with = "required_nullable")]
-    pub grant_id: Option<Id>,
-    /// Identifies the live owner generation.
-    pub owner_generation: U64,
-    /// Orders inventory revisions.
-    pub revision: U64,
-    /// Claims complete inventory; false cannot justify absence.
-    pub complete: bool,
-    /// Records accepted input custody progress.
-    pub input_watermark: U64,
-    /// Identifies the input custody epoch.
-    pub input_epoch: Id,
-    /// Lists all pending entries by ID.
-    pub entries: Vec<PendingEntry>,
-    /// Carries inventory extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Binds complete pending custody to an owner generation.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct PendingInventory {
+        /// Selects baseline pending-inventory schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the execution owner.
+        pub execution_owner_id: Id,
+        /// Commits to complete owner compatibility.
+        pub owner_binding_hash: HashRef,
+        /// Commits to world compatibility.
+        pub world_binding_hash: HashRef,
+        /// Identifies activation, or explicit null before activation.
+        #[serde(deserialize_with = "required_nullable")]
+        pub activation_id: Option<Id>,
+        /// Identifies the selected world generation.
+        pub world_generation: U64,
+        /// Identifies scope, or explicit null only for unscoped stopped inventory.
+        #[serde(deserialize_with = "required_nullable")]
+        pub operation_id: Option<Id>,
+        /// Retains grant identity when grant-originated.
+        #[serde(deserialize_with = "required_nullable")]
+        pub grant_id: Option<Id>,
+        /// Identifies the live owner generation.
+        pub owner_generation: U64,
+        /// Orders inventory revisions.
+        pub revision: U64,
+        /// Claims complete inventory; false cannot justify absence.
+        pub complete: bool,
+        /// Records accepted input custody progress.
+        pub input_watermark: U64,
+        /// Identifies the input custody epoch.
+        pub input_epoch: Id,
+        /// Lists all pending entries by ID.
+        pub entries: Vec<PendingEntry>,
+        /// Carries inventory extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Identifies one pending input, output, timer, I/O, or native operation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PendingEntry {
-    /// Identifies the inventory entry.
-    pub id: Id,
-    /// Selects the pending state category.
-    pub kind: PendingKind,
-    /// Identifies actual custody ownership.
-    pub owner_id: Id,
-    /// Binds qualified deadline evidence or explicit unknown lookahead.
-    pub deadline: Bound,
-    /// Binds complete pending state using the selected facet schema.
-    pub state_ref: ContentRef,
-    /// Carries pending-entry extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Identifies one pending input, output, timer, I/O, or native operation.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct PendingEntry {
+        /// Identifies the inventory entry.
+        pub id: Id,
+        /// Selects the pending state category.
+        pub kind: PendingKind,
+        /// Identifies actual custody ownership.
+        pub owner_id: Id,
+        /// Binds qualified deadline evidence or explicit unknown lookahead.
+        pub deadline: Bound,
+        /// Binds complete pending state using the selected facet schema.
+        pub state_ref: ContentRef,
+        /// Carries pending-entry extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for Event {

@@ -70,94 +70,98 @@ pub enum Continuation {
     Unsupported,
 }
 
-/// Selects one independent operation facet with bound guarantees.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FacetSelection {
-    /// Names the selected operation facet.
-    pub id: Id,
-    /// Selects its positive interface edition.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub version: Version,
-    /// Binds the selected operation configuration and schemas.
-    pub configuration_ref: ContentRef,
-    /// Binds its explicit guarantee evidence and limitations.
-    pub guarantees_ref: ContentRef,
-    /// Carries identity-bearing facet extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Selects one independent operation facet with bound guarantees.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct FacetSelection {
+        /// Names the selected operation facet.
+        pub id: Id,
+        /// Selects its positive interface edition.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub version: Version,
+        /// Binds the selected operation configuration and schemas.
+        pub configuration_ref: ContentRef,
+        /// Binds its explicit guarantee evidence and limitations.
+        pub guarantees_ref: ContentRef,
+        /// Carries identity-bearing facet extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Selects timing mode and scheduling independently of guarantee axes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OperatingContract {
-    /// Selects the baseline operating schema, version 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Selects exact or quantized timing.
-    pub mode: OperatingMode,
-    /// Selects active, event-driven, or autonomous participation.
-    pub scheduling_role: SchedulingRole,
-    /// Names the admitted ordering profile, superdense-v1.
-    pub ordering_profile: String,
-    /// Binds the complete timing, budget, publication, and deadline policy.
-    pub policy_ref: ContentRef,
-    /// Specifies positive regular-grid resolution, or explicit null for nonuniform boundaries.
-    #[serde(deserialize_with = "required_nullable")]
-    pub resolution_ps: Option<U64>,
-    /// Specifies regular-grid phase, or explicit null with nonuniform resolution.
-    #[serde(deserialize_with = "required_nullable")]
-    pub phase_ps: Option<U64>,
-    /// Lists selected facets by ID and version.
-    pub facets: Vec<FacetSelection>,
-    /// Carries identity-bearing timing extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Selects timing mode and scheduling independently of guarantee axes.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct OperatingContract {
+        /// Selects the baseline operating schema, version 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Selects exact or quantized timing.
+        pub mode: OperatingMode,
+        /// Selects active, event-driven, or autonomous participation.
+        pub scheduling_role: SchedulingRole,
+        /// Names the admitted ordering profile, superdense-v1.
+        pub ordering_profile: String,
+        /// Binds the complete timing, budget, publication, and deadline policy.
+        pub policy_ref: ContentRef,
+        /// Specifies positive regular-grid resolution, or explicit null for nonuniform boundaries.
+        #[serde(deserialize_with = "required_nullable")]
+        pub resolution_ps: Option<U64>,
+        /// Specifies regular-grid phase, or explicit null with nonuniform resolution.
+        #[serde(deserialize_with = "required_nullable")]
+        pub phase_ps: Option<U64>,
+        /// Lists selected facets by ID and version.
+        pub facets: Vec<FacetSelection>,
+        /// Carries identity-bearing timing extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// States independent repeatability and preservation guarantees.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GuaranteeProfile {
-    /// Selects the baseline guarantee schema, version 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// States qualification or admitted nondeterminism.
-    pub repeatability: Repeatability,
-    /// States whether capture covers complete modeled or architectural state.
-    pub capture_scope: CaptureScope,
-    /// States the continuation guarantee within that scope.
-    pub continuation: Continuation,
-    /// Claims separately qualified restart from durable content.
-    pub durable_restart: bool,
-    /// Claims separately qualified branch isolation.
-    pub isolated_fork: bool,
-    /// Claims separately qualified replay conditional on recorded inputs.
-    pub conditional_replay: bool,
-    /// Binds scope restrictions and future exogenous-input limitations.
-    pub limitations_ref: ContentRef,
-    /// Carries identity-bearing guarantee extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// States independent repeatability and preservation guarantees.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct GuaranteeProfile {
+        /// Selects the baseline guarantee schema, version 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// States qualification or admitted nondeterminism.
+        pub repeatability: Repeatability,
+        /// States whether capture covers complete modeled or architectural state.
+        pub capture_scope: CaptureScope,
+        /// States the continuation guarantee within that scope.
+        pub continuation: Continuation,
+        /// Claims separately qualified restart from durable content.
+        pub durable_restart: bool,
+        /// Claims separately qualified branch isolation.
+        pub isolated_fork: bool,
+        /// Claims separately qualified replay conditional on recorded inputs.
+        pub conditional_replay: bool,
+        /// Binds scope restrictions and future exogenous-input limitations.
+        pub limitations_ref: ContentRef,
+        /// Carries identity-bearing guarantee extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Describes realized capabilities without implying unselected facets.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CapabilityProfile {
-    /// Selects the baseline capability schema, version 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Lists realized operation facets by ID and version.
-    pub facets: Vec<FacetSelection>,
-    /// Binds device, queue, DMA, IRQ, reset, and capture support.
-    pub devices_ref: ContentRef,
-    /// Binds mandatory host restrictions and allowed mode combinations.
-    pub requirements_ref: ContentRef,
-    /// Carries identity-bearing capability extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Describes realized capabilities without implying unselected facets.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct CapabilityProfile {
+        /// Selects the baseline capability schema, version 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Lists realized operation facets by ID and version.
+        pub facets: Vec<FacetSelection>,
+        /// Binds device, queue, DMA, IRQ, reset, and capture support.
+        pub devices_ref: ContentRef,
+        /// Binds mandatory host restrictions and allowed mode combinations.
+        pub requirements_ref: ContentRef,
+        /// Carries identity-bearing capability extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for FacetSelection {

@@ -5,6 +5,8 @@
 //! [`canonical`] implements strict JSON decoding and CNP/1 content identity.
 //! [`literal_json`] preserves arbitrary JSON field data during schema decoding
 //! without interpreting implementation-private object keys.
+//! The [`wire_record!`] macro requires objects at every named record boundary,
+//! including records nested in tagged schemas.
 //! These records describe claims; they do not authenticate custody, resolve
 //! referenced content, or establish that a provider is qualified.
 //!
@@ -17,6 +19,8 @@ pub mod literal_json;
 pub mod schema;
 pub mod time;
 pub mod values;
+
+mod wire_record;
 
 pub use schema::*;
 pub use time::*;

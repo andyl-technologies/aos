@@ -490,16 +490,17 @@ impl U64 {
     }
 }
 
-/// Commits to bytes in a domain-separated CNP/1 hash namespace.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HashRef {
-    /// Names the sole baseline digest algorithm, `blake3-256`.
-    pub algorithm: String,
-    /// Separates this identity from unrelated content constructions.
-    pub domain: String,
-    /// Contains exactly 64 lowercase hexadecimal characters.
-    pub digest: String,
+crate::wire_record! {
+    /// Commits to bytes in a domain-separated CNP/1 hash namespace.
+    #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+    pub struct HashRef {
+        /// Names the sole baseline digest algorithm, `blake3-256`.
+        pub algorithm: String,
+        /// Separates this identity from unrelated content constructions.
+        pub domain: String,
+        /// Contains exactly 64 lowercase hexadecimal characters.
+        pub digest: String,
+    }
 }
 
 impl HashRef {
@@ -531,16 +532,17 @@ impl Validate for HashRef {
     }
 }
 
-/// Identifies immutable portable content without granting access to it.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ContentRef {
-    /// Hashes the exact stored bytes in `cnp.blob.v1`.
-    pub hash: HashRef,
-    /// Declares the exact stored byte length.
-    pub length: U64,
-    /// Describes the content using bounded printable ASCII.
-    pub media_type: String,
+crate::wire_record! {
+    /// Identifies immutable portable content without granting access to it.
+    #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+    pub struct ContentRef {
+        /// Hashes the exact stored bytes in `cnp.blob.v1`.
+        pub hash: HashRef,
+        /// Declares the exact stored byte length.
+        pub length: U64,
+        /// Describes the content using bounded printable ASCII.
+        pub media_type: String,
+    }
 }
 
 impl ContentRef {

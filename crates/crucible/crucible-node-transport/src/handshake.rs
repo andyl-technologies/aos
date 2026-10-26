@@ -44,18 +44,19 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-/// Requests same-incarnation resumption without resetting retained identities.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResumeSession {
-    /// Identifies the surviving admitted session.
-    pub session_id: Id,
-    /// Identifies the surviving process incarnation and native custody.
-    pub incarnation_id: Id,
-    /// Contains the 32-byte secret issued by the previous admitted exchange.
-    pub resume_token: Bytes,
-    /// Lists all unresolved operation IDs in strict ASCII order.
-    pub unresolved_operation_ids: IdSet,
+crucible_node_format::wire_record! {
+    /// Requests same-incarnation resumption without resetting retained identities.
+    #[derive(Clone, PartialEq, Serialize)]
+    pub struct ResumeSession {
+        /// Identifies the surviving admitted session.
+        pub session_id: Id,
+        /// Identifies the surviving process incarnation and native custody.
+        pub incarnation_id: Id,
+        /// Contains the 32-byte secret issued by the previous admitted exchange.
+        pub resume_token: Bytes,
+        /// Lists all unresolved operation IDs in strict ASCII order.
+        pub unresolved_operation_ids: IdSet,
+    }
 }
 
 impl fmt::Debug for ResumeSession {
@@ -78,34 +79,35 @@ impl Validate for ResumeSession {
     }
 }
 
-/// Carries the sole initial or resumed pre-negotiation hello request.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HelloRequest {
-    /// Offers protocol version identifiers, including CNP/1.
-    pub versions: Vec<String>,
-    /// Names the intended admitted world session.
-    pub session_id: Id,
-    /// Contains exactly 32 unpredictable controller challenge bytes.
-    pub controller_nonce: Bytes,
-    /// Lists every required feature, including cnp.core/1.
-    pub required_features: IdSet,
-    /// Lists offered optional feature identifiers.
-    pub optional_features: IdSet,
-    /// Advertises positive controller receiving limits.
-    pub limits: Limits,
-    /// Contains exactly 32 secret bytes from the private host launch channel.
-    pub admission_token: Bytes,
-    /// Adds a negotiated resumption object only when resuming a live incarnation.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "optional_nonnull"
-    )]
-    pub resume_session: Option<ResumeSession>,
-    /// Carries explicitly negotiated hello extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Carries the sole initial or resumed pre-negotiation hello request.
+    #[derive(Clone, PartialEq, Serialize)]
+    pub struct HelloRequest {
+        /// Offers protocol version identifiers, including CNP/1.
+        pub versions: Vec<String>,
+        /// Names the intended admitted world session.
+        pub session_id: Id,
+        /// Contains exactly 32 unpredictable controller challenge bytes.
+        pub controller_nonce: Bytes,
+        /// Lists every required feature, including cnp.core/1.
+        pub required_features: IdSet,
+        /// Lists offered optional feature identifiers.
+        pub optional_features: IdSet,
+        /// Advertises positive controller receiving limits.
+        pub limits: Limits,
+        /// Contains exactly 32 secret bytes from the private host launch channel.
+        pub admission_token: Bytes,
+        /// Adds a negotiated resumption object only when resuming a live incarnation.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "optional_nonnull"
+        )]
+        pub resume_session: Option<ResumeSession>,
+        /// Carries explicitly negotiated hello extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl fmt::Debug for HelloRequest {
@@ -170,17 +172,18 @@ impl Validate for HelloRequest {
     }
 }
 
-/// Retains one requested unresolved operation without re-executing it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResumedOperation {
-    /// Identifies the original registered operation.
-    pub operation_id: Id,
-    /// Reports its retained state, including unresolved native uncertainty.
-    pub operation_state: OperationState,
-    /// Retains the original terminal response, or explicit null while nonterminal.
-    #[serde(deserialize_with = "crate::envelope::deserialize_literal_nullable_object")]
-    pub outcome: Nullable<Map<String, Value>>,
+crucible_node_format::wire_record! {
+    /// Retains one requested unresolved operation without re-executing it.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ResumedOperation {
+        /// Identifies the original registered operation.
+        pub operation_id: Id,
+        /// Reports its retained state, including unresolved native uncertainty.
+        pub operation_state: OperationState,
+        /// Retains the original terminal response, or explicit null while nonterminal.
+        #[serde(deserialize_with = "crate::envelope::deserialize_literal_nullable_object")]
+        pub outcome: Nullable<Map<String, Value>>,
+    }
 }
 
 impl Validate for ResumedOperation {
@@ -205,30 +208,31 @@ impl Validate for ResumedOperation {
     }
 }
 
-/// Carries negotiated wire claims that still require trusted host verification.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HelloResult {
-    /// Selects the common baseline version CNP/1.
-    pub version: String,
-    /// Echoes the admitted session identity.
-    pub session_id: Id,
-    /// Names the surviving measured provider incarnation.
-    pub incarnation_id: Id,
-    /// Echoes the controller's exact challenge bytes.
-    pub controller_nonce: Bytes,
-    /// Contains exactly 32 unpredictable provider challenge bytes.
-    pub provider_nonce: Bytes,
-    /// Lists the exact mutually selected features in ASCII order.
-    pub selected_features: IdSet,
-    /// Selects each smaller advertised receiving limit.
-    pub limits: Limits,
-    /// Returns a fresh 32-byte resume secret, or explicit null without resumption.
-    pub resume_token: Nullable<Bytes>,
-    /// Reports the implementation manifest without asserting host measurement.
-    pub provider_identity: ProviderManifest,
-    /// Lists exactly the requested retained operation records, or empty initially.
-    pub resumed_operations: Vec<ResumedOperation>,
+crucible_node_format::wire_record! {
+    /// Carries negotiated wire claims that still require trusted host verification.
+    #[derive(Clone, PartialEq, Serialize)]
+    pub struct HelloResult {
+        /// Selects the common baseline version CNP/1.
+        pub version: String,
+        /// Echoes the admitted session identity.
+        pub session_id: Id,
+        /// Names the surviving measured provider incarnation.
+        pub incarnation_id: Id,
+        /// Echoes the controller's exact challenge bytes.
+        pub controller_nonce: Bytes,
+        /// Contains exactly 32 unpredictable provider challenge bytes.
+        pub provider_nonce: Bytes,
+        /// Lists the exact mutually selected features in ASCII order.
+        pub selected_features: IdSet,
+        /// Selects each smaller advertised receiving limit.
+        pub limits: Limits,
+        /// Returns a fresh 32-byte resume secret, or explicit null without resumption.
+        pub resume_token: Nullable<Bytes>,
+        /// Reports the implementation manifest without asserting host measurement.
+        pub provider_identity: ProviderManifest,
+        /// Lists exactly the requested retained operation records, or empty initially.
+        pub resumed_operations: Vec<ResumedOperation>,
+    }
 }
 
 impl fmt::Debug for HelloResult {

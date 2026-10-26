@@ -19,26 +19,28 @@ pub const MAXIMUM_EXTENSION_NEGOTIATION_BYTES: usize = 1_048_576;
 /// Bounds the same complete original negotiated definition roster.
 pub use crucible_source_birth_data::profile::reference_packet::service::native_startup::hello_shapes::MAXIMUM_NEGOTIATED_EXTENSIONS;
 
-/// Offers exact required and optional extension definitions to one peer.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionOfferV1 {
-    /// Selects this closed negotiation contract's edition1.
-    pub format: U64,
-    /// Requires every exact definition; an incompatible tuple refuses Hello.
-    pub required: Vec<ExtensionSelection>,
-    /// Offers optional exact definitions without authorizing their semantics.
-    pub optional: Vec<ExtensionSelection>,
+crucible_node_format::wire_record! {
+    /// Offers exact required and optional extension definitions to one peer.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ExtensionOfferV1 {
+        /// Selects this closed negotiation contract's edition1.
+        pub format: U64,
+        /// Requires every exact definition; an incompatible tuple refuses Hello.
+        pub required: Vec<ExtensionSelection>,
+        /// Offers optional exact definitions without authorizing their semantics.
+        pub optional: Vec<ExtensionSelection>,
+    }
 }
 
-/// Returns every exact mutually selected definition explicitly.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionSelectionV1 {
-    /// Selects this closed negotiation contract's edition1.
-    pub format: U64,
-    /// Retains identifier, exact SemVer, schema digest and declaration reference.
-    pub selected: Vec<ExtensionSelection>,
+crucible_node_format::wire_record! {
+    /// Returns every exact mutually selected definition explicitly.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ExtensionSelectionV1 {
+        /// Selects this closed negotiation contract's edition1.
+        pub format: U64,
+        /// Retains identifier, exact SemVer, schema digest and declaration reference.
+        pub selected: Vec<ExtensionSelection>,
+    }
 }
 
 impl Validate for ExtensionOfferV1 {

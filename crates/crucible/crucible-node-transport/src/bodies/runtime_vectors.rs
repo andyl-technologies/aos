@@ -61,8 +61,9 @@ trait HeapShape {
 }
 
 // Each completed element contributes its own syntax, disjoint from nested
-// vector elements. Serde's borrowed Value struct visitor can also accept a
-// positional array: use that smaller separator/bracket budget for records.
+// vector elements. Records require objects. Keep the earlier, smaller positional
+// separator/bracket allowance as a conservative bound; tightening the grammar
+// does not grant a larger vector population or refund its funding component.
 // The defining schema controls below pin every selected field as required.
 trait VectorElement: HeapShape {
     const LOCAL_ENCODED_BYTES: usize;
@@ -80,8 +81,9 @@ trait RecordFields {
 macro_rules! record_vector_elements {
     ($($type:ty),+ $(,)?) => {$(
         impl VectorElement for $type {
-            // N required positional fields have N-1 separators and two
-            // brackets. No child value's syntax contributes to this budget.
+            // Every required object field has at least one key/separator byte.
+            // This retained lower bound also allows two container delimiters;
+            // child value syntax never contributes to the local budget.
             const LOCAL_ENCODED_BYTES: usize = <Self as RecordFields>::FIELDS.len() + 1;
         }
     )+};

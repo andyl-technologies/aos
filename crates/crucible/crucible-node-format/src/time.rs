@@ -40,16 +40,17 @@ impl<'de> Deserialize<'de> for Phase {
     }
 }
 
-/// Locates public work on the superdense-v1 coordinator timeline.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Position {
-    /// Measures the modeled instant in picoseconds.
-    pub time_ps: Tick,
-    /// Orders causal same-time reactions without advancing modeled time.
-    pub microstep: U64,
-    /// Orders control, publication, delivery, and reaction within a microstep.
-    pub phase: Phase,
+crate::wire_record! {
+    /// Locates public work on the superdense-v1 coordinator timeline.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize)]
+    pub struct Position {
+        /// Measures the modeled instant in picoseconds.
+        pub time_ps: Tick,
+        /// Orders causal same-time reactions without advancing modeled time.
+        pub microstep: U64,
+        /// Orders control, publication, delivery, and reaction within a microstep.
+        pub phase: Phase,
+    }
 }
 
 impl Position {
@@ -98,16 +99,17 @@ pub struct EventKey {
     pub source_sequence: U64,
 }
 
-/// Identifies one logical node port lane.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Endpoint {
-    /// Selects the admitted logical node.
-    pub node_id: Id,
-    /// Selects its stable port.
-    pub port_id: Id,
-    /// Selects the input or output lane.
-    pub lane_id: Id,
+crate::wire_record! {
+    /// Identifies one logical node port lane.
+    #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+    pub struct Endpoint {
+        /// Selects the admitted logical node.
+        pub node_id: Id,
+        /// Selects its stable port.
+        pub port_id: Id,
+        /// Selects the input or output lane.
+        pub lane_id: Id,
+    }
 }
 
 impl Validate for Endpoint {
@@ -130,18 +132,19 @@ pub enum BoundKind {
     Unknown,
 }
 
-/// Carries a lower-bound claim requiring separately qualified evidence.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Bound {
-    /// Selects the exact equality and activation semantics.
-    pub kind: BoundKind,
-    /// Locates an `at` or `after` bound; otherwise explicitly null.
-    #[serde(deserialize_with = "crate::schema::required_nullable")]
-    pub position: Option<Position>,
-    /// Binds proof content; unknown bounds have no evidence.
-    #[serde(deserialize_with = "crate::schema::required_nullable")]
-    pub evidence: Option<ContentRef>,
+crate::wire_record! {
+    /// Carries a lower-bound claim requiring separately qualified evidence.
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+    pub struct Bound {
+        /// Selects the exact equality and activation semantics.
+        pub kind: BoundKind,
+        /// Locates an `at` or `after` bound; otherwise explicitly null.
+        #[serde(deserialize_with = "crate::schema::required_nullable")]
+        pub position: Option<Position>,
+        /// Binds proof content; unknown bounds have no evidence.
+        #[serde(deserialize_with = "crate::schema::required_nullable")]
+        pub evidence: Option<ContentRef>,
+    }
 }
 
 impl Validate for Bound {

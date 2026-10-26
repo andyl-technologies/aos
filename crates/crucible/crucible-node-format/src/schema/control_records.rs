@@ -14,30 +14,31 @@ pub enum CleanupDisposition {
     Retained,
 }
 
-/// Binds accepted input batches and complete pending custody.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InputCustodyRecord {
-    /// Selects baseline control-record schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the receiving execution owner.
-    pub execution_owner_id: Id,
-    /// Identifies the admitted owner generation.
-    pub owner_generation: U64,
-    /// Identifies the input custody epoch.
-    pub input_epoch: Id,
-    /// Records accepted input progress.
-    pub input_watermark: U64,
-    /// Lists accepted complete input-batch identities.
-    pub batch_hashes: Vec<HashRef>,
-    /// Binds complete pending input state.
-    pub pending_inventory: ContentRef,
-    /// Binds complete qualified native proof content.
-    pub evidence_refs: Vec<ContentRef>,
-    /// Carries record extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Binds accepted input batches and complete pending custody.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct InputCustodyRecord {
+        /// Selects baseline control-record schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the receiving execution owner.
+        pub execution_owner_id: Id,
+        /// Identifies the admitted owner generation.
+        pub owner_generation: U64,
+        /// Identifies the input custody epoch.
+        pub input_epoch: Id,
+        /// Records accepted input progress.
+        pub input_watermark: U64,
+        /// Lists accepted complete input-batch identities.
+        pub batch_hashes: Vec<HashRef>,
+        /// Binds complete pending input state.
+        pub pending_inventory: ContentRef,
+        /// Binds complete qualified native proof content.
+        pub evidence_refs: Vec<ContentRef>,
+        /// Carries record extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for InputCustodyRecord {
@@ -73,28 +74,29 @@ impl Validate for InputCustodyRecord {
     }
 }
 
-/// Records actual physical gate closure beneath prepared custody.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ClosedGateRecord {
-    /// Selects baseline control-record schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the physically closed gate.
-    pub gate_id: Id,
-    /// Identifies authenticated prepared custody.
-    pub prepared_token: Id,
-    /// Lists every contained owner.
-    pub owner_ids: IdSet,
-    /// Must be true for this receipt kind.
-    pub gate_closed: bool,
-    /// Binds actual contained native activity.
-    pub physical_status_ref: ContentRef,
-    /// Binds complete qualified native proof content.
-    pub evidence_refs: Vec<ContentRef>,
-    /// Carries record extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Records actual physical gate closure beneath prepared custody.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ClosedGateRecord {
+        /// Selects baseline control-record schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the physically closed gate.
+        pub gate_id: Id,
+        /// Identifies authenticated prepared custody.
+        pub prepared_token: Id,
+        /// Lists every contained owner.
+        pub owner_ids: IdSet,
+        /// Must be true for this receipt kind.
+        pub gate_closed: bool,
+        /// Binds actual contained native activity.
+        pub physical_status_ref: ContentRef,
+        /// Binds complete qualified native proof content.
+        pub evidence_refs: Vec<ContentRef>,
+        /// Carries record extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for ClosedGateRecord {
@@ -119,32 +121,33 @@ impl Validate for ClosedGateRecord {
     }
 }
 
-/// Records complete owner readiness beneath a physically closed gate.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ActivationReadyRecord {
-    /// Selects baseline control-record schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the proposed activation.
-    pub activation_id: Id,
-    /// Identifies the proposed world generation.
-    pub world_generation: U64,
-    /// Identifies the closed gate.
-    pub gate_id: Id,
-    /// Identifies prepared custody.
-    pub prepared_token: Id,
-    /// Commits to complete world compatibility.
-    pub world_binding_hash: HashRef,
-    /// Lists every prepared owner.
-    pub owner_ids: IdSet,
-    /// Must be true; readiness does not open the gate.
-    pub gate_closed: bool,
-    /// Binds complete qualified native proof content.
-    pub evidence_refs: Vec<ContentRef>,
-    /// Carries record extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Records complete owner readiness beneath a physically closed gate.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ActivationReadyRecord {
+        /// Selects baseline control-record schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the proposed activation.
+        pub activation_id: Id,
+        /// Identifies the proposed world generation.
+        pub world_generation: U64,
+        /// Identifies the closed gate.
+        pub gate_id: Id,
+        /// Identifies prepared custody.
+        pub prepared_token: Id,
+        /// Commits to complete world compatibility.
+        pub world_binding_hash: HashRef,
+        /// Lists every prepared owner.
+        pub owner_ids: IdSet,
+        /// Must be true; readiness does not open the gate.
+        pub gate_closed: bool,
+        /// Binds complete qualified native proof content.
+        pub evidence_refs: Vec<ContentRef>,
+        /// Carries record extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for ActivationReadyRecord {
@@ -172,32 +175,33 @@ impl Validate for ActivationReadyRecord {
     }
 }
 
-/// Records unchanged modeled state and complete progress counters.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UnchangedCutRecord {
-    /// Selects baseline control-record schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Locates the unchanged modeled boundary.
-    pub cut: Position,
-    /// Records the unchanged coordinator ordinal.
-    pub event_ordinal: U64,
-    /// Commits to modeled state before capture preparation.
-    pub before_state_digest: HashRef,
-    /// Commits to the identical modeled state after preparation.
-    pub after_state_digest: HashRef,
-    /// Binds complete pre-capture retirement and native event counters.
-    pub before_progress_ref: ContentRef,
-    /// Binds complete post-capture retirement and native event counters.
-    pub after_progress_ref: ContentRef,
-    /// Lists every owner covered by the proof.
-    pub owner_ids: IdSet,
-    /// Binds complete qualified native proof content.
-    pub evidence_refs: Vec<ContentRef>,
-    /// Carries record extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Records unchanged modeled state and complete progress counters.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct UnchangedCutRecord {
+        /// Selects baseline control-record schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Locates the unchanged modeled boundary.
+        pub cut: Position,
+        /// Records the unchanged coordinator ordinal.
+        pub event_ordinal: U64,
+        /// Commits to modeled state before capture preparation.
+        pub before_state_digest: HashRef,
+        /// Commits to the identical modeled state after preparation.
+        pub after_state_digest: HashRef,
+        /// Binds complete pre-capture retirement and native event counters.
+        pub before_progress_ref: ContentRef,
+        /// Binds complete post-capture retirement and native event counters.
+        pub after_progress_ref: ContentRef,
+        /// Lists every owner covered by the proof.
+        pub owner_ids: IdSet,
+        /// Binds complete qualified native proof content.
+        pub evidence_refs: Vec<ContentRef>,
+        /// Carries record extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for UnchangedCutRecord {
@@ -226,27 +230,28 @@ impl Validate for UnchangedCutRecord {
     }
 }
 
-/// Records terminal resource disposition with explicit supervision custody.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CleanupRecord {
-    /// Selects baseline control-record schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Lists every owner covered by cleanup.
-    pub owner_ids: IdSet,
-    /// Enumerates all processes, mappings, files, descriptors, and external authority.
-    pub resource_inventory_ref: ContentRef,
-    /// Selects proven release, supervised quarantine, or retention.
-    pub disposition: CleanupDisposition,
-    /// Binds authenticated supervisor custody, required for quarantine.
-    #[serde(deserialize_with = "required_nullable")]
-    pub supervisor_receipt: Option<ContentRef>,
-    /// Binds complete qualified native proof content.
-    pub evidence_refs: Vec<ContentRef>,
-    /// Carries record extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Records terminal resource disposition with explicit supervision custody.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct CleanupRecord {
+        /// Selects baseline control-record schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Lists every owner covered by cleanup.
+        pub owner_ids: IdSet,
+        /// Enumerates all processes, mappings, files, descriptors, and external authority.
+        pub resource_inventory_ref: ContentRef,
+        /// Selects proven release, supervised quarantine, or retention.
+        pub disposition: CleanupDisposition,
+        /// Binds authenticated supervisor custody, required for quarantine.
+        #[serde(deserialize_with = "required_nullable")]
+        pub supervisor_receipt: Option<ContentRef>,
+        /// Binds complete qualified native proof content.
+        pub evidence_refs: Vec<ContentRef>,
+        /// Carries record extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for CleanupRecord {
@@ -278,30 +283,31 @@ impl Validate for CleanupRecord {
     }
 }
 
-/// Records host admission of exact artifacts, qualifications, and resource limits.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AdmissionRecord {
-    /// Selects baseline control-record schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the admitted realization.
-    pub realization_id: Id,
-    /// Lists admitted durable node-binding identities.
-    pub binding_hashes: Vec<HashRef>,
-    /// Commits to the admitted complete world.
-    pub world_binding_hash: HashRef,
-    /// Lists exact measured artifacts by ID.
-    pub measured_artifacts: Vec<ArtifactIdentity>,
-    /// Binds exact implementation and profile qualification.
-    pub qualification_refs: Vec<ContentRef>,
-    /// Records installed resource ceilings.
-    pub resource_limits: ResourceLimits,
-    /// Binds complete qualified native proof content.
-    pub evidence_refs: Vec<ContentRef>,
-    /// Carries record extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Records host admission of exact artifacts, qualifications, and resource limits.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct AdmissionRecord {
+        /// Selects baseline control-record schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the admitted realization.
+        pub realization_id: Id,
+        /// Lists admitted durable node-binding identities.
+        pub binding_hashes: Vec<HashRef>,
+        /// Commits to the admitted complete world.
+        pub world_binding_hash: HashRef,
+        /// Lists exact measured artifacts by ID.
+        pub measured_artifacts: Vec<ArtifactIdentity>,
+        /// Binds exact implementation and profile qualification.
+        pub qualification_refs: Vec<ContentRef>,
+        /// Records installed resource ceilings.
+        pub resource_limits: ResourceLimits,
+        /// Binds complete qualified native proof content.
+        pub evidence_refs: Vec<ContentRef>,
+        /// Carries record extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for AdmissionRecord {

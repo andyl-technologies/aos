@@ -21,21 +21,22 @@ pub enum EffectCertainty {
     Unknown,
 }
 
-/// Carries a bounded refusal without permitting replacement execution.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ErrorRecord {
-    /// Names a baseline error or explicitly negotiated extension code.
-    pub code: String,
-    /// Explains the refusal in at most 4096 UTF-8 bytes.
-    pub message: String,
-    /// States known effect certainty without inferring rollback.
-    pub effect: EffectCertainty,
-    /// Permits retry of the same identity only.
-    pub retryable: bool,
-    /// Carries bounded machine-readable metadata under negotiated schemas.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
-    pub details: Map<String, Value>,
+crucible_node_format::wire_record! {
+    /// Carries a bounded refusal without permitting replacement execution.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ErrorRecord {
+        /// Names a baseline error or explicitly negotiated extension code.
+        pub code: String,
+        /// Explains the refusal in at most 4096 UTF-8 bytes.
+        pub message: String,
+        /// States known effect certainty without inferring rollback.
+        pub effect: EffectCertainty,
+        /// Permits retry of the same identity only.
+        pub retryable: bool,
+        /// Carries bounded machine-readable metadata under negotiated schemas.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
+        pub details: Map<String, Value>,
+    }
 }
 
 impl Validate for ErrorRecord {
@@ -439,20 +440,21 @@ fn validate_result_identity(
     Ok(())
 }
 
-/// Carries bounded notification metadata without an authoritative result.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NotificationBody {
-    /// States currently reported operation progress.
-    pub operation_state: OperationState,
-    /// Reports an observation cursor without releasing staged output.
-    pub last_observation_sequence: U64,
-    /// Contains bounded notification details; poll retrieves actual evidence.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
-    pub details: Map<String, Value>,
-    /// Carries explicitly negotiated notification extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Carries bounded notification metadata without an authoritative result.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct NotificationBody {
+        /// States currently reported operation progress.
+        pub operation_state: OperationState,
+        /// Reports an observation cursor without releasing staged output.
+        pub last_observation_sequence: U64,
+        /// Contains bounded notification details; poll retrieves actual evidence.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
+        pub details: Map<String, Value>,
+        /// Carries explicitly negotiated notification extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for NotificationBody {

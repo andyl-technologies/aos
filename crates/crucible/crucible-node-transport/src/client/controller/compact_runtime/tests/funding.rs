@@ -5,6 +5,8 @@
 use super::*;
 use crate::retained_metadata::{MetadataObserver, requested_metadata_backing_storage_data};
 
+mod provider_replay;
+
 #[test]
 fn runtime_identity_query_preserves_original_history_and_survives_fencing() -> TestResult {
     let (mut handshake, mut original, mut peer, _) = fixture(256);

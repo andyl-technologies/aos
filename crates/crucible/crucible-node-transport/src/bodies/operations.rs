@@ -2,28 +2,29 @@
 
 use super::*;
 
-/// Represents the baseline `GrantContext` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GrantContext {
-    /// Carries the normative `grant_id` contract field.
-    pub grant_id: Id,
-    /// Carries the normative `participant_ids` contract field.
-    pub participant_ids: IdSet,
-    /// Carries the normative `realization_id` contract field.
-    pub realization_id: Id,
-    /// Identifies the admitted activation.
-    pub activation_id: Id,
-    /// Identifies the admitted world generation.
-    pub world_generation: U64,
-    /// Identifies the positive admitted owner generation.
-    pub owner_generation: U64,
-    /// Carries the normative `input_epoch` contract field.
-    pub input_epoch: Id,
-    /// Carries the normative `mode` contract field.
-    pub mode: OperatingMode,
-    /// Carries the normative `ordering_profile` contract field.
-    pub ordering_profile: String,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `GrantContext` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct GrantContext {
+        /// Carries the normative `grant_id` contract field.
+        pub grant_id: Id,
+        /// Carries the normative `participant_ids` contract field.
+        pub participant_ids: IdSet,
+        /// Carries the normative `realization_id` contract field.
+        pub realization_id: Id,
+        /// Identifies the admitted activation.
+        pub activation_id: Id,
+        /// Identifies the admitted world generation.
+        pub world_generation: U64,
+        /// Identifies the positive admitted owner generation.
+        pub owner_generation: U64,
+        /// Carries the normative `input_epoch` contract field.
+        pub input_epoch: Id,
+        /// Carries the normative `mode` contract field.
+        pub mode: OperatingMode,
+        /// Carries the normative `ordering_profile` contract field.
+        pub ordering_profile: String,
+    }
 }
 
 impl Validate for GrantContext {
@@ -39,38 +40,39 @@ impl Validate for GrantContext {
     }
 }
 
-/// Represents the baseline `ExactRunArguments` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExactRunArguments {
-    /// Carries the normative `grant_id` contract field.
-    pub grant_id: Id,
-    /// Carries the normative `participant_ids` contract field.
-    pub participant_ids: IdSet,
-    /// Carries the normative `realization_id` contract field.
-    pub realization_id: Id,
-    /// Identifies the admitted activation.
-    pub activation_id: Id,
-    /// Identifies the admitted world generation.
-    pub world_generation: U64,
-    /// Identifies the positive admitted owner generation.
-    pub owner_generation: U64,
-    /// Carries the normative `input_epoch` contract field.
-    pub input_epoch: Id,
-    /// Carries the normative `mode` contract field.
-    pub mode: OperatingMode,
-    /// Carries the normative `ordering_profile` contract field.
-    pub ordering_profile: String,
-    /// Carries the normative `start` contract field.
-    pub start: Position,
-    /// Carries the normative `limit` contract field.
-    pub limit: Position,
-    /// Carries the normative `boundary_policy` contract field.
-    pub boundary_policy: BoundaryPolicy,
-    /// Carries the normative `input_authorization` contract field.
-    pub input_authorization: ContentRef,
-    /// Carries the normative `input_watermark` contract field.
-    pub input_watermark: U64,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `ExactRunArguments` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ExactRunArguments {
+        /// Carries the normative `grant_id` contract field.
+        pub grant_id: Id,
+        /// Carries the normative `participant_ids` contract field.
+        pub participant_ids: IdSet,
+        /// Carries the normative `realization_id` contract field.
+        pub realization_id: Id,
+        /// Identifies the admitted activation.
+        pub activation_id: Id,
+        /// Identifies the admitted world generation.
+        pub world_generation: U64,
+        /// Identifies the positive admitted owner generation.
+        pub owner_generation: U64,
+        /// Carries the normative `input_epoch` contract field.
+        pub input_epoch: Id,
+        /// Carries the normative `mode` contract field.
+        pub mode: OperatingMode,
+        /// Carries the normative `ordering_profile` contract field.
+        pub ordering_profile: String,
+        /// Carries the normative `start` contract field.
+        pub start: Position,
+        /// Carries the normative `limit` contract field.
+        pub limit: Position,
+        /// Carries the normative `boundary_policy` contract field.
+        pub boundary_policy: BoundaryPolicy,
+        /// Carries the normative `input_authorization` contract field.
+        pub input_authorization: ContentRef,
+        /// Carries the normative `input_watermark` contract field.
+        pub input_watermark: U64,
+    }
 }
 
 impl Validate for ExactRunArguments {
@@ -95,42 +97,43 @@ impl Validate for ExactRunArguments {
     }
 }
 
-/// Represents the baseline `QuantumBeginArguments` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QuantumBeginArguments {
-    /// Carries the normative `grant_id` contract field.
-    pub grant_id: Id,
-    /// Carries the normative `participant_ids` contract field.
-    pub participant_ids: IdSet,
-    /// Carries the normative `realization_id` contract field.
-    pub realization_id: Id,
-    /// Identifies the admitted activation.
-    pub activation_id: Id,
-    /// Identifies the admitted world generation.
-    pub world_generation: U64,
-    /// Identifies the positive admitted owner generation.
-    pub owner_generation: U64,
-    /// Carries the normative `input_epoch` contract field.
-    pub input_epoch: Id,
-    /// Carries the normative `mode` contract field.
-    pub mode: OperatingMode,
-    /// Carries the normative `ordering_profile` contract field.
-    pub ordering_profile: String,
-    /// Carries the normative `quantum_index` contract field.
-    pub quantum_index: U64,
-    /// Carries the normative `from_ps` contract field.
-    pub from_ps: Tick,
-    /// Carries the normative `until_ps` contract field.
-    pub until_ps: Tick,
-    /// Carries the normative `input_batch` contract field.
-    pub input_batch: ContentRef,
-    /// Carries the normative `input_watermark` contract field.
-    pub input_watermark: U64,
-    /// Commits to the exact admitted timing policy.
-    pub policy_hash: HashRef,
-    /// Carries the normative `wall_budget_ns` contract field.
-    pub wall_budget_ns: U64,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `QuantumBeginArguments` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct QuantumBeginArguments {
+        /// Carries the normative `grant_id` contract field.
+        pub grant_id: Id,
+        /// Carries the normative `participant_ids` contract field.
+        pub participant_ids: IdSet,
+        /// Carries the normative `realization_id` contract field.
+        pub realization_id: Id,
+        /// Identifies the admitted activation.
+        pub activation_id: Id,
+        /// Identifies the admitted world generation.
+        pub world_generation: U64,
+        /// Identifies the positive admitted owner generation.
+        pub owner_generation: U64,
+        /// Carries the normative `input_epoch` contract field.
+        pub input_epoch: Id,
+        /// Carries the normative `mode` contract field.
+        pub mode: OperatingMode,
+        /// Carries the normative `ordering_profile` contract field.
+        pub ordering_profile: String,
+        /// Carries the normative `quantum_index` contract field.
+        pub quantum_index: U64,
+        /// Carries the normative `from_ps` contract field.
+        pub from_ps: Tick,
+        /// Carries the normative `until_ps` contract field.
+        pub until_ps: Tick,
+        /// Carries the normative `input_batch` contract field.
+        pub input_batch: ContentRef,
+        /// Carries the normative `input_watermark` contract field.
+        pub input_watermark: U64,
+        /// Commits to the exact admitted timing policy.
+        pub policy_hash: HashRef,
+        /// Carries the normative `wall_budget_ns` contract field.
+        pub wall_budget_ns: U64,
+    }
 }
 
 impl Validate for QuantumBeginArguments {
@@ -154,14 +157,15 @@ impl Validate for QuantumBeginArguments {
     }
 }
 
-/// Represents the baseline `PauseArguments` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PauseArguments {
-    /// Carries the normative `participant_ids` contract field.
-    pub participant_ids: IdSet,
-    /// Carries the normative `reason` contract field.
-    pub reason: Id,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `PauseArguments` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct PauseArguments {
+        /// Carries the normative `participant_ids` contract field.
+        pub participant_ids: IdSet,
+        /// Carries the normative `reason` contract field.
+        pub reason: Id,
+    }
 }
 
 impl Validate for PauseArguments {
@@ -171,24 +175,25 @@ impl Validate for PauseArguments {
     }
 }
 
-/// Represents the baseline `CaptureArguments` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CaptureArguments {
-    /// Carries the normative `capture_id` contract field.
-    pub capture_id: Id,
-    /// Carries the normative `participant_ids` contract field.
-    pub participant_ids: IdSet,
-    /// Carries the normative `cut_id` contract field.
-    pub cut_id: Id,
-    /// Carries the normative `cut` contract field.
-    pub cut: Position,
-    /// Carries the normative `event_ordinal` contract field.
-    pub event_ordinal: U64,
-    /// Carries the normative `ordering_profile` contract field.
-    pub ordering_profile: String,
-    /// Carries the normative `preservation_contract` contract field.
-    pub preservation_contract: Id,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `CaptureArguments` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct CaptureArguments {
+        /// Carries the normative `capture_id` contract field.
+        pub capture_id: Id,
+        /// Carries the normative `participant_ids` contract field.
+        pub participant_ids: IdSet,
+        /// Carries the normative `cut_id` contract field.
+        pub cut_id: Id,
+        /// Carries the normative `cut` contract field.
+        pub cut: Position,
+        /// Carries the normative `event_ordinal` contract field.
+        pub event_ordinal: U64,
+        /// Carries the normative `ordering_profile` contract field.
+        pub ordering_profile: String,
+        /// Carries the normative `preservation_contract` contract field.
+        pub preservation_contract: Id,
+    }
 }
 
 impl Validate for CaptureArguments {
@@ -202,20 +207,21 @@ impl Validate for CaptureArguments {
     }
 }
 
-/// Represents the baseline `PrepareRestoreArguments` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PrepareRestoreArguments {
-    /// Carries the normative `transaction_id` contract field.
-    pub transaction_id: Id,
-    /// Carries the normative `capture_manifest` contract field.
-    pub capture_manifest: ContentRef,
-    /// Carries the normative `expected_world_binding_hash` contract field.
-    pub expected_world_binding_hash: HashRef,
-    /// Carries the normative `expected_owner_binding_hash` contract field.
-    pub expected_owner_binding_hash: HashRef,
-    /// Carries the normative `destination_owner_ids` contract field.
-    pub destination_owner_ids: IdSet,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `PrepareRestoreArguments` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct PrepareRestoreArguments {
+        /// Carries the normative `transaction_id` contract field.
+        pub transaction_id: Id,
+        /// Carries the normative `capture_manifest` contract field.
+        pub capture_manifest: ContentRef,
+        /// Carries the normative `expected_world_binding_hash` contract field.
+        pub expected_world_binding_hash: HashRef,
+        /// Carries the normative `expected_owner_binding_hash` contract field.
+        pub expected_owner_binding_hash: HashRef,
+        /// Carries the normative `destination_owner_ids` contract field.
+        pub destination_owner_ids: IdSet,
+    }
 }
 
 impl Validate for PrepareRestoreArguments {
@@ -230,14 +236,15 @@ impl Validate for PrepareRestoreArguments {
     }
 }
 
-/// Represents the baseline `ShutdownArguments` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ShutdownArguments {
-    /// Carries the normative `participant_ids` contract field.
-    pub participant_ids: IdSet,
-    /// Carries the normative `reason` contract field.
-    pub reason: Id,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `ShutdownArguments` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ShutdownArguments {
+        /// Carries the normative `participant_ids` contract field.
+        pub participant_ids: IdSet,
+        /// Carries the normative `reason` contract field.
+        pub reason: Id,
+    }
 }
 
 impl Validate for ShutdownArguments {
@@ -247,24 +254,25 @@ impl Validate for ShutdownArguments {
     }
 }
 
-/// Represents the baseline `ExactRunResult` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExactRunResult {
-    /// Carries the normative `grant_id` contract field.
-    pub grant_id: Id,
-    /// Carries the normative `reached` contract field.
-    pub reached: Position,
-    /// Carries the normative `stop_reason` contract field.
-    pub stop_reason: StopReason,
-    /// Carries the normative `stop_receipt` contract field.
-    pub stop_receipt: ContentRef,
-    /// Carries the normative `observation_batch` contract field.
-    pub observation_batch: ContentRef,
-    /// Carries the normative `pending_inventory` contract field.
-    pub pending_inventory: ContentRef,
-    /// Carries the normative `next_attention` contract field.
-    pub next_attention: Bound,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `ExactRunResult` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ExactRunResult {
+        /// Carries the normative `grant_id` contract field.
+        pub grant_id: Id,
+        /// Carries the normative `reached` contract field.
+        pub reached: Position,
+        /// Carries the normative `stop_reason` contract field.
+        pub stop_reason: StopReason,
+        /// Carries the normative `stop_receipt` contract field.
+        pub stop_receipt: ContentRef,
+        /// Carries the normative `observation_batch` contract field.
+        pub observation_batch: ContentRef,
+        /// Carries the normative `pending_inventory` contract field.
+        pub pending_inventory: ContentRef,
+        /// Carries the normative `next_attention` contract field.
+        pub next_attention: Bound,
+    }
 }
 
 impl Validate for ExactRunResult {
@@ -278,24 +286,25 @@ impl Validate for ExactRunResult {
     }
 }
 
-/// Represents the baseline `QuantumBeginResult` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QuantumBeginResult {
-    /// Carries the normative `grant_id` contract field.
-    pub grant_id: Id,
-    /// Carries the normative `quantum_index` contract field.
-    pub quantum_index: U64,
-    /// Carries the normative `stop_receipt` contract field.
-    pub stop_receipt: ContentRef,
-    /// Carries the normative `observation_batch` contract field.
-    pub observation_batch: ContentRef,
-    /// Carries the normative `pending_inventory` contract field.
-    pub pending_inventory: ContentRef,
-    /// Carries the normative `budget_outcome` contract field.
-    pub budget_outcome: BudgetOutcome,
-    /// Carries the normative `physical_measurement_ref` contract field.
-    pub physical_measurement_ref: ContentRef,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `QuantumBeginResult` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct QuantumBeginResult {
+        /// Carries the normative `grant_id` contract field.
+        pub grant_id: Id,
+        /// Carries the normative `quantum_index` contract field.
+        pub quantum_index: U64,
+        /// Carries the normative `stop_receipt` contract field.
+        pub stop_receipt: ContentRef,
+        /// Carries the normative `observation_batch` contract field.
+        pub observation_batch: ContentRef,
+        /// Carries the normative `pending_inventory` contract field.
+        pub pending_inventory: ContentRef,
+        /// Carries the normative `budget_outcome` contract field.
+        pub budget_outcome: BudgetOutcome,
+        /// Carries the normative `physical_measurement_ref` contract field.
+        pub physical_measurement_ref: ContentRef,
+    }
 }
 
 impl Validate for QuantumBeginResult {
@@ -308,18 +317,19 @@ impl Validate for QuantumBeginResult {
     }
 }
 
-/// Represents the baseline `PauseResult` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PauseResult {
-    /// Carries the normative `stop_receipt` contract field.
-    pub stop_receipt: ContentRef,
-    /// Carries the normative `physical_paused` contract field.
-    pub physical_paused: bool,
-    /// Carries the normative `reached` contract field.
-    pub reached: Nullable<Position>,
-    /// Carries the normative `pending_inventory` contract field.
-    pub pending_inventory: ContentRef,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `PauseResult` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct PauseResult {
+        /// Carries the normative `stop_receipt` contract field.
+        pub stop_receipt: ContentRef,
+        /// Carries the normative `physical_paused` contract field.
+        pub physical_paused: bool,
+        /// Carries the normative `reached` contract field.
+        pub reached: Nullable<Position>,
+        /// Carries the normative `pending_inventory` contract field.
+        pub pending_inventory: ContentRef,
+    }
 }
 
 impl Validate for PauseResult {
@@ -333,16 +343,17 @@ impl Validate for PauseResult {
     }
 }
 
-/// Represents the baseline `CaptureResult` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CaptureResult {
-    /// Carries the normative `capture_manifest` contract field.
-    pub capture_manifest: ContentRef,
-    /// Carries the normative `owner_state_refs` contract field.
-    pub owner_state_refs: Vec<ContentRef>,
-    /// Carries the normative `unchanged_cut_receipt` contract field.
-    pub unchanged_cut_receipt: ContentRef,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `CaptureResult` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct CaptureResult {
+        /// Carries the normative `capture_manifest` contract field.
+        pub capture_manifest: ContentRef,
+        /// Carries the normative `owner_state_refs` contract field.
+        pub owner_state_refs: Vec<ContentRef>,
+        /// Carries the normative `unchanged_cut_receipt` contract field.
+        pub unchanged_cut_receipt: ContentRef,
+    }
 }
 
 impl Validate for CaptureResult {
@@ -361,24 +372,25 @@ impl Validate for CaptureResult {
     }
 }
 
-/// Represents the baseline `PrepareRestoreResult` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PrepareRestoreResult {
-    /// Carries the normative `transaction_id` contract field.
-    pub transaction_id: Id,
-    /// Carries the normative `prepared_token` contract field.
-    pub prepared_token: Id,
-    /// Commits to complete world compatibility.
-    pub world_binding_hash: HashRef,
-    /// Carries the normative `owner_binding_hash` contract field.
-    pub owner_binding_hash: HashRef,
-    /// Carries the normative `staged_owner_ids` contract field.
-    pub staged_owner_ids: IdSet,
-    /// Carries the normative `closed_gate_receipt` contract field.
-    pub closed_gate_receipt: ContentRef,
-    /// Carries the normative `validated_manifest` contract field.
-    pub validated_manifest: ContentRef,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `PrepareRestoreResult` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct PrepareRestoreResult {
+        /// Carries the normative `transaction_id` contract field.
+        pub transaction_id: Id,
+        /// Carries the normative `prepared_token` contract field.
+        pub prepared_token: Id,
+        /// Commits to complete world compatibility.
+        pub world_binding_hash: HashRef,
+        /// Carries the normative `owner_binding_hash` contract field.
+        pub owner_binding_hash: HashRef,
+        /// Carries the normative `staged_owner_ids` contract field.
+        pub staged_owner_ids: IdSet,
+        /// Carries the normative `closed_gate_receipt` contract field.
+        pub closed_gate_receipt: ContentRef,
+        /// Carries the normative `validated_manifest` contract field.
+        pub validated_manifest: ContentRef,
+    }
 }
 
 impl Validate for PrepareRestoreResult {
@@ -394,20 +406,21 @@ impl Validate for PrepareRestoreResult {
     }
 }
 
-/// Represents the baseline `ShutdownResult` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ShutdownResult {
-    /// Carries the normative `observation_batch` contract field.
-    pub observation_batch: ContentRef,
-    /// Carries the normative `pending_inventory` contract field.
-    pub pending_inventory: ContentRef,
-    /// Carries the normative `stopped` contract field.
-    pub stopped: bool,
-    /// Carries the normative `reaped` contract field.
-    pub reaped: bool,
-    /// Carries the normative `cleanup_receipt` contract field.
-    pub cleanup_receipt: ContentRef,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `ShutdownResult` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ShutdownResult {
+        /// Carries the normative `observation_batch` contract field.
+        pub observation_batch: ContentRef,
+        /// Carries the normative `pending_inventory` contract field.
+        pub pending_inventory: ContentRef,
+        /// Carries the normative `stopped` contract field.
+        pub stopped: bool,
+        /// Carries the normative `reaped` contract field.
+        pub reaped: bool,
+        /// Carries the normative `cleanup_receipt` contract field.
+        pub cleanup_receipt: ContentRef,
+    }
 }
 
 impl Validate for ShutdownResult {

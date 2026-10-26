@@ -10,22 +10,23 @@
 
 use super::*;
 
-/// Selects one exact published Semantic Version, including prerelease and build.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SemanticVersion {
-    /// Selects the canonical nonnegative major version.
-    pub major: U64,
-    /// Selects the canonical nonnegative minor version.
-    pub minor: U64,
-    /// Selects the canonical nonnegative patch version.
-    pub patch: U64,
-    /// Retains exact prerelease identifiers; numeric identifiers have no leading zero.
-    #[serde(deserialize_with = "required_nullable")]
-    pub prerelease: Option<String>,
-    /// Retains exact build identifiers as part of this published content selection.
-    #[serde(deserialize_with = "required_nullable")]
-    pub build: Option<String>,
+crate::wire_record! {
+    /// Selects one exact published Semantic Version, including prerelease and build.
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+    pub struct SemanticVersion {
+        /// Selects the canonical nonnegative major version.
+        pub major: U64,
+        /// Selects the canonical nonnegative minor version.
+        pub minor: U64,
+        /// Selects the canonical nonnegative patch version.
+        pub patch: U64,
+        /// Retains exact prerelease identifiers; numeric identifiers have no leading zero.
+        #[serde(deserialize_with = "required_nullable")]
+        pub prerelease: Option<String>,
+        /// Retains exact build identifiers as part of this published content selection.
+        #[serde(deserialize_with = "required_nullable")]
+        pub build: Option<String>,
+    }
 }
 
 impl Validate for SemanticVersion {
@@ -55,14 +56,15 @@ impl Validate for SemanticVersion {
     }
 }
 
-/// Identifies the configured namespace authority and immutable publication origin.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionNamespaceOwner {
-    /// Names the authority whose control must be independently authenticated.
-    pub authority: Id,
-    /// Binds the published namespace authorization; the reference is not proof.
-    pub publication_origin: ContentRef,
+crate::wire_record! {
+    /// Identifies the configured namespace authority and immutable publication origin.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ExtensionNamespaceOwner {
+        /// Names the authority whose control must be independently authenticated.
+        pub authority: Id,
+        /// Binds the published namespace authorization; the reference is not proof.
+        pub publication_origin: ContentRef,
+    }
 }
 
 impl Validate for ExtensionNamespaceOwner {
@@ -71,18 +73,19 @@ impl Validate for ExtensionNamespaceOwner {
     }
 }
 
-/// Identifies one exact selected definition independently of a feature-name suffix.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionSelection {
-    /// Binds the complete declaration bytes under `cnp.blob.v1`.
-    pub declaration: ContentRef,
-    /// Names the exact owner-controlled semantic identifier.
-    pub identifier: Id,
-    /// Selects the exact published version, including prerelease/build identity.
-    pub semantic_version: SemanticVersion,
-    /// Equals the referenced schema definition's exact `cnp.blob.v1` content hash.
-    pub schema_digest: HashRef,
+crate::wire_record! {
+    /// Identifies one exact selected definition independently of a feature-name suffix.
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+    pub struct ExtensionSelection {
+        /// Binds the complete declaration bytes under `cnp.blob.v1`.
+        pub declaration: ContentRef,
+        /// Names the exact owner-controlled semantic identifier.
+        pub identifier: Id,
+        /// Selects the exact published version, including prerelease/build identity.
+        pub semantic_version: SemanticVersion,
+        /// Equals the referenced schema definition's exact `cnp.blob.v1` content hash.
+        pub schema_digest: HashRef,
+    }
 }
 
 impl Validate for ExtensionSelection {
@@ -246,27 +249,28 @@ pub enum ExtensionLocation {
     ResourceLimits,
 }
 
-/// Restricts one containing location independently of implementation qualification.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionApplicability {
-    /// Names the exact containing record kind.
-    pub location: ExtensionLocation,
-    /// Restricts operation kinds for method-scoped use; empty adds no operation.
-    pub operation_kinds: IdSet,
-    /// Restricts the lane/event direction when applicable.
-    #[serde(deserialize_with = "required_nullable")]
-    pub direction: Option<Direction>,
-    /// Restricts logical roles; empty delegates restrictions to the installed handler.
-    pub roles: IdSet,
-    /// Restricts actual modes in exact-before-quantized order.
-    pub modes: Vec<OperatingMode>,
-    /// Restricts selected facets without advertising additional facet support.
-    pub facets: IdSet,
-    /// Restricts exact port identifiers when applicable.
-    pub ports: IdSet,
-    /// Restricts exact lane identifiers when applicable.
-    pub lanes: IdSet,
+crate::wire_record! {
+    /// Restricts one containing location independently of implementation qualification.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ExtensionApplicability {
+        /// Names the exact containing record kind.
+        pub location: ExtensionLocation,
+        /// Restricts operation kinds for method-scoped use; empty adds no operation.
+        pub operation_kinds: IdSet,
+        /// Restricts the lane/event direction when applicable.
+        #[serde(deserialize_with = "required_nullable")]
+        pub direction: Option<Direction>,
+        /// Restricts logical roles; empty delegates restrictions to the installed handler.
+        pub roles: IdSet,
+        /// Restricts actual modes in exact-before-quantized order.
+        pub modes: Vec<OperatingMode>,
+        /// Restricts selected facets without advertising additional facet support.
+        pub facets: IdSet,
+        /// Restricts exact port identifiers when applicable.
+        pub ports: IdSet,
+        /// Restricts exact lane identifiers when applicable.
+        pub lanes: IdSet,
+    }
 }
 
 impl Validate for ExtensionApplicability {
@@ -295,57 +299,59 @@ impl Validate for ExtensionApplicability {
     }
 }
 
-/// Defines explicit finite extension allowances; zero provides no allowance.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionLimits {
-    /// Bounds one corresponding message or extension parameter body.
-    pub maximum_message_bytes: U64,
-    /// Bounds simultaneously retained objects.
-    pub maximum_objects: U64,
-    /// Bounds total receiving and retained allocation.
-    pub maximum_allocation_bytes: U64,
-    /// Bounds retained modeled events.
-    pub maximum_pending_events: U64,
-    /// Bounds retained original operations and retries.
-    pub maximum_operations: U64,
+crate::wire_record! {
+    /// Defines explicit finite extension allowances; zero provides no allowance.
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+    pub struct ExtensionLimits {
+        /// Bounds one corresponding message or extension parameter body.
+        pub maximum_message_bytes: U64,
+        /// Bounds simultaneously retained objects.
+        pub maximum_objects: U64,
+        /// Bounds total receiving and retained allocation.
+        pub maximum_allocation_bytes: U64,
+        /// Bounds retained modeled events.
+        pub maximum_pending_events: U64,
+        /// Bounds retained original operations and retries.
+        pub maximum_operations: U64,
+    }
 }
 
-/// Publishes the complete independently implementable contract of one extension.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionDeclaration {
-    /// Selects the closed declaration format, independently of semantic version.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Names the exact owner-controlled semantic namespace.
-    pub identifier: Id,
-    /// Declares the namespace authority; host trust must authenticate it.
-    pub owner: ExtensionNamespaceOwner,
-    /// Selects the exact published Semantic Version.
-    pub semantic_version: SemanticVersion,
-    /// Identifies the complete installed parameter schema.
-    pub schema: SchemaRef,
-    /// Equals `schema.definition.hash`, not the hash of the schema-ref wrapper.
-    pub schema_digest: HashRef,
-    /// Binds the complete independently implementable specification.
-    pub specification: ContentRef,
-    /// Enumerates the exact complete dependency contracts in identifier order.
-    pub dependencies: Vec<ExtensionDependency>,
-    /// Names negotiated requirements without implying those features are available.
-    pub required_features: IdSet,
-    /// Enumerates one exact applicability clause per containing location.
-    pub applicability: Vec<ExtensionApplicability>,
-    /// Binds all timing, resolution, and causal-boundary obligations.
-    pub timing_effects: ContentRef,
-    /// Binds all state, ownership, preservation, and compatibility obligations.
-    pub state_effects: ContentRef,
-    /// Binds refusal, uncertain effects, retry, cancellation, and disposition.
-    pub error_behavior: ContentRef,
-    /// Defines finite receiving and retained-state allowances.
-    pub limits: ExtensionLimits,
-    /// Binds positive/negative qualification cases and their evidence scope.
-    pub conformance: ContentRef,
+crate::wire_record! {
+    /// Publishes the complete independently implementable contract of one extension.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ExtensionDeclaration {
+        /// Selects the closed declaration format, independently of semantic version.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Names the exact owner-controlled semantic namespace.
+        pub identifier: Id,
+        /// Declares the namespace authority; host trust must authenticate it.
+        pub owner: ExtensionNamespaceOwner,
+        /// Selects the exact published Semantic Version.
+        pub semantic_version: SemanticVersion,
+        /// Identifies the complete installed parameter schema.
+        pub schema: SchemaRef,
+        /// Equals `schema.definition.hash`, not the hash of the schema-ref wrapper.
+        pub schema_digest: HashRef,
+        /// Binds the complete independently implementable specification.
+        pub specification: ContentRef,
+        /// Enumerates the exact complete dependency contracts in identifier order.
+        pub dependencies: Vec<ExtensionDependency>,
+        /// Names negotiated requirements without implying those features are available.
+        pub required_features: IdSet,
+        /// Enumerates one exact applicability clause per containing location.
+        pub applicability: Vec<ExtensionApplicability>,
+        /// Binds all timing, resolution, and causal-boundary obligations.
+        pub timing_effects: ContentRef,
+        /// Binds all state, ownership, preservation, and compatibility obligations.
+        pub state_effects: ContentRef,
+        /// Binds refusal, uncertain effects, retry, cancellation, and disposition.
+        pub error_behavior: ContentRef,
+        /// Defines finite receiving and retained-state allowances.
+        pub limits: ExtensionLimits,
+        /// Binds positive/negative qualification cases and their evidence scope.
+        pub conformance: ContentRef,
+    }
 }
 
 impl Validate for ExtensionDeclaration {
@@ -402,15 +408,16 @@ impl Validate for ExtensionDeclaration {
     }
 }
 
-/// Binds exact selected definition and parameters inside an identity-bearing map.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExtensionUse {
-    /// Selects exact declaration/version/schema identities without implicit upgrades.
-    pub selection: ExtensionSelection,
-    /// Carries parameters checked against the actual installed schema and semantics.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_value")]
-    pub parameters: serde_json::Value,
+crate::wire_record! {
+    /// Binds exact selected definition and parameters inside an identity-bearing map.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ExtensionUse {
+        /// Selects exact declaration/version/schema identities without implicit upgrades.
+        pub selection: ExtensionSelection,
+        /// Carries parameters checked against the actual installed schema and semantics.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_value")]
+        pub parameters: serde_json::Value,
+    }
 }
 
 impl Validate for ExtensionUse {

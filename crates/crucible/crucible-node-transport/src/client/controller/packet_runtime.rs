@@ -8,6 +8,7 @@
 use super::*;
 
 mod identity;
+mod storage;
 
 pub use crate::bodies::PacketRuntimeRequest;
 

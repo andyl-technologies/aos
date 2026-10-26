@@ -2,22 +2,23 @@
 
 use super::*;
 
-/// Represents the baseline `DiscoverRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DiscoverRequest {
-    /// Carries the normative `profile_ids` contract field.
-    pub profile_ids: IdSet,
-    /// Carries the normative `cursor` contract field.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "optional_nonnull"
-    )]
-    pub cursor: Option<Id>,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `DiscoverRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct DiscoverRequest {
+        /// Carries the normative `profile_ids` contract field.
+        pub profile_ids: IdSet,
+        /// Carries the normative `cursor` contract field.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "optional_nonnull"
+        )]
+        pub cursor: Option<Id>,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for DiscoverRequest {
@@ -27,19 +28,20 @@ impl Validate for DiscoverRequest {
     }
 }
 
-/// Represents the baseline `AdmitRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AdmitRequest {
-    /// Carries the normative `bindings` contract field.
-    pub bindings: Vec<NodeBinding>,
-    /// Commits to complete world compatibility.
-    pub world_binding_hash: HashRef,
-    /// Carries the normative `admission_receipt` contract field.
-    pub admission_receipt: ContentRef,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `AdmitRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct AdmitRequest {
+        /// Carries the normative `bindings` contract field.
+        pub bindings: Vec<NodeBinding>,
+        /// Commits to complete world compatibility.
+        pub world_binding_hash: HashRef,
+        /// Carries the normative `admission_receipt` contract field.
+        pub admission_receipt: ContentRef,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for AdmitRequest {
@@ -59,27 +61,28 @@ impl Validate for AdmitRequest {
     }
 }
 
-/// Represents the baseline `InputRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InputRequest {
-    /// Commits to the selected complete owner or node binding.
-    pub binding_hash: HashRef,
-    /// Identifies the positive admitted owner generation.
-    pub owner_generation: U64,
-    /// Carries the normative `batch_id` contract field.
-    pub batch_id: Id,
-    /// Carries the normative `batch_sequence` contract field.
-    pub batch_sequence: U64,
-    /// Carries the normative `input_epoch` contract field.
-    pub input_epoch: Id,
-    /// Preserves the admitted delivered event order.
-    pub events: Vec<Event>,
-    /// Carries the normative `batch_hash` contract field.
-    pub batch_hash: HashRef,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `InputRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct InputRequest {
+        /// Commits to the selected complete owner or node binding.
+        pub binding_hash: HashRef,
+        /// Identifies the positive admitted owner generation.
+        pub owner_generation: U64,
+        /// Carries the normative `batch_id` contract field.
+        pub batch_id: Id,
+        /// Carries the normative `batch_sequence` contract field.
+        pub batch_sequence: U64,
+        /// Carries the normative `input_epoch` contract field.
+        pub input_epoch: Id,
+        /// Preserves the admitted delivered event order.
+        pub events: Vec<Event>,
+        /// Carries the normative `batch_hash` contract field.
+        pub batch_hash: HashRef,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for InputRequest {
@@ -111,21 +114,22 @@ impl Validate for InputRequest {
     }
 }
 
-/// Represents the baseline `ObserveRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ObserveRequest {
-    /// Commits to the selected complete owner or node binding.
-    pub binding_hash: HashRef,
-    /// Identifies the positive admitted owner generation.
-    pub owner_generation: U64,
-    /// Carries the normative `after_observation_sequence` contract field.
-    pub after_observation_sequence: U64,
-    /// Limits requested observations without authorizing allocation.
-    pub maximum_items: U64,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `ObserveRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ObserveRequest {
+        /// Commits to the selected complete owner or node binding.
+        pub binding_hash: HashRef,
+        /// Identifies the positive admitted owner generation.
+        pub owner_generation: U64,
+        /// Carries the normative `after_observation_sequence` contract field.
+        pub after_observation_sequence: U64,
+        /// Limits requested observations without authorizing allocation.
+        pub maximum_items: U64,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for ObserveRequest {
@@ -150,26 +154,27 @@ impl Validate for ObserveRequest {
     }
 }
 
-/// Represents the baseline `BeginRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BeginRequest {
-    /// Carries the normative `kind` contract field.
-    pub kind: BeginKind,
-    /// Commits to the selected complete owner or node binding.
-    pub binding_hash: HashRef,
-    /// Identifies the positive admitted owner generation.
-    pub owner_generation: U64,
-    /// Identifies the admitted activation.
-    pub activation_id: Nullable<Id>,
-    /// Identifies the admitted world generation.
-    pub world_generation: U64,
-    /// Contains the closed argument schema selected by kind.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
-    pub arguments: Map<String, Value>,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `BeginRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct BeginRequest {
+        /// Carries the normative `kind` contract field.
+        pub kind: BeginKind,
+        /// Commits to the selected complete owner or node binding.
+        pub binding_hash: HashRef,
+        /// Identifies the positive admitted owner generation.
+        pub owner_generation: U64,
+        /// Identifies the admitted activation.
+        pub activation_id: Nullable<Id>,
+        /// Identifies the admitted world generation.
+        pub world_generation: U64,
+        /// Contains the closed argument schema selected by kind.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
+        pub arguments: Map<String, Value>,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for BeginRequest {
@@ -184,15 +189,16 @@ impl Validate for BeginRequest {
     }
 }
 
-/// Represents the baseline `PollRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PollRequest {
-    /// Carries the normative `after_observation_sequence` contract field.
-    pub after_observation_sequence: U64,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `PollRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct PollRequest {
+        /// Carries the normative `after_observation_sequence` contract field.
+        pub after_observation_sequence: U64,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for PollRequest {
@@ -201,15 +207,16 @@ impl Validate for PollRequest {
     }
 }
 
-/// Represents the baseline `CancelRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CancelRequest {
-    /// Carries the normative `reason` contract field.
-    pub reason: Id,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `CancelRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct CancelRequest {
+        /// Carries the normative `reason` contract field.
+        pub reason: Id,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for CancelRequest {
@@ -218,37 +225,38 @@ impl Validate for CancelRequest {
     }
 }
 
-/// Represents the baseline `QuantumCloseRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QuantumCloseRequest {
-    /// Carries the normative `grant_id` contract field.
-    pub grant_id: Id,
-    /// Identifies the admitted activation.
-    pub activation_id: Id,
-    /// Identifies the admitted world generation.
-    pub world_generation: U64,
-    /// Identifies the positive admitted owner generation.
-    pub owner_generation: U64,
-    /// Carries the normative `input_epoch` contract field.
-    pub input_epoch: Id,
-    /// Carries the normative `quantum_index` contract field.
-    pub quantum_index: U64,
-    /// Carries the normative `participant_ids` contract field.
-    pub participant_ids: IdSet,
-    /// Carries the normative `cut` contract field.
-    pub cut: Position,
-    /// Commits to the exact admitted timing policy.
-    pub policy_hash: HashRef,
-    /// Carries the normative `observation_batch_hash` contract field.
-    pub observation_batch_hash: HashRef,
-    /// Carries the normative `input_watermark` contract field.
-    pub input_watermark: U64,
-    /// Carries the normative `deadline_disposition` contract field.
-    pub deadline_disposition: BudgetOutcome,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `QuantumCloseRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct QuantumCloseRequest {
+        /// Carries the normative `grant_id` contract field.
+        pub grant_id: Id,
+        /// Identifies the admitted activation.
+        pub activation_id: Id,
+        /// Identifies the admitted world generation.
+        pub world_generation: U64,
+        /// Identifies the positive admitted owner generation.
+        pub owner_generation: U64,
+        /// Carries the normative `input_epoch` contract field.
+        pub input_epoch: Id,
+        /// Carries the normative `quantum_index` contract field.
+        pub quantum_index: U64,
+        /// Carries the normative `participant_ids` contract field.
+        pub participant_ids: IdSet,
+        /// Carries the normative `cut` contract field.
+        pub cut: Position,
+        /// Commits to the exact admitted timing policy.
+        pub policy_hash: HashRef,
+        /// Carries the normative `observation_batch_hash` contract field.
+        pub observation_batch_hash: HashRef,
+        /// Carries the normative `input_watermark` contract field.
+        pub input_watermark: U64,
+        /// Carries the normative `deadline_disposition` contract field.
+        pub deadline_disposition: BudgetOutcome,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for QuantumCloseRequest {
@@ -264,27 +272,28 @@ impl Validate for QuantumCloseRequest {
     }
 }
 
-/// Represents the baseline `WorldActivateRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorldActivateRequest {
-    /// Carries the normative `transaction_id` contract field.
-    pub transaction_id: Id,
-    /// Identifies the admitted activation.
-    pub activation_id: Id,
-    /// Identifies the admitted world generation.
-    pub world_generation: U64,
-    /// Carries the normative `prepared_token` contract field.
-    pub prepared_token: Id,
-    /// Commits to complete world compatibility.
-    pub world_binding_hash: HashRef,
-    /// Carries the normative `gate_id` contract field.
-    pub gate_id: Id,
-    /// Carries the normative `activation_manifest` contract field.
-    pub activation_manifest: ContentRef,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `WorldActivateRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct WorldActivateRequest {
+        /// Carries the normative `transaction_id` contract field.
+        pub transaction_id: Id,
+        /// Identifies the admitted activation.
+        pub activation_id: Id,
+        /// Identifies the admitted world generation.
+        pub world_generation: U64,
+        /// Carries the normative `prepared_token` contract field.
+        pub prepared_token: Id,
+        /// Commits to complete world compatibility.
+        pub world_binding_hash: HashRef,
+        /// Carries the normative `gate_id` contract field.
+        pub gate_id: Id,
+        /// Carries the normative `activation_manifest` contract field.
+        pub activation_manifest: ContentRef,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for WorldActivateRequest {
@@ -296,17 +305,18 @@ impl Validate for WorldActivateRequest {
     }
 }
 
-/// Represents the baseline `AbortRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AbortRequest {
-    /// Carries the normative `transaction_id` contract field.
-    pub transaction_id: Id,
-    /// Carries the normative `reason` contract field.
-    pub reason: Id,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `AbortRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct AbortRequest {
+        /// Carries the normative `transaction_id` contract field.
+        pub transaction_id: Id,
+        /// Carries the normative `reason` contract field.
+        pub reason: Id,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for AbortRequest {
@@ -315,21 +325,22 @@ impl Validate for AbortRequest {
     }
 }
 
-/// Represents the baseline `RetireRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RetireRequest {
-    /// Carries the normative `request_ids` contract field.
-    pub request_ids: IdSet,
-    /// Carries the normative `operation_ids` contract field.
-    pub operation_ids: IdSet,
-    /// Carries the normative `disposition` contract field.
-    pub disposition: RetirementDisposition,
-    /// Binds authenticated durable custody; null is legal only for inert abandonment.
-    pub custody_receipt: Nullable<ContentRef>,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `RetireRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct RetireRequest {
+        /// Carries the normative `request_ids` contract field.
+        pub request_ids: IdSet,
+        /// Carries the normative `operation_ids` contract field.
+        pub operation_ids: IdSet,
+        /// Carries the normative `disposition` contract field.
+        pub disposition: RetirementDisposition,
+        /// Binds authenticated durable custody; null is legal only for inert abandonment.
+        pub custody_receipt: Nullable<ContentRef>,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for RetireRequest {
@@ -354,17 +365,18 @@ impl Validate for RetireRequest {
     }
 }
 
-/// Represents the baseline `BlobBeginRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BlobBeginRequest {
-    /// Carries the normative `transfer_id` contract field.
-    pub transfer_id: Id,
-    /// Carries the normative `content` contract field.
-    pub content: ContentRef,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `BlobBeginRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct BlobBeginRequest {
+        /// Carries the normative `transfer_id` contract field.
+        pub transfer_id: Id,
+        /// Carries the normative `content` contract field.
+        pub content: ContentRef,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for BlobBeginRequest {
@@ -374,19 +386,20 @@ impl Validate for BlobBeginRequest {
     }
 }
 
-/// Represents the baseline `BlobChunkRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BlobChunkRequest {
-    /// Carries the normative `transfer_id` contract field.
-    pub transfer_id: Id,
-    /// Carries the normative `offset` contract field.
-    pub offset: U64,
-    /// Carries the normative `bytes` contract field.
-    pub bytes: Bytes,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `BlobChunkRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct BlobChunkRequest {
+        /// Carries the normative `transfer_id` contract field.
+        pub transfer_id: Id,
+        /// Carries the normative `offset` contract field.
+        pub offset: U64,
+        /// Carries the normative `bytes` contract field.
+        pub bytes: Bytes,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for BlobChunkRequest {
@@ -401,15 +414,16 @@ impl Validate for BlobChunkRequest {
     }
 }
 
-/// Represents the baseline `BlobFinishRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BlobFinishRequest {
-    /// Carries the normative `transfer_id` contract field.
-    pub transfer_id: Id,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `BlobFinishRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct BlobFinishRequest {
+        /// Carries the normative `transfer_id` contract field.
+        pub transfer_id: Id,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for BlobFinishRequest {
@@ -418,15 +432,16 @@ impl Validate for BlobFinishRequest {
     }
 }
 
-/// Represents the baseline `ReleaseRequest` wire object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReleaseRequest {
-    /// Carries the normative `realization_id` contract field.
-    pub realization_id: Id,
-    /// Carries explicitly negotiated method extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Represents the baseline `ReleaseRequest` wire object.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ReleaseRequest {
+        /// Carries the normative `realization_id` contract field.
+        pub realization_id: Id,
+        /// Carries explicitly negotiated method extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for ReleaseRequest {

@@ -2,174 +2,182 @@
 
 use super::*;
 
-/// Identifies an executable, adapter, patch set, or model input by bytes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ArtifactIdentity {
-    /// Identifies the artifact within the implementation.
-    pub id: Id,
-    /// Names its implementation role.
-    pub role: Id,
-    /// Commits to exact artifact bytes.
-    pub content: ContentRef,
-    /// Carries identity-bearing artifact extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Identifies an executable, adapter, patch set, or model input by bytes.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ArtifactIdentity {
+        /// Identifies the artifact within the implementation.
+        pub id: Id,
+        /// Names its implementation role.
+        pub role: Id,
+        /// Commits to exact artifact bytes.
+        pub content: ContentRef,
+        /// Carries identity-bearing artifact extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Binds all artifacts and formats affecting implementation compatibility.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImplementationIdentity {
-    /// Selects the baseline implementation schema, version 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the selected implementation family.
-    pub implementation_id: Id,
-    /// Lists exact implementation artifacts by ID.
-    pub artifacts: Vec<ArtifactIdentity>,
-    /// Lists model-definition content sorted by domain and digest.
-    pub model_definitions: Vec<ContentRef>,
-    /// Lists complete state or protocol schemas by ID and version.
-    pub formats: Vec<SchemaRef>,
-    /// Carries identity-bearing implementation extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Binds all artifacts and formats affecting implementation compatibility.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ImplementationIdentity {
+        /// Selects the baseline implementation schema, version 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the selected implementation family.
+        pub implementation_id: Id,
+        /// Lists exact implementation artifacts by ID.
+        pub artifacts: Vec<ArtifactIdentity>,
+        /// Lists model-definition content sorted by domain and digest.
+        pub model_definitions: Vec<ContentRef>,
+        /// Lists complete state or protocol schemas by ID and version.
+        pub formats: Vec<SchemaRef>,
+        /// Carries identity-bearing implementation extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Commits to durable node compatibility independently of live authority.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BindingCompatibility {
-    /// Selects the baseline binding schema, version 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the descriptor node.
-    pub node_id: Id,
-    /// Commits to the complete immutable descriptor.
-    pub descriptor_hash: HashRef,
-    /// Binds the selected artifacts and formats.
-    pub implementation: ImplementationIdentity,
-    /// Binds the full selected machine, device, or model profile.
-    pub profile_ref: ContentRef,
-    /// Binds all resolved compatibility parameters.
-    pub configuration_ref: ContentRef,
-    /// Binds timing, scheduling, and selected facets.
-    pub operating_contract: OperatingContract,
-    /// Declares indivisible execution membership and domains.
-    pub execution_owner: OwnerRef,
-    /// Declares authoritative capture membership and domains.
-    pub capture_owner: OwnerRef,
-    /// Binds the realized capability profile.
-    pub capabilities_ref: ContentRef,
-    /// Binds the orthogonal guarantee profile.
-    pub guarantees_ref: ContentRef,
-    /// Lists the exact implementation and profile qualification basis.
-    pub qualification_refs: Vec<ContentRef>,
-    /// Carries durable identity-bearing extension parameters.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Commits to durable node compatibility independently of live authority.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct BindingCompatibility {
+        /// Selects the baseline binding schema, version 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the descriptor node.
+        pub node_id: Id,
+        /// Commits to the complete immutable descriptor.
+        pub descriptor_hash: HashRef,
+        /// Binds the selected artifacts and formats.
+        pub implementation: ImplementationIdentity,
+        /// Binds the full selected machine, device, or model profile.
+        pub profile_ref: ContentRef,
+        /// Binds all resolved compatibility parameters.
+        pub configuration_ref: ContentRef,
+        /// Binds timing, scheduling, and selected facets.
+        pub operating_contract: OperatingContract,
+        /// Declares indivisible execution membership and domains.
+        pub execution_owner: OwnerRef,
+        /// Declares authoritative capture membership and domains.
+        pub capture_owner: OwnerRef,
+        /// Binds the realized capability profile.
+        pub capabilities_ref: ContentRef,
+        /// Binds the orthogonal guarantee profile.
+        pub guarantees_ref: ContentRef,
+        /// Lists the exact implementation and profile qualification basis.
+        pub qualification_refs: Vec<ContentRef>,
+        /// Carries durable identity-bearing extension parameters.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Records live custody claims requiring authenticated host admission.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LiveAuthority {
-    /// Selects the baseline authority schema, version 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the admitted session.
-    pub session_id: Id,
-    /// Identifies the fresh live owner incarnation.
-    pub incarnation_id: Id,
-    /// Identifies the admitted realization.
-    pub realization_id: Id,
-    /// Identifies the selected activation, or explicit null before activation.
-    #[serde(deserialize_with = "required_nullable")]
-    pub activation_id: Option<Id>,
-    /// Identifies the world generation; zero is initially uncommitted.
-    pub world_generation: U64,
-    /// Identifies the positive live owner generation.
-    pub owner_generation: U64,
-    /// Identifies the authenticated input custody epoch.
-    pub input_epoch: Id,
-    /// Binds the host admission record; syntax alone confers no authority.
-    pub host_receipt: ContentRef,
-    /// Carries negotiated operational extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Records live custody claims requiring authenticated host admission.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct LiveAuthority {
+        /// Selects the baseline authority schema, version 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the admitted session.
+        pub session_id: Id,
+        /// Identifies the fresh live owner incarnation.
+        pub incarnation_id: Id,
+        /// Identifies the admitted realization.
+        pub realization_id: Id,
+        /// Identifies the selected activation, or explicit null before activation.
+        #[serde(deserialize_with = "required_nullable")]
+        pub activation_id: Option<Id>,
+        /// Identifies the world generation; zero is initially uncommitted.
+        pub world_generation: U64,
+        /// Identifies the positive live owner generation.
+        pub owner_generation: U64,
+        /// Identifies the authenticated input custody epoch.
+        pub input_epoch: Id,
+        /// Binds the host admission record; syntax alone confers no authority.
+        pub host_receipt: ContentRef,
+        /// Carries negotiated operational extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Combines durable compatibility and separately authenticated live custody.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NodeBinding {
-    /// Contains the sole durable node-binding hash projection.
-    pub compatibility: BindingCompatibility,
-    /// Contains separately authenticated live authority.
-    pub authority: LiveAuthority,
-    /// Carries operational extensions excluded from durable compatibility.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Combines durable compatibility and separately authenticated live custody.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct NodeBinding {
+        /// Contains the sole durable node-binding hash projection.
+        pub compatibility: BindingCompatibility,
+        /// Contains separately authenticated live authority.
+        pub authority: LiveAuthority,
+        /// Carries operational extensions excluded from durable compatibility.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Names a node and its durable admitted binding identity.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NodeBindingRef {
-    /// Identifies the semantic node.
-    pub node_id: Id,
-    /// Commits to its complete durable compatibility projection.
-    pub binding_hash: HashRef,
-    /// Carries identity-bearing reference extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Names a node and its durable admitted binding identity.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct NodeBindingRef {
+        /// Identifies the semantic node.
+        pub node_id: Id,
+        /// Commits to its complete durable compatibility projection.
+        pub binding_hash: HashRef,
+        /// Carries identity-bearing reference extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Commits to the complete roster and constraints of one owner.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OwnerBinding {
-    /// Selects the baseline owner schema, version 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Declares participants and authoritative state domains.
-    pub owner: OwnerRef,
-    /// Selects execution, capture, or both roles.
-    pub owner_roles: IdSet,
-    /// Lists every participant binding by node ID.
-    pub node_bindings: Vec<NodeBindingRef>,
-    /// Binds indivisible ownership constraints.
-    pub ownership_ref: ContentRef,
-    /// Carries identity-bearing owner extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Commits to the complete roster and constraints of one owner.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct OwnerBinding {
+        /// Selects the baseline owner schema, version 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Declares participants and authoritative state domains.
+        pub owner: OwnerRef,
+        /// Selects execution, capture, or both roles.
+        pub owner_roles: IdSet,
+        /// Lists every participant binding by node ID.
+        pub node_bindings: Vec<NodeBindingRef>,
+        /// Binds indivisible ownership constraints.
+        pub ownership_ref: ContentRef,
+        /// Carries identity-bearing owner extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Commits to the complete immutable graph and coordinator contract.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorldBinding {
-    /// Selects the baseline world schema, version 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Binds the complete scenario identity.
-    pub scenario_ref: ContentRef,
-    /// Lists every admitted node binding by node ID.
-    pub node_bindings: Vec<NodeBindingRef>,
-    /// Lists admitted connections by ID.
-    pub connections: Vec<ConnectionDescriptor>,
-    /// Binds unique state domains and all owner dependencies.
-    pub ownership_ref: ContentRef,
-    /// Binds timing, preservation, arbitration, and compatibility schemas.
-    pub coordinator_contract_ref: ContentRef,
-    /// Names the admitted ordering profile, superdense-v1.
-    pub ordering_profile: String,
-    /// Binds initialization policy and provenance.
-    pub initialization_ref: ContentRef,
-    /// Carries identity-bearing world extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Commits to the complete immutable graph and coordinator contract.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct WorldBinding {
+        /// Selects the baseline world schema, version 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Binds the complete scenario identity.
+        pub scenario_ref: ContentRef,
+        /// Lists every admitted node binding by node ID.
+        pub node_bindings: Vec<NodeBindingRef>,
+        /// Lists admitted connections by ID.
+        pub connections: Vec<ConnectionDescriptor>,
+        /// Binds unique state domains and all owner dependencies.
+        pub ownership_ref: ContentRef,
+        /// Binds timing, preservation, arbitration, and compatibility schemas.
+        pub coordinator_contract_ref: ContentRef,
+        /// Names the admitted ordering profile, superdense-v1.
+        pub ordering_profile: String,
+        /// Binds initialization policy and provenance.
+        pub initialization_ref: ContentRef,
+        /// Carries identity-bearing world extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for ArtifactIdentity {

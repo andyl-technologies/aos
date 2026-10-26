@@ -51,157 +51,162 @@ pub enum ReceiptIssuer {
     Host,
 }
 
-/// Records physical stop status and independently justified production closure.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StopReceipt {
-    /// Selects baseline stop-receipt schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the admitted session.
-    pub session_id: Id,
-    /// Identifies the live provider incarnation.
-    pub incarnation_id: Id,
-    /// Commits to complete owner compatibility.
-    pub owner_binding_hash: HashRef,
-    /// Commits to world compatibility.
-    pub world_binding_hash: HashRef,
-    /// Identifies the admitted activation.
-    pub activation_id: Id,
-    /// Identifies the world generation.
-    pub world_generation: U64,
-    /// Identifies the execution owner.
-    pub execution_owner_id: Id,
-    /// Identifies the owner generation.
-    pub owner_generation: U64,
-    /// Identifies the originating operation.
-    pub operation_id: Id,
-    /// Retains grant identity, or explicit null for a nongrant operation.
-    #[serde(deserialize_with = "required_nullable")]
-    pub grant_id: Option<Id>,
-    /// Lists every controlled public participant.
-    pub participant_ids: IdSet,
-    /// Names the selected timing mode.
-    pub mode: OperatingMode,
-    /// Names the admitted ordering profile, superdense-v1.
-    pub ordering_profile: String,
-    /// Locates execution progress; null requires an autonomous observation contract.
-    #[serde(deserialize_with = "required_nullable")]
-    pub reached: Option<Position>,
-    /// Locates independently justified production closure.
-    pub production_prefix: Position,
-    /// Selects inclusive or exclusive closure.
-    pub prefix_kind: ClosureKind,
-    /// Lists each output lane bound by endpoint.
-    pub output_lower_bounds: Vec<PortBound>,
-    /// States actual physical containment without inferring semantic closure.
-    pub physical_stop: PhysicalStop,
-    /// Identifies the qualified stop cause.
-    pub cause: Id,
-    /// Binds actual input stream custody.
-    pub input_custody: ContentRef,
-    /// Binds complete pending state.
-    pub pending_inventory: ContentRef,
-    /// Binds staged or committed observations.
-    pub observation_batch: ContentRef,
-    /// Binds physical stop measurements and uncertainty.
-    pub physical_measurement_ref: ContentRef,
-    /// Binds selected native proof content.
-    pub evidence_refs: Vec<ContentRef>,
-    /// Carries stop-receipt extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Records physical stop status and independently justified production closure.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct StopReceipt {
+        /// Selects baseline stop-receipt schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the admitted session.
+        pub session_id: Id,
+        /// Identifies the live provider incarnation.
+        pub incarnation_id: Id,
+        /// Commits to complete owner compatibility.
+        pub owner_binding_hash: HashRef,
+        /// Commits to world compatibility.
+        pub world_binding_hash: HashRef,
+        /// Identifies the admitted activation.
+        pub activation_id: Id,
+        /// Identifies the world generation.
+        pub world_generation: U64,
+        /// Identifies the execution owner.
+        pub execution_owner_id: Id,
+        /// Identifies the owner generation.
+        pub owner_generation: U64,
+        /// Identifies the originating operation.
+        pub operation_id: Id,
+        /// Retains grant identity, or explicit null for a nongrant operation.
+        #[serde(deserialize_with = "required_nullable")]
+        pub grant_id: Option<Id>,
+        /// Lists every controlled public participant.
+        pub participant_ids: IdSet,
+        /// Names the selected timing mode.
+        pub mode: OperatingMode,
+        /// Names the admitted ordering profile, superdense-v1.
+        pub ordering_profile: String,
+        /// Locates execution progress; null requires an autonomous observation contract.
+        #[serde(deserialize_with = "required_nullable")]
+        pub reached: Option<Position>,
+        /// Locates independently justified production closure.
+        pub production_prefix: Position,
+        /// Selects inclusive or exclusive closure.
+        pub prefix_kind: ClosureKind,
+        /// Lists each output lane bound by endpoint.
+        pub output_lower_bounds: Vec<PortBound>,
+        /// States actual physical containment without inferring semantic closure.
+        pub physical_stop: PhysicalStop,
+        /// Identifies the qualified stop cause.
+        pub cause: Id,
+        /// Binds actual input stream custody.
+        pub input_custody: ContentRef,
+        /// Binds complete pending state.
+        pub pending_inventory: ContentRef,
+        /// Binds staged or committed observations.
+        pub observation_batch: ContentRef,
+        /// Binds physical stop measurements and uncertainty.
+        pub physical_measurement_ref: ContentRef,
+        /// Binds selected native proof content.
+        pub evidence_refs: Vec<ContentRef>,
+        /// Carries stop-receipt extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Binds qualified lookahead to exactly one logical output lane.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PortBound {
-    /// Identifies the precise output lane.
-    pub endpoint: Endpoint,
-    /// Contains its qualified lower bound or explicit unknown.
-    pub bound: Bound,
-    /// Carries per-port bound extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Binds qualified lookahead to exactly one logical output lane.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct PortBound {
+        /// Identifies the precise output lane.
+        pub endpoint: Endpoint,
+        /// Contains its qualified lower bound or explicit unknown.
+        pub bound: Bound,
+        /// Carries per-port bound extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Describes a world activation transaction without granting provider authority.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ActivationManifest {
-    /// Selects baseline activation-manifest schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies the host transaction.
-    pub transaction_id: Id,
-    /// Identifies the proposed activation.
-    pub activation_id: Id,
-    /// Identifies the proposed committed generation.
-    pub world_generation: U64,
-    /// Identifies the closed activation gate.
-    pub gate_id: Id,
-    /// Commits to the full world compatibility.
-    pub world_binding_hash: HashRef,
-    /// Lists all ready owners by owner ID.
-    pub owners: Vec<PreparedOwner>,
-    /// Binds prepared coordinator state.
-    pub coordinator_state_ref: ContentRef,
-    /// Carries activation extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Describes a world activation transaction without granting provider authority.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ActivationManifest {
+        /// Selects baseline activation-manifest schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies the host transaction.
+        pub transaction_id: Id,
+        /// Identifies the proposed activation.
+        pub activation_id: Id,
+        /// Identifies the proposed committed generation.
+        pub world_generation: U64,
+        /// Identifies the closed activation gate.
+        pub gate_id: Id,
+        /// Commits to the full world compatibility.
+        pub world_binding_hash: HashRef,
+        /// Lists all ready owners by owner ID.
+        pub owners: Vec<PreparedOwner>,
+        /// Binds prepared coordinator state.
+        pub coordinator_state_ref: ContentRef,
+        /// Carries activation extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Records one prepared owner beneath a closed activation gate.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PreparedOwner {
-    /// Identifies the prepared owner.
-    pub owner_id: Id,
-    /// Identifies the fresh live incarnation.
-    pub incarnation_id: Id,
-    /// Identifies the prepared positive owner generation.
-    pub owner_generation: U64,
-    /// Identifies authenticated prepared custody.
-    pub prepared_token: Id,
-    /// Lists admitted node binding hashes by domain and digest.
-    pub binding_hashes: Vec<HashRef>,
-    /// Binds exact ready-state evidence.
-    pub ready_receipt: ContentRef,
-    /// Carries preparation extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Records one prepared owner beneath a closed activation gate.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct PreparedOwner {
+        /// Identifies the prepared owner.
+        pub owner_id: Id,
+        /// Identifies the fresh live incarnation.
+        pub incarnation_id: Id,
+        /// Identifies the prepared positive owner generation.
+        pub owner_generation: U64,
+        /// Identifies authenticated prepared custody.
+        pub prepared_token: Id,
+        /// Lists admitted node binding hashes by domain and digest.
+        pub binding_hashes: Vec<HashRef>,
+        /// Binds exact ready-state evidence.
+        pub ready_receipt: ContentRef,
+        /// Carries preparation extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Separates provider claims from host-authenticated control records.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ControlReceipt {
-    /// Selects baseline control-receipt schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Selects the complete record schema.
-    pub kind: ControlReceiptKind,
-    /// Identifies the admitted session.
-    pub session_id: Id,
-    /// Identifies the live provider incarnation.
-    pub incarnation_id: Id,
-    /// Identifies the original request.
-    pub request_id: Id,
-    /// Identifies operation scope, or explicit null for an unscoped control record.
-    #[serde(deserialize_with = "required_nullable")]
-    pub operation_id: Option<Id>,
-    /// Lists every affected owner.
-    pub owner_ids: IdSet,
-    /// Identifies the selected world generation.
-    pub world_generation: U64,
-    /// Binds the complete kind-specific facts and evidence.
-    pub record_ref: ContentRef,
-    /// Distinguishes provider claims from host-authenticated records.
-    pub issuer: ReceiptIssuer,
-    /// Carries control-receipt extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Separates provider claims from host-authenticated control records.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct ControlReceipt {
+        /// Selects baseline control-receipt schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Selects the complete record schema.
+        pub kind: ControlReceiptKind,
+        /// Identifies the admitted session.
+        pub session_id: Id,
+        /// Identifies the live provider incarnation.
+        pub incarnation_id: Id,
+        /// Identifies the original request.
+        pub request_id: Id,
+        /// Identifies operation scope, or explicit null for an unscoped control record.
+        #[serde(deserialize_with = "required_nullable")]
+        pub operation_id: Option<Id>,
+        /// Lists every affected owner.
+        pub owner_ids: IdSet,
+        /// Identifies the selected world generation.
+        pub world_generation: U64,
+        /// Binds the complete kind-specific facts and evidence.
+        pub record_ref: ContentRef,
+        /// Distinguishes provider claims from host-authenticated records.
+        pub issuer: ReceiptIssuer,
+        /// Carries control-receipt extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for StopReceipt {

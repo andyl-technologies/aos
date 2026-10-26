@@ -53,38 +53,39 @@ pub enum RequestOrigin {
 
 pub use crucible_source_birth_data::profile::envelope::Method;
 
-/// Carries portable correlation fields without native pointers or receipts.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Envelope {
-    /// Identifies exactly `CNP/1`.
-    pub protocol: String,
-    /// Distinguishes requests, responses and unsolicited events.
-    pub message: MessageKind,
-    /// Names the world session, or null only during initial hello.
-    pub session_id: Nullable<Id>,
-    /// Names the surviving native provider incarnation.
-    pub incarnation_id: Nullable<Id>,
-    /// Names a specific logical node when the scope is node-local.
-    pub node_id: Nullable<Id>,
-    /// Names the indivisible execution owner when progress is involved.
-    pub execution_owner_id: Nullable<Id>,
-    /// Names the indivisible capture owner when preservation is involved.
-    pub capture_owner_id: Nullable<Id>,
-    /// Correlates one original request, or null for an unsolicited event.
-    pub request_id: Nullable<Id>,
-    /// Names the retained long-lived effectful operation, if any.
-    pub operation_id: Nullable<Id>,
-    /// Counts frames in this connection direction, beginning at one.
-    pub sequence: U64,
-    /// Selects a negotiated method's exact semantics.
-    pub method: Method,
-    /// Contains the method-specific closed request/result/event object.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
-    pub body: Map<String, Value>,
-    /// Carries only explicitly negotiated envelope extensions.
-    #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crucible_node_format::wire_record! {
+    /// Carries portable correlation fields without native pointers or receipts.
+    #[derive(Clone, PartialEq, Serialize)]
+    pub struct Envelope {
+        /// Identifies exactly `CNP/1`.
+        pub protocol: String,
+        /// Distinguishes requests, responses and unsolicited events.
+        pub message: MessageKind,
+        /// Names the world session, or null only during initial hello.
+        pub session_id: Nullable<Id>,
+        /// Names the surviving native provider incarnation.
+        pub incarnation_id: Nullable<Id>,
+        /// Names a specific logical node when the scope is node-local.
+        pub node_id: Nullable<Id>,
+        /// Names the indivisible execution owner when progress is involved.
+        pub execution_owner_id: Nullable<Id>,
+        /// Names the indivisible capture owner when preservation is involved.
+        pub capture_owner_id: Nullable<Id>,
+        /// Correlates one original request, or null for an unsolicited event.
+        pub request_id: Nullable<Id>,
+        /// Names the retained long-lived effectful operation, if any.
+        pub operation_id: Nullable<Id>,
+        /// Counts frames in this connection direction, beginning at one.
+        pub sequence: U64,
+        /// Selects a negotiated method's exact semantics.
+        pub method: Method,
+        /// Contains the method-specific closed request/result/event object.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_object")]
+        pub body: Map<String, Value>,
+        /// Carries only explicitly negotiated envelope extensions.
+        #[serde(deserialize_with = "crucible_node_format::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl std::fmt::Debug for Envelope {

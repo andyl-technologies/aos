@@ -2,22 +2,23 @@
 
 use super::bodies::invalid;
 use crucible_node_format::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-/// Declares positive receiving ceilings within the baseline hard limits.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Limits {
-    /// Bounds one UTF-8 JSON frame to at most 16777216 bytes.
-    pub frame_bytes: U64,
-    /// Bounds JSON container nesting to at most 64.
-    pub nesting: U64,
-    /// Bounds outstanding IDs in each request direction to at most 256.
-    pub requests: U64,
-    /// Bounds retained journal entries per request origin to at most 4096.
-    pub journal_entries: U64,
-    /// Bounds decoded inline chunks to at most 1048576 bytes.
-    pub blob_chunk_bytes: U64,
+crucible_node_format::wire_record! {
+    /// Declares positive receiving ceilings within the baseline hard limits.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+    pub struct Limits {
+        /// Bounds one UTF-8 JSON frame to at most 16777216 bytes.
+        pub frame_bytes: U64,
+        /// Bounds JSON container nesting to at most 64.
+        pub nesting: U64,
+        /// Bounds outstanding IDs in each request direction to at most 256.
+        pub requests: U64,
+        /// Bounds retained journal entries per request origin to at most 4096.
+        pub journal_entries: U64,
+        /// Bounds decoded inline chunks to at most 1048576 bytes.
+        pub blob_chunk_bytes: U64,
+    }
 }
 
 impl Validate for Limits {

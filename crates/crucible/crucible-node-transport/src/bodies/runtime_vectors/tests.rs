@@ -95,7 +95,8 @@ where
         assert!(T::deserialize(Value::Object(missing)).is_err(), "{field}");
     }
     let array = positional::<T>(&value);
-    assert!(T::deserialize(&array)? == *original);
+    assert!(T::deserialize(&array).is_err());
+    assert!(T::deserialize(array.clone()).is_err());
     let elements = array.as_array().ok_or("record sequence absent")?;
     for length in 0..elements.len() {
         assert!(T::deserialize(Value::Array(elements[..length].to_vec())).is_err());
@@ -104,7 +105,7 @@ where
 }
 
 #[test]
-fn local_syntax_bound_covers_required_object_and_positional_record_forms() -> TestResult {
+fn records_require_objects_and_keep_every_required_field() -> TestResult {
     let batch = observation(1, 1);
 
     verify_required_record_syntax(&batch.measurement_ref)?;
@@ -116,7 +117,7 @@ fn local_syntax_bound_covers_required_object_and_positional_record_forms() -> Te
 }
 
 #[test]
-fn nested_positional_records_fit_the_same_disjoint_vector_budget() -> TestResult {
+fn nested_positional_records_are_refused_before_typed_vector_results() -> TestResult {
     let original = ObserveResult {
         observations: vec![observation(17, 33); 3],
         next_sequence: U64::new(1),
@@ -124,6 +125,12 @@ fn nested_positional_records_fit_the_same_disjoint_vector_budget() -> TestResult
         inventory_hash: canonical::hash("cnp.inventory.v1", b"inventory")?,
     };
     let mut input = serde_json::to_value(&original)?;
+    let bytes = serde_json::to_vec(&input)?;
+    let decoded = ObserveResult::deserialize(&input)?;
+    let row = typed_vector_storage_data(bytes.len(), usize::MAX)?;
+    assert_eq!(decoded, original);
+    assert!(vector_backing(&decoded) <= row[0]);
+
     for batch in input["observations"].as_array_mut().unwrap() {
         for event in batch["events"].as_array_mut().unwrap() {
             for field in ["payload", "provenance_ref"] {
@@ -134,16 +141,8 @@ fn nested_positional_records_fit_the_same_disjoint_vector_budget() -> TestResult
         batch["measurement_ref"] = positional::<ContentRef>(&batch["measurement_ref"]);
         *batch = positional::<ObservationBatch>(batch);
     }
-    let bytes = serde_json::to_vec(&input)?;
-
-    let decoded = ObserveResult::deserialize(&input)?;
-    let row = typed_vector_storage_data(bytes.len(), usize::MAX)?;
-
-    assert_eq!(decoded, original);
-    assert!(vector_backing(&decoded) <= row[0]);
-    // The old largest-slot-per-two-bytes projection is unnecessary even for
-    // positional inputs, and would obscure the actual SDK admission demand.
-    assert!(row[0] < bytes.len() * RUNTIME.element_bytes);
+    assert!(ObserveResult::deserialize(&input).is_err());
+    assert!(ObserveResult::deserialize(input).is_err());
     Ok(())
 }
 

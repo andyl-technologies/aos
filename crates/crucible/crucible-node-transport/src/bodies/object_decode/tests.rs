@@ -170,3 +170,5 @@ fn exact_hard_canonical_byte_limit_matches_the_preceding_decoder() -> TestResult
     }
     Ok(())
 }
+
+mod wire_records;

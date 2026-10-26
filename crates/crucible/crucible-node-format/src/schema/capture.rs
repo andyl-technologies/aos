@@ -19,71 +19,73 @@ pub enum CaptureRepresentation {
     RetainedSource,
 }
 
-/// Commits to the complete world continuation boundary and authoritative domains.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CaptureManifest {
-    /// Selects baseline capture-manifest schema 1.
-    #[serde(deserialize_with = "crate::deserialize_version")]
-    pub schema_version: Version,
-    /// Identifies this complete capture.
-    pub capture_id: Id,
-    /// Commits to complete world compatibility.
-    pub world_binding_hash: HashRef,
-    /// Binds the scenario identity.
-    pub scenario_ref: ContentRef,
-    /// Names the selected complete preservation contract.
-    pub preservation_contract: Id,
-    /// Locates the unchanged coherent capture boundary.
-    pub cut: Position,
-    /// Preserves the coordinator event ordinal.
-    pub event_ordinal: U64,
-    /// Names the admitted ordering profile, superdense-v1.
-    pub ordering_profile: String,
-    /// Binds capture guarantees and nondeterminism limitations.
-    pub guarantees_ref: ContentRef,
-    /// Binds the complete coordinator continuation state.
-    pub coordinator_state_ref: ContentRef,
-    /// Lists every authoritative capture owner by owner ID.
-    pub owners: Vec<CapturedOwner>,
-    /// Lists all immutable dependencies by domain and digest.
-    pub immutable_refs: Vec<ContentRef>,
-    /// Binds capture provenance and input history.
-    pub provenance_ref: ContentRef,
-    /// Carries identity-bearing capture extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Commits to the complete world continuation boundary and authoritative domains.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct CaptureManifest {
+        /// Selects baseline capture-manifest schema 1.
+        #[serde(deserialize_with = "crate::deserialize_version")]
+        pub schema_version: Version,
+        /// Identifies this complete capture.
+        pub capture_id: Id,
+        /// Commits to complete world compatibility.
+        pub world_binding_hash: HashRef,
+        /// Binds the scenario identity.
+        pub scenario_ref: ContentRef,
+        /// Names the selected complete preservation contract.
+        pub preservation_contract: Id,
+        /// Locates the unchanged coherent capture boundary.
+        pub cut: Position,
+        /// Preserves the coordinator event ordinal.
+        pub event_ordinal: U64,
+        /// Names the admitted ordering profile, superdense-v1.
+        pub ordering_profile: String,
+        /// Binds capture guarantees and nondeterminism limitations.
+        pub guarantees_ref: ContentRef,
+        /// Binds the complete coordinator continuation state.
+        pub coordinator_state_ref: ContentRef,
+        /// Lists every authoritative capture owner by owner ID.
+        pub owners: Vec<CapturedOwner>,
+        /// Lists all immutable dependencies by domain and digest.
+        pub immutable_refs: Vec<ContentRef>,
+        /// Binds capture provenance and input history.
+        pub provenance_ref: ContentRef,
+        /// Carries identity-bearing capture extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
-/// Preserves one authoritative owner using durable bytes or an authenticated live lease.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CapturedOwner {
-    /// Identifies the authoritative capture owner.
-    pub capture_owner_id: Id,
-    /// Lists all public participants in this capture.
-    pub participant_ids: IdSet,
-    /// Lists exact authoritative mutable domain coverage.
-    pub state_domain_ids: IdSet,
-    /// Lists participant binding hashes by domain and digest.
-    pub binding_hashes: Vec<HashRef>,
-    /// Binds complete versioned native state semantics.
-    pub state_schema: SchemaRef,
-    /// Selects durable content or retained-source lease.
-    pub representation: CaptureRepresentation,
-    /// Binds durable state, or explicit null for a retained source.
-    #[serde(deserialize_with = "required_nullable")]
-    pub state_ref: Option<ContentRef>,
-    /// Binds authenticated retained custody and expiry, or explicit null for durable state.
-    #[serde(deserialize_with = "required_nullable")]
-    pub retained_source_ref: Option<ContentRef>,
-    /// Lists required owner dependencies.
-    pub dependencies: IdSet,
-    /// Binds unchanged-cut and complete-domain proof.
-    pub capture_receipt: ContentRef,
-    /// Carries owner capture extensions.
-    #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
-    pub extensions: Extensions,
+crate::wire_record! {
+    /// Preserves one authoritative owner using durable bytes or an authenticated live lease.
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct CapturedOwner {
+        /// Identifies the authoritative capture owner.
+        pub capture_owner_id: Id,
+        /// Lists all public participants in this capture.
+        pub participant_ids: IdSet,
+        /// Lists exact authoritative mutable domain coverage.
+        pub state_domain_ids: IdSet,
+        /// Lists participant binding hashes by domain and digest.
+        pub binding_hashes: Vec<HashRef>,
+        /// Binds complete versioned native state semantics.
+        pub state_schema: SchemaRef,
+        /// Selects durable content or retained-source lease.
+        pub representation: CaptureRepresentation,
+        /// Binds durable state, or explicit null for a retained source.
+        #[serde(deserialize_with = "required_nullable")]
+        pub state_ref: Option<ContentRef>,
+        /// Binds authenticated retained custody and expiry, or explicit null for durable state.
+        #[serde(deserialize_with = "required_nullable")]
+        pub retained_source_ref: Option<ContentRef>,
+        /// Lists required owner dependencies.
+        pub dependencies: IdSet,
+        /// Binds unchanged-cut and complete-domain proof.
+        pub capture_receipt: ContentRef,
+        /// Carries owner capture extensions.
+        #[serde(deserialize_with = "crate::literal_json::deserialize_extensions")]
+        pub extensions: Extensions,
+    }
 }
 
 impl Validate for CaptureManifest {
