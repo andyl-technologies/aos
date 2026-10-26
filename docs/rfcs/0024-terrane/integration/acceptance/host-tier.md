@@ -6,13 +6,30 @@ boundaries and the evidence still needed for acceptance. **T-HOST-1 remains
 unaccepted.** Optional smart reassembly, discard and volatile storage are outside
 this task.
 
-The source inspection uses `0677eb432c`, including the publisher directory-open
-correction. Its six host/publisher owning gates pass in 4,511.141 seconds.
-Independent host review checks all 8,259 immutable source files, ten actual
-executables, twenty-one original ordered selectors and seventeen actual guests.
-Independent publisher review checks eight guests and eleven actual executables.
-These results qualify the recorded correction; they predate the later allocation
-mount, setgid inheritance and publication service mount corrections.
+Current source inspection uses
+`330e82243d9441a63e9fbbb7672b9e4fd6883041`. All four host owning gates pass
+in 80.730 seconds after independently reviewed prerequisite construction in
+401.661 seconds. Runtime review matches all 9,596 tracked source files, the
+original three new selector guests and their three aggregates, and the already
+qualified crash-recovery gate. All 21 original selectors retain their actual
+SDK executable identity, UID/GID 840, empty supplementary groups, empty
+capability sets, no-new-privileges, private ext4 storage and original deadlines.
+
+The four gates consume seventeen distinct original KVM outputs and the same
+ten physical prerequisites. Review binds the reused thirteen physical guests
+and original crash-recovery selector guest to their source-qualified serial
+hashes; they are not presented as new executions in this renewal. Twenty-three
+outputs are preserved as 89 hashed regular files and three checked aggregate
+aliases. Prerequisite review independently checks all thirteen guest dispatches,
+including the fresh isolation probe, with host builds disabled. Seven raw
+controller records are preserved and the exact owned scratch is removed.
+
+Production and toolchain comparison with `42cb99b1a6` matches all 7,278 checked
+Git entries, and the normative specification is unchanged. That comparison is
+source equality only. The six newer Python verifier changes retain their own
+guest-renewal obligation; no executable or runtime result is relabeled. These
+complete gate results still require reconciliation with every assigned clause
+below before accepting T-HOST-1.
 
 The complete manager fixture at `874c01676f` passes in 218.935 seconds under
 its original 300-second bound. Review matches all 8,266 immutable source files,
@@ -23,9 +40,10 @@ owner exclusion, foreign-peer refusal, listener retirement and durable snapshots
 through acknowledged shutdown pass. Its renewed prerequisites pass in 1,471.441
 seconds with all 96 remote derivations, both imported outputs, the fresh
 capability-free ext4 sandbox proof and clean shutdown reviewed. This establishes
-manager startup at that source; restart recovery, draining physical exposure
-release and complete T-HOST-2 role acceptance remain open. It does not renew
-the earlier owning gates or accept T-HOST-1.
+manager startup at that source; it does not establish later complete Serve
+restart or draining physical exposure release. T-HOST-2 is now independently
+accepted under the [publisher audit](publisher-role.md). This earlier manager
+result does not renew current role execution or accept T-HOST-1.
 
 ## Clause coverage
 
@@ -53,10 +71,20 @@ physical prerequisites remain mandatory. Shared compilation images and aggregate
 results do not replace individual guest transcripts, retained Cargo artifact
 identity or complete immutable source comparison.
 
-The six-gate dispatch audit accounts for all 86 missing derivations, including
-twenty KVM checks, without changing their execution contracts. The completed
-runtime reviews above additionally bind each original guest transcript, source
-image and retained Cargo artifact.
+The current four-gate preflight leaves exactly eighteen original derivations:
+twelve packaging prerequisites, three KVM selector guests and three aggregates.
+After guest-only prerequisite construction, the repeated preflight leaves
+exactly those six deferred runtime derivations. Runtime review checks all six
+original derivations, four gate outputs, each selector transcript, the source
+image and its retained Cargo artifact. The crash-recovery gate's separately
+reviewed dependencies retain their original source and execution attribution.
+
+The initial-enrollment transcript still records `capabilities-update` as an
+unqualified actual Original native-fence refusal. Its passing enclosing guest
+does not turn that refusal into positive evidence for administrative bucket
+reopening. BKT-15 reconciliation must inspect the independent portable-bucket
+validation and actual NativeReady composition, rather than infer conformance
+from the enrollment component's success result.
 
 Separate base/all-feature native cache renewal at `31aa0ae05f` passes in
 3,235.284 seconds. Each profile matches 8,263 immutable source files, four
