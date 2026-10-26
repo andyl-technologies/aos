@@ -14,6 +14,19 @@ Independent publisher review checks eight guests and eleven actual executables.
 These results qualify the recorded correction; they predate the later allocation
 mount, setgid inheritance and publication service mount corrections.
 
+The complete manager fixture at `874c01676f` passes in 218.935 seconds under
+its original 300-second bound. Review matches all 8,266 immutable source files,
+five retained Cargo executables, fifteen enrollment controls, and eighteen
+actual mount observations for each of Serve and publisher. Actual PID 1 journal
+records order both fresh confined GC processes after Serve readiness. Original
+owner exclusion, foreign-peer refusal, listener retirement and durable snapshots
+through acknowledged shutdown pass. Its renewed prerequisites pass in 1,471.441
+seconds with all 96 remote derivations, both imported outputs, the fresh
+capability-free ext4 sandbox proof and clean shutdown reviewed. This establishes
+manager startup at that source; restart recovery, draining physical exposure
+release and complete T-HOST-2 role acceptance remain open. It does not renew
+the earlier owning gates or accept T-HOST-1.
+
 ## Clause coverage
 
 | Requirements | Inspected implementation | Required physical evidence and remaining limits |

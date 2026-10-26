@@ -91,6 +91,21 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The complete committed manager fixture at `874c01676f` now passes in 218.935
+seconds under its original 300-second bound. Independent review matches all
+8,266 immutable source files, five retained Cargo executables, fifteen enrollment
+controls and eighteen actual mount observations for each of Serve and publisher.
+PID 1 starts both fresh confined GC processes after Serve readiness; original
+owner exclusion, foreign-peer refusal, listener retirement and durable snapshots
+through acknowledged shutdown pass. The renewed prerequisites pass in 1,471.441
+seconds: all 96 remote derivations, both imported outputs, the fresh
+capability-free ext4 sandbox proof and clean shutdown are reviewed. These
+prerequisites do not claim fresh execution of the twelve earlier package checks.
+Only the manager manifest's image and initrd identities change; its original
+resources, timeout and driver assertions remain. This qualifies actual manager
+startup at the recorded source. Restart recovery, draining physical exposure
+release and complete role acceptance remain open; trunk acceptance is 28/64.
+
 The copied retirement fixture now forwards ordinary native read recipes to its
 existing inner binding, including the physical closing recipe required by
 candidate-history completion. It previously retained the trait's unsupported
