@@ -31,7 +31,6 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{StatVfsMountFlags, fstatvfs};
-#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
