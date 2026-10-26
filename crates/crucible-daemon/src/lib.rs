@@ -587,9 +587,10 @@ pub(crate) use qemu_campaign_lifecycle::{
 };
 pub use qemu_campaign_lifecycle::{
     InteractiveQemuSessionError, QemuAttemptContinuation, QemuAttemptProductionVmLifecycleError,
-    QemuFinalBoundaryDrain, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
-    QemuFreshDriveOutcome, QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
-    QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
+    QemuExactCheckpointRefusal, QemuFinalBoundaryDrain, QemuFreshAttemptDriver,
+    QemuFreshAttemptLifecycle, QemuFreshDriveOutcome, QemuFreshExecutionRunnerError,
+    QemuFreshGenesisCheckpointCandidate, QemuFreshGenesisCheckpointError,
+    QemuFreshStartMaterialization, QemuFreshStartReplayError,
     build_guarded_interactive_qemu_session,
 };
 #[cfg(test)]

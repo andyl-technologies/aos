@@ -153,6 +153,9 @@ pub enum QemuAttemptProductionVmLifecycleError {
     TraceStorage(#[source] std::io::Error),
 }
 
+mod checkpoint_refusal;
+pub use checkpoint_refusal::QemuExactCheckpointRefusal;
+
 mod resource_admission;
 pub use resource_admission::{
     QemuFreshScenarioResourceError, validate_fresh_qemu_scenario_resources,
@@ -301,6 +304,21 @@ pub trait QemuFreshAttemptLifecycleOwner {
     /// Returns [`SchedulerError`] when live-node or host-I/O state cannot be
     /// inspected consistently.
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError>;
+
+    /// Names why the current boundary cannot enter an exact checkpoint.
+    ///
+    /// Returns `None` exactly when [`Self::exact_checkpoint_ready`] would
+    /// report ready. The default can only report an unnamed refusal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when live-node or host-I/O state cannot be
+    /// inspected consistently.
+    fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<QemuExactCheckpointRefusal>, SchedulerError> {
+        Ok((!self.exact_checkpoint_ready()?).then_some(QemuExactCheckpointRefusal::Unnamed))
+    }
 
     /// Reads an exact physical park for a declared campaign phase marker.
     ///
@@ -644,6 +662,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         ProductionVmLifecycleLoop::exact_checkpoint_ready(self)
     }
 
+    fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<QemuExactCheckpointRefusal>, SchedulerError> {
+        Ok(ProductionVmLifecycleLoop::exact_checkpoint_refusal(self)?
+            .map(QemuExactCheckpointRefusal::Named))
+    }
+
     fn parked_campaign_marker(
         &mut self,
         node: &NodeId,
@@ -981,6 +1006,18 @@ impl QemuFreshAttemptLifecycle<'_> {
     /// inspected consistently.
     pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         self.owner.exact_checkpoint_ready()
+    }
+
+    /// Names why the current boundary cannot enter an exact checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the live checkpoint boundary cannot be
+    /// inspected consistently.
+    pub fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<QemuExactCheckpointRefusal>, SchedulerError> {
+        self.owner.exact_checkpoint_refusal()
     }
 
     /// Reads the parked physical marker proof for one VM.

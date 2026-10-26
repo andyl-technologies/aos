@@ -44,6 +44,7 @@ use crate::guest_selectable::{
 use crate::qemu_campaign_lifecycle::{
     GuardedCampaignFindingOracle, GuardedCampaignFindingOracleError,
     GuardedCampaignFindingOracleEvaluation, QemuCheckpointChoiceProvenance,
+    QemuExactCheckpointRefusal,
 };
 use crate::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure, CrucibleArtifactError,
@@ -68,6 +69,7 @@ mod quantum_budget_report;
 mod replay_proof;
 mod resume_progress;
 mod retention_boundary;
+mod savepoint_refusal;
 mod selection_projection;
 mod stop_boundary;
 mod triage_inputs;
@@ -712,6 +714,20 @@ pub trait QemuModeledAttemptLifecycle {
     /// Returns [`SchedulerError`] when quiescence cannot be authenticated.
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError>;
 
+    /// Names why the current boundary is not an exact checkpoint boundary.
+    ///
+    /// Returns `None` exactly when [`Self::exact_checkpoint_ready`] would
+    /// report ready. The default can only report an unnamed refusal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when quiescence cannot be authenticated.
+    fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<QemuExactCheckpointRefusal>, SchedulerError> {
+        Ok((!self.exact_checkpoint_ready()?).then_some(QemuExactCheckpointRefusal::Unnamed))
+    }
+
     /// Reads one live VM's exact marker park, if present.
     ///
     /// # Errors
@@ -916,6 +932,12 @@ impl QemuModeledAttemptLifecycle for QemuFreshAttemptLifecycle<'_> {
 
     fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
         QemuFreshAttemptLifecycle::exact_checkpoint_ready(self)
+    }
+
+    fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<QemuExactCheckpointRefusal>, SchedulerError> {
+        QemuFreshAttemptLifecycle::exact_checkpoint_refusal(self)
     }
 
     fn parked_campaign_marker(
@@ -1857,13 +1879,16 @@ fn modeled_stop_outcome(
             },
         ));
     }
-    if !lifecycle
-        .exact_checkpoint_ready()
+    // RFC-0010 ADV-12: a stop that cannot be captured completely refuses the
+    // capture rather than producing a partial checkpoint or replaying.
+    if let Some(refusal) = lifecycle
+        .exact_checkpoint_refusal()
         .map_err(classify_scheduler_error)?
     {
+        savepoint_refusal::record_savepoint_capture_refusal(&pending.input, &refusal);
         return Err(classify_scheduler_error(
             SchedulerError::BoundaryViolation {
-                message: String::from("savepoint capture stop is not checkpoint ready"),
+                message: format!("savepoint capture stop is not checkpoint ready: {refusal}"),
             },
         ));
     }

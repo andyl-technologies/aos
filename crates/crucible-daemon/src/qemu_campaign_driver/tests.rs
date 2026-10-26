@@ -46,6 +46,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use super::*;
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
 
+mod capture_refusal;
 mod envoy_boot_eligibility;
 mod guest_marker_boundary;
 mod held_source;

@@ -515,6 +515,16 @@ where
         self.lifecycle.exact_checkpoint_ready()
     }
 
+    fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<crate::qemu_campaign_lifecycle::QemuExactCheckpointRefusal>, SchedulerError>
+    {
+        Ok(self
+            .lifecycle
+            .exact_checkpoint_refusal()?
+            .map(crate::qemu_campaign_lifecycle::QemuExactCheckpointRefusal::Named))
+    }
+
     fn parked_campaign_marker(
         &mut self,
         node: &NodeId,

@@ -47,6 +47,36 @@ pub enum ProductionExactCheckpointNotReady {
     },
 }
 
+impl ProductionExactCheckpointNotReady {
+    /// Returns the stable kebab-case token naming this reason in diagnostics.
+    ///
+    /// Node-scoped reasons share one token; the node is reported separately.
+    #[must_use]
+    pub const fn token(&self) -> &'static str {
+        match self {
+            Self::HeldHostOutcomes => "held-host-outcomes",
+            Self::UnsettledHostContinuation => "unsettled-host-continuation",
+            Self::LiveNetworkPreselection => "live-network-preselection",
+            Self::CampaignParks => "campaign-parks",
+            Self::BranchEffectChoices => "branch-effect-choices",
+            Self::SignalFaultBranches => "signal-fault-branches",
+            Self::PendingNetworkOutputs => "pending-network-outputs",
+            Self::SelectableCatalogs => "selectable-catalogs",
+            Self::DeviceIo { .. } => "device-io",
+            Self::SelectableReply { .. } => "selectable-reply",
+        }
+    }
+
+    /// Returns the node a node-scoped reason names, if any.
+    #[must_use]
+    pub const fn node(&self) -> Option<&NodeId> {
+        match self {
+            Self::DeviceIo { node } | Self::SelectableReply { node } => Some(node),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for ProductionExactCheckpointNotReady {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
