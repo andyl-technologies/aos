@@ -108431,7 +108431,7 @@
     "crates/packages/aos-deployment-format/BUILD.bazel": "55e6e63a26d32a52f926a9e1ffb6dd1649c084a3c4ba9879e0fcd2cd41cf62c9",
     "crates/packages/aos-deployment/BUILD.bazel": "16600315d4e041dd064d783aa623b6cd9746010fb5353fb1c1a69e0d944cc2c4",
     "crates/packages/aos-nix-cache/BUILD.bazel": "681ee8c4934b987d505d7dc315e7bcc6ddf74ec1a5766286b5f9c98d32934369",
-    "crates/packages/aos-package-manager/BUILD.bazel": "e02f67e1a7129d8b9b12c8467e4bd1fe6a0897d0508da86acef0a075fac50b6e",
+    "crates/packages/aos-package-manager/BUILD.bazel": "4ebdb544a7ca91f08400d1662150ce93611d7d54f7a7a7b49b3f4e3a5caada7a",
     "crates/registry/aos-registry-authoring/BUILD.bazel": "67d9a128a8cca78e5cfab001f15df6eb24d22875841eb742571e997d3b5f42ab",
     "crates/registry/aos-registry-client/BUILD.bazel": "6bb8a933c15256dc28541fafdc9d6e78c3c6fa36d9a52f4c4aabbf0612c8f4bd",
     "crates/registry/aos-registry-format/BUILD.bazel": "06a57c32cc0ec6432b321014d96aa4efa89bd4f964f2099138eebcf022eb7381",

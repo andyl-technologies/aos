@@ -16,7 +16,7 @@ in
     pname = "boot-configuration-check";
     version = "0";
     src = null;
-    buildDeps = [driver inputs pkgs.coreutils pkgs.nix];
+    buildDeps = [driver inputs pkgs.coreutils pkgs.grep pkgs.nix];
     phases = [
       {
         name = "check";
@@ -38,17 +38,26 @@ in
           export AOS_BOOT_CONFIGURATION_FIXTURE=${fixture}/fixture.json
           export AOS_BOOT_HANDOFF_FIXTURE=${handoffFixture}/fixture.json
           export PATH=${pkgs.nix}/bin:$PATH
+          case_index=0
           for executable in ${driver}/bin/aos_package_manager-*; do
-            "$executable" --exact \
+            for test_case in \
               boot_configuration::integration::checked_metadata_adoption_recovers_and_preserves_operator_sources \
-              --ignored --nocapture
-            "$executable" --exact \
               config_eval::provisioning_evaluator::tests::source_built_provisioning_results_match_declared_wire_contracts \
-              --ignored --nocapture
-            "$executable" --exact \
-              boot_configuration::integration::committed_dynamic_receipts_cross_stores_with_exact_authority \
-              --ignored --nocapture
+              boot_configuration::integration::committed_dynamic_receipts_cross_stores_with_exact_authority; do
+              # Libtest otherwise reports success when an exact filter matches nothing.
+              listing="$("$executable" "$test_case" --exact --list --ignored --format=terse)"
+              test "$listing" = "$test_case: test"
+              case_index=$((case_index + 1))
+              log="$out/case-$case_index.log"
+              if ! "$executable" "$test_case" --exact --ignored --nocapture > "$log" 2>&1; then
+                cat "$log" >&2
+                exit 1
+              fi
+              ${pkgs.grep}/bin/grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored;' "$log"
+              printf '%s\n' "$test_case" >> "$out/cases.txt"
+            done
           done
+          test "$case_index" -eq 3
           echo PASS > "$out/result"
         '';
       }

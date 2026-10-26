@@ -2486,6 +2486,47 @@ Linux sandbox actions are checked independently. Evidence is retained in
 Foreign-host execution, numeric performance acceptance, production default
 cutover and repository-wide Cargo removal remain separate RFC gates.
 
+## Boot configuration fixture driver
+
+`pkgs.aos-boot-configuration-test-driver.passthru.withBuildDriver "bazel"`
+installs the package-manager release libtest as `bin/aos_package_manager-unit`.
+The existing `aos_package_manager-*` consumer contract is preserved. Cargo
+remains the default and rollback builder; the Bazel selector avoids evaluating
+the Cargo constructor and vendor tree and preserves the platform and runtime
+contracts. It reuses the pinned `package-evaluation-driver` dependency profile;
+all 76 dependency profiles and their generated files remain unchanged.
+
+`checks.build.bazel.boot-configuration-driver-production.all`, also available
+through `tools/bazel/tests/boot-configuration-driver-production.nix`, compares
+26 first-party compiler profiles, feature selections for 24 first-party packages
+and 332 dependencies, complete installed ELF linkage and runtime closures.
+Both installed binaries must pass all 617 ordinary cases, with the same seven
+ignored cases. The Bazel release test target runs those ordinary cases as well.
+
+The production fixture harness runs three ignored cases with each installed
+driver: checked metadata adoption and recovery preserving operator sources;
+provisioning results matching declaration-derived wire contracts; and dynamic
+receipts retaining exact authority across isolated stores. Each exact filter
+must list its required case and execute it once. The harness retains the case
+names and individual logs and rejects missing, duplicated or unexecuted cases.
+The other four ignored cases retain their existing qualification scope.
+
+Running every installed case exposed an existing fixup bug: reference scrubbing
+rewrote synthetic store hashes, breaking 60 Cargo tests and collapsing distinct
+fixture identities. Both installers now keep the 14 explicit synthetic fixture
+hashes while continuing to scrub other references. This deliberately changes
+the Cargo package identity; compiler inputs, build commands and dependency
+identities are unchanged. The intermediate Bazel package installation applies
+the same policy. Omitting the new optional `mkAosBazelPackage.nukeRefsKeep`
+argument, or passing an empty list, preserves the previous default derivation
+identity.
+
+Precise and conservative source selections agree on three roots and 445
+configured reports. The qualification receipt is retained in
+`tests/evidence/boot-configuration-driver-production-package.json`.
+Foreign-host execution, numeric performance acceptance, production default
+cutover and repository-wide Cargo removal remain separate RFC gates.
+
 ## Storage/campaign compilation measurements
 
 `tests/evidence/store-performance-v3.json` identifies a frozen compilation trial

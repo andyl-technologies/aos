@@ -233,6 +233,25 @@ aos_package(
     visibility = ["//visibility:public"],
 )
 
+aos_license_check(
+    name = "boot_configuration_driver_license_closure",
+    testonly = True,
+    roots = [":unit_binary"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_package(
+    name = "boot_configuration_driver_package",
+    testonly = True,
+    package_name = "aos-boot-configuration-test-driver",
+    version = "0",
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {":unit_binary": "bin/aos_package_manager-unit"},
+    executables = ["bin/aos_package_manager-unit"],
+    visibility = ["//visibility:public"],
+)
+
 rust_doc_test(name = "doc", crate = ":lib")
 
 PRODUCTION_ARTIFACTS = [
