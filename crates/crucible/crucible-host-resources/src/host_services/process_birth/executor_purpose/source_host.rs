@@ -6,6 +6,7 @@
 //! records physical reap; a PID, empty cgroup or cancellation cannot replace it.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::os::fd::BorrowedFd;
 use std::process::{Child, ExitStatus};
 use std::sync::Mutex;
 
@@ -13,6 +14,9 @@ use super::*;
 
 mod retained_control;
 use retained_control::RetainedControl;
+
+#[cfg(test)]
+mod tests;
 
 mod roster_allocation;
 pub use roster_allocation::{NativeRosterAllocationFunding, NativeRosterUpgradeGate};
@@ -81,17 +85,81 @@ struct SourceControlState {
 
 #[derive(Default)]
 struct SourceChildState {
+    endpoint: Option<SourceBirthEndpoint>,
     birth_attempted: bool,
     process: Option<u32>,
     reaped: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SourceBirthEndpoint {
+    device: u64,
+    inode: u64,
+}
+
+impl SourceBirthEndpoint {
+    fn read(endpoint: BorrowedFd<'_>) -> Result<Self, ServiceBirthError> {
+        let metadata =
+            rustix::fs::fstat(endpoint).map_err(crate::host_services::process_birth::message)?;
+        if rustix::fs::FileType::from_raw_mode(metadata.st_mode) != rustix::fs::FileType::Socket {
+            return Err(ServiceBirthError::policy(
+                "Source birth endpoint is not a socket",
+            ));
+        }
+        Ok(Self {
+            device: metadata.st_dev,
+            inode: metadata.st_ino,
+        })
+    }
+}
+
+/// Retains one Source's once-only birth attempt and its actual socket endpoint.
+///
+/// The endpoint remains borrowed through creation and actual Child retention.
+/// Dropping an attempted birth without its child leaves the same payer held;
+/// this owner creates neither a native execution grant nor another reservation.
+#[derive(Debug)]
+pub struct AuthenticatedSourceBirth<'endpoint> {
+    purpose: AuthenticatedSourceHostPurpose,
+    endpoint: BorrowedFd<'endpoint>,
+    identity: SourceBirthEndpoint,
+}
+
 impl SourceChildState {
+    fn assign_endpoint(&mut self, endpoint: SourceBirthEndpoint) -> Result<(), ServiceBirthError> {
+        if self.endpoint.is_some() || self.birth_attempted || self.process.is_some() || self.reaped
+        {
+            return Err(ServiceBirthError::policy(
+                "Source birth endpoint was already assigned",
+            ));
+        }
+        self.endpoint = Some(endpoint);
+        Ok(())
+    }
+
+    fn begin_birth(&mut self, endpoint: SourceBirthEndpoint) -> Result<(), ServiceBirthError> {
+        if self.endpoint != Some(endpoint)
+            || self.birth_attempted
+            || self.process.is_some()
+            || self.reaped
+        {
+            return Err(ServiceBirthError::policy(
+                "Source birth assignment is unavailable",
+            ));
+        }
+        self.birth_attempted = true;
+        Ok(())
+    }
+
     fn returned_or_unstarted(&self) -> bool {
         matches!(
             (self.birth_attempted, self.process, self.reaped),
-            (false, None, false) | (true, Some(_), true)
-        )
+            (false, None, false)
+        ) || (self.endpoint.is_some()
+            && matches!(
+                (self.birth_attempted, self.process, self.reaped),
+                (true, Some(_), true)
+            ))
     }
 }
 
@@ -325,27 +393,57 @@ impl AuthenticatedSourceHostPurpose {
         Ok(())
     }
 
-    /// Marks the actual Source spawn attempt before invoking process creation.
+    /// Assigns the actual endpoint to one birth owner before queuing Setup.
     ///
-    /// An uncertain failed spawn cannot replenish its window. The caller keeps
-    /// this same purpose in the already paid failure/cleanup owner.
+    /// The assignment is irreversible even if no creation is attempted. An
+    /// unattempted birth still has no process borrower, but cannot reassign this
+    /// same purpose to another endpoint. The caller retains the existing loan
+    /// and all descriptor owners independently through failure and collection.
     ///
     /// # Errors
-    /// Refuses repeated birth, changed Main or poisoned retained process state.
-    pub fn begin_birth(&self) -> Result<(), ServiceBirthError> {
+    /// Refuses changed Main custody, an invalid socket, repeated assignment or
+    /// a busy or poisoned birth journal.
+    pub fn prepare_birth<'endpoint>(
+        &self,
+        endpoint: BorrowedFd<'endpoint>,
+    ) -> Result<AuthenticatedSourceBirth<'endpoint>, ServiceBirthError> {
         self.check()?;
+        let identity = SourceBirthEndpoint::read(endpoint)?;
         let mut state = self
             .held
             .child
-            .lock()
+            .try_lock()
             .map_err(|_| ServiceBirthError::policy("Source process custody is uncertain"))?;
-        if state.birth_attempted {
-            return Err(ServiceBirthError::policy(
-                "Source birth was already attempted",
-            ));
+        state.assign_endpoint(identity)?;
+        Ok(AuthenticatedSourceBirth {
+            purpose: self.clone(),
+            endpoint,
+            identity,
+        })
+    }
+}
+
+impl AuthenticatedSourceBirth<'_> {
+    /// Marks this assigned Source's sole creation attempt before invoking it.
+    ///
+    /// An uncertain creation result cannot replenish the assignment. The same
+    /// purpose remains held by its preborn failure and cleanup owners.
+    ///
+    /// # Errors
+    /// Refuses changed Main or endpoint custody, repeated birth, or a busy or
+    /// poisoned process journal.
+    pub fn begin_birth(&mut self) -> Result<(), ServiceBirthError> {
+        self.purpose.check()?;
+        if SourceBirthEndpoint::read(self.endpoint)? != self.identity {
+            return Err(ServiceBirthError::policy("Source birth endpoint changed"));
         }
-        state.birth_attempted = true;
-        Ok(())
+        let mut state = self
+            .purpose
+            .held
+            .child
+            .try_lock()
+            .map_err(|_| ServiceBirthError::policy("Source process custody is uncertain"))?;
+        state.begin_birth(self.identity)
     }
 
     /// Moves the actual spawned Child into its retained physical wait owner.
@@ -354,10 +452,10 @@ impl AuthenticatedSourceHostPurpose {
     /// Returns the same Child on missing/repeated birth or uncertain state. The
     /// caller must retain and contain that real process after refusal.
     pub fn retain_child(
-        &self,
+        self,
         child: Child,
     ) -> Result<AuthenticatedSourceChild, (Child, ServiceBirthError)> {
-        let mut state = match self.held.child.lock() {
+        let mut state = match self.purpose.held.child.try_lock() {
             Ok(state) => state,
             Err(_) => {
                 return Err((
@@ -366,7 +464,11 @@ impl AuthenticatedSourceHostPurpose {
                 ));
             }
         };
-        if !state.birth_attempted || state.process.is_some() || state.reaped {
+        if state.endpoint != Some(self.identity)
+            || !state.birth_attempted
+            || state.process.is_some()
+            || state.reaped
+        {
             return Err((
                 child,
                 ServiceBirthError::policy("Source child birth does not match keeper"),
@@ -376,7 +478,7 @@ impl AuthenticatedSourceHostPurpose {
         drop(state);
         Ok(AuthenticatedSourceChild {
             child,
-            purpose: self.clone(),
+            purpose: self.purpose,
         })
     }
 }

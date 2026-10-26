@@ -17,10 +17,11 @@ pub use executor_purpose::{
     AuthenticatedNativeNodeClaim, AuthenticatedNativeNodeHostWindow,
     AuthenticatedNativePoolPurpose, AuthenticatedNativeSlotPurpose, AuthenticatedNativeSubdivision,
     AuthenticatedNativeWorldClaim, AuthenticatedNativeWorldCleanupLoan,
-    AuthenticatedNativeWorldControlLease, AuthenticatedSourceChild, AuthenticatedSourceHostPurpose,
-    AuthenticatedTargetDispatcherPurpose, NativeNodeReservation, NativePoolRefusal,
-    NativePoolReturnError, NativeRosterAllocationFunding, NativeRosterUpgradeGate, NativeWorldIdentity,
-    NativeWorldReturn, SourceHostControlLease, SourceHostControlPayer,
+    AuthenticatedNativeWorldControlLease, AuthenticatedSourceBirth, AuthenticatedSourceChild,
+    AuthenticatedSourceHostPurpose, AuthenticatedTargetDispatcherPurpose, NativeNodeReservation,
+    NativePoolRefusal, NativePoolReturnError, NativeRosterAllocationFunding,
+    NativeRosterUpgradeGate, NativeWorldIdentity, NativeWorldReturn, SourceHostControlLease,
+    SourceHostControlPayer,
 };
 
 use super::{

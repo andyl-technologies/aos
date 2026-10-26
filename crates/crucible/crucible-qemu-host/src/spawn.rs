@@ -1495,6 +1495,14 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
             bytes,
         )?);
     }
+    // Consume the actual Source's endpoint assignment before Setup can expose
+    // aliases. This same owner covers the interval before spawn returns its
+    // Child; neither a queued frame nor an uncertain result permits another birth.
+    let mut source_birth = source_purpose
+        .as_ref()
+        .map(|purpose| purpose.prepare_birth(child_resources.control_socket.as_fd()))
+        .transpose()
+        .map_err(|source| QemuSpawnError::SourceHost { source })?;
     if let Some(preexec) = preexec {
         let ram_endpoint =
             child_resources.issue_ram_control_endpoint(&resources, command, contract, &preexec)?;
@@ -1533,8 +1541,8 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
             cleanup.child_started();
         }
     }
-    if let Some(purpose) = source_purpose.as_ref() {
-        purpose
+    if let Some(birth) = source_birth.as_mut() {
+        birth
             .begin_birth()
             .map_err(|source| QemuSpawnError::SourceHost { source })?;
     }
@@ -1542,7 +1550,7 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
         command.executable(),
         &launch_args,
         run_directory,
-        child_resources,
+        &child_resources,
         &image_pins,
         command.diagnostic_envs(),
         Some(BorrowedSpawnProcessContract {
@@ -1551,8 +1559,8 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
             selected_preexec,
         }),
     )?;
-    let mut child = match source_purpose.as_ref() {
-        Some(purpose) => match purpose.retain_child(child) {
+    let mut child = match source_birth.take() {
+        Some(birth) => match birth.retain_child(child) {
             Ok(child) => QemuNodeChild::from_authenticated_source(child),
             Err((child, source)) => {
                 let mut child = QemuNodeChild::new(child);
@@ -1879,7 +1887,7 @@ fn spawn_process_with_resources(
     executable: &str,
     args: &[String],
     run_directory: &QemuPreparedRunDirectory,
-    child_resources: QemuSpawnChildResources,
+    child_resources: &QemuSpawnChildResources,
     image_pins: &GuardedLaunchImagePins,
     envs: &[(&str, &str)],
     process_contract: Option<BorrowedSpawnProcessContract<'_>>,

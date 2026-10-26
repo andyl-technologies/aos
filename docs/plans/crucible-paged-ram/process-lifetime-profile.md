@@ -129,6 +129,14 @@ journal. `AuthenticatedSourceHostPurpose` owns the actual Source child keeper;
 successful waits on that owned child record collection. Launch retirement now
 joins that journal with its other physical-return conditions.
 
+Before queuing Setup, that purpose irreversibly assigns the actual child-side
+socket to one non-cloneable `AuthenticatedSourceBirth`. Its borrowed descriptor
+keeps that endpoint alive through the creation attempt and actual Child
+retention. The journal refuses another assignment even when creation was never
+attempted, and an uncertain attempted birth retains the existing payer. This
+host prerequisite adds no native grant or enabled wire contract; socket identity
+alone does not authenticate native process adoption.
+
 The creator runs in the authenticated service's guardian. Its child inherits
 that membership, then attaches itself to the Source cgroup in `pre_exec` before
 loading QEMU. This establishes an authenticated ancestor and pre-exec
@@ -136,8 +144,8 @@ attachment. It does not establish creation directly in the Source subdivision
 or prove the complete simultaneous guardian/fork and Source/exec accounting.
 
 The remaining implementation is the complete resource-domain classification,
-an explicit irreversible birth-attempt assignment and authenticated local
-adoption under the revised contract, and the real compiled Cleanup-entry
-producer. Existing physical-return APIs still require their own actual
+the revised contract joining that host birth assignment to authenticated local
+adoption, and the real compiled Cleanup-entry producer. Existing physical-return
+APIs still require their own actual
 terminal, last-use, unmap and settlement receipts. This design supplies none
 of the missing writer, paging, fork/rearm, performance or release qualification.

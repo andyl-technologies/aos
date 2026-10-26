@@ -16,7 +16,9 @@
 
 use std::os::fd::{AsRawFd, BorrowedFd, IntoRawFd, OwnedFd};
 
-use crucible_host_resources::host_services::process_birth::SourceHostControlLease;
+use crucible_host_resources::host_services::process_birth::{
+    AuthenticatedSourceBirth, SourceHostControlLease,
+};
 use crucible_host_resources::host_supervision::{HostOperationSupervisor, HostSupervisionError};
 use crucible_qemu_protocol::plugin_setup_plan::{
     PLUGIN_SETUP_PLAN_MAX_BYTES, PROCESS_PURPOSE_BYTES, PluginSetupPlan,
@@ -137,6 +139,7 @@ impl PreparedPreexecSetup {
         let fixed = std::mem::size_of::<Self>()
             .checked_add(std::mem::size_of::<PreexecSetupError>())?
             .checked_add(std::mem::size_of::<PreexecAbandonment>())?
+            .checked_add(std::mem::size_of::<Option<AuthenticatedSourceBirth<'static>>>())?
             .checked_add(PURPOSE_BYTES)?
             .checked_add(std::mem::size_of::<
                 super::ram_endpoint_binding::IssuedRamControlEndpoint<'_>,

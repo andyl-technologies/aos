@@ -1403,7 +1403,7 @@ fn pinned_pre_exec_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
         &current_exe,
         &[],
         &prepared,
-        child_resources,
+        &child_resources,
         &image_pins,
         &[],
         None,
@@ -1411,6 +1411,8 @@ fn pinned_pre_exec_rejects_vmstate_replacement() -> Result<(), Box<dyn Error>> {
         Err(error) => error,
         Ok(_) => panic!("pre-exec must reject a replaced VMState inode"),
     };
+
+    drop(child_resources);
 
     assert!(matches!(
         error,
@@ -1458,7 +1460,7 @@ fn pinned_run_directory_survives_diagnostic_path_replacement() -> Result<(), Box
         &current_exe,
         &args,
         &prepared,
-        child_resources,
+        &child_resources,
         &image_pins,
         &[
             (
@@ -1469,6 +1471,8 @@ fn pinned_run_directory_survives_diagnostic_path_replacement() -> Result<(), Box
         ],
         None,
     )?;
+
+    drop(child_resources);
 
     assert!(child.wait()?.success());
     Ok(())
@@ -1576,7 +1580,7 @@ fn inherited_block_roots_survive_names_replaced_after_exec() -> Result<(), Box<d
         &current_exe,
         &args,
         &prepared,
-        child_resources,
+        &child_resources,
         &image_pins,
         &[
             (PINNED_BLOCK_PROBE_ENV, probe_path),
@@ -1584,6 +1588,8 @@ fn inherited_block_roots_survive_names_replaced_after_exec() -> Result<(), Box<d
         ],
         None,
     )?;
+
+    drop(child_resources);
 
     wait_for_probe_file(&probe_root.path().join("ready"))?;
     std::fs::rename(&vmstate, attempt.join("old-vmstate"))?;
