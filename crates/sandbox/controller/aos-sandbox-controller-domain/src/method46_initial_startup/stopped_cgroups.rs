@@ -39,6 +39,16 @@ impl CgroupSampleOriginalV1 {
 }
 
 impl InitialStoppedCgroupsOriginalV1 {
+    pub(super) fn before_complete(&self) -> bool {
+        self.paid.get()
+            && self.samples[0].iter().all(|sample| {
+                sample.try_borrow().is_ok_and(|sample| {
+                    matches!(sample.result, Some(Ok(())))
+                        && sample.original.is_empty_or_absent_data_v1()
+                })
+            })
+    }
+
     pub(super) fn new() -> Self {
         Self {
             samples: std::array::from_fn(|_| {
@@ -95,13 +105,7 @@ impl InitialStoppedCgroupsOriginalV1 {
         let posts = self.observe(startup, 1);
         // A caught unwind or an interrupted primary cannot be healed by three
         // later empty observations or a caller-supplied successful body marker.
-        let before_complete = self.samples[0].iter().all(|sample| {
-            sample.try_borrow().is_ok_and(|sample| {
-                matches!(sample.result, Some(Ok(())))
-                    && sample.original.is_empty_or_absent_data_v1()
-            })
-        });
-        if before_complete {
+        if self.before_complete() {
             posts
         } else {
             Err(startup.closed)

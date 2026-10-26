@@ -35,6 +35,7 @@ pub use credentials::{
     METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, Method46InitialProvisionReadbackLoanV1,
 };
 mod images;
+mod main_writer;
 mod policy;
 mod stopped_cgroups;
 mod unit;
@@ -51,6 +52,7 @@ enum First {
     Unit,
     Credentials,
     StoppedOwners,
+    MainWriter,
     Order,
 }
 
@@ -90,6 +92,7 @@ struct StartupRolesOriginalV1 {
     policy: policy::InitialPolicyOriginalV1,
     unit: unit::InitialUnitOriginalV1,
     stopped_cgroups: stopped_cgroups::InitialStoppedCgroupsOriginalV1,
+    main_writer: RefCell<crate::journal::Method46InitialMainWriterOriginalV1>,
     credentials: RefCell<credentials::InitialCredentialsOriginalV1>,
     profile_original: Option<File>,
     profile: ImmutableFileAcquisitionOriginalV1,
@@ -117,6 +120,7 @@ impl StartupRolesOriginalV1 {
             policy: policy::InitialPolicyOriginalV1::new(),
             unit: unit::InitialUnitOriginalV1::new(),
             stopped_cgroups: stopped_cgroups::InitialStoppedCgroupsOriginalV1::new(),
+            main_writer: RefCell::new(crate::journal::Method46InitialMainWriterOriginalV1::new()),
             credentials: RefCell::new(credentials::InitialCredentialsOriginalV1::new()),
             profile_original: None,
             profile: ImmutableFileAcquisitionOriginalV1::new(),
@@ -482,6 +486,16 @@ impl Method46InitialStartupOriginalV1 {
             }
             if body.stopped_cgroups.finish_post(self).is_err() {
                 self.fail(First::StoppedOwners);
+            }
+            match body.main_writer.try_borrow_mut() {
+                Ok(mut writer) => {
+                    if writer.finish_post().is_err() {
+                        self.fail(First::MainWriter);
+                    }
+                }
+                Err(_) => {
+                    self.fail(First::Order);
+                }
             }
             match body.credentials.try_borrow_mut() {
                 Ok(mut credentials) => {

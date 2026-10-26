@@ -92,6 +92,10 @@ pub(super) struct InitialCredentialsOriginalV1 {
 }
 
 impl InitialCredentialsOriginalV1 {
+    pub(super) fn admitted_before_post(&self) -> bool {
+        self.completed && !self.post_entered
+    }
+
     pub(super) fn new() -> Self {
         Self {
             root: None,

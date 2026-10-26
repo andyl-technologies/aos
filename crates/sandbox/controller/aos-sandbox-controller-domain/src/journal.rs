@@ -777,6 +777,7 @@ mod execution_observation;
 pub(crate) use execution_observation::ExecutionObservationJournalIdentityV4;
 
 mod storage_captured_open;
+pub(crate) use storage_captured_open::Method46InitialMainWriterOriginalV1;
 pub(crate) use storage_captured_open::EnvironmentEvidenceCapturedJournalOpenV1;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]

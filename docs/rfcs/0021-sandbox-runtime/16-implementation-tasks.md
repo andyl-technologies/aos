@@ -482,8 +482,10 @@ Recent committed startup fixes close narrower prerequisites:
   Broker, Domain and Security tests plus four native cgroup-reader regressions
   pass. Complete Rust target compilation is running for the runtime changes.
   A dedicated AOS Nix kernel VM now selects the exact feature-gated kernel
-  fixture; it checks absence, emptiness, recursive population, immutable failure
-  and fresh observations at all three coordinates, and is running. The broader
+  fixture; it passes at
+  `/nix/store/q66di8pqxqjgv925ch0fnv5ndfaxxx9r-aos-vm-test-sandbox-method46-stopped-cgroups-0`.
+  It checks absence, emptiness, recursive population, immutable failure and
+  fresh observations at all three coordinates. The broader
   local-identity VM also selects it. Its first build-time check used plain
   Cargo and hit existing cgroup/process-isolation cases; the corrected fixture
   uses the established `nix-sandbox` nextest profile, where 537 tests pass and
@@ -492,6 +494,26 @@ Recent committed startup fixes close narrower prerequisites:
   test supplies a genuine installed
   manual producer, prevents later jobs/migrations, or grants protected writer
   or physical TPM custody. Those gates remain closed.
+
+- The genuine initial startup now also pays and retains its fixed existing
+  main writer. Admitted unit/credential originals and all three actual initial
+  stopped-cgroup cuts precede acquisition. Controller's configured image UID
+  and Storage's root UID select only their existing broker-session paths;
+  callers supply no path, owner, limits or Journal. Fixed native acquisition
+  and the same held physical prefix's complete native/semantic replay receive
+  separate actual Source debits. The shared existing-only writer engine cannot
+  create missing names, clean compaction or repair a tail. Nonempty means
+  committed native history, so a valid history whose current map is empty is
+  not rejected merely for deleting all rows. Empty and exhausted sequences
+  refuse. Partial acquisitions, original replay/pricing errors and the actual
+  Journal remain parked; an independently prepaid final name observation and
+  Source after stay owed on all failures. All 65 focused Broker, Domain and
+  Security tests pass, including purpose/order and missing-Source refusal and
+  dispatch past a busy writer post. Exact-source complete Rust target
+  compilation is running. This is existing writer custody and replay only;
+  Session schema/current HEAD, independent public-key and endpoint provenance,
+  job exclusion, approved-intent durability, physical TPM operations and
+  installed producer qualification remain open.
 
 - The latest installed offline key-preparation candidate passes its service
   property stage, then exits with the stopped-runtime invalid-unit class 95.

@@ -12,6 +12,8 @@ pub use storage_host::StorageHostSessionCapturedJournalOpenV1;
 mod controller;
 mod controller_floor;
 mod storage_floor;
+mod method46_initial;
+pub(crate) use method46_initial::Method46InitialMainWriterOriginalV1;
 pub use controller::{
     ControllerBrokerSessionCapturedJournalOpenV1,
     ControllerStartResourceSessionCapturedJournalOpenV4,
@@ -167,6 +169,7 @@ enum ProtectedCapturedJournalRecipeV1 {
     JoinedControllerSession(Option<(crate::ControllerInitialBrokerSessionRoleV1, u32)>),
     JoinedControllerStorageFloor(Option<u32>),
     JoinedStartResourceSession(Option<(crate::ControllerInitialBrokerSessionRoleV1, u32)>),
+    JoinedMethod46InitialMain(Option<(aos_sandbox_broker::receiving::Method46InitialServiceRoleV1, u32)>),
 }
 
 impl ProtectedCapturedJournalRecipeV1 {
@@ -181,6 +184,9 @@ impl ProtectedCapturedJournalRecipeV1 {
                 Some(Path::new(controller::directory(*role)))
             }
             Self::JoinedControllerSession(None) => None,
+            Self::JoinedMethod46InitialMain(coordinates) => coordinates.map(|(role, _)| {
+                Path::new(method46_initial::directory(role))
+            }),
             Self::JoinedStartResourceSession(Some((role, _))) => {
                 Some(Path::new(controller::directory(*role)))
             }
@@ -200,6 +206,7 @@ impl ProtectedCapturedJournalRecipeV1 {
             Self::JoinedControllerSession(_) | Self::JoinedStartResourceSession(_) => {
                 "session.journal"
             }
+            Self::JoinedMethod46InitialMain(_) => "session.journal",
             Self::JoinedControllerStorageFloor(_) => {
                 aos_sandbox_protocol::domain_ledger::floor_sidecar_geometry::SIDECAR_NAME_V1
             }
@@ -245,6 +252,7 @@ impl ProtectedCapturedJournalRecipeV1 {
             Self::JoinedControllerSession(coordinates) => coordinates.map(|(_, uid)| uid),
             Self::JoinedControllerStorageFloor(uid) => *uid,
             Self::JoinedStartResourceSession(coordinates) => coordinates.map(|(_, uid)| uid),
+            Self::JoinedMethod46InitialMain(coordinates) => coordinates.map(|(_, uid)| uid),
         }
     }
 }
