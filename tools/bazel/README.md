@@ -2304,6 +2304,16 @@ These results expose edit and no-op regressions against Cargo incremental.
 They do not establish end-to-end performance, numeric acceptance budgets,
 production readiness, or permission to remove Cargo.
 
+`tests/evidence/store-cargo-current-exploratory.json` retains a later completed
+Cargo baseline with the Rust 1.98.1 toolchain: three repetitions of both Cargo
+modes across the same six scenarios, with 599 cases validated per sample.
+Its raw report preserves all 36 samples, compiler configuration, resource usage
+and load observations. The accompanying overlap record identifies other builds
+and qualifications running during the trial. These contended compilation-only
+samples establish neither a quiet matched Bazel comparison nor numeric cutover
+budgets; they must not be compared with the earlier toolchain's timings as a
+matched performance result.
+
 ## Static Crucible activation adapter
 
 `aos-dev bazel --family activation-crucible` selects the optional AOS adapter
