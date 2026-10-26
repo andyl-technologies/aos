@@ -91,6 +91,29 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The public-reader batch at `3041fd861b` passes in 367.133 seconds: all twelve
+local service/direct/read-only/public-trust cases, 35 socket cases and 22 portable
+cases execute under their original thirty-second limits. Four independent
+reviews match all 8,289 immutable source files, 5,510 bound crate inputs, actual
+Cargo artifacts and retained service/socket executables. The fresh nonce proves
+the capability-free AOS 7.2.3 ext4 sandbox; exactly four derivations run remotely
+with host-native execution disabled. Clean stop and disk removal are verified;
+seven raw controller records are preserved before owned scratch cleanup. Missing
+and wrong public trust, malformed startup credentials, private-file absence,
+whole-head/file reads and backing equality are qualified at this revision. This
+does not qualify the later production launcher or accept a complete trunk task.
+
+Configured unit qualification at `221134c592` passes in 390.588 seconds. All
+twelve original selectors execute in the fresh AOS guest. Independent review
+matches all 8,289 immutable source files, 5,510 bound crate inputs and four
+retained Cargo executables: unit, example, CLI and GC. A second review verifies
+the fresh nonce-bound capability-free ext4 sandbox, exactly three remotely built
+derivations, disabled host-native fallback and clean shutdown. Seven raw records
+are preserved and owned terminal scratch is removed. Actual configured CLI,
+maintained-cache and independent cache-refusal VM checks are now running against
+this frozen image. Required application compilation remains pending. These unit
+results establish neither actual CLI execution nor complete role confinement.
+
 Configured SDK startup now uses the public-reader factory after installing its
 existing irreversible confinement. Pure preflight requires explicit public
 issuer locators and a separate file-backed `tokens.host_token` startup Read,
