@@ -119,6 +119,16 @@ read, weak upgrade or lifecycle renewal. The independent File-seed controls cove
 spare banks, exact/short credit, revoked backing and busy/foreign refusal. This
 query's integration into the genuine one-use Source handoff remains unfinished.
 
+The original registry capture now preserves its encoded bank, capacity-record
+bank and both private alias vectors using their defining element layouts. The
+SDK returns capacity DATA without exposing lookup keys or changing retained
+edges. Moved payloads and refused completion keep their actual independent
+backing, and selected-row refusal preserves prior components and the initialized
+prefix. Production byte admission uses the same census; tests retain the original
+separate byte formula as an independent oracle. The pre-Child observer includes
+these bank and census controls. The live typed registry owner, callbacks and
+complete Source handoff remain separate obligations.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its twelve
@@ -128,15 +138,15 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 120 focused Transport controls and 47 Engine
-census/installation/holder/startup controls. Complete Transport suites pass 2,320 tests each
-with twenty ignored; all 649 selected SDK/dependency inputs match the tested
-Transport snapshot. Complete Engine suites pass 2,118 tests each with thirty-four
+Both codec configurations pass 124 focused Transport controls and 51 Engine
+census/installation/holder/startup controls. Complete Transport suites pass 2,324 tests each
+with twenty ignored; all 650 selected SDK/dependency inputs match the tested
+Transport snapshot. Complete Engine suites pass 2,122 tests each with thirty-four
 ignored, using matching source-built installed packet fixtures. Five-package
-all-feature/all-target checks, 21-file scoped formatting, all six architecture
+all-feature/all-target checks, six-file scoped formatting, all six architecture
 gates and the RFC requirement-map gate pass. Required application test-target
 compilation passes with 185 artifacts across 58 packages and 76 integration targets;
-all 824 selected frozen Rust/Cargo inputs match current and captured source. User-owned
+all 828 selected frozen Rust/Cargo inputs match current and captured source. User-owned
 changes are preserved. These are component results; the requirement map records
 planning coverage, and no latest-source strict lint or native lifecycle result
 is claimed.

@@ -340,6 +340,44 @@ impl MetadataAliasBank {
         (self.rows.capacity(), self.keys.capacity())
     }
 
+    /// Reports actual row and lookup geometry without exposing lookup addresses.
+    ///
+    /// Both vectors retain independent rows, including empty, spare or failed
+    /// backing. The enclosing owner already contains the bank's inline header.
+    /// No alias group, native owner or traversal completion follows from DATA.
+    pub fn retained_capacity_data(&self) -> [super::records::MetadataCapacityRecord; 2] {
+        use super::records::{MetadataCapacityRecord, MetadataRecordKind};
+        let Self {
+            rows,
+            keys,
+            maximum: _,
+            comparisons: _,
+            reservation: _,
+        } = self;
+        [
+            MetadataCapacityRecord {
+                kind: MetadataRecordKind::Vector,
+                extent: rows.capacity(),
+                element_bytes: std::mem::size_of::<AliasRow>(),
+                alignment: std::mem::align_of::<AliasRow>(),
+            },
+            MetadataCapacityRecord {
+                kind: MetadataRecordKind::Vector,
+                extent: keys.capacity(),
+                element_bytes: std::mem::size_of::<AliasKey>(),
+                alignment: std::mem::align_of::<AliasKey>(),
+            },
+        ]
+    }
+
+    /// Names the actual bank, private vector loans and returned row controls.
+    pub const fn retained_capacity_counter_scratch_data() -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<&Vec<AliasRow>>()
+            + std::mem::size_of::<&Vec<AliasKey>>()
+            + std::mem::size_of::<[super::records::MetadataCapacityRecord; 2]>()
+    }
+
     /// Reads the two actual precharged vector capacities without copying rows.
     pub fn allocation_facts(&self) -> MetadataAliasAllocationFacts {
         let (row_capacity, lookup_capacity) = self.capacity_rows();
@@ -649,6 +687,68 @@ mod retained_owner_tests {
         );
         assert_eq!(bank.rows.as_ptr(), pointer);
         assert_eq!(bank.allocation_facts(), allocation);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bank_capacity_data_tests {
+    use super::super::records::MetadataRecordKind;
+    use super::*;
+
+    #[test]
+    fn original_alias_backing_keeps_both_private_layouts_and_edges() -> Result<(), ProviderError> {
+        let mut bank = MetadataAliasBank::reserve(7)?;
+        let original = 23u64;
+        bank.retain(MetadataSharedKind::RegistrarEpoch, &original)?;
+        bank.retain(MetadataSharedKind::RegistrarEpoch, &original)?;
+        let pointers = (bank.rows.as_ptr(), bank.keys.as_ptr());
+        let capacities = bank.capacity_rows();
+        let comparisons = bank.comparisons;
+
+        let rows = bank.retained_capacity_data();
+
+        for row in rows {
+            row.validate_data()?;
+            assert_eq!(row.kind, MetadataRecordKind::Vector);
+        }
+        assert_eq!((rows[0].extent, rows[1].extent), capacities);
+        assert_eq!(rows[0].element_bytes, std::mem::size_of::<AliasRow>());
+        assert_eq!(rows[0].alignment, std::mem::align_of::<AliasRow>());
+        assert_eq!(rows[1].element_bytes, std::mem::size_of::<AliasKey>());
+        assert_eq!(rows[1].alignment, std::mem::align_of::<AliasKey>());
+        assert_eq!(
+            rows.into_iter()
+                .map(|row| row.extent * row.element_bytes)
+                .sum::<usize>(),
+            bank.allocated_bytes()
+        );
+        assert_eq!((bank.rows.as_ptr(), bank.keys.as_ptr()), pointers);
+        assert_eq!(bank.comparisons, comparisons);
+        assert_eq!(bank.retained_rows(), 2);
+        assert_eq!(bank.keys.len(), 1);
+        assert!(bank.rows.iter().all(|row| row.first == 0));
+        Ok(())
+    }
+
+    #[test]
+    fn refused_alias_backing_stays_failed_after_capacity_observation() -> Result<(), ProviderError>
+    {
+        let mut bank = MetadataAliasBank::unallocated(7)?;
+        let before = bank.retained_capacity_data();
+        assert!(bank.reserve_retained_with_backing_data(0).is_err());
+
+        let after = bank.retained_capacity_data();
+
+        assert_eq!(before, after);
+        assert!(
+            after
+                .into_iter()
+                .all(|row| row.extent == 0 && row.element_bytes > 0)
+        );
+        assert!(matches!(bank.reservation, ReservationState::Failed));
+        assert!(bank.reserve_retained_data().is_err());
+        assert_eq!(bank.retained_rows(), 0);
         Ok(())
     }
 }

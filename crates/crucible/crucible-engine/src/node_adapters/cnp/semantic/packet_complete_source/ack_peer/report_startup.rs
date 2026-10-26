@@ -93,6 +93,7 @@ impl PacketCompleteSemanticSource {
             + Self::original_complete_holder_capacity_counter_scratch_data()
             + Self::original_complete_host_startup_marker_capacity_counter_scratch_data()
             + retained_values::value_capacity_counter_scratch_data()
+            + Self::original_complete_registry_capacity_counter_scratch_data()
             + crucible_node_transport::retained_metadata::original_metadata_observer_layout_bytes()
             + size_of::<[usize; 7]>()
             + size_of::<StartupAdditions<'_>>()

@@ -12,6 +12,9 @@ use crucible_node_transport::retained_metadata::{
 };
 use std::{cell::Ref, mem::size_of};
 
+#[path = "registry_capture/metadata.rs"]
+mod metadata;
+
 pub(super) const HOST_REGISTRY_MEDIA: &str =
     "application/vnd.source-owned.packet-host-extension-registry.v12+json";
 
@@ -115,29 +118,9 @@ impl OriginalCompleteRegistryCapture {
         &self,
         maximum: usize,
     ) -> Result<usize, E> {
-        let reference = self
-            .payload
-            .as_ref()
-            .map(|payload| {
-                NodeRuntime::capture_reference_storage(&payload.reference).map_err(E::unknown)
-            })
-            .transpose()?
-            .unwrap_or(0);
-        retained_values::sum_with_error::<E, _>(
-            [
-                self.encoded.capacity(),
-                self.records
-                    .as_ref()
-                    .map_or(0, MetadataRecordBank::allocated_bytes),
-                self.aliases
-                    .as_ref()
-                    .map_or(0, MetadataAliasBank::allocated_bytes),
-                self.payload
-                    .as_ref()
-                    .map_or(0, |payload| payload.bytes.capacity()),
-                reference,
-            ],
-            maximum,
+        let facts = self.capacity_facts_data(None).map_err(E::runtime)?;
+        PacketCompleteSemanticSource::complete_retained_metadata_storage_with_error::<E>(
+            &facts, maximum,
         )
     }
 }

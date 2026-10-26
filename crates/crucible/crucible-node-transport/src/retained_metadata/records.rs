@@ -227,6 +227,32 @@ impl MetadataRecordBank {
         self.rows.capacity()
     }
 
+    /// Reports the actual record-vector geometry, including unused backing.
+    ///
+    /// The enclosing owner already contains this bank's inline header. The row
+    /// describes backing only, even after failed reservation, and neither reads
+    /// recorded contents nor establishes traversal completion.
+    pub fn retained_capacity_data(&self) -> MetadataCapacityRecord {
+        let Self {
+            rows,
+            maximum_rows: _,
+            reservation: _,
+        } = self;
+        MetadataCapacityRecord {
+            kind: MetadataRecordKind::Vector,
+            extent: rows.capacity(),
+            element_bytes: std::mem::size_of::<MetadataCapacityRecord>(),
+            alignment: std::mem::align_of::<MetadataCapacityRecord>(),
+        }
+    }
+
+    /// Names the actual bank, vector loan and returned capacity-row controls.
+    pub const fn retained_capacity_counter_scratch_data() -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<&Vec<MetadataCapacityRecord>>()
+            + std::mem::size_of::<MetadataCapacityRecord>()
+    }
+
     /// Borrows the complete recorded traversal without copying rows.
     pub fn rows(&self) -> &[MetadataCapacityRecord] {
         &self.rows
@@ -643,6 +669,63 @@ mod retained_owner_tests {
         assert!(bank.append(row()).is_err());
         assert_eq!(bank.capacity_rows(), 0);
         assert!(bank.rows().is_empty());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod bank_capacity_data_tests {
+    use super::*;
+
+    #[test]
+    fn original_record_backing_keeps_spare_rows_and_contents() -> Result<(), ProviderError> {
+        let mut bank = MetadataRecordBank::reserve(7)?;
+        let row = MetadataCapacityRecord {
+            kind: MetadataRecordKind::String,
+            extent: 37,
+            element_bytes: 1,
+            alignment: 1,
+        };
+        bank.append(row)?;
+        let pointer = bank.rows.as_ptr();
+
+        let geometry = bank.retained_capacity_data();
+
+        geometry.validate_data()?;
+        assert_eq!(geometry.kind, MetadataRecordKind::Vector);
+        assert_eq!(geometry.extent, bank.capacity_rows());
+        assert_eq!(
+            geometry.element_bytes,
+            std::mem::size_of::<MetadataCapacityRecord>()
+        );
+        assert_eq!(
+            geometry.alignment,
+            std::mem::align_of::<MetadataCapacityRecord>()
+        );
+        assert_eq!(
+            geometry.extent * geometry.element_bytes,
+            bank.allocated_bytes()
+        );
+        assert_eq!(bank.rows(), &[row]);
+        assert_eq!(bank.rows.as_ptr(), pointer);
+        assert!(geometry.extent > bank.rows.len());
+        Ok(())
+    }
+
+    #[test]
+    fn refused_record_backing_stays_failed_after_capacity_observation() -> Result<(), ProviderError>
+    {
+        let mut bank = MetadataRecordBank::unallocated(7)?;
+        let before = bank.retained_capacity_data();
+        assert!(bank.reserve_retained_with_backing_data(0).is_err());
+
+        let after = bank.retained_capacity_data();
+
+        assert_eq!(before, after);
+        assert_eq!(after.extent, 0);
+        assert_ne!(after.element_bytes, 0);
+        assert!(matches!(bank.reservation, ReservationState::Failed));
+        assert!(bank.reserve_retained_data().is_err());
         Ok(())
     }
 }
