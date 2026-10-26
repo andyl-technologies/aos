@@ -386,8 +386,21 @@ libtest cases, and native rustdoc checks the same doctest. The checked inventory
 selects 46 configured targets and a workspace without Cargo manifests or locks.
 The [host-fixture receipt](tests/evidence/test-support-host-fixtures.json) retains
 matching compiler arguments, environments, declared inputs, and output digests
-for both source selections. The 27 repository audit and feature-driver
-integration targets remain separate migration work.
+for both source selections.
+
+`checks.build.bazel.test-support-audits.all` runs the five existing unsafe-fence
+audit cases against declared source ownership. Its precise workspace contains
+no Cargo manifests or locks. The generated catalog retains all 78 workspace
+packages; the audit checks all 19 Crucible packages, including their crate-root
+fences, safe-wrapper contracts, and unsafe source usage. An independent Cargo
+build executes the same cases using Cargo ownership, then its retained binary
+executes them again against the Cargo-free catalog sources. Seven negative
+controls reject invalid or missing ownership and an actual removed fence.
+The [unsafe-fence receipt](tests/evidence/test-support-unsafe-fence.json) retains
+the pre-change failure with catalog ownership and the precise/conservative
+compiler input and output comparison. Each Bazel build executes 63 fresh Linux
+sandbox actions, including two first-party Rust compilations. The remaining 26
+repository audit and feature-driver integration targets still need migration.
 
 `checks.build.bazel.feature-powerset.all` independently compiles the nine
 engine, QEMU host, and device configurations from the existing feature-powerset
@@ -515,6 +528,15 @@ conservative and Cargo-free workspaces with identical compiler inputs and
 package bytes, using an explicitly pinned source-built boot-tool snapshot.
 Installed helper scripts, runtime-closure parity, and boot transactions require
 their separate production and VM checks.
+
+`pkgs.aos-boot-preparations.passthru.withBuildDriver "bazel"` selects the
+native Linux installed package, while `"rustc"` selects its ordinary recipe.
+Both retain the same installation phases, helper scripts, modules, and pinned
+runtime commands. `checks.build.bazel.initrd-production.all`, also exposed by
+`tools/bazel/tests/initrd-production.nix`, compares selector round trips, the
+three unit cases, all installed paths and modes, loader results, runtime
+closures, and rejected command invocations. Successful boot transactions remain
+the responsibility of the existing authenticated-image and VM checks.
 
 Shared compile macros declare a license domain. Package analysis follows
 compiled dependency edges and rejects Apache host/GPL QEMU combinations in

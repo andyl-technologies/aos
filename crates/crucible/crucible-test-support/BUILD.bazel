@@ -67,6 +67,26 @@ rust_doc_test(
     crate = ":lib",
 )
 
+aos_rust_test(
+    name = "crate_unsafe_fence",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/crate_unsafe_fence.rs",
+    srcs = [
+        "tests/crate_unsafe_fence.rs",
+        "tests/support/crate_unsafe_fence.rs",
+        "tests/support/workspace.rs",
+    ],
+    env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+    data = ["//crates:source_catalog"],
+    deps = [
+        ":lib",
+        "//third_party/rust:core_serde",
+        "//third_party/rust:core_serde_json",
+        "//third_party/rust:core_toml",
+    ],
+)
+
 aos_source_package(
     name = "source_package",
     package = RUST_PACKAGE,

@@ -116,7 +116,9 @@ in
     rust-format = import ./_bazel-rust-format.nix {inherit pkgs;};
     boot-production = import ./_bazel-boot-production.nix {inherit pkgs;};
     cli-production-package = import ./_bazel-aos-cli-package.nix {inherit pkgs;};
+    initrd-production = import ./_bazel-initrd-production.nix {inherit pkgs;};
     test-support = import ./_bazel-test-support.nix {inherit pkgs;};
+    test-support-audits = import ./_bazel-test-support-audits.nix {inherit pkgs;};
     feature-powerset = import ./_bazel-feature-powerset.nix {inherit pkgs;};
     crucible-feature-policy = import ./_bazel-crucible-feature-policy.nix {inherit pkgs;};
     rust-source-patches = import ./_bazel-rust-source-patches.nix {inherit pkgs;};
@@ -524,7 +526,9 @@ in
             rust-format
             boot-production.all
             cli-production-package.all
+            initrd-production.all
             test-support.all
+            test-support-audits.all
             feature-powerset.all
             crucible-feature-policy.all
             rust-source-patches.all
