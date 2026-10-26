@@ -31,6 +31,27 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The genuine initial Source now prepays a distinct main-writer metadata
+  interval across approval. Its first native Directory/Journal/Lock sample must
+  match the actual retained replay-prefix file metadata before main decoding;
+  the final sample must match all three held descriptions before any approval
+  route returns signed DATA. Append, same-size overwrite, name replacement and
+  changes between replay and the first sample refuse. Both native observations
+  are priced from the actual held writer before the readback loan exists; the
+  extra four descriptor carriers and four named metadata entries remain paid
+  through cleanup. The final observation stays owed after failed hashing,
+  transport or signature verification. Source cleanup attempts it if approval
+  is never reached. Earlier semantic errors fence the Source before native
+  posts, and chronological native prefixes retain their first cause across the
+  nested readback and approval intervals. This strengthens currentness without
+  publishing an intent, entering a physical TPM operation or opening admission.
+  All 95 focused initializer, 433 ordinary Security and 442 online-Nix Security
+  tests pass, with two existing ignored cases per Security suite. Complete
+  application unit/integration target compilation is running against the final
+  source, whose audited closure excludes production policy.
+  Installed intent durability, the Source-bound physical initializer and the
+  connected enforcing lifecycle/crash tests remain required.
+
 - Initial approval exclusion now retains four independently delivered normal
   manifest copies: Host's Controller-facing broker, the Nix owner's public
   catalog and ONLINE broker, and Controller's ONLINE Nix client. The existing
@@ -64,8 +85,9 @@ Recent committed startup fixes close narrower prerequisites:
   receive reservoirs and bytes before construction. Resource-bank capacities and
   the credential decoder's 36 KiB invoice remain unchanged. All 89 focused
   initializer and 433 Security tests pass, with two existing ignored Security
-  cases. Complete application unit/integration target compilation is running
-  against the current combined source. Its frozen source includes all seventeen
+  cases. Complete application unit/integration target compilation passed for
+  this checkpoint (`z31j6vjvsj1drkcvj2c8kx6yyycnc6s9`), before the later owner
+  manifest and approval-interval changes. Its frozen source includes all seventeen
   Rust inputs changed since the policy-pin checkpoint. The older genesis and
   Root key-pair builds were cancelled after proving none of their pending
   derivations was needed by this build; the preceding build remains live because
@@ -87,8 +109,9 @@ Recent committed startup fixes close narrower prerequisites:
   genuine Source now prepays 36 KiB for these retained decoders; resource-bank
   capacities remain unchanged. All 88 focused initializer, 433 ordinary Security
   and 442 online-Nix Security tests pass, with two existing ignored cases per
-  Security suite. Complete application unit/integration target compilation is
-  running for the six final Rust files. The superseded full build was
+  Security suite. Complete application unit/integration target compilation
+  passed for the six final Rust files (`0mx79xi4brcc783ry1i9kini7zrpv44c`), before
+  the later Host and owner-manifest changes. The superseded full build was
   cancelled after the native compile exposed the insufficient prepayment.
   Actual Host delivery provenance, offline Nix approval, installed producer
   effects and public lifecycle qualification remain open.

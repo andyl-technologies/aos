@@ -90,6 +90,7 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     root_public_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; 5],
     root_public: [RootPublicKeyOriginal; 5],
     approval: RefCell<ApprovalVerificationOriginal>,
+    approval_main_after: RefCell<Option<Result<(), Method46InitialStartupClosedV1>>>,
 }
 
 // The same Source pays this fixed allowance before the result owner exists.
@@ -152,6 +153,7 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             root_public_reads: std::array::from_fn(|_| None),
             root_public: std::array::from_fn(|_| RootPublicKeyOriginal::new()),
             approval: RefCell::new(ApprovalVerificationOriginal::new()),
+            approval_main_after: RefCell::new(None),
         };
         original.decode();
         if !original.admitted() {
@@ -597,13 +599,16 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
     /// the same strict verification attempt; its native originals remain with
     /// the startup alongside the signature and canonical decode results here.
     ///
-    /// This returns signed comparison DATA. Complete endpoint provenance,
+    /// The same Source prepays a native main-writer metadata post, which is
+    /// attempted after transport/signature failure too. This returns signed
+    /// comparison DATA only. Complete endpoint provenance,
     /// Nix/Root key separation, Session schema, job exclusion, durable intent
     /// and physical TPM custody remain required before publication or Extend.
     ///
     /// # Errors
     /// Refuses failed/foreign/ended originals, prior approval, busy custody,
-    /// native transport failure or a strict signature/current-request mismatch.
+    /// native transport or main-writer metadata failure, or a strict
+    /// signature/current-request mismatch.
     /// Refusal fences this startup without suppressing its independent posts.
     pub fn exchange_captured_approval_once_v1(
         &self,
@@ -627,10 +632,7 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
                     .unwrap_or(Err(Method46InitialDataErrorV1::Approval)),
             )
         })();
-        if result.is_err() {
-            self.readback.refuse_decode_v1();
-        }
-        result
+        self.finish_approval_with_main_post(main, result)
     }
 
     /// Verifies one signature using this original's held public credential.
@@ -648,7 +650,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
     ///
     /// # Errors
     /// Refuses an ended/foreign main original, failed credential admission,
-    /// invalid strict signature, repeated attempt or busy verification owner.
+    /// invalid strict signature, changed native main-writer metadata, repeated
+    /// attempt or busy verification owner.
     /// Refusal fences this startup without suppressing its owed native posts.
     pub fn verify_captured_pin_signature_once_v1(
         &self,
@@ -667,10 +670,7 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
                     .unwrap_or(Err(Method46InitialDataErrorV1::Approval)),
             )
         })();
-        if result.is_err() {
-            self.readback.refuse_decode_v1();
-        }
-        result
+        self.finish_approval_with_main_post(main, result)
     }
 
     /// Revalidates one encoded initial intent under the original public pin.
@@ -686,7 +686,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
     ///
     /// # Errors
     /// Refuses a foreign/ended original, malformed framing, invalid signature,
-    /// changed current request, busy owner or repeated attempt. Refusal fences
+    /// changed current request or native main-writer metadata, busy owner or
+    /// repeated attempt. Refusal fences
     /// this startup while its independent native posts remain owed.
     pub fn decode_captured_pin_intent_once_v1(
         &self,
@@ -705,10 +706,39 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
                     .unwrap_or(Err(Method46InitialDataErrorV1::Approval)),
             )
         })();
+        self.finish_approval_with_main_post(main, result)
+    }
+
+    fn finish_approval_with_main_post(
+        &self,
+        main: &Method46InitialMainCutOriginalV1<'_>,
+        result: Result<Method46InitialIntentDataV1, Method46InitialDataErrorV1>,
+    ) -> Result<Method46InitialIntentDataV1, Method46InitialDataErrorV1> {
+        // Fence the original semantic failure before independently owed IO.
         if result.is_err() {
             self.readback.refuse_decode_v1();
         }
-        result
+        let after = (|| {
+            let mut destination = self
+                .approval_main_after
+                .try_borrow_mut()
+                .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+            if destination.is_some() {
+                return Err(Method46InitialDataErrorV1::Conflict);
+            }
+            *destination = Some(main.finish_approval_currentness_after_owed_once_v1());
+            match *destination {
+                Some(Ok(())) => Ok(()),
+                _ => Err(Method46InitialDataErrorV1::Conflict),
+            }
+        })();
+        if after.is_err() {
+            self.readback.refuse_decode_v1();
+        }
+        // Native post failure cannot erase the original verification refusal.
+        let intent = result?;
+        after?;
+        Ok(intent)
     }
 
     /// Returns the compared fixed purpose as DATA while the Source is current.

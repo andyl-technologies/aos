@@ -10,6 +10,7 @@ use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector}
 
 use super::*;
 
+mod approval_currentness;
 mod namespace;
 mod readback;
 
@@ -45,6 +46,7 @@ pub(crate) struct Method46InitialMainWriterOriginalV1 {
     post_original: super::super::ProtectedJournalCurrentnessOriginalsV1,
     closed: Option<JournalError>,
     readback: readback::MainMapReadbackOriginalV1,
+    approval_currentness: approval_currentness::ApprovalCurrentnessOriginalV1,
     namespace: namespace::MainNamespaceOriginalV1,
 }
 
@@ -63,6 +65,7 @@ impl Method46InitialMainWriterOriginalV1 {
             post_original: super::super::ProtectedJournalCurrentnessOriginalsV1::new(),
             closed: None,
             readback: readback::MainMapReadbackOriginalV1::new(),
+            approval_currentness: approval_currentness::ApprovalCurrentnessOriginalV1::new(),
             namespace: namespace::MainNamespaceOriginalV1::new(),
         }
     }
@@ -205,6 +208,7 @@ impl Method46InitialMainWriterOriginalV1 {
         }
         // A failed map-before/hash cannot suppress its separately paid after.
         let _readback_after = self.finish_readback_after_owed();
+        let _approval_after = self.finish_approval_currentness_after_owed();
         self.post = Some((|| {
             self.inner.original.check_named_currentness_retaining(
                 self.inner
@@ -250,7 +254,13 @@ impl Method46InitialMainWriterOriginalV1 {
                     .map(|error| error as _)
             })
             .or_else(|| self.namespace.failure())
-            .or_else(|| self.readback.failure())
+            // Preserve chronological prefixes across the nested intervals:
+            // main readback before, approval before, readback after, approval after.
+            .or_else(|| self.readback.before_failure())
+            .or_else(|| self.approval_currentness.before_failure())
+            .or_else(|| self.readback.after_failure())
+            .or_else(|| self.approval_currentness.after_failure())
+            .or_else(|| self.approval_currentness.order_failure())
             .or_else(|| self.post_original.failure())
             .or_else(|| {
                 self.post

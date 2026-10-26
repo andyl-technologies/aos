@@ -287,6 +287,21 @@ impl ProtectedWriterOpenOriginalsV1 {
         self.journal.as_ref()
     }
 
+    /// Projects historical metadata from the same successful captured replay.
+    ///
+    /// This supplies DATA only, before any optional ordinary tail repair. A
+    /// caller must independently compare its current held file and reject
+    /// repair when using this identity to bind the replayed prefix.
+    pub(crate) fn captured_replay_file_identity_data_v1(
+        &self,
+    ) -> Option<aos_sandbox_journal::protected_storage::FileIdentity> {
+        self.journal_data_v1()?;
+        let post = self.prefix_post.as_ref()?;
+        post.comparison_result().as_ref().ok()?;
+        let metadata = post.metadata_result().as_ref().ok()?;
+        Some(aos_sandbox_journal::protected_storage::FileIdentity::from_metadata_data_v1(metadata))
+    }
+
     pub(crate) fn journal_mut(&mut self) -> Option<&mut Journal> {
         if self.failure().is_some() || !matches!(self.returned, Some(Ok(_))) {
             return None;

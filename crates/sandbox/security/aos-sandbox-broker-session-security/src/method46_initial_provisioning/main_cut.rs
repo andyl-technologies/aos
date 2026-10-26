@@ -198,6 +198,13 @@ impl<'owner> Method46InitialMainCutOriginalV1<'owner> {
         self.cut_data_v1()
     }
 
+    pub(super) fn finish_approval_currentness_after_owed_once_v1(
+        &self,
+    ) -> Result<(), Method46InitialStartupClosedV1> {
+        self.readback
+            .finish_approval_currentness_after_owed_once_v1()
+    }
+
     /// Copies the compared cut as DATA while its actual Source remains current.
     ///
     /// This is not initial approval, a prepared intent or an Extend/checkpoint

@@ -32,6 +32,7 @@ pub const METHOD46_INITIAL_SESSION_SCHEMA_CELLS_V1: usize = 2048;
 pub struct Method46InitialMainReadbackLoanV1<'owner> {
     startup: &'owner Method46InitialStartupOriginalV1,
     after_attempted: Cell<bool>,
+    approval_after_attempted: Cell<bool>,
 }
 
 /// Holds a temporary immutable borrow of the original complete native map.
@@ -162,6 +163,32 @@ impl Method46InitialMainReadbackLoanV1<'_> {
         result.map_err(|_| self.startup.fail(First::MainWriter))
     }
 
+    /// Attempts the prepaid native main-writer post across approval once.
+    ///
+    /// The held Directory/Journal/Lock metadata must match the originals sampled
+    /// before main decoding. The native sample stays owed after a failed hash,
+    /// signature or transport. This grants no publication or TPM authority.
+    ///
+    /// # Errors
+    /// Refuses repeated dispatch, an ended or busy owner, failed original names
+    /// or changed metadata. The final Source post still services other debts.
+    pub fn finish_approval_currentness_after_owed_once_v1(
+        &self,
+    ) -> Result<(), Method46InitialStartupClosedV1> {
+        if self.approval_after_attempted.replace(true) || self.startup.after_attempted.get() {
+            return Err(self.startup.fail(First::MainWriter));
+        }
+        let result = (|| {
+            let body = self.startup.body.as_ref().ok_or(self.startup.closed)?;
+            body.main_writer
+                .try_borrow_mut()
+                .map_err(|_| self.startup.closed)?
+                .finish_approval_currentness_after_owed()
+                .map_err(|_| self.startup.closed)
+        })();
+        result.map_err(|_| self.startup.fail(First::MainWriter))
+    }
+
     /// Fences this same startup after a canonical map/hash refusal.
     pub fn refuse_readback_v1(&self) {
         self.startup.fail(First::MainWriter);
@@ -172,8 +199,10 @@ impl Method46InitialStartupOriginalV1 {
     /// Prepays and lends the original existing main-map readback once.
     ///
     /// The same Source pays the finite hash allowance before the result owner
-    /// exists. Native before/after work was prepaid with this opening's fixed
-    /// acquisition. No supplied map, amount, path or Journal enters this gate.
+    /// exists. The actual held writer separately prices both approval-interval
+    /// name and metadata samples, paid before their first IO. Ordinary readback
+    /// posts were prepaid with the opening. No supplied map, amount, path or
+    /// Journal enters this gate.
     ///
     /// # Errors
     /// Refuses missing original writer admission, reentry, a closed Source,
@@ -199,10 +228,15 @@ impl Method46InitialStartupOriginalV1 {
                 ResourceVector::ZERO
                     .with(D::MemoryBytes, METHOD46_INITIAL_MAIN_CUT_BYTES_V1 as u64),
             ))?;
+            let currentness = writer
+                .quote_approval_currentness_once()
+                .ok_or(self.closed)?;
+            self.fund_additional(Some(currentness))?;
             writer.begin_readback_once().map_err(|_| self.closed)?;
             Ok(Method46InitialMainReadbackLoanV1 {
                 startup: self,
                 after_attempted: Cell::new(false),
+                approval_after_attempted: Cell::new(false),
             })
         })();
         result.map_err(|_| self.fail(First::MainWriter))
@@ -239,12 +273,17 @@ mod tests {
         let loan = Method46InitialMainReadbackLoanV1 {
             startup: &startup,
             after_attempted: Cell::new(false),
+            approval_after_attempted: Cell::new(false),
         };
 
         assert!(loan.origin_data_v1().is_err());
         assert!(loan.read_map_data_v1().is_err());
         loan.refuse_readback_v1();
         assert!(loan.finish_readback_after_owed_once_v1().is_err());
+        assert!(
+            loan.finish_approval_currentness_after_owed_once_v1()
+                .is_err()
+        );
         assert!(startup.finish_source_after_owed_once_v1(Ok(())).is_err());
 
         assert!(startup.after_attempted.get());

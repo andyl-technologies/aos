@@ -24,22 +24,25 @@ impl MainMapReadbackOriginalV1 {
         }
     }
 
+    fn sample_failure(&self, index: usize) -> Option<&(dyn Error + 'static)> {
+        self.originals[index].failure().or_else(|| {
+            self.results[index]
+                .as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(|error| error as _)
+        })
+    }
+
+    pub(super) fn before_failure(&self) -> Option<&(dyn Error + 'static)> {
+        self.sample_failure(0)
+    }
+
+    pub(super) fn after_failure(&self) -> Option<&(dyn Error + 'static)> {
+        self.sample_failure(1)
+    }
+
     pub(super) fn failure(&self) -> Option<&(dyn Error + 'static)> {
-        self.originals[0]
-            .failure()
-            .or_else(|| {
-                self.results[0]
-                    .as_ref()
-                    .and_then(|result| result.as_ref().err())
-                    .map(|error| error as _)
-            })
-            .or_else(|| self.originals[1].failure())
-            .or_else(|| {
-                self.results[1]
-                    .as_ref()
-                    .and_then(|result| result.as_ref().err())
-                    .map(|error| error as _)
-            })
+        self.before_failure().or_else(|| self.after_failure())
     }
 }
 
@@ -89,7 +92,8 @@ impl Method46InitialMainWriterOriginalV1 {
             return Err(JournalError::ProtectedBoundary);
         }
         self.readback.entered = true;
-        self.observe_readback(0)
+        self.observe_readback(0)?;
+        self.observe_approval_before_once()
     }
 
     pub(crate) fn readback_journal_data(&self) -> Option<&Journal> {
