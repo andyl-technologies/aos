@@ -69,7 +69,30 @@ failed attempts appear in the dated entries below.
 | Native compiler correction | Signed atomic `4b64466043`, conventional `3038851ffc`, preserves the deliberately disconnected RR birth body and all CPU admission refusals, documenting its unused state. Fresh configure, actual owning Source object, direct default/provider Source objects, six syntax checks and extraction pass with unchanged warnings. The packaged configuration completes all 1,941 x86 image compile/link actions with its existing system libfdt. | The separate minimal configuration's bundled-libfdt compiler failure remains recorded. Compilation and linking establish no runtime qualification. Complete execution backing, containing prebirth payment and external collection remain absent. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 22 errors: two large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 680 bindings: 661 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 682 bindings: 663 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+
+#### Source collection before host retirement
+
+Host launch cleanup now checks the retained Source purpose's actual child
+collection journal alongside its independent cleanup flags. Process-return
+observations, cleanup completion and final incarnation retirement all require
+that join. The journal accepts only an unattempted birth or a recorded successful
+wait on the owned Child; a separate completion flag cannot replace it. The
+nonblocking check refuses busy or poisoned custody and does not obtain another
+operation or require a live issuance deadline.
+
+Two registered component controls reap actual generic children, then hold or
+poison the Source-purpose slot. Held custody blocks return until released;
+poisoned custody prevents final retirement and quarantines the launch. These
+fixtures create no authenticated Source purpose or Main stack/TLS owner. This
+host-side join does not supply the missing complete prebirth execution profile
+or the native receiver's external collection contract.
+
+All twenty focused cleanup controls pass, including both new regressions.
+All ninety testing-standard controls, five engineering-hygiene controls and
+core evaluation pass. The refreshed inventory records 682 bindings across 243
+requirements, with 142 still uncovered, none qualified and no advertised
+capabilities.
 
 #### Source compilation and synchronous Cleanup ownership
 

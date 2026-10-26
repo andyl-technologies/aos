@@ -209,6 +209,25 @@ struct CleanupFinalizer {
         Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
 }
 
+impl CleanupFinalizer {
+    fn source_process_collected(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            // The actual Source Child records this independently of the local
+            // cleanup flags. Unknown custody keeps the original charge held.
+            self.source_purpose.try_lock().is_ok_and(|purpose| {
+                purpose
+                    .as_ref()
+                    .is_none_or(|purpose| purpose.verify_process_returned_or_unstarted().is_ok())
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            true
+        }
+    }
+}
+
 impl std::fmt::Debug for CleanupFinalizer {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -575,13 +594,15 @@ impl LaunchCleanup {
     // A never-created child has no process borrower; a created child must have
     // its own physical receipt. A source parent's reap is not this receipt.
     pub(crate) fn process_returned_or_unstarted(&self) -> bool {
-        !self.inner.child_started.load(Ordering::Acquire)
-            || self.inner.child_reaped.load(Ordering::Acquire)
+        (!self.inner.child_started.load(Ordering::Acquire)
+            || self.inner.child_reaped.load(Ordering::Acquire))
+            && self.inner.source_process_collected()
     }
 
     pub(crate) fn process_reaped(&self) -> bool {
         self.inner.child_started.load(Ordering::Acquire)
             && self.inner.child_reaped.load(Ordering::Acquire)
+            && self.inner.source_process_collected()
     }
 
     #[cfg(target_os = "linux")]
@@ -688,8 +709,7 @@ impl LaunchCleanup {
     }
 
     pub(crate) fn cleanup_proven(&self) -> bool {
-        (!self.inner.child_started.load(Ordering::Acquire)
-            || self.inner.child_reaped.load(Ordering::Acquire))
+        self.process_returned_or_unstarted()
             && self.inner.pending_joins.load(Ordering::Acquire) == 0
             && self.inner.pending_imports.load(Ordering::Acquire) == 0
     }
@@ -817,6 +837,7 @@ impl Drop for CleanupFinalizer {
         #[cfg(target_os = "linux")]
         drop(self.preexec_failure.take());
 
+        let source_collected = self.source_process_collected();
         let Ok(authority) = self.authority.get_mut() else {
             #[cfg(target_os = "linux")]
             retain_unproven_target_workspace(&mut self.target_workspace);
@@ -829,6 +850,7 @@ impl Drop for CleanupFinalizer {
         let reaped = !self.child_started.load(Ordering::Acquire)
             || self.child_reaped.load(Ordering::Acquire);
         let proven = reaped
+            && source_collected
             && self.pending_joins.load(Ordering::Acquire) == 0
             && self.pending_imports.load(Ordering::Acquire) == 0;
         let mut released = if authority.published {

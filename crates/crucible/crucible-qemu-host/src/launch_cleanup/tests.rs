@@ -356,6 +356,60 @@ fn missing_reap_or_refused_retirement_quarantines_without_discharge() {
 }
 
 #[test]
+fn busy_source_collection_holder_blocks_return_after_actual_child_reap() {
+    let (registration, registrar) = registration(false, None);
+    let cleanup = LaunchCleanup::new(&registration);
+    let mut child = crate::QemuNodeChild::new(Command::new("true").spawn().unwrap());
+    child.retain_launch_cleanup(cleanup.clone());
+    child.force_kill_and_reap_failed_realization().unwrap();
+    assert!(child.reaped());
+    assert!(cleanup.process_reaped());
+
+    // This generic launch issues no Source purpose. Unavailable custody of
+    // even that absence must not be replaced by the local completion flags.
+    let held = cleanup.inner.source_purpose.lock().unwrap();
+    assert!(!cleanup.process_returned_or_unstarted());
+    assert!(!cleanup.process_reaped());
+    assert!(!cleanup.cleanup_proven());
+    assert_eq!(registrar.retired.load(Ordering::Acquire), 0);
+
+    drop(held);
+    assert!(cleanup.process_returned_or_unstarted());
+    assert!(cleanup.process_reaped());
+    assert!(cleanup.cleanup_proven());
+    drop(child);
+    drop(cleanup);
+
+    assert_eq!(registrar.retired.load(Ordering::Acquire), 1);
+    assert_eq!(registrar.quarantined.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn poisoned_source_collection_holder_prevents_retirement_after_actual_child_reap() {
+    let (registration, registrar) = registration(false, None);
+    let cleanup = LaunchCleanup::new(&registration);
+    let mut child = crate::QemuNodeChild::new(Command::new("true").spawn().unwrap());
+    child.retain_launch_cleanup(cleanup.clone());
+    child.force_kill_and_reap_failed_realization().unwrap();
+    assert!(child.reaped());
+
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _held = cleanup.inner.source_purpose.lock().unwrap();
+        panic!("interrupt the actual collection holder");
+    }));
+
+    assert!(poisoned.is_err());
+    assert!(!cleanup.process_returned_or_unstarted());
+    assert!(!cleanup.process_reaped());
+    assert!(!cleanup.cleanup_proven());
+    drop(child);
+    drop(cleanup);
+
+    assert_eq!(registrar.retired.load(Ordering::Acquire), 0);
+    assert_eq!(registrar.quarantined.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn published_retirement_waits_for_final_descriptor_close_after_actual_reap() {
     let (registration, registrar) = registration(false, None);
     let cleanup = LaunchCleanup::new(&registration);

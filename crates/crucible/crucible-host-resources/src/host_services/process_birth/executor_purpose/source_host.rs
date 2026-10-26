@@ -86,6 +86,15 @@ struct SourceChildState {
     reaped: bool,
 }
 
+impl SourceChildState {
+    fn returned_or_unstarted(&self) -> bool {
+        matches!(
+            (self.birth_attempted, self.process, self.reaped),
+            (false, None, false) | (true, Some(_), true)
+        )
+    }
+}
+
 /// Owns the actual Source child whose wait result proves process retirement.
 ///
 /// Its host purpose remains retained after process reap until every launch
@@ -198,6 +207,30 @@ fn construct_source_host(
 }
 
 impl AuthenticatedSourceHostPurpose {
+    /// Checks the actual retained child's collection journal before return.
+    ///
+    /// Only an unattempted birth or a successful wait on the owned Child closes
+    /// this process borrower. Cancellation, a copied PID, or a cleanup owner's
+    /// separate completion flag cannot substitute for that journal. This check
+    /// issues no work and remains usable after the issuance deadline expires.
+    ///
+    /// # Errors
+    /// Refuses an attempted birth without recorded reap, inconsistent state,
+    /// or a busy or poisoned collection journal.
+    pub fn verify_process_returned_or_unstarted(&self) -> Result<(), ServiceBirthError> {
+        let state = self
+            .held
+            .child
+            .try_lock()
+            .map_err(|_| ServiceBirthError::policy("Source process collection is uncertain"))?;
+        if !state.returned_or_unstarted() {
+            return Err(ServiceBirthError::policy(
+                "Source process collection is incomplete",
+            ));
+        }
+        Ok(())
+    }
+
     /// Retains this actual Source payer for an already issued control route.
     ///
     /// The observer shares the original allocation and Main charge; it grants
@@ -407,7 +440,7 @@ impl Drop for SourceHostState {
         let proven = self
             .child
             .get_mut()
-            .is_ok_and(|state| (!state.birth_attempted && state.process.is_none()) || state.reaped);
+            .is_ok_and(|state| state.returned_or_unstarted());
         let controls_closed = self
             .controls
             .get_mut()
