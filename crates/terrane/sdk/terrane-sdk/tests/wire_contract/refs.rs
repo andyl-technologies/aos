@@ -239,6 +239,58 @@ fn log_record() -> terrane_format::refs::RefLogRecord {
 }
 
 #[test]
+fn observed_reflogs_keep_exact_predecessors_private_until_context_matches() {
+    let previous = record();
+    let mut current = previous.clone();
+    current.commit = [8; 32];
+    current.seq += 1;
+    current.candidate_id = Some([10; 32]);
+    let original = terrane_format::refs::RefLogRecord {
+        record: current,
+        previous_commit: Some(previous.commit),
+        expected_previous: Some(Some(previous)),
+        ..log_record()
+    };
+    let entry = codec()
+        .encode_log(&original, "terrane-v1", "advisory")
+        .unwrap();
+
+    let observed = codec().observe_log(&entry).unwrap();
+
+    assert_eq!(observed.sequence_hint(), original.record.seq);
+    assert_eq!(observed.commit_hint(), &original.record.commit);
+    assert_eq!(observed.profile_hint(), "terrane-v1");
+    assert!(matches!(
+        observed.clone().verify(&[7; 32], "terrane-v1"),
+        Err(RefWireError::CommitMismatch)
+    ));
+    for profile in ["", "other"] {
+        assert!(matches!(
+            observed.clone().verify(&original.record.commit, profile),
+            Err(RefWireError::ProfileMismatch)
+        ));
+    }
+    assert_eq!(
+        observed
+            .verify(&original.record.commit, "terrane-v1")
+            .unwrap(),
+        original
+    );
+
+    for change in 0..5 {
+        let mut malformed = entry.clone();
+        match change {
+            0 => malformed.at.as_option_mut().unwrap().seconds += 1,
+            1 => malformed.principal = "another-principal".into(),
+            2 => malformed.sequence += 1,
+            3 => malformed.value.as_option_mut().unwrap().profile.clear(),
+            _ => malformed.canonical_ref_log_record.clear(),
+        }
+        assert!(codec().observe_log(&malformed).is_err());
+    }
+}
+
+#[test]
 fn complete_reflogs_keep_exact_expectations_and_ref_values() {
     let original = log_record();
     let entry = codec()

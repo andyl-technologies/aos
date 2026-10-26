@@ -27,6 +27,11 @@ pub(super) struct Services {
     pub(super) ref_response: Option<v1::RefState>,
     pub(super) ref_delay: std::time::Duration,
     pub(super) ref_requests: std::sync::Mutex<Vec<v1::GetRefRequest>>,
+    pub(super) ref_log_entries: Option<Vec<v1::RefLogEntry>>,
+    pub(super) ref_log_error: bool,
+    pub(super) ref_log_pending: bool,
+    pub(super) ref_log_delay: std::time::Duration,
+    pub(super) ref_log_requests: std::sync::Mutex<Vec<v1::GetRefLogRequest>>,
 }
 
 fn unsupported() -> connectrpc::ConnectError {
@@ -183,6 +188,14 @@ impl Drop for PendingBody {
     }
 }
 
+struct StreamLifetime(Arc<AtomicBool>);
+
+impl Drop for StreamLifetime {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 #[allow(refining_impl_trait)]
 impl RefService for Services {
     async fn get_ref(
@@ -209,7 +222,47 @@ impl RefService for Services {
         v1::CompareAndSwapRefRequest,
         v1::RefState
     );
-    unavailable_stream!(get_ref_log, v1::GetRefLogRequest, v1::RefLogEntry);
+    async fn get_ref_log(
+        &self,
+        _context: RequestContext,
+        request: ServiceRequest<'_, v1::GetRefLogRequest>,
+    ) -> ServiceResult<ServiceStream<v1::RefLogEntry>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.ref_log_requests
+            .lock()
+            .map_err(|_| unsupported())?
+            .push(request.to_owned_message());
+        let entries = self.ref_log_entries.clone().ok_or_else(unsupported)?;
+        let state = (
+            entries.into_iter(),
+            self.ref_log_error,
+            self.ref_log_pending,
+            self.ref_log_delay,
+            StreamLifetime(self.dropped_stream.clone()),
+        );
+        let stream = futures_util::stream::unfold(
+            state,
+            |(mut entries, mut fail, pending, delay, lifetime)| async move {
+                let next = if let Some(entry) = entries.next() {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    Ok(entry)
+                } else if fail {
+                    fail = false;
+                    Err(unsupported())
+                } else if pending {
+                    return std::future::pending().await;
+                } else {
+                    return None;
+                };
+                Some((next, (entries, fail, pending, delay, lifetime)))
+            },
+        );
+        Ok(Response::new(
+            Box::pin(stream) as ServiceStream<v1::RefLogEntry>
+        ))
+    }
     unavailable_stream!(watch_refs, v1::WatchRefsRequest, v1::RefEvent);
     unavailable_stream!(list_refs, v1::ListRefsRequest, v1::RefState);
 }

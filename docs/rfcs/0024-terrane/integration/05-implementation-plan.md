@@ -91,6 +91,30 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The native client now stages finite `GetRefLog` responses behind explicit
+entry/content bounds and a whole-call deadline through protocol termination.
+Canonical records and their complete predecessors remain private until each
+entry matches independently verified commit/profile context. Increasing sequence
+order and the requested lower bound are checked without inferring contiguity,
+selected history, predecessor authority or current permission. Transport errors,
+missing termination, cancellation and exceeded limits discard all retained
+entries. Five new actual-socket cases cover these boundaries, exact content
+budgets, progress without deadline reset and canonical contradictions; one new
+portable case checks complete predecessor retention. Original socket and codec
+selectors keep their order and thirty-second bounds. Strict all-target Clippy
+passes for default Tokio and explicit `tokio,surface-sdk`; the no-default
+library and wire-contract target compile with the six existing Guard dead-code
+warning groups. Formatting, selector registration and PLAN-2 pass. Fresh AOS
+execution and required application compilation of this increment remain pending.
+Production Ref services, reflog retention/selection and gap-free watch recovery
+remain open.
+
+Required application-target compilation at `8b012824d4` passes in 1,450.366
+seconds. Independent review matches all 8,274 immutable source files and 190
+test-executable records across 59 packages. This qualifies the GetRef client
+revision's compilation only, with no retained executable bytes. The subsequent
+reflog increment needs separate required compilation.
+
 The native client now receives bounded `GetRef` observations through the
 generated Ref service. It rejects malformed names, unknown freshness modes and
 missing bounded-read durations before connecting. Complete response reception
@@ -166,7 +190,8 @@ Required application-target compilation at `e6f214f3ce` passes in 1,498.897
 seconds. Independent review matches all 8,272 immutable source files and 190
 test-executable build records across 59 packages. This covers compilation of
 the held-index increment, with no retained executable bytes or native runtime
-claim. The later ref-client changes still need their own required compilation.
+claim. The later GetRef client compilation also passes at `8b012824d4` as
+reviewed above; the new reflog increment still needs its required compilation.
 
 Required application-target compilation at `513ed9e29a` passes in 1,546.300
 seconds. Independent review matches all 8,268 immutable source files and 190

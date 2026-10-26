@@ -19,6 +19,9 @@ mod negotiation;
 #[path = "distribution_transport/references.rs"]
 mod references;
 
+#[path = "distribution_transport/reflog.rs"]
+mod reflog;
+
 use buffa::Message;
 use fixture::{Services, limits};
 use std::{

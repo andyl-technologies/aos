@@ -37,6 +37,11 @@ CASES = [
     "references::invalid_requests_and_call_limits_never_connect",
     "references::refuses_changed_names_invalid_values_and_exceeded_freshness",
     "references::preserves_record_message_transport_and_whole_call_bounds",
+    "reflog::retains_ordered_complete_logs_until_independent_context_matches",
+    "reflog::accepts_empty_and_maximum_sequences_but_refuses_invalid_order_and_records",
+    "reflog::enforces_aggregate_entry_content_and_individual_record_message_bounds",
+    "reflog::terminal_failure_deadline_and_cancellation_never_deliver_partial_logs",
+    "reflog::invalid_names_and_missing_call_limits_refuse_before_connecting",
 ]
 
 

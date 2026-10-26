@@ -19,6 +19,7 @@ CASES = [
     "status::native_conversion_retains_error_info_and_every_required_protobuf_detail",
     "refs::complete_reflogs_keep_exact_expectations_and_ref_values",
     "refs::observations_require_independent_commit_context_before_whole_record_delivery",
+    "refs::observed_reflogs_keep_exact_predecessors_private_until_context_matches",
     "refs::reflog_limits_timestamp_bounds_and_incomplete_candidates_are_rejected",
     "refs::whole_records_preserve_policy_home_and_candidate_through_wire_roundtrip",
     "refs::missing_or_inconsistent_summaries_never_replace_canonical_records",

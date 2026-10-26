@@ -89,6 +89,69 @@ impl ObservedRefValue {
     }
 }
 
+/// Retains a canonical reflog observation before independent commit verification.
+///
+/// Sequence, commit and profile hints are peer assertions. The complete record,
+/// including its exact previous values, remains private until verified context
+/// matches. Representation consistency proves no selected backend history.
+#[derive(Clone)]
+pub struct ObservedRefLog {
+    record: RefLogRecord,
+    profile: String,
+}
+
+impl fmt::Debug for ObservedRefLog {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ObservedRefLog")
+            .field("sequence_hint", &self.sequence_hint())
+            .field("commit_hint", &self.commit_hint())
+            .field("profile_hint", &self.profile_hint())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ObservedRefLog {
+    /// Returns the consistent peer sequence for stream ordering checks.
+    pub fn sequence_hint(&self) -> u64 {
+        self.record.record.seq
+    }
+
+    /// Borrows the peer's commit hint for independent verification.
+    pub fn commit_hint(&self) -> &Digest {
+        &self.record.record.commit
+    }
+
+    /// Borrows the peer's untrusted registered-profile claim.
+    pub fn profile_hint(&self) -> &str {
+        &self.profile
+    }
+
+    /// Delivers the whole reflog after matching independently verified context.
+    ///
+    /// Passing this observation's hints back establishes no independent
+    /// verification. Success proves no current permission, committed selection,
+    /// predecessor authority or successful CAS acknowledgement.
+    ///
+    /// # Errors
+    /// Rejects a different commit or an empty or mismatched verified profile.
+    pub fn verify(
+        self,
+        verified_commit: &Digest,
+        verified_profile: &str,
+    ) -> Result<RefLogRecord, RefWireError> {
+        require_profile(verified_profile)?;
+        if self.record.record.commit != *verified_commit {
+            return Err(RefWireError::CommitMismatch);
+        }
+        if self.profile != verified_profile {
+            return Err(RefWireError::ProfileMismatch);
+        }
+
+        Ok(self.record)
+    }
+}
+
 impl RefCodec {
     /// Creates a codec with a positive explicit canonical-record byte limit.
     ///
@@ -272,19 +335,33 @@ impl RefCodec {
             RefLogRecord::decode(&entry.canonical_ref_log_record).map_err(RefWireError::Record)?;
         let value = entry.value.as_option().ok_or(RefWireError::MissingRecord)?;
         let decoded = self.decode_value(value, verified_commit, verified_profile)?;
-        let seconds = timestamp_seconds(record.timestamp)?;
-        if decoded != record.record
-            || entry.sequence != record.record.seq
-            || entry.principal != record.principal
-            || !entry
-                .at
-                .as_option()
-                .is_some_and(|at| at.seconds == seconds && at.nanos == 0)
-        {
-            return Err(RefWireError::SummaryMismatch);
-        }
+        check_log_summary(entry, &record, &decoded)?;
 
         Ok(record)
+    }
+
+    /// Retains a complete consistent reflog for later commit-context verification.
+    ///
+    /// This checks every canonical and redundant field without accepting the
+    /// peer's commit/profile hints as independently verified context. The outer
+    /// advisory message is not part of the canonical reflog record.
+    ///
+    /// # Errors
+    /// Rejects missing, oversized or invalid canonical records, empty profiles,
+    /// invalid ref values and contradictory sequence, timestamp or principal.
+    pub fn observe_log(&self, entry: &v1::RefLogEntry) -> Result<ObservedRefLog, RefWireError> {
+        self.check_size(&entry.canonical_ref_log_record)?;
+        let record =
+            RefLogRecord::decode(&entry.canonical_ref_log_record).map_err(RefWireError::Record)?;
+        let value = entry.value.as_option().ok_or(RefWireError::MissingRecord)?;
+        require_profile(&value.profile)?;
+        let decoded = self.decode_summary(value)?;
+        check_log_summary(entry, &record, &decoded)?;
+
+        Ok(ObservedRefLog {
+            record,
+            profile: value.profile.clone(),
+        })
     }
 
     fn check_size(&self, bytes: &[u8]) -> Result<(), RefWireError> {
@@ -296,6 +373,27 @@ impl RefCodec {
         }
         Ok(())
     }
+}
+
+// Both staged and independently contextualized decoding check the same wire claims.
+fn check_log_summary(
+    entry: &v1::RefLogEntry,
+    record: &RefLogRecord,
+    decoded: &RefRecord,
+) -> Result<(), RefWireError> {
+    let seconds = timestamp_seconds(record.timestamp)?;
+    if decoded != &record.record
+        || entry.sequence != record.record.seq
+        || entry.principal != record.principal
+        || !entry
+            .at
+            .as_option()
+            .is_some_and(|at| at.seconds == seconds && at.nanos == 0)
+    {
+        return Err(RefWireError::SummaryMismatch);
+    }
+
+    Ok(())
 }
 
 fn timestamp_seconds(seconds: u64) -> Result<i64, RefWireError> {
