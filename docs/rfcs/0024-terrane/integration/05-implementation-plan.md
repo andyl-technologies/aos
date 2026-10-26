@@ -91,6 +91,22 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+Complete publisher owning-gate renewal at `d70df3c1a2` stops during AOS
+prerequisite construction in 525.215 seconds. The host-cache image's source
+inventory omits exactly the five new publisher listener-retirement cases;
+independent source review finds no missing original declaration. The failed
+run reaches no host-cache native runtime check. Seven raw controller records
+are preserved and the exact owned scratch directory is removed.
+
+The image inventory now retains all 130 original base selectors and adds those
+five cases. Both source contracts pass: 135 ordinary base cases or 263 ordinary
+FUSE-profile cases, plus the unchanged five administrator creator cases in
+each profile. Missing and duplicate selectors remain refused. Inventory
+failures now report the exact unlisted and undeclared names. Python source,
+PLAN-2 and diff checks pass; no production Rust behavior changes. Fresh AOS
+image construction and the complete owning gates remain pending. Acceptance
+stays 27/64.
+
 The actual warm Serve-restart diagnostic at `10699f7b5d` completes in
 194.410 seconds with all fifteen original enrollment controls and the complete
 original managed proof. Starting the unchanged Serve unit automatically starts

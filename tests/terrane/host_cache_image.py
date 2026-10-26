@@ -1,5 +1,6 @@
 """Installs exact source-bound native cache component executables and ELF closure."""
 
+from collections import Counter
 import hashlib
 import json
 import os
@@ -158,13 +159,18 @@ UNIT_TESTS = (
     'publisher_local::socket::tests::ancillary_truncation_and_unregistered_credentials_are_rejected',
     'publisher_local::socket::tests::configured_domain_selection_has_no_fallback',
     'publisher_local::socket::tests::duplicate_active_request_is_rejected_before_dispatch',
+    'publisher_local::socket::tests::explicit_retirement_removes_original_name_and_allows_fresh_binding',
     'publisher_local::socket::tests::kernel_peer_credentials_cannot_be_claimed_in_packet',
+    'publisher_local::socket::tests::ordinary_drop_preserves_name_for_failed_startup_diagnosis',
     'publisher_local::socket::tests::oversized_payload_and_excess_rights_are_rejected',
     'publisher_local::socket::tests::real_seqpacket_roundtrip_requires_response_correlation',
     'publisher_local::socket::tests::received_rights_are_close_on_exec_and_writable_sources_fail',
     'publisher_local::socket::tests::rejected_rights_do_not_accumulate_descriptors',
     'publisher_local::socket::tests::replaced_socket_name_is_rejected_without_changing_either_inode',
     'publisher_local::socket::tests::retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group',
+    'publisher_local::socket::tests::retirement_refuses_newly_writable_parent_without_removing_socket',
+    'publisher_local::socket::tests::retirement_refuses_replacement_without_removing_either_inode',
+    'publisher_local::socket::tests::retirement_uses_retained_parent_after_ancestor_replacement',
     'publisher_local::socket::tests::socket_chmod_rejects_wrong_type_and_owner_before_mutation',
     'publisher_local::socket::tests::unsolicited_and_mismatched_responses_are_rejected',
     'quota_confinement::policy::tests::setter_denial_survives_command_padding_and_preserves_get_and_verity',
@@ -425,9 +431,12 @@ def source_unit_inventory(workspace):
         declared.extend(re.findall(r"#\[(?:tokio::)?test\]\s*(?:async\s+)?fn\s+(\w+)\s*\(", path.read_text()))
     selected, _ = unit_selection()
     expected = (*selected, *ROOT_UNIT_TESTS)
-    shared.require(len(declared) == len(expected)
-                   and sorted(declared) == sorted(name.rsplit("::", 1)[1] for name in expected),
-                   "source native unit declarations differ from the complete inventory")
+    actual_counts = Counter(declared)
+    expected_counts = Counter(name.rsplit("::", 1)[1] for name in expected)
+    shared.require(actual_counts == expected_counts,
+                   "source native unit declarations differ from the complete inventory: "
+                   f"unlisted={dict(actual_counts - expected_counts)}, "
+                   f"undeclared={dict(expected_counts - actual_counts)}")
 
 
 def unit_artifact(workspace, temporary, target, packages):

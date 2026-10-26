@@ -37,6 +37,15 @@ to its expected socket inventory. It does not change the Rust implementation
 or qualify the complete owning gates. Renewal at `d70df3c1a2` must include this
 corrected verifier and the original full dependency graph.
 
+That renewal stops during AOS prerequisite construction in 525.215 seconds:
+the host-cache image's separate native source inventory omits the same five
+publisher retirement cases. All original cases remain declared. The inventory
+correction preserves them and requires 135 ordinary base cases or 263 ordinary
+FUSE-profile cases, with the original five administrator creator cases in each
+profile. Both source contracts pass; native image construction and complete
+owning-gate renewal still require a fresh run. The failed run's raw records and
+independent attribution review remain preserved.
+
 The separate 194.410-second warm Serve-restart observation at `10699f7b5d`
 preserves the original units, credentials, endpoints, configuration and limits.
 A third fresh publisher reaches readiness, while Serve exits at SDK
