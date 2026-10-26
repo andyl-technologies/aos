@@ -131,3 +131,32 @@ fn conflicting_or_foreign_compact_custody_cannot_issue_a_source_read() {
     drop(foreign_guard);
     drop(guard);
 }
+
+#[test]
+fn native_read_capacity_keeps_genuinely_issued_complete_byte_custody_after_revocation() {
+    let fixture = Fixture::new(true, true);
+    let guard = fixture.launch_guard_selected(true);
+    let read = guard.custody().unwrap().original_source_read().unwrap();
+    let report = read
+        .retained_requested_storage_precredit_data(usize::MAX)
+        .unwrap();
+    assert!(!report.unknowns().executable_lease_worker);
+    read.ensure_current().unwrap();
+
+    let before = read.retained_capacity_data(None).unwrap();
+
+    assert_eq!(before.shared_backing_views, 5);
+    assert_eq!(before.vector_banks, 2);
+    assert!(before.vector_capacity_bytes > 0);
+    assert_eq!(before.observed_nodes, 1); // Only the SDK's saved scalar epoch.
+    assert!(before.string_capacity_bytes > 0);
+    assert!(
+        crate::node_adapters::cnp::CnpSemanticSourceRead::retained_capacity_counter_scratch_data()
+            > 0
+    );
+    drop(guard);
+
+    assert!(read.ensure_current().is_err());
+    assert_eq!(read.retained_capacity_data(None).unwrap(), before);
+    assert_eq!(read.retained_capacity_data(None).unwrap(), before);
+}

@@ -271,3 +271,80 @@ fn complete_byte_path_measures_actual_original_child_and_revocation_stays_sticky
     assert!(original.ensure_current(&identity).is_err());
     assert!(original.original.lease().is_none());
 }
+
+#[test]
+fn executable_capacity_data_keeps_real_path_spares_and_descriptor_after_revocation() {
+    use crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData;
+
+    let fixture = NativeFixture::new();
+    let mut original = OriginalExecutable::open_complete_bytes(
+        fixture.child.id(),
+        &fixture.measured(),
+        &fixture.kernel(),
+    )
+    .unwrap();
+    original.process_path.reserve(173);
+    original.original_target.reserve(257);
+    let paths = original.process_path.capacity() + original.original_target.capacity();
+    let reference = &original.expected;
+    let reference_bytes = reference.hash.algorithm.capacity()
+        + reference.hash.domain.capacity()
+        + reference.hash.digest.capacity()
+        + reference.media_type.capacity();
+    let mut census = OriginalOwnerCapacityMetadataData::new(usize::MAX, None);
+    original.record_capacity_data(&mut census).unwrap();
+    let before = census.finish();
+
+    assert_eq!(before.vector_banks, 2);
+    assert_eq!(before.vector_capacity_bytes, paths);
+    assert_eq!(before.string_capacity_bytes, reference_bytes);
+    assert_eq!(before.shared_backing_views, 1);
+    assert_eq!(before.shared_value_bytes, std::mem::size_of::<File>());
+    let prefix = String::with_capacity(113);
+    let mut short = OriginalOwnerCapacityMetadataData::new(3, None);
+    short.observe(&prefix).unwrap();
+    assert_eq!(
+        original.record_capacity_data(&mut short),
+        Err(crate::node_contract::RuntimeError::ResourceLimit)
+    );
+    let partial = short.finish();
+    assert_eq!(partial.capacity_records, 3);
+    assert_eq!(partial.string_capacity_bytes, prefix.capacity());
+    assert_eq!(partial.vector_capacity_bytes, paths);
+
+    original.revoked.set(true);
+    let mut repeated = OriginalOwnerCapacityMetadataData::new(usize::MAX, None);
+    original.record_capacity_data(&mut repeated).unwrap();
+    original.record_capacity_data(&mut repeated).unwrap();
+    let after = repeated.finish();
+    assert_eq!(after.capacity_records, before.capacity_records * 2);
+    assert_eq!(after.vector_capacity_bytes, paths * 2);
+    assert_eq!(after.shared_backing_views, 2);
+    assert!(original.ensure_current(&fixture.kernel()).is_err());
+}
+
+#[test]
+fn executable_capacity_data_refuses_worker_and_foreign_origin_before_rows() {
+    use crate::node_contract::{
+        RuntimeError, restored_owner_history::OriginalOwnerCapacityMetadataData,
+    };
+
+    let fixture = NativeFixture::new();
+    let mut original = fixture.guard();
+    assert!(original.original.lease().is_some());
+    let mut census = OriginalOwnerCapacityMetadataData::new(usize::MAX, None);
+    assert_eq!(
+        original.record_capacity_data(&mut census),
+        Err(RuntimeError::UnsupportedFacet)
+    );
+    assert_eq!(census.finish().capacity_records, 0);
+
+    original.creator = std::process::id().wrapping_add(1);
+    let mut foreign = OriginalOwnerCapacityMetadataData::new(usize::MAX, None);
+    assert_eq!(
+        original.record_capacity_data(&mut foreign),
+        Err(RuntimeError::ForeignAuthority)
+    );
+    assert_eq!(foreign.finish().capacity_records, 0);
+    original.creator = std::process::id();
+}

@@ -360,7 +360,41 @@ pub struct LinuxReadLeaseFile {
     validation: OriginalValidation,
 }
 
+/// Reports the descriptor payload layout and presence of separate lease backing.
+///
+/// These inert facts expose no descriptor or shared owner. They omit Arc header
+/// overhead, the enclosing inline file slot and any notification-worker backing.
+/// A complete census must separately cover that backing or refuse its presence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LinuxReadLeaseFileCapacityData {
+    /// Holds the actual retained File payload size, excluding its Arc header.
+    pub descriptor_value_bytes: usize,
+    /// Holds the actual File payload alignment.
+    pub descriptor_value_alignment: usize,
+    /// Reports an acquired lease and its separately retained notification worker.
+    ///
+    /// A broken or revoked lease remains present; this is never a live check.
+    pub has_lease_worker: bool,
+}
+
 impl LinuxReadLeaseFile {
+    /// Reports original descriptor geometry without I/O or lease validation.
+    ///
+    /// The defining roster borrows the actual Arc payload and original validation
+    /// variant. It neither clones resources nor changes acquired-lease fallback.
+    pub fn retained_capacity_data(&self) -> LinuxReadLeaseFileCapacityData {
+        let Self { file, validation } = self;
+        let has_lease_worker = match validation {
+            OriginalValidation::ReadLease(_) => true,
+            OriginalValidation::CompleteBytesRequired => false,
+        };
+        LinuxReadLeaseFileCapacityData {
+            descriptor_value_bytes: std::mem::size_of_val(file.as_ref()),
+            descriptor_value_alignment: std::mem::align_of_val(file.as_ref()),
+            has_lease_worker,
+        }
+    }
+
     /// Opens an original file and completes its single lease attempt.
     ///
     /// The caller must measure all retained descriptor bytes after construction,

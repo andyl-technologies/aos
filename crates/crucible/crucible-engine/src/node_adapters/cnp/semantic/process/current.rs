@@ -9,6 +9,9 @@ use std::{cell::Cell, rc::Rc};
 mod retained_storage;
 pub(in crate::node_adapters::cnp::semantic) use retained_storage::OriginalFreshQueryReadCall;
 
+#[path = "current/metadata.rs"]
+mod metadata;
+
 #[path = "current/fresh_current.rs"]
 mod fresh_current;
 

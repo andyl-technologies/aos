@@ -74,6 +74,30 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
         merge_capacity_metadata_data(&mut self.facts, &additional)
     }
 
+    /// Joins the original SDK registrar without resetting earlier capacity rows.
+    ///
+    /// The owning capsule checks creator identity before calling this bridge.
+    ///
+    /// # Errors
+    /// Refuses unavailable physical backing, traversal or aggregate row limits,
+    /// and checked geometry overflow. Initialized physical prefixes remain DATA.
+    pub(crate) fn observe_registrar_read_data(
+        &mut self,
+        owner: &crucible_node_transport::client::CnpRegistrarRead,
+    ) -> Result<(), RuntimeError> {
+        let additional = match self.bank.as_deref_mut() {
+            Some(bank) => owner.record_retained_capacity_data(bank),
+            None => owner.retained_metadata_facts_data(),
+        }
+        .map_err(metadata_error)?;
+        self.facts
+            .capacity_records
+            .checked_add(additional.capacity_records)
+            .filter(|rows| *rows <= self.maximum_rows)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        merge_capacity_metadata_data(&mut self.facts, &additional)
+    }
+
     /// Keeps a Copy field in the defining allocation-free roster.
     ///
     /// This compile-time bound prevents a fixed field from silently acquiring an

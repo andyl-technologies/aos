@@ -207,3 +207,71 @@ impl OriginalCompletePreconstruction {
         E::read(&self.native, maximum)
     }
 }
+
+impl PacketCompleteSemanticSource {
+    /// Reports retained original preconstruction capacities without live reads.
+    ///
+    /// The enclosing Source holds the association's inline slot. Its Copy bank
+    /// facts carry no separately owned backing. Revoked native views retain
+    /// their allocations but do not regain lifecycle eligibility from this DATA.
+    ///
+    /// # Errors
+    /// Refuses another creator, a busy association or read owner, unsupported
+    /// executable backing, unready physical rows and checked metadata limits.
+    pub fn original_preconstruction_capacity_data(
+        &self,
+        bank: Option<&mut crucible_node_transport::retained_metadata::records::PacketRuntimeMetadataRecordBank>,
+    ) -> Result<
+        crucible_node_transport::retained_metadata::RetainedProtocolMetadataFacts,
+        RuntimeError,
+    > {
+        use crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData;
+
+        self.storage_origin_with_error::<RuntimeError>()?;
+        let original = self
+            .preconstruction
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
+        let maximum = bank.as_ref().map_or(usize::MAX, |bank| bank.maximum_rows());
+        let mut census = OriginalOwnerCapacityMetadataData::new(maximum, bank);
+        if let Some(OriginalCompletePreconstruction {
+            native,
+            source_banks,
+            controller_bank,
+        }) = original.as_ref()
+        {
+            census.observe_inline_data(source_banks);
+            census.observe_inline_data(controller_bank);
+            native.record_capacity_data(&mut census)?;
+        }
+        self.storage_origin_with_error::<RuntimeError>()?;
+        Ok(census.finish())
+    }
+
+    /// Names actual preconstruction loan and native-read observation controls.
+    pub fn original_preconstruction_capacity_counter_scratch_data() -> usize {
+        use crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData;
+        use std::mem::size_of;
+
+        OriginalOwnerCapacityMetadataData::counter_scratch_data()
+            + CnpSemanticSourceRead::retained_capacity_counter_scratch_data()
+            + size_of::<&Self>()
+            + size_of::<std::cell::Ref<'_, Option<OriginalCompletePreconstruction>>>()
+            + size_of::<
+                Result<
+                    std::cell::Ref<'_, Option<OriginalCompletePreconstruction>>,
+                    std::cell::BorrowError,
+                >,
+            >()
+            + size_of::<Option<&OriginalCompletePreconstruction>>()
+            + size_of::<(
+                &CnpSemanticSourceRead,
+                &PacketCompleteCaptureBankFacts,
+                &OriginalProtocolStorageFacts,
+            )>()
+    }
+}
+
+#[cfg(test)]
+#[path = "preconstruction/capacity_tests.rs"]
+mod capacity_tests;

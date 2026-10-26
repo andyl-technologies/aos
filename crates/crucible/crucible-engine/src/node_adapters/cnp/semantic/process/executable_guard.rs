@@ -29,6 +29,9 @@ mod native_startup;
 
 pub(in crate::node_adapters::cnp::semantic) use fresh_current::FreshCurrentScratch;
 
+#[path = "executable_guard/metadata.rs"]
+mod metadata;
+
 const MAXIMUM_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(PartialEq, Eq)]

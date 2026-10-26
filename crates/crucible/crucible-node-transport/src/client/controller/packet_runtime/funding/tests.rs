@@ -633,3 +633,5 @@ fn physical_recording_checks_original_supervisors_before_clearing_history() -> T
     assert_eq!(serde_json::to_vec(&records)?, before);
     Ok(())
 }
+
+mod registrar;

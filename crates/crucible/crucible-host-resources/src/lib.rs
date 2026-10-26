@@ -39,7 +39,8 @@ pub use linux_directory_cleanup::{
     LinuxDirectoryCleanupOperation,
 };
 pub use linux_read_lease::{
-    LinuxReadLease, LinuxReadLeaseError, LinuxReadLeaseFile, LinuxReadLeaseOwner,
+    LinuxReadLease, LinuxReadLeaseError, LinuxReadLeaseFile, LinuxReadLeaseFileCapacityData,
+    LinuxReadLeaseOwner,
 };
 
 pub use linux_pure_worker::{

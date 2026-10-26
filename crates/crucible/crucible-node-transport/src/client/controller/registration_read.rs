@@ -60,6 +60,38 @@ impl CnpRegistrarRead {
         Ok(observer.finish())
     }
 
+    /// Appends original registrar capacity rows without clearing earlier components.
+    ///
+    /// The owning capsule checks its creator process and thread before lending
+    /// the bank. This walk neither locks the gate nor samples or renews an epoch;
+    /// revoked and contended originals retain their backing. Repeated views keep
+    /// independent rows without alias discount. It grants no registration rights.
+    ///
+    /// # Errors
+    /// Refuses unready physical backing, exhausted rows or checked layout and
+    /// traversal limits. Earlier rows and any initialized prefix remain intact.
+    pub fn record_retained_capacity_data(
+        &self,
+        bank: &mut crate::retained_metadata::records::PacketRuntimeMetadataRecordBank,
+    ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer =
+            crate::retained_metadata::MetadataObserver::appending(bank.recording_bank_data()?);
+        self.observe_settled_history_metadata_data(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    /// Names concrete borrowed registrar, packet-bank and observer controls.
+    pub fn capacity_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        Self::settled_history_counter_scratch_data()
+            + size_of::<crate::retained_metadata::MetadataObserver<'_>>()
+            + size_of::<&mut crate::retained_metadata::records::PacketRuntimeMetadataRecordBank>()
+            + size_of::<
+                Result<&mut crate::retained_metadata::records::MetadataRecordBank, ProviderError>,
+            >()
+    }
+
     /// Reports fixed borrowed projection and recorder views before walking.
     ///
     /// Caller-owned dynamic record/alias banks, serializer output and aggregate

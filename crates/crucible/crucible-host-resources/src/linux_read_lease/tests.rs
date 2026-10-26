@@ -365,3 +365,41 @@ fn owning_original_keeps_a_broken_token_and_never_enters_fallback() {
     assert!(original.lease().is_some());
     assert!(original.lease().unwrap().verify_current().is_err());
 }
+
+#[test]
+fn capacity_data_keeps_actual_descriptor_layout_after_unlink_without_a_worker() {
+    let fixture = Fixture::new();
+    let path = fixture.file();
+    let original = LinuxReadLeaseFile::open(&path, None).unwrap();
+    let expected = LinuxReadLeaseFileCapacityData {
+        descriptor_value_bytes: std::mem::size_of::<File>(),
+        descriptor_value_alignment: std::mem::align_of::<File>(),
+        has_lease_worker: false,
+    };
+    assert_eq!(original.retained_capacity_data(), expected);
+
+    std::fs::remove_file(path).unwrap();
+
+    assert_eq!(original.retained_capacity_data(), expected);
+    assert!(original.lease().is_none());
+    assert_eq!(Arc::strong_count(&original.file), 1);
+}
+
+#[test]
+fn capacity_data_reports_acquired_worker_after_revocation_without_fallback() {
+    let fixture = Fixture::new();
+    let path = fixture.file();
+    let owner = Arc::new(LinuxReadLeaseOwner::new().unwrap());
+    let original = LinuxReadLeaseFile::open(&path, Some(owner)).unwrap();
+    let lease = original.lease().unwrap();
+    lease.verify_current().unwrap();
+    let before = original.retained_capacity_data();
+    assert!(before.has_lease_worker);
+    let references = Arc::strong_count(&original.file);
+
+    lease.revoked.set(true);
+
+    assert_eq!(original.retained_capacity_data(), before);
+    assert!(original.lease().unwrap().verify_current().is_err());
+    assert_eq!(Arc::strong_count(&original.file), references);
+}

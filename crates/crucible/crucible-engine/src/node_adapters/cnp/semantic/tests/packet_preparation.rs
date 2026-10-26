@@ -152,9 +152,14 @@ impl Fixture {
     }
 
     fn launch_guard(&self) -> CnpSemanticLaunchGuard {
+        self.launch_guard_selected(false)
+    }
+
+    fn launch_guard_selected(&self, complete_bytes: bool) -> CnpSemanticLaunchGuard {
         let bootstrap = Bootstrap::new(&self.definition);
         let socket = self.directory.join("native.sock");
-        let mut child = Command::new(std::env::current_exe().unwrap())
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "--ignored",
                 "--exact",
@@ -163,32 +168,46 @@ impl Fixture {
                 "--test-threads=1",
             ])
             .env("CRUCIBLE_COMMON_PACKET_SOCKET", &socket)
-            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
-            .process_group(0)
-            .spawn()
+            .process_group(0);
+        let guard = if complete_bytes {
+            // Fix the complete-byte choice before any Child exists. A real
+            // disk input avoids borrowing Child out of the original reservation.
+            let path = self.directory.join("capacity-bootstrap");
+            let mut file = std::fs::File::create(&path).unwrap();
+            write_frame(&mut file, &serde_json::to_value(&bootstrap).unwrap(), FRAME).unwrap();
+            drop(file);
+            command.stdin(std::fs::File::open(&path).unwrap());
+            let mut reservation = CnpSemanticLaunchReservation::reserve_complete_bytes(
+                self.directory.clone(),
+                bootstrap.executable.clone(),
+                Box::new(Slot(self.retained.clone())),
+            );
+            reservation.launch(&mut command).unwrap();
+            reservation.into_guard().ok().unwrap()
+        } else {
+            let mut child = command.stdin(Stdio::piped()).spawn().unwrap();
+            let input = child.stdin.take();
+            let guard = CnpSemanticLaunchGuard::new(
+                child,
+                self.directory.clone(),
+                bootstrap.executable.clone(),
+                Box::new(Slot(self.retained.clone())),
+            )
+            .ok()
             .unwrap();
-        let pid = child.id();
-        // Taking the pipe cannot fail. Transfer the child immediately, then let
-        // the original guard retain custody during all fallible bootstrap work.
-        let input = child.stdin.take();
-        let guard = CnpSemanticLaunchGuard::new(
-            child,
-            self.directory.clone(),
-            bootstrap.executable.clone(),
-            Box::new(Slot(self.retained.clone())),
-        )
-        .ok()
-        .unwrap();
-        let mut input = input.unwrap();
-        write_frame(
-            &mut input,
-            &serde_json::to_value(&bootstrap).unwrap(),
-            FRAME,
-        )
-        .unwrap();
-        drop(input);
+            let mut input = input.unwrap();
+            write_frame(
+                &mut input,
+                &serde_json::to_value(&bootstrap).unwrap(),
+                FRAME,
+            )
+            .unwrap();
+            drop(input);
+            guard
+        };
+        let pid = guard.custody().unwrap().provider_pid();
         let stream = connect_guarded_original_peer(&guard, &socket);
         let mut handshake = bootstrap.handshake();
         let session = ClientSession::negotiate(

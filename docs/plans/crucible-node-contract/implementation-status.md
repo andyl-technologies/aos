@@ -184,6 +184,21 @@ inert failed rows establish storage DATA only; genuine Import18 publication and
 one-use Source authority remain separate qualification obligations. The four
 existing reservation constructor controls and legacy byte gates still pass.
 
+Native-read capacity DATA now keeps the actual ReadOwner and executable Rc
+allocations, original registrar gate and epoch Arc views, both Unix path byte
+capacities, the complete executable ContentRef and the original File Arc payload.
+The SDK registrar appends to the physical packet bank without resetting prior
+components, locking its gate or renewing its saved epoch. HostResources supplies
+only numeric descriptor geometry and reports acquired lease-worker presence;
+unsupported worker backing still refuses a complete-capacity claim. The native
+walk checks creator process/thread and busy-owner state before row mutation,
+while revoked originals retain observable backing. Preconstruction uses the same
+native roster and keeps its two Copy bank-fact records inline. These are capacity
+components, not whole-Source traversal-work or one-use authority. Controls use
+actual negotiated SDK originals and a genuinely issued read from the prebirth
+complete-byte launch reservation; that custody control does not qualify Source18
+native dispatch. All eight new controls pass in both codec configurations.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its twelve
@@ -193,20 +208,19 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 74 Engine census/installation/holder/startup
+Both codec configurations pass 78 Engine census/installation/holder/startup
 controls, eight execution reservation controls and four Import18 bank constructor
-controls. Complete Engine suites pass 2,145 tests each with thirty-four ignored,
-using matching source-built installed packet fixtures. Previously qualified
-Transport suites pass 2,328 tests and 128 focused controls each, with twenty
-ignored; all 2,015 SDK Rust/Cargo inputs match
-the previously qualified captured source. Five-package all-feature/all-target
-checks, five-file scoped Rust formatting, all six architecture gates and the RFC
-requirement-map gate pass. Required application test-target compilation passes
-with 185 artifacts across 58 packages and 76 integration targets; all 4,898
-selected frozen Rust/Cargo inputs match current and captured source. User-owned
-changes are preserved. These are component results; the requirement map records
-planning coverage, and no latest-source strict lint or native lifecycle result
-is claimed.
+controls. Complete Engine suites pass 2,149 tests each with thirty-four ignored,
+using matching source-built installed packet fixtures. Current Transport suites
+pass 2,330 tests and 130 focused controls each, with twenty ignored; HostResources
+suites pass all 37 tests each, including both descriptor capacity controls.
+Six-package all-feature/all-target checks, sixteen-file scoped Rust formatting,
+all six architecture gates and the RFC requirement-map gate pass. Required
+application test-target compilation passes with 185 artifacts across 58 packages
+and 76 integration targets; all 4,922 selected frozen Rust/Cargo inputs match
+current and captured source. User-owned changes are preserved. These are component
+results; the requirement map records planning coverage, and no latest-source
+strict lint or native lifecycle qualification is claimed.
 
 The genuine same-Source one-use admission and funded move, completed Initial and
 address-bound claim retirement checks, integration of the physical bank into
