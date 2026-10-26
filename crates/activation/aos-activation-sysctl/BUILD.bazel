@@ -1,5 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
@@ -87,6 +88,70 @@ aos_license_check(
         ":aos-kernel-tunable-provider",
     ],
     license_domain = RUST_PACKAGE.license_domain,
+)
+
+# The installed early-boot handler retains its static runtime independently
+# of the ordinary development targets.
+rust_library(
+    name = "static_lib",
+    package = RUST_PACKAGE,
+    crate_name = "aos_activation_sysctl",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    deps = DEPENDENCIES,
+    link_deps = ["@aos_native//:static_runtime"],
+)
+
+rust_binary(
+    name = "static_provider",
+    package = RUST_PACKAGE,
+    crate_name = "aos_kernel_tunable_provider",
+    crate_root = "src/main.rs",
+    srcs = ["src/main.rs"],
+    deps = [":static_lib"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "static_unit",
+    package = RUST_PACKAGE,
+    crate = ":static_lib",
+    deps = DEVELOPMENT_DEPENDENCIES,
+    tags = ["manual"],
+)
+
+aos_rust_test(
+    name = "static_bin",
+    package = RUST_PACKAGE,
+    crate = ":static_provider",
+    deps = DEVELOPMENT_DEPENDENCIES,
+    allow_empty = True,
+    tags = ["manual"],
+)
+
+rust_doc_test(name = "doc_static", crate = ":static_lib", tags = ["manual"])
+
+aos_license_check(
+    name = "static_production_license_closure",
+    roots = [":static_lib", ":static_provider"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "static_license_closure",
+    testonly = True,
+    roots = [":static_unit_binary", ":static_bin_binary"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_package(
+    name = "static_package",
+    package_name = "aos-kernel-tunable-provider",
+    version = RUST_PACKAGE.version,
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {":static_provider": "bin/aos-kernel-tunable-provider"},
+    executables = ["bin/aos-kernel-tunable-provider"],
+    visibility = ["//visibility:public"],
 )
 
 aos_source_package(

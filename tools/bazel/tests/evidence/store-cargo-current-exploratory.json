@@ -155,7 +155,7 @@
       "Static ZFS four-command production and release-test Bazel compiles, ordinary Cargo artifacts and package, independent Cargo release oracle, actual version-input compiler reconstruction, precise/conservative inventories and package/profile/policy checks.",
       "Broader core evaluation gate rebuilt source-built systemd/provider prerequisites and passed after the shared static storage provider checkpoint.",
       "Static storage provisioning production and release-test builds, ordinary Cargo artifacts and package, independent release Cargo oracle including storage-layout, exact installed helper/image checks, precise/conservative inventories and package/profile/policy qualification.",
-      "Kernel-tunable dedicated source-built SDK resolution, static production and release-test builds, actual Cargo package and oracle, and precise/conservative inventory qualification overlapped the exploratory Cargo store baseline."
+      "Kernel-tunable source-built SDK generation, initial conservative builds and ordinary package work were underway when baseline completion was first observed. The exact overlap interval was not instrumented. The independent release oracle and final qualification were launched after that observation; overlap with them is not claimed."
     ],
     "derivation": "/nix/store/s6gv3dnf5nbwi1x2qbqz7cyhsbgcmlfv-aos-bazel-store-performance.drv",
     "initrd_production_overlap": "Standalone initrd Bazel package qualification and its unchanged-source Cargo/systemd runtime prerequisites also overlap; these store baseline measurements remain exploratory and contended.",

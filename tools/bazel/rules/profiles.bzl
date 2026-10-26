@@ -31,6 +31,8 @@ def _dependency_profile_impl(ctx):
         "configuration-image-tests",
         "preparation-provider",
         "preparation-provider-tests",
+        "kernel-tunable",
+        "kernel-tunable-tests",
         "boot-preparation",
         "boot-preparation-minimal",
         "release-coordination",

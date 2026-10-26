@@ -3073,6 +3073,29 @@ Precise and conservative inventories agree on nine roots, 152 configured reports
 and 66 source files. Real block devices, MD assembly, VM boot, foreign hosts,
 performance acceptance and default cutover remain separate gates.
 
+`pkgs.aos-kernel-tunable-provider.withBuildDriver "bazel"` selects the static
+sysctl handler and preserves its module, runtime declarations and executable
+probe. Cargo remains the default and explicit rollback. Dedicated production
+and test dependency profiles retain the native compiler features observed in
+the actual Cargo builds. The test profile excludes foreign-only Serde allocation
+features and Syn's full parser; all 69 earlier profiles retain their source pins,
+generated files and semantic dependency definitions.
+Both profiles are available through `aos-dev bazel update-deps`.
+
+`checks.build.bazel.kernel-tunable-provider-production.all`, also exposed through
+`tools/bazel/tests/kernel-tunable-provider-production.nix`, compares the actual
+installed Cargo package and an independent release-test oracle. The retained
+`tests/evidence/kernel-tunable-provider-production-package.json` checks static
+archive inputs, ELF contracts, runtime closure, compiled features, both optimized
+test binaries and both unoptimized procedural macros. Three fixture-backed cases
+cover reconfiguration, baseline restoration, interrupted writes and malformed
+keys. The empty command-test and doctest targets are retained. Eight installed
+rejection comparisons include the 256 KiB document bound. Precise and conservative
+inventories agree on six roots, 109 configured reports and nine source files.
+Production and release tests execute 78 and 112 fresh Linux sandbox actions.
+Live procfs convergence, foreign hosts, numeric performance acceptance and
+default cutover remain separate gates.
+
 The broader [native evaluation gate](tests/evidence/static-storage-core-evaluation.json)
 passes for the static storage checkpoint. Reinstantiation after the OpenZFS and
 provisioning selector changes yields the identical completed root derivation;

@@ -28,6 +28,8 @@
     "package-manager-tests"
     "configuration-image"
     "configuration-image-tests"
+    "kernel-tunable"
+    "kernel-tunable-tests"
     "preparation-provider"
     "preparation-provider-tests"
     "boot-preparation"
