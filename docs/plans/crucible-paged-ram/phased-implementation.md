@@ -66,10 +66,53 @@ failed attempts appear in the dated entries below.
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
 | Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Earlier legacy configuration and thirteen read-only Ninja queries pass; later target attempts retain generator, interpreter and unavailable-process refusals. The latest original invocation refuses during configure because a disappeared wrapper lacks original exit-observation custody; its complete signed result and diagnosis pass independent review. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
-| Native compiler correction | Signed atomic `cb9a5e825a` and conventional `0d49fac971` preserve the complete integration while correcting declarations, const projections and shadowed locals. Fresh configure, the POSIX thread object and source extraction pass. | The startup Source object still fails on its unchanged uncalled RR birth routine with all warnings retained. No whole QEMU build, Windows compilation, native execution or lifecycle qualification is established. |
+| Native compiler correction | Signed atomic `4b64466043`, conventional `3038851ffc`, preserves the deliberately disconnected RR birth body and all CPU admission refusals, documenting its unused state. Fresh configure, actual owning Source object, direct default/provider Source objects, six syntax checks and extraction pass with unchanged warnings. | Full-image compilation reaches bundled libfdt and fails on `-Werror=stringop-overread`; no image link or runtime qualification is established. Complete execution backing, containing prebirth payment and external collection remain absent. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The fresh strict host-library check now reports 22 errors: two large-error returns, seventeen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 680 bindings: 661 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+
+#### Source compilation and synchronous Cleanup ownership
+
+Signed atomic QEMU commit `4b64466043` marks the intentionally disconnected
+`quantum_rr_actor_birth` producer with `G_GNUC_UNUSED` and explains its current
+admission boundary. Its body and every CPU admission refusal remain unchanged.
+Six extraction scripts refresh seven transitive SHA256 pins from the final
+source bytes; no call site or execution permission is added.
+
+Fresh configuration and the actual owning Source object pass. Direct default
+and authentic-header provider Source objects also compile without diagnostics,
+using the unchanged warning policy. All six Source/native/control syntax checks
+and the 179-root, 1,299-function source extraction pass. Extraction establishes
+selected-source and hash coherence; these checks execute no native operation.
+Exact signed reconstruction passes at `ys6a7pg6prfzfr4599frpnmxb9hd7p0p`, the
+666-entry license ledger remains passing at `67pa6j468lx9vmkxrqymd4dllardg69j`,
+and core evaluation passes.
+
+The existing concrete Cleanup body is the synchronous `deferred_driver_run`.
+It retains its original initiating thread, Main/BQL and callback invocation
+contracts. The auxiliary guarded stack and unarmed provider backing are not
+used by a stack switch or this driver. They cannot fund Main's already-live
+stack and initial TLS. Actual containing prebirth payment, loader/mapping
+producer closure and initial-TLS custody still have no complete producer.
+Main's final stack/TLS return requires process exit and genuine external
+collection; local continuation completion cannot certify that return.
+
+A separate default full-image compile reaches 327 of 1,953 Ninja steps before
+bundled libfdt fails on `strrchr`/`strlen` with
+`-Werror=stringop-overread`. No link occurs. That first attempt records its
+inherited unlimited address-space/core limits separately from the explicit
+2-GiB address-space, zero-core and two-compiler validation budget required for
+subsequent invocations. No source or warning change masks this dependency
+failure, and no QEMU binary or test is executed.
+
+The preceding signed host checkpoint `af945e4337` independently passes fresh
+application-target compilation for its complete packaged source snapshot at
+`qq1kvjw78py5ngf421g59v5y92iiq7v2`: 185 test artifacts across 58 packages,
+including all 56 library test targets. All 5,471 retained Rust/TOML files and
+Cargo.lock match that commit. This QEMU-only compiler correction changes no
+Rust inputs; reusing their compilation is unchanged-code evidence, not a fresh
+build of this checkpoint's changed full packaged source derivation. Native
+activation, physical return and complete RFC qualification remain unfinished.
 
 #### Initialized, uncreated backing return
 

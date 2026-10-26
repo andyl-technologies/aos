@@ -1,39 +1,42 @@
-From ac77c71918f9fabef298e9134ff0754eaf9c54d7 Mon Sep 17 00:00:00 2001
+From 4b64466043bf4cc0386ca8f547af393c9673a5b8 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: preserve ownership integration with uncreated
- Cleanup return
+Subject: [PATCH] crucible: preserve cleanup ownership integration and Source
+ compilation
 
-Retain the complete Crucible Source integration, Core quantum bank borrowers,
-fixed Module callbacks, opaque frame acquisition and bounded provider ownership
+Retain the complete Crucible Source integration, Core bank borrowers, fixed
+Module callbacks, opaque frame acquisition and bounded provider ownership
 interfaces as one complete source tree over the selected base.
 
 Provide application-paid guarded stack custody, checked expanded fixed-control
-payment and separately charged startup and libc arena backing. Connect real
-unarmed caller-backed storage and the retained stack interior to actual native
-provider initialization, preserving both-span outcomes before independent posts.
-The existing armed constructor still requires an entry; unarmed creation
-refuses before physical effects and has no entry-binding operation.
+payment and separately charged startup and libc arena backing. Connect actual
+unarmed caller-backed storage and the retained stack interior to native provider
+initialization, preserving factual outcomes before independent posts. Unarmed
+creation refuses before effects and has no worker-entry binding operation.
 
-Add a distinct once-only initialized-but-never-created return operation. It
-authenticates retained canonical request/account/process/payment coordinates
-without repeating permission Current after refusal. Actual provider retirement
-and exact uncreated backing receipts precede canonical startup unlink, separate
-resource last-use posts and both physical unmaps. Each application charge
-returns last. Fixed snapshots and independent return failures preserve every
-partial outcome without changing the initiating child failure or issue state.
+Add once-only initialized-but-never-created native resource return through real
+provider retirement, exact backing receipts and canonical startup unlink.
+Retained request/account/process/payment identity authorizes only teardown of
+the same resources after refusal. Independent last-use posts precede physical
+unmap, and application charges return last. Preserve every partial outcome and
+independent return failure without overwriting the initiating child failure.
 
-No worker/kernel/TLS terminal facts or guarded-stack last use are fabricated.
-Complete-profile ownership, genuine containing prebirth payment, complete
-workload bounds, allocator ownership and actual Cleanup execution/terminal
-producers remain missing. This source progress enables no accepting admission,
-worker birth, new Original or complete Cleanup return.
+Mark the deliberately disconnected quantum_rr_actor_birth producer unused and
+explain the closed CPU admission boundary. Preserve its complete body, every
+admission refusal and all warning flags. Refresh extraction hashes from final
+bytes. No invented call site or additional execution permission is introduced.
 
-Six Source/native/control syntax checks and four native/control object checks
-pass in default and authentic-header provider compile-only configurations.
-Source extraction passes. Source objects retain the existing unused
-quantum_rr_actor_birth diagnostic with the warning policy unchanged. No
-component, provider/startup experiment, guest or runtime activation is executed.
+The existing synchronous Main continuation remains subject to its exact caller,
+Main/BQL and retained-owner contracts. Complete execution-profile ownership,
+genuine containing prebirth payment, loader/initial-TLS closure, workload bounds,
+allocator/context/cache/RCU terminal joins and external collection remain absent.
+No worker/kernel/TLS terminal or independent guarded-stack last-use is inferred.
+
+Fresh source-built configuration and actual owning Source object compilation
+pass. Direct default and authentic-header bounded-provider compile-only Source
+objects both pass without diagnostics, as do six existing syntax checks and
+Source extraction coherence. Earlier component evidence remains unchanged.
+No test, provider/startup experiment, guest or runtime activation is executed.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -271080,10 +271083,10 @@ index 0000000000000000000000000000000000000000..744d2e13826ee48ae28b195928233aaf
 +}
 diff --git a/plugins/crucible-quantum-rr-birth.inc.h b/plugins/crucible-quantum-rr-birth.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..29aa75dc8fbc3fa1c1948351847b3b734ca77db7
+index 0000000000000000000000000000000000000000..cca4ae67120413275766d4db0b33d430ac8ee67d
 --- /dev/null
 +++ b/plugins/crucible-quantum-rr-birth.inc.h
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,326 @@
 +/*
 + * Retained RR actor birth beneath the existing operation and physical keeper.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -271238,10 +271241,11 @@ index 0000000000000000000000000000000000000000..29aa75dc8fbc3fa1c1948351847b3b73
 +
 +/* Not an admission replacement: the selected CPU entry remains unavailable
 + * until this birth and every checked return path are joined and qualified.
-+ * Only the actual Core RR keeper may reach this producer. No caller-provided
++ * CPU admission keeps this producer disconnected until those dependencies
++ * exist. Only the actual Core RR keeper may reach it. No caller-provided
 + * observation or Module receipt can create its physical CPU/QOM custody.
 + */
-+static int quantum_rr_actor_birth(CPUState *cpu,
++static int G_GNUC_UNUSED quantum_rr_actor_birth(CPUState *cpu,
 +    QemuCrucibleCoreQuantumFrame *core,
 +    QemuCrucibleQuantumCpuExecution **execution_holder, uint64_t core_serial)
 +{
@@ -310120,7 +310124,7 @@ index 0000000000000000000000000000000000000000..82bfae83900383ac30006bc4ca9201f9
 +    main()
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d9e0cf6717a1fd658110b18008cdcb28ed996a38
+index 0000000000000000000000000000000000000000..8a4573c42baed55bf65a81601e85b6c2e06efd54
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,184 @@
@@ -310192,7 +310196,7 @@ index 0000000000000000000000000000000000000000..d9e0cf6717a1fd658110b18008cdcb28
 +    'include/plugins/qemu-plugin.h':
 +        '98dffedb987540b27b5725b202fb65deaec3c9b1bedf0f80c7fcf6fcda499fe4',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a3957394477ba0a81a4774dbee94f2bec7c0ebd38f858e10adf8e230f3c4f8df',
++        '842462df2be3e1869f3b39185f6846d92cec53e5a542eb1ff304be02865ff094',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +}
@@ -398944,7 +398948,7 @@ index 0000000000000000000000000000000000000000..347b0f145ba0140b229f0e1818873304
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..15bb819d1d0f81b5b377572d88f96598b4c6107e
+index 0000000000000000000000000000000000000000..95f982b0975d4e2d6cd45629223df9b373f1d483
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -398962,7 +398966,7 @@ index 0000000000000000000000000000000000000000..15bb819d1d0f81b5b377572d88f96598
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a3957394477ba0a81a4774dbee94f2bec7c0ebd38f858e10adf8e230f3c4f8df',
++        '842462df2be3e1869f3b39185f6846d92cec53e5a542eb1ff304be02865ff094',
 +}
 +
 +FUNCTIONS = (
@@ -399050,7 +399054,7 @@ index 0000000000000000000000000000000000000000..15bb819d1d0f81b5b377572d88f96598
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2eb0b23c976444797c8f1e74c3c77eb92681b300
+index 0000000000000000000000000000000000000000..7d47e6887359416a8a9994fbd992b4ff5e72d973
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -399081,7 +399085,7 @@ index 0000000000000000000000000000000000000000..2eb0b23c976444797c8f1e74c3c77eb9
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a3957394477ba0a81a4774dbee94f2bec7c0ebd38f858e10adf8e230f3c4f8df',
++        '842462df2be3e1869f3b39185f6846d92cec53e5a542eb1ff304be02865ff094',
 +}
 +
 +FUNCTIONS = (
@@ -399297,7 +399301,7 @@ index 0000000000000000000000000000000000000000..2eb0b23c976444797c8f1e74c3c77eb9
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d98efad33cf513927f4e97eccf4f858a2aeb7b03
+index 0000000000000000000000000000000000000000..b84d4ad0f916d4bd7720b32c76dd1ad15bfe98a0
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -399321,7 +399325,7 @@ index 0000000000000000000000000000000000000000..d98efad33cf513927f4e97eccf4f858a
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a3957394477ba0a81a4774dbee94f2bec7c0ebd38f858e10adf8e230f3c4f8df',
++        '842462df2be3e1869f3b39185f6846d92cec53e5a542eb1ff304be02865ff094',
 +}
 +
 +FUNCTIONS = (
@@ -399415,7 +399419,7 @@ index 0000000000000000000000000000000000000000..d98efad33cf513927f4e97eccf4f858a
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1a2967b86656724e512a0ddca3af5ca413cdc786
+index 0000000000000000000000000000000000000000..54768ad6bbf755cca9a335f4b02dbeb4ee45a5d2
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,795 @@
@@ -399501,9 +399505,9 @@ index 0000000000000000000000000000000000000000..1a2967b86656724e512a0ddca3af5ca4
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a3957394477ba0a81a4774dbee94f2bec7c0ebd38f858e10adf8e230f3c4f8df',
++        '842462df2be3e1869f3b39185f6846d92cec53e5a542eb1ff304be02865ff094',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '4bba3d4bb8b877ca5323b812842bcdb53452475d698ab76dd63e65f3e62ccf17',
++        'a8b24e6a474da4ee5d7744f08c5e9c555d762ca72431a80cc967ab6a6fd6eebb',
 +    'meson.build':
 +        'd60f3d0a573e006c42c93c08720d825da552ccd45b6a9d276a68839968d59be7',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -400216,7 +400220,7 @@ index 0000000000000000000000000000000000000000..1a2967b86656724e512a0ddca3af5ca4
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4054c2718efacdbfec79bd4a987a20fc52436607
+index 0000000000000000000000000000000000000000..e6c6797f520f57ab79cd3787fc7a958b54c19184
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,2033 @@
@@ -400570,7 +400574,7 @@ index 0000000000000000000000000000000000000000..4054c2718efacdbfec79bd4a987a20fc
 +    'plugins/crucible-quantum-rr-actor.inc.h':
 +        '4da32dc90e4ac30ad5cbf2863e79d8c56fb6c4df725d4155b14b2f961fb8ca35',
 +    'plugins/crucible-quantum-rr-birth.inc.h':
-+        'ee410d9154950db6d1f3d5f109fa94c5f5f25613509008406e636587da847f15',
++        '3863c4083d607a45f49fdec3c33457400570a0129f93e25e381cff216b5afc80',
 +    'plugins/crucible-quantum-rr-executor.inc.h':
 +        '0f0b42b14bba42d7617fa4403328db88c2143fde126bdd32ecae4ba61bb1b842',
 +    'plugins/crucible-quantum-rr-partial-return.inc.h':
