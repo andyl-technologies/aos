@@ -9,7 +9,13 @@
     "harness_lint_annotations"
     "determinism_core_coverage"
     "testing_standards"
+    "crate_spec_index"
   ];
+  specificationDirectory = ../../docs/rfcs/0010-crucible;
+  specificationFiles =
+    map (name: "docs/rfcs/0010-crucible/${name}")
+    (builtins.filter (name: pkgs.lib.hasSuffix ".md" name)
+      (builtins.attrNames (builtins.readDir specificationDirectory)));
   parityTools = builtins.path {
     path = ../../tools/bazel/tests;
     name = "aos-source-audit-parity-tools";
@@ -19,17 +25,19 @@
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
     inherit sourceInventory;
-    sourceDirectories = pkgs.lib.optionals (sourceInventory == null) [
-      "BUILD.bazel"
-      "crates"
-      "tools/bazel/rules"
-      "tools/bazel/metadata"
-      "tools/bazel/testing"
-      "tools/bazel/toolchains"
-      "pkgs/tools/crucible/_packages.nix"
-      "tests/crucible/BUILD.bazel"
-      "tests/crucible/testing-standards-baseline.txt"
-    ];
+    sourceDirectories = pkgs.lib.optionals (sourceInventory == null) ([
+        "BUILD.bazel"
+        "crates"
+        "tools/bazel/rules"
+        "tools/bazel/metadata"
+        "tools/bazel/testing"
+        "tools/bazel/toolchains"
+        "pkgs/tools/crucible/_packages.nix"
+        "tests/crucible/BUILD.bazel"
+        "tests/crucible/testing-standards-baseline.txt"
+        "docs/rfcs/0010-crucible/BUILD.bazel"
+      ]
+      ++ specificationFiles);
     dependencyProfile = "engine";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.engine;
     analysisTargets = map (name: "//crates/crucible/crucible-test-support:${name}") audits ++ ["//crates:source_catalog_package" "//crates/crucible/crucible-test-support:source_audit_binaries"];
@@ -58,7 +66,7 @@ in rec {
     cargoFlags = pkgs.lib.concatMap (name: ["--test" name]) audits;
     cargoSource = import ../../pkgs/tools/crucible/_cargo-source.nix {
       inherit (pkgs) lib;
-      extraPaths = ["tests/crucible/testing-standards-baseline.txt"];
+      extraPaths = ["tests/crucible/testing-standards-baseline.txt"] ++ specificationFiles;
     };
     captureCompilerArguments = true;
   };

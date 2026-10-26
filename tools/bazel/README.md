@@ -388,22 +388,23 @@ The [host-fixture receipt](tests/evidence/test-support-host-fixtures.json) retai
 matching compiler arguments, environments, declared inputs, and output digests
 for both source selections.
 
-`checks.build.bazel.test-support-audits.all` runs 18 existing cases across the
+`checks.build.bazel.test-support-audits.all` runs 21 existing cases across the
 unsafe-fence, concurrency/ABI/oracle standards, harness-lint annotation,
-determinism coverage, and per-layer testing-standards audits against declared
+determinism coverage, per-layer testing-standards, and crate/spec-index audits against declared
 source ownership. Its precise workspace contains no Cargo manifests or locks.
 The generated catalog retains all 78 workspace packages; the audit checks all
 19 Crucible packages, including their crate-root
 fences, safe-wrapper contracts, and unsafe source usage. An independent Cargo
 build executes the same cases using Cargo ownership, then both compilers'
 retained binaries execute them again against the Cargo-free catalog sources.
-Ten negative controls run with both compilers and reject invalid or missing
+Thirteen negative controls run with both compilers and reject invalid or missing
 ownership, an actual removed fence, a removed coverage marker, a missing
-testing-standards baseline, and an unbaselined flaky-test escape. The
-[testing-standards receipt](tests/evidence/test-support-testing-standards.json) retains
+testing-standards baseline, an unbaselined flaky-test escape, a missing spec-index
+declaration, a stale normative table row, and an absent referenced specification. The
+[spec-index receipt](tests/evidence/test-support-spec-index.json) retains
 the precise/conservative compiler input and output comparison: each Bazel build
-executes 71 fresh Linux sandbox actions, including six first-party Rust
-compilations. These five audit targets use a relative compiler manifest path
+executes 73 fresh Linux sandbox actions, including seven first-party Rust
+compilations. These six audit targets use a relative compiler manifest path
 because their runtime ownership comes from the catalog; this prevents the
 compiler sandbox sequence number from entering their binaries. The verifier
 rejects embedded private sandbox paths and has rejected an actual older binary.
@@ -412,7 +413,9 @@ retains the pre-change failure with catalog ownership. The earlier
 [three-target receipt](tests/evidence/test-support-source-audits.json) records
 the sandbox-path regression and its original qualification. The
 [coverage-audit receipt](tests/evidence/test-support-coverage-audit.json) retains
-the earlier coverage-marker qualification. The remaining 22
+the earlier coverage-marker qualification. The
+[testing-standards receipt](tests/evidence/test-support-testing-standards.json)
+retains the earlier baseline and flaky-test qualification. The remaining 21
 repository audit and feature-driver integration targets still need migration.
 The concurrency/ABI/oracle audit inspects source contracts; production ABI
 execution remains a separate gate. The coverage audit checks source markers;
@@ -420,11 +423,15 @@ it does not measure runtime branch coverage.
 The existing testing-standards baseline is an explicit runtime input in both
 build systems. The Cargo oracle selects it through its source filter's existing
 `extraPaths` option; production source filters remain unchanged.
+The spec-index audit declares all 40 Crucible specification documents as runtime
+inputs, checks the complete referenced file-number inventory and section 6 table,
+and uses catalog ownership without requiring package manifests. Its new target
+leaves the five previously qualified audit binaries and compiler inputs unchanged.
 
 The [required application compilation receipt](tests/evidence/test-support-source-audits-full-rust-compilation.json)
 records the completed `checks.rust.aos-test-targets` gate following the audit
 helper change: 185 test executables compiled successfully. All 3,773 Rust files
-in that gate's frozen source match the checkout, including the edited audit
+in that gate's frozen source matched that checkpoint, including the edited audit
 helper. This is compilation evidence; executing application tests and qualifying
 later Nix/Bazel declarations remain separate checks.
 

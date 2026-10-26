@@ -1,5 +1,13 @@
 exports_files(["24-determinism-harness-testing.md"])
 
+# The spec-index audit checks both referenced file numbers and the crate table.
+filegroup(
+    name = "spec_index_audit",
+    testonly = True,
+    srcs = glob(["*.md"]),
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)
+
 # Source-only gate inputs are inspected as data, never linked into the plugin.
 filegroup(
     name = "qemu_plugin_gate_audit",

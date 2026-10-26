@@ -21,9 +21,18 @@ AUDITS = {
     "harness_lint_annotations": 4,
     "determinism_core_coverage": 2,
     "testing_standards": 5,
+    "crate_spec_index": 3,
 }
 TESTING_STANDARDS_BASELINE = "tests/crucible/testing-standards-baseline.txt"
-RUNTIME_DATA = [TESTING_STANDARDS_BASELINE]
+SPECIFICATION_DIRECTORY = "docs/rfcs/0010-crucible"
+
+
+def runtime_data(workspace):
+    """Keeps the actual spec-number inventory and table as declared audit inputs."""
+    specifications = sorted((workspace / SPECIFICATION_DIRECTORY).glob("*.md"))
+    if not specifications:
+        raise ValueError("source audits omit the declared Crucible specifications")
+    return [TESTING_STANDARDS_BASELINE] + [str(path.relative_to(workspace)) for path in specifications]
 
 
 def oracle_binary(oracle, target="crate_unsafe_fence"):
@@ -56,6 +65,7 @@ def run_audit(binary, catalog, exact=None):
 
 
 def qualify(options):
+    declared_data = runtime_data(options.workspace)
     binaries = {name: oracle_binary(options.oracle, name) for name in AUDITS}
     package_index = json.loads((options.build / "packages/index.json").read_text())
     package = options.build / "packages" / package_index[
@@ -93,7 +103,7 @@ def qualify(options):
     with tempfile.TemporaryDirectory(prefix="aos-source-audit-") as temporary:
         root = Path(temporary)
         shutil.copytree(source, root / "crates")
-        for relative in RUNTIME_DATA:
+        for relative in declared_data:
             destination = root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(options.workspace / relative, destination)
@@ -207,6 +217,50 @@ def qualify(options):
                 raise ValueError("catalog-backed audit missed an unbaselined flaky-test escape")
         rejected.append("unbaselined-flaky-test-escape")
 
+        # Retain both directions of the source/spec contract: crate-root
+        # declarations and the normative table must each detect independent drift.
+        package = next(item for item in catalog["packages"] if item["name"] == "crucible-determinism")
+        source = root / package["directory"] / "src/lib.rs"
+        contents = source.read_text()
+        declaration = "//! Spec index: RFC-0010 files 04, 08, 09."
+        if contents.count(declaration) != 1:
+            raise ValueError("spec-index control cannot identify the active declaration")
+        source.chmod(0o644)
+        source.write_text(contents.replace(declaration, "//! Removed spec index for qualification.", 1))
+        for selected in (binaries, bazel_binaries):
+            result = run_audit(selected["crate_spec_index"], selected_catalog,
+                               "crucible_crate_roots_carry_declared_spec_index")
+            if result.returncode == 0 or "missing exact spec index line" not in result.stdout + result.stderr:
+                raise ValueError("catalog-backed spec audit missed an absent crate declaration")
+        source.write_text(contents)
+        rejected.append("missing-active-spec-index")
+
+        table = root / SPECIFICATION_DIRECTORY / "27-crate-structure.md"
+        contents = table.read_text()
+        before, section = contents.split("## 6. ", 1)
+        body, after = section.split("## 7. ", 1)
+        row = "| `crucible-determinism` |"
+        if body.count(row) != 1:
+            raise ValueError("spec-index control cannot identify the normative table row")
+        table.chmod(0o644)
+        table.write_text(before + "## 6. " + body.replace(row, "| `crucible-stale-package` |", 1)
+                         + "## 7. " + after)
+        for selected in (binaries, bazel_binaries):
+            result = run_audit(selected["crate_spec_index"], selected_catalog,
+                               "section_6_crate_spec_table_matches_harness_index")
+            if result.returncode == 0 or "missing section 6 crate/spec row" not in result.stdout + result.stderr:
+                raise ValueError("catalog-backed spec audit missed normative table drift")
+        rejected.append("stale-normative-spec-table")
+
+        specification = root / SPECIFICATION_DIRECTORY / "04-determinism-contract.md"
+        specification.unlink()
+        for selected in (binaries, bazel_binaries):
+            result = run_audit(selected["crate_spec_index"], selected_catalog,
+                               "crucible_crate_roots_carry_declared_spec_index")
+            if result.returncode == 0 or "references missing RFC-0010 file `04`" not in result.stdout + result.stderr:
+                raise ValueError("catalog-backed spec audit accepted an absent referenced specification")
+        rejected.append("absent-referenced-specification")
+
     return {
         "schema_version": 2,
         "test_parity": parity,
@@ -219,7 +273,7 @@ def qualify(options):
         "first_party_cargo_files": manifests,
         "runtime_data_sha256": {
             relative: hashlib.sha256((options.workspace / relative).read_bytes()).hexdigest()
-            for relative in RUNTIME_DATA
+            for relative in declared_data
         },
         "negative_controls_rejected": rejected,
         "negative_control_compilers": ["cargo", "bazel"],

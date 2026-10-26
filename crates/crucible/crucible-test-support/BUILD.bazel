@@ -187,6 +187,29 @@ aos_rust_test(
     ],
 )
 
+aos_rust_test(
+    name = "crate_spec_index",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/crate_spec_index.rs",
+    srcs = [
+        "tests/crate_spec_index.rs",
+        "tests/support/workspace.rs",
+    ],
+    env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+    rustc_env = SOURCE_AUDIT_COMPILER_ENV,
+    data = [
+        "//crates:source_catalog",
+        "//docs/rfcs/0010-crucible:spec_index_audit",
+    ],
+    deps = [
+        ":lib",
+        "//third_party/rust:core_serde",
+        "//third_party/rust:core_serde_json",
+        "//third_party/rust:core_toml",
+    ],
+)
+
 aos_package(
     name = "source_audit_binaries",
     package = RUST_PACKAGE,
@@ -197,8 +220,9 @@ aos_package(
         ":harness_lint_annotations_binary": "bin/harness_lint_annotations",
         ":determinism_core_coverage_binary": "bin/determinism_core_coverage",
         ":testing_standards_binary": "bin/testing_standards",
+        ":crate_spec_index_binary": "bin/crate_spec_index",
     },
-    executables = ["bin/crate_unsafe_fence", "bin/concurrency_abi_oracle_standards", "bin/harness_lint_annotations", "bin/determinism_core_coverage", "bin/testing_standards"],
+    executables = ["bin/crate_unsafe_fence", "bin/concurrency_abi_oracle_standards", "bin/harness_lint_annotations", "bin/determinism_core_coverage", "bin/testing_standards", "bin/crate_spec_index"],
 )
 
 aos_source_package(

@@ -1,0 +1,1093 @@
+{
+  "cargo_oracle": {
+    "derivation": "/nix/store/14dwbl87kjy959848659l6c5r3wi4xn8-aos-bazel-test-support-source-audit-cargo-oracle-1.drv",
+    "output": "/nix/store/h6s5nqm89c2hvi126nhkn3a17ajnbz9k-aos-bazel-test-support-source-audit-cargo-oracle-1",
+    "runtime_data_sha256": {
+      "docs/rfcs/0010-crucible/00-conventions.md": "5c1f2360dc7fcfa3036da8c46f231f30a4ca827b0317c21d2a4fdc5a72b24abf",
+      "docs/rfcs/0010-crucible/01-goals-nongoals-invariants.md": "6074909295f732797949250a36f1c4378e4d327a241ea91e018cc897b471b410",
+      "docs/rfcs/0010-crucible/02-glossary.md": "7d820664a30f98a5fda7d9007eaa392a87f7f3750af3ee2848711e452acdf770",
+      "docs/rfcs/0010-crucible/03-architecture-overview.md": "7f158265a97db1fcdc6dba153180ee30a958bb5d12c410f8a69ea9ceb251ea04",
+      "docs/rfcs/0010-crucible/04-determinism-contract.md": "7e6708ef91153e6f6bcc4089b666d8ec6d562919118183488fc9d24992c9f830",
+      "docs/rfcs/0010-crucible/05-execution-model.md": "0f30915f4a275cedbfdb5cc82509429d5639baf1ab4e3988ac7382d1cf3e80d1",
+      "docs/rfcs/0010-crucible/06-spatial-graph.md": "f6e030ebaa27f48c580b2c28823a7093cc01418b2aeabe646e645561e066db40",
+      "docs/rfcs/0010-crucible/07-temporal-graph.md": "728bfa60370bbe76a6e63a325efd512105fe0836f6df00bfeb66bd286c0d33a1",
+      "docs/rfcs/0010-crucible/08-scheduling.md": "7db0271a824ce66fd4dba0e12643e37c5862655555081afa64c77e26c2f1bd96",
+      "docs/rfcs/0010-crucible/09-virtual-time-icount.md": "7252cbee4ffba419726ff553ef876895303eb5e5688a135eecf1dfb47afb3302",
+      "docs/rfcs/0010-crucible/10-qemu-integration.md": "95666f9152ca775f6e2a5ee4daabc6b803f309e8e03d8570e88189e2b447861c",
+      "docs/rfcs/0010-crucible/11-qemu-patches.md": "005097a0bbc9d6787ca05c81b70bfd6c20a11abffdfe50ca594cb5d785341496",
+      "docs/rfcs/0010-crucible/12-qemu-plugin.md": "827c7b5b89f69ca831d462c834243b2dcb43d2dc02f200feec1a33f6a378427b",
+      "docs/rfcs/0010-crucible/13-shmem-abi.md": "d21ecdec30e365ebec205394d2cd0cb770286d808910e95eed06c98252e89762",
+      "docs/rfcs/0010-crucible/14-protocol.md": "6bb054d6b0eeb5431bd9d1b625fa34605019761ab8e5eebc9b66144c5cf99657",
+      "docs/rfcs/0010-crucible/15-io-subnodes.md": "7d5c1c88a0f929a2474b967ef757bcc07dd1007af1ca671691b852a1e7100106",
+      "docs/rfcs/0010-crucible/16-guest-host-channel.md": "8245862741fc2ef37692efe9a620de70dc014f9af0fb6e1a1742e22ef6425df7",
+      "docs/rfcs/0010-crucible/17-fault-injection.md": "47283c2921f9c2874ae04a7d3991757c847e7345fc83ec79737cf8fd85315fc9",
+      "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md": "e63ce92b4646692103b88527d9640ee895a7c7f9a4cd2c8683abf0489cc37072",
+      "docs/rfcs/0010-crucible/18-assertions-properties.md": "b63d678a350b5fa67938795b7a2f7685072aedc72fc9401872ea782d1520aa5d",
+      "docs/rfcs/0010-crucible/19-observability-event-log.md": "489e32a1e66793c9608fadbf92981a40b76e1e0725b1586fe699a747b822aa10",
+      "docs/rfcs/0010-crucible/20-session-control-plane.md": "57fbcb4aa8e8f2f57adafdb4b9816e08a470fa7538350ecb599559458b1eae03",
+      "docs/rfcs/0010-crucible/21-api.md": "8d1e1608755972986c4a41e079a4450935f57bed74304ffd88f68ec3de34bfe8",
+      "docs/rfcs/0010-crucible/22-advanced-features.md": "1893b050e82b2e0b22469e8aa3505b1db1f3c1f3c924217f24195fb01130db8e",
+      "docs/rfcs/0010-crucible/23-cli.md": "6f005e4efff54da388e3be5186d3ee607cd4f63e448042f397be763604b64ee4",
+      "docs/rfcs/0010-crucible/24-determinism-harness-testing.md": "e365dfe82c99fdf3ef9016b301c285147c167e34c7d982146278b50d855cd15c",
+      "docs/rfcs/0010-crucible/25-performance-targets.md": "23038ef3081b2d3fe937d1355d0f7595be5e738c9be760ac951ae5acd5bd8c95",
+      "docs/rfcs/0010-crucible/26-packaging-aos-integration.md": "94fefc7bca7067ceec49f20ac3136b9ea8cf3aad5ba0753f16b78091133f3f1c",
+      "docs/rfcs/0010-crucible/27-crate-structure.md": "19487c33c26c049ad14988bc91fe9005569a23849fddf005e9eabde5fd44af1b",
+      "docs/rfcs/0010-crucible/28-engineering-standards.md": "96be174396eb717f9bae2d8bcccdd0396a64fe03c14209c8d2a25f1fb5a8c0ba",
+      "docs/rfcs/0010-crucible/29-patterns-and-sketches.md": "620bf8553048a1d62b24dee25a77c858b24d0c023131ba4f811be0fca1d11786",
+      "docs/rfcs/0010-crucible/30-risks-spikes.md": "dcab704800397026a3f0741aa22184a0db1dd15b55a739c7f2ad60e7b52c869b",
+      "docs/rfcs/0010-crucible/31-decision-register.md": "6056246b0084a52786321d54f20f85d7196d7c2eaf634ee0ad3167994569a427",
+      "docs/rfcs/0010-crucible/32-implementation-plan.md": "22333adaf6336660e71e18cdf22fcc14271d8ac4fefb34872e69abb98227c884",
+      "docs/rfcs/0010-crucible/33-examples-and-workloads.md": "2b555160b119733e115634fa5e8fff9334c8549196a7102a790fe6f8ff15b26f",
+      "docs/rfcs/0010-crucible/34-failure-triage.md": "71e1213f9c8436921d2235cbc3e775e35802108a08a8af4ace4e4b5631ff557b",
+      "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md": "4b4c5955e305e3094714d559e898632567c73aa1fe877c849c58ada2bc674b19",
+      "docs/rfcs/0010-crucible/36-time-travel-debugging.md": "d7a60132cdb7f558da7a848a535b73cecb0c79e5fcd0f11f9eb4fa9dfdd7bf0e",
+      "docs/rfcs/0010-crucible/37-licensing-process-boundary.md": "872efd3d0d08eb72e994b8860377fc5e9975d35fca7aa5f20688cff7da4cb238",
+      "docs/rfcs/0010-crucible/README.md": "852aa1d8958a6eaf068601555838b8a6ade93ac5ae7e35626f0e79eae9854fcb",
+      "tests/crucible/testing-standards-baseline.txt": "c9a75e6fe954df30e2b52bfaea72dea85fec32832edbea4b1a43e369a8012cf0"
+    },
+    "source": "/nix/store/g26gb26xacnxfbf4dpwsrkmrz64avdyw-crucible-cargo-src"
+  },
+  "checked_inventory": {
+    "configured_targets": 146,
+    "contracts": 255,
+    "path": "tools/bazel/metadata/test-support-audit-inventory.json",
+    "sha256": "df6c42ea7a050ebffd5b42f9d1d4511dcfe32902a952b096d732d2ce958dd7aa",
+    "source_files": 3837
+  },
+  "entry_point": "checks.build.bazel.test-support-audits.all",
+  "first_party_compiler_arguments_environments_inputs_and_output_digests_match": true,
+  "limits": [
+    "The shared ownership helper retains Cargo fallback for unmigrated integration tests.",
+    "Only catalog-backed audit targets use the relative compiler manifest path.",
+    "These source checks do not execute the production QEMU ABI or license gates.",
+    "No foreign-platform, numeric performance, default-cutover or full RFC completion claim."
+  ],
+  "precise_conservative_inventories_match": true,
+  "previously_qualified_first_party_compiler_inputs_and_outputs_unchanged": true,
+  "qualification": {
+    "full_rust_target_compilation": {
+      "derivation": "/nix/store/qhcmm5vzchsc371xa31ywf44vxqwsr96-aos-test-targets-0.1.0.drv",
+      "scope": "Required application unit and integration target compilation; the changed source audit is separately compiled and executed by both recorded oracles.",
+      "status": "RUNNING"
+    },
+    "policy": {
+      "output": "/nix/store/jxzcfm5v8fz41bz8xcq6080zvrl3f61d-aos-bazel-policy-checks",
+      "tests": 433
+    }
+  },
+  "records": {
+    "conservative": {
+      "build": "/nix/store/mwhybjkpcj4rz5qgsbv148780gd991va-aos-bazel-test-support-source-audits-1",
+      "cache_hits": 0,
+      "derivation": "/nix/store/idd0kslcmq40vdil8589bvzhph373xnj-aos-bazel-test-support-source-audits-1.drv",
+      "evidence_sha256": {
+        "actions.json": "ac338ce7b01b0e2ddf0d637aa72c5c523b47aae0ecbeb64643f38faeb16da6dd",
+        "compiler-inputs.json": "fa46fa897405a31568e7e31d85c2248303276af2c807df610ff6f1e082c205f4",
+        "execution.json": "08f6188e14ad946f2526f69c3bb3bb4ffc736a23814316d1ed1adecdea418a5d"
+      },
+      "exported_audit_binary_sha256": {
+        "concurrency_abi_oracle_standards": "5ab9b7e67dd19375880e1dc0e6f1889fd8111c2c281c02bcdb4aca8473995f8a",
+        "crate_spec_index": "652c561c8d7b940902ed48003e4d54a30104a2797373f1a71839b33e0df6b4a3",
+        "crate_unsafe_fence": "7ade93acea03b6b41ad923aa231f3e8cac7ce2696eeb2cc3e22bb9b542c1fae7",
+        "determinism_core_coverage": "0a403c0e88f46c6db62a918a5becd6d75b06ceb69b996a60e02391040ca2ea18",
+        "harness_lint_annotations": "65cf10db7edc9fea4bfbe5bbad5d8aaec5bc257682304f3b7c83f614895019e2",
+        "testing_standards": "264281e4ed181c1cd124531cf9a3d1062d21466f0ed4d4413789a80b7d8160e1"
+      },
+      "first_party": {
+        "//crates/crucible/crucible-test-support:concurrency_abi_oracle_standards_binary": {
+          "event_inputs_sha256": "5a6c01786c624f21a6831827bb043b6a62955e4018deda70c2844340e0eee4c1",
+          "expanded_arguments_environment_sha256": "2a1f0773c5ba7479769ded1e8b1a9a5f70232fd84a4d2f2bbdfa2121d7f74c7d",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "5ab9b7e67dd19375880e1dc0e6f1889fd8111c2c281c02bcdb4aca8473995f8a",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2225824"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/concurrency_abi_oracle_standards_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:crate_spec_index_binary": {
+          "event_inputs_sha256": "5c8976dca9989e3c79cf684fab3000d7a668aadc47fa89683c641a4d1576c783",
+          "expanded_arguments_environment_sha256": "d5e49b7cfd9133f94a20a0cc2dee2bde4fcb8ff3aa37740b6e56b4178db2ad2f",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "652c561c8d7b940902ed48003e4d54a30104a2797373f1a71839b33e0df6b4a3",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2160768"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/crate_spec_index_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:crate_unsafe_fence_binary": {
+          "event_inputs_sha256": "d6433840723df976be9ef0f73106894ccb6f417ff4e78303f8a9677b9f7bfd42",
+          "expanded_arguments_environment_sha256": "32996014d89d2a5c1c3fef1832b19e1c3b4ca27b329c9e630f042f2a08c8bd28",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "7ade93acea03b6b41ad923aa231f3e8cac7ce2696eeb2cc3e22bb9b542c1fae7",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2116800"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/crate_unsafe_fence_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:determinism_core_coverage_binary": {
+          "event_inputs_sha256": "30e723ade910d70c491fc790f788130f57f666e3d1fd82e460747e2d3ecdda79",
+          "expanded_arguments_environment_sha256": "d3f482c2d0f808fcf5fe57775e957b2dea5b6f1b05c250d79690a7aaf2c94b53",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "0a403c0e88f46c6db62a918a5becd6d75b06ceb69b996a60e02391040ca2ea18",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "1496632"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/determinism_core_coverage_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:harness_lint_annotations_binary": {
+          "event_inputs_sha256": "cc9e87752f108c6333cec898de8e870b2d779e955777d3beea87911be135aead",
+          "expanded_arguments_environment_sha256": "4d590b24004ec2903d7898f0bba876fa3e10bc77b2e63b4d727d68b15ac5e13d",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "65cf10db7edc9fea4bfbe5bbad5d8aaec5bc257682304f3b7c83f614895019e2",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "1529512"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/harness_lint_annotations_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:lib": {
+          "event_inputs_sha256": "8fb723059a4ab2d590c2de83585851dd1e2d32a647e2f8c5692b32377806997c",
+          "expanded_arguments_environment_sha256": "ad72ac3e337276d88c832a8c00f50a1b436e567a47cf70e2c47da7ed43eb1028",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "1d11e71460ccbae50ad0ceb83a26fabd0fef033220738e781127a353807d42d9",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "4119774"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/libcrucible_test_support-2634982536.rlib",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:testing_standards_binary": {
+          "event_inputs_sha256": "5652777eaf00048ff4c30ba3555f615303ef3eaca8d642c5eb88a3b525add3e5",
+          "expanded_arguments_environment_sha256": "63dd8260c22fd07ea910e9d0b9856a5b6ce6c1aca0faebae1c64683bacb6a71c",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "264281e4ed181c1cd124531cf9a3d1062d21466f0ed4d4413789a80b7d8160e1",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2354432"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/testing_standards_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        }
+      },
+      "first_party_rust_compilations": 7,
+      "qualification": "/nix/store/jkb1js4q2qngfn06zv65qbrd8hp0vap3-aos-bazel-test-support-source-audit-checks",
+      "report": {
+        "audited_package_sources": {
+          "crucible-campaign": 216,
+          "crucible-cli": 172,
+          "crucible-control-api": 18,
+          "crucible-control-client": 16,
+          "crucible-control-server": 37,
+          "crucible-daemon": 369,
+          "crucible-determinism": 6,
+          "crucible-device": 115,
+          "crucible-engine": 443,
+          "crucible-guest": 12,
+          "crucible-qemu-debug-gateway": 8,
+          "crucible-qemu-host": 327,
+          "crucible-qemu-plugin": 147,
+          "crucible-qemu-protocol": 32,
+          "crucible-qemu-shmem": 119,
+          "crucible-session": 33,
+          "crucible-store": 51,
+          "crucible-store-s3": 4,
+          "crucible-test-support": 93
+        },
+        "bazel_compiled_catalog_ownership_executed_cases": {
+          "concurrency_abi_oracle_standards": [
+            "gate_targets_follow_concurrency_abi_and_oracle_standards",
+            "standards_cover_the_required_abi_and_oracle_surface"
+          ],
+          "crate_spec_index": [
+            "crucible_crate_roots_carry_declared_spec_index",
+            "section_6_crate_spec_table_matches_harness_index",
+            "spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift"
+          ],
+          "crate_unsafe_fence": [
+            "crate_root_attribute_scanner_ignores_inactive_fences",
+            "crucible_crate_roots_carry_declared_unsafe_fence",
+            "unsafe_boundary_crates_document_safe_wrapper_contracts",
+            "unsafe_source_scanner_rejects_boundary_drift",
+            "unsafe_usage_is_confined_to_safe_wrapper_boundaries"
+          ],
+          "determinism_core_coverage": [
+            "active_determinism_core_paths_have_branch_and_error_coverage_markers",
+            "determinism_core_coverage_floor_names_required_surfaces"
+          ],
+          "harness_lint_annotations": [
+            "harness_lint_classifies_cfg_test_sections_without_literal_false_positives",
+            "harness_lint_enforces_annotated_exceptions",
+            "harness_lint_recognizes_split_test_modules",
+            "scan::guidance::rejects_float_types_but_ignores_comments_and_strings"
+          ],
+          "testing_standards": [
+            "campaign_model_standard_requires_public_repository_recovery_proofs",
+            "control_responsiveness_standard_requires_daemon_proofs",
+            "gate_target_sources_treat_flaky_as_failing",
+            "gate_targets_follow_per_layer_testing_standards",
+            "world_fork_atomicity_standard_requires_production_transaction_proofs"
+          ]
+        },
+        "cargo_compiled_catalog_ownership_executed_cases": {
+          "concurrency_abi_oracle_standards": [
+            "gate_targets_follow_concurrency_abi_and_oracle_standards",
+            "standards_cover_the_required_abi_and_oracle_surface"
+          ],
+          "crate_spec_index": [
+            "crucible_crate_roots_carry_declared_spec_index",
+            "section_6_crate_spec_table_matches_harness_index",
+            "spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift"
+          ],
+          "crate_unsafe_fence": [
+            "crate_root_attribute_scanner_ignores_inactive_fences",
+            "crucible_crate_roots_carry_declared_unsafe_fence",
+            "unsafe_boundary_crates_document_safe_wrapper_contracts",
+            "unsafe_source_scanner_rejects_boundary_drift",
+            "unsafe_usage_is_confined_to_safe_wrapper_boundaries"
+          ],
+          "determinism_core_coverage": [
+            "active_determinism_core_paths_have_branch_and_error_coverage_markers",
+            "determinism_core_coverage_floor_names_required_surfaces"
+          ],
+          "harness_lint_annotations": [
+            "harness_lint_classifies_cfg_test_sections_without_literal_false_positives",
+            "harness_lint_enforces_annotated_exceptions",
+            "harness_lint_recognizes_split_test_modules",
+            "scan::guidance::rejects_float_types_but_ignores_comments_and_strings"
+          ],
+          "testing_standards": [
+            "campaign_model_standard_requires_public_repository_recovery_proofs",
+            "control_responsiveness_standard_requires_daemon_proofs",
+            "gate_target_sources_treat_flaky_as_failing",
+            "gate_targets_follow_per_layer_testing_standards",
+            "world_fork_atomicity_standard_requires_production_transaction_proofs"
+          ]
+        },
+        "cargo_ownership_executed_cases": [
+          "active_determinism_core_paths_have_branch_and_error_coverage_markers",
+          "campaign_model_standard_requires_public_repository_recovery_proofs",
+          "control_responsiveness_standard_requires_daemon_proofs",
+          "crate_root_attribute_scanner_ignores_inactive_fences",
+          "crucible_crate_roots_carry_declared_spec_index",
+          "crucible_crate_roots_carry_declared_unsafe_fence",
+          "determinism_core_coverage_floor_names_required_surfaces",
+          "gate_target_sources_treat_flaky_as_failing",
+          "gate_targets_follow_concurrency_abi_and_oracle_standards",
+          "gate_targets_follow_per_layer_testing_standards",
+          "harness_lint_classifies_cfg_test_sections_without_literal_false_positives",
+          "harness_lint_enforces_annotated_exceptions",
+          "harness_lint_recognizes_split_test_modules",
+          "scan::guidance::rejects_float_types_but_ignores_comments_and_strings",
+          "section_6_crate_spec_table_matches_harness_index",
+          "spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift",
+          "standards_cover_the_required_abi_and_oracle_surface",
+          "unsafe_boundary_crates_document_safe_wrapper_contracts",
+          "unsafe_source_scanner_rejects_boundary_drift",
+          "unsafe_usage_is_confined_to_safe_wrapper_boundaries",
+          "world_fork_atomicity_standard_requires_production_transaction_proofs"
+        ],
+        "catalog_package_count": 78,
+        "catalog_sha256": "cc7a7e616f09cd49c98d9bb1bf32eb9db9ed15abdc89b3cc74404a799e329b6e",
+        "first_party_cargo_files": [
+          "crates/Cargo.lock",
+          "crates/Cargo.toml",
+          "crates/accache/Cargo.lock",
+          "crates/accache/Cargo.toml",
+          "crates/accache/accache-frontend/Cargo.toml",
+          "crates/accache/accache/Cargo.toml",
+          "crates/activation/aos-activation-bpf-lsm/Cargo.toml",
+          "crates/activation/aos-activation-bpf-network/Cargo.toml",
+          "crates/activation/aos-activation-config-files/Cargo.toml",
+          "crates/activation/aos-activation-crucible/Cargo.toml",
+          "crates/activation/aos-activation-filesystem/Cargo.toml",
+          "crates/activation/aos-activation-kubernetes/Cargo.toml",
+          "crates/activation/aos-activation-nftables/Cargo.toml",
+          "crates/activation/aos-activation-nix-store/Cargo.toml",
+          "crates/activation/aos-activation-storage/Cargo.toml",
+          "crates/activation/aos-activation-sysctl/Cargo.toml",
+          "crates/activation/aos-activation-systemd/Cargo.toml",
+          "crates/activation/aos-activation/Cargo.toml",
+          "crates/artifacts/aos-artifact-evidence/Cargo.toml",
+          "crates/artifacts/aos-nar/Cargo.toml",
+          "crates/artifacts/aos-oci-types/Cargo.toml",
+          "crates/artifacts/aos-oci/Cargo.toml",
+          "crates/bindings/libssh2-sys/Cargo.toml",
+          "crates/boot/aos-boot-identity/Cargo.toml",
+          "crates/boot/aos-boot-runtime/Cargo.toml",
+          "crates/boot/aos-configuration-image/Cargo.toml",
+          "crates/boot/aos-platform-metadata/Cargo.toml",
+          "crates/boot/aos-recovery/Cargo.toml",
+          "crates/boot/aos-storage-layout/Cargo.toml",
+          "crates/cli/aos-cli-ui/Cargo.toml",
+          "crates/cli/aos-cli/Cargo.toml",
+          "crates/cli/aos-closure-analysis/Cargo.toml",
+          "crates/cli/aos-nix-docs/Cargo.toml",
+          "crates/core/aos-core/Cargo.toml",
+          "crates/crucible/crucible-campaign/Cargo.toml",
+          "crates/crucible/crucible-cli/Cargo.toml",
+          "crates/crucible/crucible-control-api/Cargo.toml",
+          "crates/crucible/crucible-control-client/Cargo.toml",
+          "crates/crucible/crucible-control-server/Cargo.toml",
+          "crates/crucible/crucible-daemon/Cargo.toml",
+          "crates/crucible/crucible-determinism/Cargo.toml",
+          "crates/crucible/crucible-device/Cargo.toml",
+          "crates/crucible/crucible-engine/Cargo.toml",
+          "crates/crucible/crucible-guest/Cargo.toml",
+          "crates/crucible/crucible-qemu-debug-gateway/Cargo.toml",
+          "crates/crucible/crucible-qemu-host/Cargo.toml",
+          "crates/crucible/crucible-qemu-plugin/Cargo.toml",
+          "crates/crucible/crucible-qemu-protocol/Cargo.toml",
+          "crates/crucible/crucible-qemu-shmem/Cargo.toml",
+          "crates/crucible/crucible-session/Cargo.toml",
+          "crates/crucible/crucible-store-s3/Cargo.toml",
+          "crates/crucible/crucible-store/Cargo.toml",
+          "crates/crucible/crucible-test-support/Cargo.toml",
+          "crates/hub/aos-hub-api/Cargo.toml",
+          "crates/hub/aos-hub-client/Cargo.toml",
+          "crates/hub/aos-hub-console/Cargo.toml",
+          "crates/hub/aos-hub-db/Cargo.toml",
+          "crates/hub/aos-hub-model/Cargo.toml",
+          "crates/hub/aos-hub-native/Cargo.toml",
+          "crates/hub/aos-hub-service/Cargo.toml",
+          "crates/hub/aos-hub-ui/Cargo.toml",
+          "crates/hub/aos-hub-worker/Cargo.toml",
+          "crates/linux/aos-linux-project-quota/Cargo.toml",
+          "crates/linux/aos-systemd-client/Cargo.toml",
+          "crates/modules/aos-module-docs/Cargo.toml",
+          "crates/modules/aos-module-format/Cargo.toml",
+          "crates/nix/aos-nix/Cargo.toml",
+          "crates/packages/aos-build-api/Cargo.toml",
+          "crates/packages/aos-build-client/Cargo.toml",
+          "crates/packages/aos-build-server/Cargo.toml",
+          "crates/packages/aos-deployment-format/Cargo.toml",
+          "crates/packages/aos-deployment/Cargo.toml",
+          "crates/packages/aos-nix-cache/Cargo.toml",
+          "crates/packages/aos-package-manager/Cargo.toml",
+          "crates/registry/aos-registry-authoring/Cargo.toml",
+          "crates/registry/aos-registry-client/Cargo.toml",
+          "crates/registry/aos-registry-format/Cargo.toml",
+          "crates/registry/aos-registry-web/Cargo.toml",
+          "crates/release/aos-image-finalizer/Cargo.toml",
+          "crates/release/aos-package-maintenance/Cargo.toml",
+          "crates/release/aos-release-coordinator/Cargo.toml",
+          "crates/release/aos-release-format/Cargo.toml",
+          "crates/release/aos-release-signer/Cargo.toml",
+          "crates/transfer/aos-transfer/Cargo.toml"
+        ],
+        "negative_control_compilers": [
+          "cargo",
+          "bazel"
+        ],
+        "negative_controls_rejected": [
+          "absent-testing-standards-baseline",
+          "unsupported-schema",
+          "empty-package-set",
+          "duplicate-ownership",
+          "escaping-ownership",
+          "absent-declared-catalog",
+          "absent-owned-directory",
+          "missing-active-unsafe-fence",
+          "missing-active-coverage-marker",
+          "unbaselined-flaky-test-escape",
+          "missing-active-spec-index",
+          "stale-normative-spec-table",
+          "absent-referenced-specification"
+        ],
+        "runtime_data_sha256": {
+          "docs/rfcs/0010-crucible/00-conventions.md": "5c1f2360dc7fcfa3036da8c46f231f30a4ca827b0317c21d2a4fdc5a72b24abf",
+          "docs/rfcs/0010-crucible/01-goals-nongoals-invariants.md": "6074909295f732797949250a36f1c4378e4d327a241ea91e018cc897b471b410",
+          "docs/rfcs/0010-crucible/02-glossary.md": "7d820664a30f98a5fda7d9007eaa392a87f7f3750af3ee2848711e452acdf770",
+          "docs/rfcs/0010-crucible/03-architecture-overview.md": "7f158265a97db1fcdc6dba153180ee30a958bb5d12c410f8a69ea9ceb251ea04",
+          "docs/rfcs/0010-crucible/04-determinism-contract.md": "7e6708ef91153e6f6bcc4089b666d8ec6d562919118183488fc9d24992c9f830",
+          "docs/rfcs/0010-crucible/05-execution-model.md": "0f30915f4a275cedbfdb5cc82509429d5639baf1ab4e3988ac7382d1cf3e80d1",
+          "docs/rfcs/0010-crucible/06-spatial-graph.md": "f6e030ebaa27f48c580b2c28823a7093cc01418b2aeabe646e645561e066db40",
+          "docs/rfcs/0010-crucible/07-temporal-graph.md": "728bfa60370bbe76a6e63a325efd512105fe0836f6df00bfeb66bd286c0d33a1",
+          "docs/rfcs/0010-crucible/08-scheduling.md": "7db0271a824ce66fd4dba0e12643e37c5862655555081afa64c77e26c2f1bd96",
+          "docs/rfcs/0010-crucible/09-virtual-time-icount.md": "7252cbee4ffba419726ff553ef876895303eb5e5688a135eecf1dfb47afb3302",
+          "docs/rfcs/0010-crucible/10-qemu-integration.md": "95666f9152ca775f6e2a5ee4daabc6b803f309e8e03d8570e88189e2b447861c",
+          "docs/rfcs/0010-crucible/11-qemu-patches.md": "005097a0bbc9d6787ca05c81b70bfd6c20a11abffdfe50ca594cb5d785341496",
+          "docs/rfcs/0010-crucible/12-qemu-plugin.md": "827c7b5b89f69ca831d462c834243b2dcb43d2dc02f200feec1a33f6a378427b",
+          "docs/rfcs/0010-crucible/13-shmem-abi.md": "d21ecdec30e365ebec205394d2cd0cb770286d808910e95eed06c98252e89762",
+          "docs/rfcs/0010-crucible/14-protocol.md": "6bb054d6b0eeb5431bd9d1b625fa34605019761ab8e5eebc9b66144c5cf99657",
+          "docs/rfcs/0010-crucible/15-io-subnodes.md": "7d5c1c88a0f929a2474b967ef757bcc07dd1007af1ca671691b852a1e7100106",
+          "docs/rfcs/0010-crucible/16-guest-host-channel.md": "8245862741fc2ef37692efe9a620de70dc014f9af0fb6e1a1742e22ef6425df7",
+          "docs/rfcs/0010-crucible/17-fault-injection.md": "47283c2921f9c2874ae04a7d3991757c847e7345fc83ec79737cf8fd85315fc9",
+          "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md": "e63ce92b4646692103b88527d9640ee895a7c7f9a4cd2c8683abf0489cc37072",
+          "docs/rfcs/0010-crucible/18-assertions-properties.md": "b63d678a350b5fa67938795b7a2f7685072aedc72fc9401872ea782d1520aa5d",
+          "docs/rfcs/0010-crucible/19-observability-event-log.md": "489e32a1e66793c9608fadbf92981a40b76e1e0725b1586fe699a747b822aa10",
+          "docs/rfcs/0010-crucible/20-session-control-plane.md": "57fbcb4aa8e8f2f57adafdb4b9816e08a470fa7538350ecb599559458b1eae03",
+          "docs/rfcs/0010-crucible/21-api.md": "8d1e1608755972986c4a41e079a4450935f57bed74304ffd88f68ec3de34bfe8",
+          "docs/rfcs/0010-crucible/22-advanced-features.md": "1893b050e82b2e0b22469e8aa3505b1db1f3c1f3c924217f24195fb01130db8e",
+          "docs/rfcs/0010-crucible/23-cli.md": "6f005e4efff54da388e3be5186d3ee607cd4f63e448042f397be763604b64ee4",
+          "docs/rfcs/0010-crucible/24-determinism-harness-testing.md": "e365dfe82c99fdf3ef9016b301c285147c167e34c7d982146278b50d855cd15c",
+          "docs/rfcs/0010-crucible/25-performance-targets.md": "23038ef3081b2d3fe937d1355d0f7595be5e738c9be760ac951ae5acd5bd8c95",
+          "docs/rfcs/0010-crucible/26-packaging-aos-integration.md": "94fefc7bca7067ceec49f20ac3136b9ea8cf3aad5ba0753f16b78091133f3f1c",
+          "docs/rfcs/0010-crucible/27-crate-structure.md": "19487c33c26c049ad14988bc91fe9005569a23849fddf005e9eabde5fd44af1b",
+          "docs/rfcs/0010-crucible/28-engineering-standards.md": "96be174396eb717f9bae2d8bcccdd0396a64fe03c14209c8d2a25f1fb5a8c0ba",
+          "docs/rfcs/0010-crucible/29-patterns-and-sketches.md": "620bf8553048a1d62b24dee25a77c858b24d0c023131ba4f811be0fca1d11786",
+          "docs/rfcs/0010-crucible/30-risks-spikes.md": "dcab704800397026a3f0741aa22184a0db1dd15b55a739c7f2ad60e7b52c869b",
+          "docs/rfcs/0010-crucible/31-decision-register.md": "6056246b0084a52786321d54f20f85d7196d7c2eaf634ee0ad3167994569a427",
+          "docs/rfcs/0010-crucible/32-implementation-plan.md": "22333adaf6336660e71e18cdf22fcc14271d8ac4fefb34872e69abb98227c884",
+          "docs/rfcs/0010-crucible/33-examples-and-workloads.md": "2b555160b119733e115634fa5e8fff9334c8549196a7102a790fe6f8ff15b26f",
+          "docs/rfcs/0010-crucible/34-failure-triage.md": "71e1213f9c8436921d2235cbc3e775e35802108a08a8af4ace4e4b5631ff557b",
+          "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md": "4b4c5955e305e3094714d559e898632567c73aa1fe877c849c58ada2bc674b19",
+          "docs/rfcs/0010-crucible/36-time-travel-debugging.md": "d7a60132cdb7f558da7a848a535b73cecb0c79e5fcd0f11f9eb4fa9dfdd7bf0e",
+          "docs/rfcs/0010-crucible/37-licensing-process-boundary.md": "872efd3d0d08eb72e994b8860377fc5e9975d35fca7aa5f20688cff7da4cb238",
+          "docs/rfcs/0010-crucible/README.md": "852aa1d8958a6eaf068601555838b8a6ade93ac5ae7e35626f0e79eae9854fcb",
+          "tests/crucible/testing-standards-baseline.txt": "c9a75e6fe954df30e2b52bfaea72dea85fec32832edbea4b1a43e369a8012cf0"
+        },
+        "schema_version": 2,
+        "test_parity": {
+          "schema_version": 1,
+          "targets": {
+            "//crates/crucible/crucible-test-support:concurrency_abi_oracle_standards": {
+              "executed": [
+                "gate_targets_follow_concurrency_abi_and_oracle_standards",
+                "standards_cover_the_required_abi_and_oracle_surface"
+              ],
+              "ignored": []
+            },
+            "//crates/crucible/crucible-test-support:crate_spec_index": {
+              "executed": [
+                "crucible_crate_roots_carry_declared_spec_index",
+                "section_6_crate_spec_table_matches_harness_index",
+                "spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift"
+              ],
+              "ignored": []
+            },
+            "//crates/crucible/crucible-test-support:crate_unsafe_fence": {
+              "executed": [
+                "crate_root_attribute_scanner_ignores_inactive_fences",
+                "crucible_crate_roots_carry_declared_unsafe_fence",
+                "unsafe_boundary_crates_document_safe_wrapper_contracts",
+                "unsafe_source_scanner_rejects_boundary_drift",
+                "unsafe_usage_is_confined_to_safe_wrapper_boundaries"
+              ],
+              "ignored": []
+            },
+            "//crates/crucible/crucible-test-support:determinism_core_coverage": {
+              "executed": [
+                "active_determinism_core_paths_have_branch_and_error_coverage_markers",
+                "determinism_core_coverage_floor_names_required_surfaces"
+              ],
+              "ignored": []
+            },
+            "//crates/crucible/crucible-test-support:harness_lint_annotations": {
+              "executed": [
+                "harness_lint_classifies_cfg_test_sections_without_literal_false_positives",
+                "harness_lint_enforces_annotated_exceptions",
+                "harness_lint_recognizes_split_test_modules",
+                "scan::guidance::rejects_float_types_but_ignores_comments_and_strings"
+              ],
+              "ignored": []
+            },
+            "//crates/crucible/crucible-test-support:testing_standards": {
+              "executed": [
+                "campaign_model_standard_requires_public_repository_recovery_proofs",
+                "control_responsiveness_standard_requires_daemon_proofs",
+                "gate_target_sources_treat_flaky_as_failing",
+                "gate_targets_follow_per_layer_testing_standards",
+                "world_fork_atomicity_standard_requires_production_transaction_proofs"
+              ],
+              "ignored": []
+            }
+          }
+        }
+      },
+      "sandboxed_cache_miss_actions": 73,
+      "workspace": "/nix/store/fxb2fkvx3y5bggngkgfmmniqy8jsar60-aos-bazel-workspace",
+      "workspace_cargo_files": [
+        "crates/Cargo.lock",
+        "crates/Cargo.toml",
+        "crates/accache/Cargo.lock",
+        "crates/accache/Cargo.toml",
+        "crates/accache/accache-frontend/Cargo.toml",
+        "crates/accache/accache/Cargo.toml",
+        "crates/activation/aos-activation-bpf-lsm/Cargo.toml",
+        "crates/activation/aos-activation-bpf-network/Cargo.toml",
+        "crates/activation/aos-activation-config-files/Cargo.toml",
+        "crates/activation/aos-activation-crucible/Cargo.toml",
+        "crates/activation/aos-activation-filesystem/Cargo.toml",
+        "crates/activation/aos-activation-kubernetes/Cargo.toml",
+        "crates/activation/aos-activation-nftables/Cargo.toml",
+        "crates/activation/aos-activation-nix-store/Cargo.toml",
+        "crates/activation/aos-activation-storage/Cargo.toml",
+        "crates/activation/aos-activation-sysctl/Cargo.toml",
+        "crates/activation/aos-activation-systemd/Cargo.toml",
+        "crates/activation/aos-activation/Cargo.toml",
+        "crates/artifacts/aos-artifact-evidence/Cargo.toml",
+        "crates/artifacts/aos-nar/Cargo.toml",
+        "crates/artifacts/aos-oci-types/Cargo.toml",
+        "crates/artifacts/aos-oci/Cargo.toml",
+        "crates/bindings/libssh2-sys/Cargo.toml",
+        "crates/boot/aos-boot-identity/Cargo.toml",
+        "crates/boot/aos-boot-runtime/Cargo.toml",
+        "crates/boot/aos-configuration-image/Cargo.toml",
+        "crates/boot/aos-platform-metadata/Cargo.toml",
+        "crates/boot/aos-recovery/Cargo.toml",
+        "crates/boot/aos-storage-layout/Cargo.toml",
+        "crates/cli/aos-cli-ui/Cargo.toml",
+        "crates/cli/aos-cli/Cargo.toml",
+        "crates/cli/aos-closure-analysis/Cargo.toml",
+        "crates/cli/aos-nix-docs/Cargo.toml",
+        "crates/core/aos-core/Cargo.toml",
+        "crates/crucible/crucible-campaign/Cargo.toml",
+        "crates/crucible/crucible-cli/Cargo.toml",
+        "crates/crucible/crucible-control-api/Cargo.toml",
+        "crates/crucible/crucible-control-client/Cargo.toml",
+        "crates/crucible/crucible-control-server/Cargo.toml",
+        "crates/crucible/crucible-daemon/Cargo.toml",
+        "crates/crucible/crucible-determinism/Cargo.toml",
+        "crates/crucible/crucible-device/Cargo.toml",
+        "crates/crucible/crucible-engine/Cargo.toml",
+        "crates/crucible/crucible-guest/Cargo.toml",
+        "crates/crucible/crucible-qemu-debug-gateway/Cargo.toml",
+        "crates/crucible/crucible-qemu-host/Cargo.toml",
+        "crates/crucible/crucible-qemu-plugin/Cargo.toml",
+        "crates/crucible/crucible-qemu-protocol/Cargo.toml",
+        "crates/crucible/crucible-qemu-shmem/Cargo.toml",
+        "crates/crucible/crucible-session/Cargo.toml",
+        "crates/crucible/crucible-store-s3/Cargo.toml",
+        "crates/crucible/crucible-store/Cargo.toml",
+        "crates/crucible/crucible-test-support/Cargo.toml",
+        "crates/hub/aos-hub-api/Cargo.toml",
+        "crates/hub/aos-hub-client/Cargo.toml",
+        "crates/hub/aos-hub-console/Cargo.toml",
+        "crates/hub/aos-hub-db/Cargo.toml",
+        "crates/hub/aos-hub-model/Cargo.toml",
+        "crates/hub/aos-hub-native/Cargo.toml",
+        "crates/hub/aos-hub-service/Cargo.toml",
+        "crates/hub/aos-hub-ui/Cargo.toml",
+        "crates/hub/aos-hub-worker/Cargo.toml",
+        "crates/linux/aos-linux-project-quota/Cargo.toml",
+        "crates/linux/aos-systemd-client/Cargo.toml",
+        "crates/modules/aos-module-docs/Cargo.toml",
+        "crates/modules/aos-module-format/Cargo.toml",
+        "crates/nix/aos-nix/Cargo.toml",
+        "crates/packages/aos-build-api/Cargo.toml",
+        "crates/packages/aos-build-client/Cargo.toml",
+        "crates/packages/aos-build-server/Cargo.toml",
+        "crates/packages/aos-deployment-format/Cargo.toml",
+        "crates/packages/aos-deployment/Cargo.toml",
+        "crates/packages/aos-nix-cache/Cargo.toml",
+        "crates/packages/aos-package-manager/Cargo.toml",
+        "crates/registry/aos-registry-authoring/Cargo.toml",
+        "crates/registry/aos-registry-client/Cargo.toml",
+        "crates/registry/aos-registry-format/Cargo.toml",
+        "crates/registry/aos-registry-web/Cargo.toml",
+        "crates/release/aos-image-finalizer/Cargo.toml",
+        "crates/release/aos-package-maintenance/Cargo.toml",
+        "crates/release/aos-release-coordinator/Cargo.toml",
+        "crates/release/aos-release-format/Cargo.toml",
+        "crates/release/aos-release-signer/Cargo.toml",
+        "crates/transfer/aos-transfer/Cargo.toml",
+        "third_party/rust/accache/Cargo.lock",
+        "third_party/rust/activation-core-tests/Cargo.lock",
+        "third_party/rust/activation-core/Cargo.lock",
+        "third_party/rust/activation-crucible-tests/Cargo.lock",
+        "third_party/rust/activation-crucible/Cargo.lock",
+        "third_party/rust/activation-storage/Cargo.lock",
+        "third_party/rust/activation-systemd/Cargo.lock",
+        "third_party/rust/aos-cli-fleet-tests/Cargo.lock",
+        "third_party/rust/aos-cli-production/Cargo.lock",
+        "third_party/rust/aos-cli-tests/Cargo.lock",
+        "third_party/rust/boot-preparation-minimal/Cargo.lock",
+        "third_party/rust/boot-preparation/Cargo.lock",
+        "third_party/rust/build-services/Cargo.lock",
+        "third_party/rust/cli-support/Cargo.lock",
+        "third_party/rust/configuration-image-tests/Cargo.lock",
+        "third_party/rust/configuration-image/Cargo.lock",
+        "third_party/rust/control/Cargo.lock",
+        "third_party/rust/core/Cargo.lock",
+        "third_party/rust/crucible-cli/Cargo.lock",
+        "third_party/rust/daemon/Cargo.lock",
+        "third_party/rust/deployment/Cargo.lock",
+        "third_party/rust/device/Cargo.lock",
+        "third_party/rust/engine/Cargo.lock",
+        "third_party/rust/formats/Cargo.lock",
+        "third_party/rust/guest/Cargo.lock",
+        "third_party/rust/hub-client/Cargo.lock",
+        "third_party/rust/hub-console-wasm/Cargo.lock",
+        "third_party/rust/hub-console/Cargo.lock",
+        "third_party/rust/hub-db-all-features-tests/Cargo.lock",
+        "third_party/rust/hub-db-all-features/Cargo.lock",
+        "third_party/rust/hub-db-tests/Cargo.lock",
+        "third_party/rust/hub-db/Cargo.lock",
+        "third_party/rust/hub-model-tests/Cargo.lock",
+        "third_party/rust/hub-model/Cargo.lock",
+        "third_party/rust/hub-native-postgres/Cargo.lock",
+        "third_party/rust/hub-native-tests/Cargo.lock",
+        "third_party/rust/hub-portable/Cargo.lock",
+        "third_party/rust/hub-service-all-features-tests/Cargo.lock",
+        "third_party/rust/hub-service-all-features/Cargo.lock",
+        "third_party/rust/hub-service-tests/Cargo.lock",
+        "third_party/rust/hub-service/Cargo.lock",
+        "third_party/rust/hub-worker-all-features-tests/Cargo.lock",
+        "third_party/rust/hub-worker-tests/Cargo.lock",
+        "third_party/rust/hub-worker-wasm-all-features/Cargo.lock",
+        "third_party/rust/hub-worker-wasm-do-e2e/Cargo.lock",
+        "third_party/rust/hub-worker-wasm/Cargo.lock",
+        "third_party/rust/native-bindings/Cargo.lock",
+        "third_party/rust/native-foundation-minimal/Cargo.lock",
+        "third_party/rust/native-foundation-tests/Cargo.lock",
+        "third_party/rust/native-foundation/Cargo.lock",
+        "third_party/rust/package-manager-tests/Cargo.lock",
+        "third_party/rust/package-manager/Cargo.lock",
+        "third_party/rust/qemu-gpl-plugin-tests/Cargo.lock",
+        "third_party/rust/qemu-gpl-production/Cargo.lock",
+        "third_party/rust/qemu-gpl-tests/Cargo.lock",
+        "third_party/rust/qemu-host/Cargo.lock",
+        "third_party/rust/qemu-test-oracle-host/Cargo.lock",
+        "third_party/rust/quota/Cargo.lock",
+        "third_party/rust/registry-native-tests/Cargo.lock",
+        "third_party/rust/registry-native/Cargo.lock",
+        "third_party/rust/registry-web-wasm/Cargo.lock",
+        "third_party/rust/registry-web/Cargo.lock",
+        "third_party/rust/release-coordination/Cargo.lock",
+        "third_party/rust/release-preparation/Cargo.lock",
+        "third_party/rust/session/Cargo.lock",
+        "third_party/rust/store-s3/Cargo.lock",
+        "third_party/rust/store/Cargo.lock"
+      ]
+    },
+    "precise": {
+      "build": "/nix/store/ndl6n8sabxzw5qy9bzji9sb4csvi16gs-aos-bazel-test-support-source-audits-1",
+      "cache_hits": 0,
+      "derivation": "/nix/store/cvs7284a3ln8dlcbmi0mq01x3i188bgy-aos-bazel-test-support-source-audits-1.drv",
+      "evidence_sha256": {
+        "actions.json": "ac338ce7b01b0e2ddf0d637aa72c5c523b47aae0ecbeb64643f38faeb16da6dd",
+        "compiler-inputs.json": "fa46fa897405a31568e7e31d85c2248303276af2c807df610ff6f1e082c205f4",
+        "execution.json": "ded69b7323c112439682dd7519094ccc3dedd14afa3dad363be096d840ef43a5"
+      },
+      "exported_audit_binary_sha256": {
+        "concurrency_abi_oracle_standards": "5ab9b7e67dd19375880e1dc0e6f1889fd8111c2c281c02bcdb4aca8473995f8a",
+        "crate_spec_index": "652c561c8d7b940902ed48003e4d54a30104a2797373f1a71839b33e0df6b4a3",
+        "crate_unsafe_fence": "7ade93acea03b6b41ad923aa231f3e8cac7ce2696eeb2cc3e22bb9b542c1fae7",
+        "determinism_core_coverage": "0a403c0e88f46c6db62a918a5becd6d75b06ceb69b996a60e02391040ca2ea18",
+        "harness_lint_annotations": "65cf10db7edc9fea4bfbe5bbad5d8aaec5bc257682304f3b7c83f614895019e2",
+        "testing_standards": "264281e4ed181c1cd124531cf9a3d1062d21466f0ed4d4413789a80b7d8160e1"
+      },
+      "first_party": {
+        "//crates/crucible/crucible-test-support:concurrency_abi_oracle_standards_binary": {
+          "event_inputs_sha256": "5a6c01786c624f21a6831827bb043b6a62955e4018deda70c2844340e0eee4c1",
+          "expanded_arguments_environment_sha256": "2a1f0773c5ba7479769ded1e8b1a9a5f70232fd84a4d2f2bbdfa2121d7f74c7d",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "5ab9b7e67dd19375880e1dc0e6f1889fd8111c2c281c02bcdb4aca8473995f8a",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2225824"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/concurrency_abi_oracle_standards_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:crate_spec_index_binary": {
+          "event_inputs_sha256": "5c8976dca9989e3c79cf684fab3000d7a668aadc47fa89683c641a4d1576c783",
+          "expanded_arguments_environment_sha256": "d5e49b7cfd9133f94a20a0cc2dee2bde4fcb8ff3aa37740b6e56b4178db2ad2f",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "652c561c8d7b940902ed48003e4d54a30104a2797373f1a71839b33e0df6b4a3",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2160768"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/crate_spec_index_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:crate_unsafe_fence_binary": {
+          "event_inputs_sha256": "d6433840723df976be9ef0f73106894ccb6f417ff4e78303f8a9677b9f7bfd42",
+          "expanded_arguments_environment_sha256": "32996014d89d2a5c1c3fef1832b19e1c3b4ca27b329c9e630f042f2a08c8bd28",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "7ade93acea03b6b41ad923aa231f3e8cac7ce2696eeb2cc3e22bb9b542c1fae7",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2116800"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/crate_unsafe_fence_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:determinism_core_coverage_binary": {
+          "event_inputs_sha256": "30e723ade910d70c491fc790f788130f57f666e3d1fd82e460747e2d3ecdda79",
+          "expanded_arguments_environment_sha256": "d3f482c2d0f808fcf5fe57775e957b2dea5b6f1b05c250d79690a7aaf2c94b53",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "0a403c0e88f46c6db62a918a5becd6d75b06ceb69b996a60e02391040ca2ea18",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "1496632"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/determinism_core_coverage_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:harness_lint_annotations_binary": {
+          "event_inputs_sha256": "cc9e87752f108c6333cec898de8e870b2d779e955777d3beea87911be135aead",
+          "expanded_arguments_environment_sha256": "4d590b24004ec2903d7898f0bba876fa3e10bc77b2e63b4d727d68b15ac5e13d",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "65cf10db7edc9fea4bfbe5bbad5d8aaec5bc257682304f3b7c83f614895019e2",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "1529512"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/harness_lint_annotations_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:lib": {
+          "event_inputs_sha256": "8fb723059a4ab2d590c2de83585851dd1e2d32a647e2f8c5692b32377806997c",
+          "expanded_arguments_environment_sha256": "ad72ac3e337276d88c832a8c00f50a1b436e567a47cf70e2c47da7ed43eb1028",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "1d11e71460ccbae50ad0ceb83a26fabd0fef033220738e781127a353807d42d9",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "4119774"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/libcrucible_test_support-2634982536.rlib",
+              "symlinkTargetPath": ""
+            }
+          ]
+        },
+        "//crates/crucible/crucible-test-support:testing_standards_binary": {
+          "event_inputs_sha256": "5652777eaf00048ff4c30ba3555f615303ef3eaca8d642c5eb88a3b525add3e5",
+          "expanded_arguments_environment_sha256": "63dd8260c22fd07ea910e9d0b9856a5b6ce6c1aca0faebae1c64683bacb6a71c",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "264281e4ed181c1cd124531cf9a3d1062d21466f0ed4d4413789a80b7d8160e1",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2354432"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/testing_standards_binary",
+              "symlinkTargetPath": ""
+            }
+          ]
+        }
+      },
+      "first_party_rust_compilations": 7,
+      "qualification": "/nix/store/5a43r2fl8prs4hvwdf1vyhf7yravimrx-aos-bazel-test-support-source-audit-checks",
+      "report": {
+        "audited_package_sources": {
+          "crucible-campaign": 216,
+          "crucible-cli": 172,
+          "crucible-control-api": 18,
+          "crucible-control-client": 16,
+          "crucible-control-server": 37,
+          "crucible-daemon": 369,
+          "crucible-determinism": 6,
+          "crucible-device": 115,
+          "crucible-engine": 443,
+          "crucible-guest": 12,
+          "crucible-qemu-debug-gateway": 8,
+          "crucible-qemu-host": 327,
+          "crucible-qemu-plugin": 147,
+          "crucible-qemu-protocol": 32,
+          "crucible-qemu-shmem": 119,
+          "crucible-session": 33,
+          "crucible-store": 51,
+          "crucible-store-s3": 4,
+          "crucible-test-support": 93
+        },
+        "bazel_compiled_catalog_ownership_executed_cases": {
+          "concurrency_abi_oracle_standards": [
+            "gate_targets_follow_concurrency_abi_and_oracle_standards",
+            "standards_cover_the_required_abi_and_oracle_surface"
+          ],
+          "crate_spec_index": [
+            "crucible_crate_roots_carry_declared_spec_index",
+            "section_6_crate_spec_table_matches_harness_index",
+            "spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift"
+          ],
+          "crate_unsafe_fence": [
+            "crate_root_attribute_scanner_ignores_inactive_fences",
+            "crucible_crate_roots_carry_declared_unsafe_fence",
+            "unsafe_boundary_crates_document_safe_wrapper_contracts",
+            "unsafe_source_scanner_rejects_boundary_drift",
+            "unsafe_usage_is_confined_to_safe_wrapper_boundaries"
+          ],
+          "determinism_core_coverage": [
+            "active_determinism_core_paths_have_branch_and_error_coverage_markers",
+            "determinism_core_coverage_floor_names_required_surfaces"
+          ],
+          "harness_lint_annotations": [
+            "harness_lint_classifies_cfg_test_sections_without_literal_false_positives",
+            "harness_lint_enforces_annotated_exceptions",
+            "harness_lint_recognizes_split_test_modules",
+            "scan::guidance::rejects_float_types_but_ignores_comments_and_strings"
+          ],
+          "testing_standards": [
+            "campaign_model_standard_requires_public_repository_recovery_proofs",
+            "control_responsiveness_standard_requires_daemon_proofs",
+            "gate_target_sources_treat_flaky_as_failing",
+            "gate_targets_follow_per_layer_testing_standards",
+            "world_fork_atomicity_standard_requires_production_transaction_proofs"
+          ]
+        },
+        "cargo_compiled_catalog_ownership_executed_cases": {
+          "concurrency_abi_oracle_standards": [
+            "gate_targets_follow_concurrency_abi_and_oracle_standards",
+            "standards_cover_the_required_abi_and_oracle_surface"
+          ],
+          "crate_spec_index": [
+            "crucible_crate_roots_carry_declared_spec_index",
+            "section_6_crate_spec_table_matches_harness_index",
+            "spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift"
+          ],
+          "crate_unsafe_fence": [
+            "crate_root_attribute_scanner_ignores_inactive_fences",
+            "crucible_crate_roots_carry_declared_unsafe_fence",
+            "unsafe_boundary_crates_document_safe_wrapper_contracts",
+            "unsafe_source_scanner_rejects_boundary_drift",
+            "unsafe_usage_is_confined_to_safe_wrapper_boundaries"
+          ],
+          "determinism_core_coverage": [
+            "active_determinism_core_paths_have_branch_and_error_coverage_markers",
+            "determinism_core_coverage_floor_names_required_surfaces"
+          ],
+          "harness_lint_annotations": [
+            "harness_lint_classifies_cfg_test_sections_without_literal_false_positives",
+            "harness_lint_enforces_annotated_exceptions",
+            "harness_lint_recognizes_split_test_modules",
+            "scan::guidance::rejects_float_types_but_ignores_comments_and_strings"
+          ],
+          "testing_standards": [
+            "campaign_model_standard_requires_public_repository_recovery_proofs",
+            "control_responsiveness_standard_requires_daemon_proofs",
+            "gate_target_sources_treat_flaky_as_failing",
+            "gate_targets_follow_per_layer_testing_standards",
+            "world_fork_atomicity_standard_requires_production_transaction_proofs"
+          ]
+        },
+        "cargo_ownership_executed_cases": [
+          "active_determinism_core_paths_have_branch_and_error_coverage_markers",
+          "campaign_model_standard_requires_public_repository_recovery_proofs",
+          "control_responsiveness_standard_requires_daemon_proofs",
+          "crate_root_attribute_scanner_ignores_inactive_fences",
+          "crucible_crate_roots_carry_declared_spec_index",
+          "crucible_crate_roots_carry_declared_unsafe_fence",
+          "determinism_core_coverage_floor_names_required_surfaces",
+          "gate_target_sources_treat_flaky_as_failing",
+          "gate_targets_follow_concurrency_abi_and_oracle_standards",
+          "gate_targets_follow_per_layer_testing_standards",
+          "harness_lint_classifies_cfg_test_sections_without_literal_false_positives",
+          "harness_lint_enforces_annotated_exceptions",
+          "harness_lint_recognizes_split_test_modules",
+          "scan::guidance::rejects_float_types_but_ignores_comments_and_strings",
+          "section_6_crate_spec_table_matches_harness_index",
+          "spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift",
+          "standards_cover_the_required_abi_and_oracle_surface",
+          "unsafe_boundary_crates_document_safe_wrapper_contracts",
+          "unsafe_source_scanner_rejects_boundary_drift",
+          "unsafe_usage_is_confined_to_safe_wrapper_boundaries",
+          "world_fork_atomicity_standard_requires_production_transaction_proofs"
+        ],
+        "catalog_package_count": 78,
+        "catalog_sha256": "cc7a7e616f09cd49c98d9bb1bf32eb9db9ed15abdc89b3cc74404a799e329b6e",
+        "first_party_cargo_files": [],
+        "negative_control_compilers": [
+          "cargo",
+          "bazel"
+        ],
+        "negative_controls_rejected": [
+          "absent-testing-standards-baseline",
+          "unsupported-schema",
+          "empty-package-set",
+          "duplicate-ownership",
+          "escaping-ownership",
+          "absent-declared-catalog",
+          "absent-owned-directory",
+          "missing-active-unsafe-fence",
+          "missing-active-coverage-marker",
+          "unbaselined-flaky-test-escape",
+          "missing-active-spec-index",
+          "stale-normative-spec-table",
+          "absent-referenced-specification"
+        ],
+        "runtime_data_sha256": {
+          "docs/rfcs/0010-crucible/00-conventions.md": "5c1f2360dc7fcfa3036da8c46f231f30a4ca827b0317c21d2a4fdc5a72b24abf",
+          "docs/rfcs/0010-crucible/01-goals-nongoals-invariants.md": "6074909295f732797949250a36f1c4378e4d327a241ea91e018cc897b471b410",
+          "docs/rfcs/0010-crucible/02-glossary.md": "7d820664a30f98a5fda7d9007eaa392a87f7f3750af3ee2848711e452acdf770",
+          "docs/rfcs/0010-crucible/03-architecture-overview.md": "7f158265a97db1fcdc6dba153180ee30a958bb5d12c410f8a69ea9ceb251ea04",
+          "docs/rfcs/0010-crucible/04-determinism-contract.md": "7e6708ef91153e6f6bcc4089b666d8ec6d562919118183488fc9d24992c9f830",
+          "docs/rfcs/0010-crucible/05-execution-model.md": "0f30915f4a275cedbfdb5cc82509429d5639baf1ab4e3988ac7382d1cf3e80d1",
+          "docs/rfcs/0010-crucible/06-spatial-graph.md": "f6e030ebaa27f48c580b2c28823a7093cc01418b2aeabe646e645561e066db40",
+          "docs/rfcs/0010-crucible/07-temporal-graph.md": "728bfa60370bbe76a6e63a325efd512105fe0836f6df00bfeb66bd286c0d33a1",
+          "docs/rfcs/0010-crucible/08-scheduling.md": "7db0271a824ce66fd4dba0e12643e37c5862655555081afa64c77e26c2f1bd96",
+          "docs/rfcs/0010-crucible/09-virtual-time-icount.md": "7252cbee4ffba419726ff553ef876895303eb5e5688a135eecf1dfb47afb3302",
+          "docs/rfcs/0010-crucible/10-qemu-integration.md": "95666f9152ca775f6e2a5ee4daabc6b803f309e8e03d8570e88189e2b447861c",
+          "docs/rfcs/0010-crucible/11-qemu-patches.md": "005097a0bbc9d6787ca05c81b70bfd6c20a11abffdfe50ca594cb5d785341496",
+          "docs/rfcs/0010-crucible/12-qemu-plugin.md": "827c7b5b89f69ca831d462c834243b2dcb43d2dc02f200feec1a33f6a378427b",
+          "docs/rfcs/0010-crucible/13-shmem-abi.md": "d21ecdec30e365ebec205394d2cd0cb770286d808910e95eed06c98252e89762",
+          "docs/rfcs/0010-crucible/14-protocol.md": "6bb054d6b0eeb5431bd9d1b625fa34605019761ab8e5eebc9b66144c5cf99657",
+          "docs/rfcs/0010-crucible/15-io-subnodes.md": "7d5c1c88a0f929a2474b967ef757bcc07dd1007af1ca671691b852a1e7100106",
+          "docs/rfcs/0010-crucible/16-guest-host-channel.md": "8245862741fc2ef37692efe9a620de70dc014f9af0fb6e1a1742e22ef6425df7",
+          "docs/rfcs/0010-crucible/17-fault-injection.md": "47283c2921f9c2874ae04a7d3991757c847e7345fc83ec79737cf8fd85315fc9",
+          "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md": "e63ce92b4646692103b88527d9640ee895a7c7f9a4cd2c8683abf0489cc37072",
+          "docs/rfcs/0010-crucible/18-assertions-properties.md": "b63d678a350b5fa67938795b7a2f7685072aedc72fc9401872ea782d1520aa5d",
+          "docs/rfcs/0010-crucible/19-observability-event-log.md": "489e32a1e66793c9608fadbf92981a40b76e1e0725b1586fe699a747b822aa10",
+          "docs/rfcs/0010-crucible/20-session-control-plane.md": "57fbcb4aa8e8f2f57adafdb4b9816e08a470fa7538350ecb599559458b1eae03",
+          "docs/rfcs/0010-crucible/21-api.md": "8d1e1608755972986c4a41e079a4450935f57bed74304ffd88f68ec3de34bfe8",
+          "docs/rfcs/0010-crucible/22-advanced-features.md": "1893b050e82b2e0b22469e8aa3505b1db1f3c1f3c924217f24195fb01130db8e",
+          "docs/rfcs/0010-crucible/23-cli.md": "6f005e4efff54da388e3be5186d3ee607cd4f63e448042f397be763604b64ee4",
+          "docs/rfcs/0010-crucible/24-determinism-harness-testing.md": "e365dfe82c99fdf3ef9016b301c285147c167e34c7d982146278b50d855cd15c",
+          "docs/rfcs/0010-crucible/25-performance-targets.md": "23038ef3081b2d3fe937d1355d0f7595be5e738c9be760ac951ae5acd5bd8c95",
+          "docs/rfcs/0010-crucible/26-packaging-aos-integration.md": "94fefc7bca7067ceec49f20ac3136b9ea8cf3aad5ba0753f16b78091133f3f1c",
+          "docs/rfcs/0010-crucible/27-crate-structure.md": "19487c33c26c049ad14988bc91fe9005569a23849fddf005e9eabde5fd44af1b",
+          "docs/rfcs/0010-crucible/28-engineering-standards.md": "96be174396eb717f9bae2d8bcccdd0396a64fe03c14209c8d2a25f1fb5a8c0ba",
+          "docs/rfcs/0010-crucible/29-patterns-and-sketches.md": "620bf8553048a1d62b24dee25a77c858b24d0c023131ba4f811be0fca1d11786",
+          "docs/rfcs/0010-crucible/30-risks-spikes.md": "dcab704800397026a3f0741aa22184a0db1dd15b55a739c7f2ad60e7b52c869b",
+          "docs/rfcs/0010-crucible/31-decision-register.md": "6056246b0084a52786321d54f20f85d7196d7c2eaf634ee0ad3167994569a427",
+          "docs/rfcs/0010-crucible/32-implementation-plan.md": "22333adaf6336660e71e18cdf22fcc14271d8ac4fefb34872e69abb98227c884",
+          "docs/rfcs/0010-crucible/33-examples-and-workloads.md": "2b555160b119733e115634fa5e8fff9334c8549196a7102a790fe6f8ff15b26f",
+          "docs/rfcs/0010-crucible/34-failure-triage.md": "71e1213f9c8436921d2235cbc3e775e35802108a08a8af4ace4e4b5631ff557b",
+          "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md": "4b4c5955e305e3094714d559e898632567c73aa1fe877c849c58ada2bc674b19",
+          "docs/rfcs/0010-crucible/36-time-travel-debugging.md": "d7a60132cdb7f558da7a848a535b73cecb0c79e5fcd0f11f9eb4fa9dfdd7bf0e",
+          "docs/rfcs/0010-crucible/37-licensing-process-boundary.md": "872efd3d0d08eb72e994b8860377fc5e9975d35fca7aa5f20688cff7da4cb238",
+          "docs/rfcs/0010-crucible/README.md": "852aa1d8958a6eaf068601555838b8a6ade93ac5ae7e35626f0e79eae9854fcb",
+          "tests/crucible/testing-standards-baseline.txt": "c9a75e6fe954df30e2b52bfaea72dea85fec32832edbea4b1a43e369a8012cf0"
+        },
+        "schema_version": 2,
+        "test_parity": {
+          "schema_version": 1,
+          "targets": {
+            "//crates/crucible/crucible-test-support:concurrency_abi_oracle_standards": {
+              "executed": [
+                "gate_targets_follow_concurrency_abi_and_oracle_standards",
+                "standards_cover_the_required_abi_and_oracle_surface"
+              ],
+              "ignored": []
+            },
+            "//crates/crucible/crucible-test-support:crate_spec_index": {
+              "executed": [
+                "crucible_crate_roots_carry_declared_spec_index",
+                "section_6_crate_spec_table_matches_harness_index",
+                "spec_index_rules_reject_missing_doc_lines_wrong_docs_and_table_drift"
+              ],
+              "ignored": []
+            },
+            "//crates/crucible/crucible-test-support:crate_unsafe_fence": {
+              "executed": [
+                "crate_root_attribute_scanner_ignores_inactive_fences",
+                "crucible_crate_roots_carry_declared_unsafe_fence",
+                "unsafe_boundary_crates_document_safe_wrapper_contracts",
+                "unsafe_source_scanner_rejects_boundary_drift",
+                "unsafe_usage_is_confined_to_safe_wrapper_boundaries"
+              ],
+              "ignored": []
+            },
+            "//crates/crucible/crucible-test-support:determinism_core_coverage": {
+              "executed": [
+                "active_determinism_core_paths_have_branch_and_error_coverage_markers",
+                "determinism_core_coverage_floor_names_required_surfaces"
+              ],
+              "ignored": []
+            },
+            "//crates/crucible/crucible-test-support:harness_lint_annotations": {
+              "executed": [
+                "harness_lint_classifies_cfg_test_sections_without_literal_false_positives",
+                "harness_lint_enforces_annotated_exceptions",
+                "harness_lint_recognizes_split_test_modules",
+                "scan::guidance::rejects_float_types_but_ignores_comments_and_strings"
+              ],
+              "ignored": []
+            },
+            "//crates/crucible/crucible-test-support:testing_standards": {
+              "executed": [
+                "campaign_model_standard_requires_public_repository_recovery_proofs",
+                "control_responsiveness_standard_requires_daemon_proofs",
+                "gate_target_sources_treat_flaky_as_failing",
+                "gate_targets_follow_per_layer_testing_standards",
+                "world_fork_atomicity_standard_requires_production_transaction_proofs"
+              ],
+              "ignored": []
+            }
+          }
+        }
+      },
+      "sandboxed_cache_miss_actions": 73,
+      "workspace": "/nix/store/lipy27ga6wlj616mabwsnc796i3f0l2j-aos-bazel-workspace",
+      "workspace_cargo_files": []
+    }
+  },
+  "remaining_integration_targets": [
+    "campaign_gate_matrix_inventory",
+    "campaign_gate_traceability",
+    "campaign_release_acceptance",
+    "control_plane_boundary",
+    "crate_artifact_types",
+    "crate_layer_graph",
+    "determinism_review",
+    "documentation_hygiene",
+    "engineering_hygiene",
+    "feature_powerset",
+    "gate_catalog",
+    "gate_license_boundary",
+    "gate_perf_bench",
+    "gate_target_mapping",
+    "harness_components",
+    "harness_lint",
+    "phase_plan",
+    "rfc_consistency",
+    "rustdoc_bar",
+    "single_scheduler_boundary",
+    "standalone_dependencies"
+  ],
+  "schema_version": 1,
+  "scope": "Six native source audits execute against declared Cargo-free package ownership; spec ownership remains bidirectional.",
+  "status": "PASS"
+}

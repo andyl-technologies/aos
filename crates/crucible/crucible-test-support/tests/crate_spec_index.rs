@@ -326,7 +326,7 @@ fn assert_expected_crucible_package_set(
     for entry in workspace::package_entries(crates_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_dir() || !path.join("Cargo.toml").is_file() {
+        if !path.is_dir() {
             continue;
         }
 
