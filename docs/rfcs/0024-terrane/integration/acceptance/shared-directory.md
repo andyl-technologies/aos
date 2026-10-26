@@ -44,9 +44,65 @@ Acceptance also requires resolving the DOM-14 realization boundary and the
 DOM-15 physical-lifetime limits above. The assigned requirement IDs are
 obligations, not a conformance claim established by a green gate name.
 
+## Realization and lifetime enforcement
+
+Source review at `9efbf29becbda14f9ac58c1a820cde63a3f8d050` identifies the
+following enforcement paths. They are separate from the backend gate renewal
+and do not constitute new native execution evidence.
+
+For DOM-14, [full-root preparation][root-read] expands graft paths and requires
+ordinary Read for every path under one unchanged complete live policy record.
+The [path evaluator][read-guard] resolves each path's signed effective domain
+and checks the token against that domain and its containing policy root.
+The selected physical domain returned by `storage_domain()` is the enclosing
+snapshot's domain; that accessor alone does not establish permission for all
+graft domains. The per-path checks establish those permissions for the
+particular invocation.
+
+[Native index preparation][scoped-index] validates every expanded path's
+storage policy before admission, binds the index to the selected physical
+domain, and closes the original full-root Read before returning a mapping.
+For a later worker, [index disclosure][worker-channel] requires a fresh
+`PreparedRootRead`; the native bridge compares its commit, root and physical
+domain with the original served index, checks the original exposure, and
+closes that fresh Read before returning backing for the serialized send.
+Possession of the index or an exposure receipt therefore does not replace
+this consumer's repository authorization.
+
+End-to-end acceptance still needs the production registration and worker path
+to bind each requesting consumer to its own verified repository credentials.
+Native qualification must exercise a mixed-domain graft, an authorized
+consumer and a consumer missing one domain, including policy change between
+preparation and disclosure. Existing root-only attenuation and policy-advance
+cases establish narrower boundaries; they do not substitute for that scenario
+or prove that every production consumer traverses this path.
+
+For DOM-15, [exposure reconciliation][closure] accepts only the original
+draining generation and its bounded inode bindings in the configured
+filesystem and project. It removes exposure pins and leases only after
+`exposure_inodes_closed` succeeds. The underlying [project census][census]
+holds every counted, non-excluded inode through a fresh kernel quota query;
+equality with the project's charged inode count establishes that none of the
+excluded original inodes remains charged. An incomplete census or an uncounted
+charged inode delays release. Expiry, a disconnected worker and disappearance
+of a pathname do not establish closure.
+
+The remaining lifetime evidence must follow the actual production worker
+through drain and recovery while another process retains a descriptor or
+mapping, then close the final reference and measure physical retirement and
+charge release. The three private-release backend guests do not exercise
+that complete exposure lifecycle. D-133's retained-passthrough semantics must
+remain intact throughout this qualification.
+
 [shared]: ../../../../../crates/terrane/sdk/terrane-sdk/src/store/shared_dir/mod.rs
 [routes]: ../../../../../crates/terrane/sdk/terrane-sdk/src/store/shared_dir/domains.rs
 [layout]: ../../../../../crates/terrane/sdk/terrane-sdk/src/host/cache/layout.rs
 [publication]: ../../../../../crates/terrane/linux/terrane-linux/src/publisher_io/native.rs
 [consumers]: ../../../../../crates/terrane/linux/terrane-linux/src/host_cache/owner/consumer/sweep.rs
 [retirement]: ../../../../../crates/terrane/linux/terrane-linux/src/host_cache/owner/publication/retirement.rs
+[root-read]: ../../../../../crates/terrane/sdk/terrane-sdk/src/repository/root_nodes.rs
+[read-guard]: ../../../../../crates/terrane/sdk/terrane-sdk/src/guard/read.rs
+[scoped-index]: ../../../../../crates/terrane/linux/terrane-linux/src/host_cache/owner/surface_index/scoped.rs
+[worker-channel]: ../../../../../crates/terrane/linux/terrane-linux/src/worker_channel/mod.rs
+[closure]: ../../../../../crates/terrane/linux/terrane-linux/src/host_cache/owner/surface_index/closure.rs
+[census]: ../../../../../crates/terrane/linux/terrane-linux/src/host_quota/census.rs
