@@ -1,6 +1,6 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "f63c800633704c3e2cbb78738e79a4f51361310ab5f649cd6260e489f38089c1",
+    "third_party/rust/BUILD.bazel": "67ea25a2e52b33b07a57ddc4a0e5c26ccf315afcdbfcb52618e0db40da61dac6",
     "third_party/rust/accache.bzl": "d77d2b31f800f096d790ca0ceecc415017106bf4f50cd597ac449414ac8fbd9a",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
     "tools/bazel/metadata/optional_dependencies.py": "2007e426ae0ded0be48d7b2c8d8d7492e8d8cb166603c597a4b6208fea51a7a4",

@@ -7,6 +7,8 @@ bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # Generated declarations contain no fetch logic. Nix supplies hashed sources.
+include("//third_party/rust:configuration-image/repositories.MODULE.bazel")
+include("//third_party/rust:configuration-image-tests/repositories.MODULE.bazel")
 include("//third_party/rust:boot-preparation/repositories.MODULE.bazel")
 include("//third_party/rust:boot-preparation-minimal/repositories.MODULE.bazel")
 include("//third_party/rust:package-manager/repositories.MODULE.bazel")

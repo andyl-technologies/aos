@@ -421,6 +421,13 @@ The existing testing-standards baseline is an explicit runtime input in both
 build systems. The Cargo oracle selects it through its source filter's existing
 `extraPaths` option; production source filters remain unchanged.
 
+The [required application compilation receipt](tests/evidence/test-support-source-audits-full-rust-compilation.json)
+records the completed `checks.rust.aos-test-targets` gate following the audit
+helper change: 185 test executables compiled successfully. All 3,773 Rust files
+in that gate's frozen source match the checkout, including the edited audit
+helper. This is compilation evidence; executing application tests and qualifying
+later Nix/Bazel declarations remain separate checks.
+
 `checks.build.bazel.feature-powerset.all` independently compiles the nine
 engine, QEMU host, and device configurations from the existing feature-powerset
 driver. Explicit library targets suppress each root's default feature without
@@ -2907,6 +2914,34 @@ configuration command paths through a declared repository. Its manifest
 retains the tool closure's store paths and NAR identities. A separate boundary
 check builds the configuration library without this repository and rejects a
 command build that omits it. No service or remote cache is introduced.
+
+`pkgs.aos-configuration-lower.withBuildDriver "bazel"` selects the native
+static production commands, with `"cargo"` as an explicit rollback. It keeps
+all four installed commands and requires their release tests and doctests.
+Cargo remains the default during qualification.
+The `configuration-image` and `configuration-image-tests` profiles independently
+pin production and test dependencies, without enabling the other boot programs'
+features. The test profile retains Cargo's native Syn derive parser rather than
+its foreign-platform full-parser union.
+
+The configuration tool repository declares only EROFS tools, mount tools and
+the package runtime; it cannot depend on its own consuming configuration package.
+`checks.build.bazel.configuration-production.all`, also exposed through
+`tools/bazel/tests/configuration-production.nix`, checks constructor independence,
+rollback, installed static ELF contracts, immutable embedded commands, runtime
+closures, native release-test profiles, exact compiled features, test inventories,
+and certificate serialization. Privileged mounting, verified boot, foreign hosts,
+performance acceptance and default-driver cutover remain separate gates.
+
+The retained qualification in
+`tests/evidence/configuration-production-package.json` passes 20 library cases,
+four empty command-test targets, the empty doctest target, and 14 installed CLI
+comparisons. Production executes 120 fresh Linux sandbox actions; release tests
+execute 151. Four procedural macros retain Cargo's unoptimized execution profile
+while all five test binaries use its optimized release profile. Precise and
+conservative inventories agree on nine roots, 157 configured reports and 52 source
+files. The 65 existing dependency specifications and their 16,104 generated and
+lock files remain unchanged apart from source-contract hash refreshes.
 
 Host deadline and observation timestamp exceptions are function-scoped. Two
 metadata fixture maps use ordered lookup maps; EFI decoding retains its checked

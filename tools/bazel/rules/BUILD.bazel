@@ -304,6 +304,18 @@ config_setting(
 )
 
 config_setting(
+    name = "configuration_image_dependencies",
+    flag_values = {":dependency_profile": "configuration-image"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "configuration_image_tests_dependencies",
+    flag_values = {":dependency_profile": "configuration-image-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
     name = "boot_preparation_dependencies",
     flag_values = {":dependency_profile": "boot-preparation"},
     visibility = ["//visibility:public"],

@@ -62,6 +62,7 @@
   aosBazelRepositoryTestSources = import ./repository-test-sources.nix {inherit pkgs lib;};
   aosBazelArchitecture = import ./architecture.nix {inherit pkgs;};
   aosBazelBootTools = import ./boot-tools.nix {inherit pkgs lib;};
+  aosBazelConfigurationTools = import ./configuration-tools.nix {inherit pkgs lib;};
   aosBazelRegistryTestTools = import ./registry-test-tools.nix {inherit pkgs lib;};
   aosBazelNixTestTools = import ./nix-test-tools.nix {inherit pkgs;};
   aosBazelCodegenTools = import ./codegen-tools.nix {inherit pkgs;};
@@ -218,6 +219,16 @@
       inherit pkgs lib;
       root = ../../..;
       family = "package-manager-tests";
+    };
+    configuration-image = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "configuration-image";
+    };
+    configuration-image-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "configuration-image-tests";
     };
     boot-preparation = import ./rust-sources.nix {
       inherit pkgs lib;

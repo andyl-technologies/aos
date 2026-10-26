@@ -26,6 +26,8 @@
     "hub-db-all-features-tests"
     "package-manager"
     "package-manager-tests"
+    "configuration-image"
+    "configuration-image-tests"
     "boot-preparation"
     "boot-preparation-minimal"
     "release-coordination"

@@ -175,6 +175,7 @@ in
     hub-service = import ./_bazel-hub-service.nix {inherit pkgs;};
     package-manager = import ./_bazel-package-manager.nix {inherit pkgs;};
     boot-preparation = import ./_bazel-boot-preparation.nix {inherit pkgs;};
+    configuration-production = import ./_bazel-configuration-production.nix {inherit pkgs;};
     release-coordination = import ./_bazel-release-coordination.nix {inherit pkgs;};
     registry-native = import ./_bazel-registry-native.nix {inherit pkgs;};
     accache = import ./_bazel-accache.nix {inherit pkgs;};
@@ -578,6 +579,7 @@ in
             hub-service.all
             package-manager.all
             boot-preparation.all
+            configuration-production.all
             release-coordination.all
             registry-native.all
             accache.all

@@ -10,8 +10,11 @@
   erofs-utils,
   util-linux,
   aos,
+  callPackage,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-configuration-lower.nix {buildDriver = selected;};
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -58,8 +61,7 @@
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
   };
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -91,6 +93,10 @@ in
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [erofs-utils util-linux aos.packageRuntime];
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
     module = ./_aos-configuration-lower;
 
     preBuild = staticBuildSetup;
@@ -112,4 +118,14 @@ in
       license = "Apache-2.0";
       mainProgram = "aos-configuration-lower";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-configuration-lower-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage
