@@ -31,6 +31,19 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- `aosMethod46InitialStartupProfileWith` now constructs the immutable V3 image
+  comparison profile for either fixed manual purpose. It reuses the existing
+  ELF-closure resolver and file-pin engine for separately exported initializer
+  and normal-owner closures, commits the complete normalized unit and actual
+  normal unit fragment/argv, and joins canonical-policy provenance to a fresh
+  effective-policy check. Public approval bytes and Controller UID/GID are
+  bounded configuration inputs; no secret or TPM state enters the derivation.
+  Seven source-only producer tests pass, including both generated purposes,
+  exact UTF-8 argument bounds, unit self-reference and conflicting policy
+  provenance. The package factory instantiates. A real selected-image build
+  still requires the initializer binaries, installed units and approved policy;
+  this producer supplies comparison DATA and does not qualify startup or effects.
+
 - The initial credential owner now retains the mandatory Host, Mount and Network
   public manifests alongside Storage. Both original stopped-Controller samples
   must match each manifest's fixed external credential source; the exact initial
@@ -61,7 +74,11 @@ Recent committed startup fixes close narrower prerequisites:
   allocate no new custody, descriptor or authority. The hermetic systemd package
   and all twelve fixed-profile regressions pass
   (`/nix/store/5w4h4yamvb0i92y0rhg1cvn3y5lwb0cs-systemd-261.2`). The focused
-  AOS Nix QEMU test is running. It queues each manual job before producer birth,
+  AOS Nix QEMU test is running with explicit loaded/inactive preconditions and
+  active fixture ordering references that retain the stopped owners. The first
+  fixture refused its initial start before establishing an exclusion interval;
+  standalone inactive owner definitions could be garbage-collected. The production
+  guard remains unchanged. The test queues each manual job before producer birth,
   checks conflicting starts and process migration, and checks migration after
   cancellation. Its closure contains no production policy. It supplies no
   installed producer, Source admission, durable intent or TPM qualification.
@@ -92,8 +109,10 @@ Recent committed startup fixes close narrower prerequisites:
   tests pass; the two Security configurations each have two existing ignored
   cases. New regressions pin twelve independently computed publication digests
   and retained failed/retired successful manifest-context scopes. Complete
-  application unit/integration target compilation is running for the sixteen
-  Rust inputs. The preceding shared native engine passes complete application
+  application unit/integration target compilation passes for the sixteen
+  Rust inputs
+  (`/nix/store/a14hs117mv2jv8b9sxs22jdgjwgva4yx-aos-test-targets-0.1.0`).
+  The preceding shared native engine passes complete application
   target compilation before the initial adapter
   (`/nix/store/1hd2bqzh4lj6ihjq2gfx87g2k6294h9r-aos-test-targets-0.1.0`).
   This implements the held-map/schema DATA join, without qualifying

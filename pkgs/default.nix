@@ -2087,6 +2087,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         (callPackage ./security/aos-environment-provision.nix {}) arguments;
       aosNormalRootStartupProfileWith = arguments:
         callPackage ./security/_aos-normal-root-profile.nix arguments;
+      aosMethod46InitialStartupProfileWith = arguments:
+        callPackage ./security/_aos-method46-initial-startup-profile.nix arguments;
       aosNixOfflineStartupProfileWith = arguments:
         callPackage ./security/_aos-nix-offline-startup-profile.nix arguments;
       # Public domain DATA flows downward to the fixed reader, then the same
