@@ -54,7 +54,9 @@ Recent committed startup fixes close narrower prerequisites:
   without running them and before the later canary and approval changes.
   The private Host startup-canary route uses the same held-descriptor check;
   its current-source isolated Host suite passes 409 tests, with four skipped.
-  Complete current-source Rust target compilation remains pending.
+  Complete Rust unit and integration targets compile for that canary source
+  (`/nix/store/m5m0374q27m29vv817x1qgsnfk2r7gi6-aos-test-targets-0.1.0`),
+  before the later captured-approval changes. This check does not run the tests.
   The enforcing combined Host candidate previously refused with retained Linux
   error class 213; this result alone does not identify its syscall or errno.
   A corrected enforcing run remains a separate gate, and admission stays closed.
@@ -598,6 +600,19 @@ Recent committed startup fixes close narrower prerequisites:
   not separation from normal endpoint/Nix/Root keys, durable-file custody,
   Session schema, job exclusion, physical TPM operations or installed producer
   qualification. Those gates and public admission remain closed.
+
+- Initial startup now admits its original inherited approval listener after
+  original unit admission. The same Source pays bounded native scratch before
+  checking socket type, record-subject options and the purpose's fixed bound
+  pathname. No caller descriptor or pathname enters this API. Native failures
+  and admitted descriptors remain resident; the independent options/pathname
+  post cannot suppress Source after, including on busy or failed custody.
+  All 80 focused initial tests pass, including four new admission-order,
+  native-cause-retention and owed-post regressions. Complete Rust target
+  compilation is pending for this source. This accepts no connection and
+  verifies no signature. The actual bounded approval exchange, socket-unit
+  delivery, normal-key separation, durable intent, physical TPM operations and
+  installed producer qualification remain incomplete.
 
 - Initial main capture now admits historical namespaces and legacy capacity
   ownership through the ordinary protected namespace engine. The read-only

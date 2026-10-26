@@ -23,7 +23,6 @@ use aos_sandbox_broker::receiving::{
     Method46InitialOriginComparisonDataV1, Method46InitialReceivingClosedV1,
     Method46InitialServiceRoleV1, Method46InitialSourceCaptureV1,
 };
-use aos_sandbox_linux::seqpacket::RecordSubjectListenerAdmissionAttemptV1;
 use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector};
 
 const PROFILE_BYTES: usize = 1024 * 1024;
@@ -40,6 +39,7 @@ pub use main_writer::{
     METHOD46_INITIAL_MAIN_CUT_BYTES_V1, Method46InitialMainMapReadbackV1,
     Method46InitialMainReadbackLoanV1,
 };
+mod approval_listener;
 mod policy;
 mod stopped_cgroups;
 mod unit;
@@ -55,6 +55,7 @@ enum First {
     Policy,
     Unit,
     Credentials,
+    ApprovalListener,
     StoppedOwners,
     MainWriter,
     Order,
@@ -90,7 +91,7 @@ pub struct Method46InitialStartupOriginalV1 {
 // Only the genuine receiver can hand these roles to this owner. They remain
 // parked here until purpose-specific image/profile admission consumes them.
 struct StartupRolesOriginalV1 {
-    listener: Option<RecordSubjectListenerAdmissionAttemptV1>,
+    listener: RefCell<approval_listener::InitialApprovalListenerOriginalV1>,
     images: images::InitialImagesOriginalV1,
     runtime: images::InitialRuntimeOriginalV1,
     policy: policy::InitialPolicyOriginalV1,
@@ -118,7 +119,7 @@ struct ProfilePostOriginalV1 {
 impl StartupRolesOriginalV1 {
     fn new() -> Self {
         Self {
-            listener: None,
+            listener: RefCell::new(approval_listener::InitialApprovalListenerOriginalV1::new()),
             images: images::InitialImagesOriginalV1::new(),
             runtime: images::InitialRuntimeOriginalV1::new(),
             policy: policy::InitialPolicyOriginalV1::new(),
@@ -263,7 +264,7 @@ impl Method46InitialStartupOriginalV1 {
             .ok_or_else(|| self.fail(First::Source))?;
         let (listener, pid1, profile) = roles.into_parts_v1();
         let body = self.body.as_mut().ok_or(self.closed)?;
-        body.listener = Some(RecordSubjectListenerAdmissionAttemptV1::new(listener));
+        body.listener.get_mut().retain(listener);
         body.images.park_pid1(File::from(pid1));
         body.profile_original = Some(File::from(profile));
         Ok(())
@@ -468,6 +469,19 @@ impl Method46InitialStartupOriginalV1 {
         }
         self.finish_profile_post();
         if let Some(body) = self.body.as_ref() {
+            match body.listener.try_borrow_mut() {
+                Ok(mut listener) => {
+                    if listener
+                        .finish_post(self.origin.as_ref().map(|origin| origin.role))
+                        .is_err()
+                    {
+                        self.fail(First::ApprovalListener);
+                    }
+                }
+                Err(_) => {
+                    self.fail(First::Order);
+                }
+            }
             if body.images.finish_posts().is_err() {
                 self.fail(First::Image);
             }
