@@ -310,20 +310,33 @@ in
                 crates/crucible-qemu-plugin/src/network_tx.rs|\
                 crates/crucible-qemu-plugin/src/registration/tests.rs|\
                 crates/crucible-qemu-plugin/src/runtime.rs|\
+                crates/crucible-qemu-plugin/src/runtime/endpoint_identity.rs|\
                 crates/crucible-qemu-plugin/src/runtime/installed_console.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/clock_domain_trace.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/console_output.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/device_wait_witness/capture.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/device_wait_witness/capture/tests.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices/tests.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/preemption.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks/test_support.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests/device_wait_observations.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests/native_block_wait.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests/network_custody.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests/registration_stubs.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/time_ownership_witness.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/error.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/marker.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/selectable.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/selectable/tests.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_whitebox/selectable_resume_witness.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_whitebox/selectable_resume_witness/tests.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/tests.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_whitebox/translation.rs|\
                 crates/crucible-qemu-plugin/src/runtime/tests.rs|\
                 crates/crucible-qemu-plugin/src/runtime/tests/support.rs|\
                 crates/crucible-qemu-plugin/src/setup.rs|\
@@ -380,7 +393,11 @@ in
                 crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
                 crates/crucible-qemu-plugin/src/network_tx.rs|\
                 crates/crucible-qemu-plugin/src/runtime/installed_console.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/clock_domain_trace.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests/native_block_wait.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/time_ownership_witness.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_whitebox/selectable_resume_witness.rs|\
                 crates/crucible-qemu-plugin/src/runtime/tests/support.rs)
                   ;;
                 *)
@@ -410,9 +427,11 @@ in
                 crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
                 crates/crucible-qemu-plugin/src/network_tx.rs|\
                 crates/crucible-qemu-plugin/src/runtime/installed_console.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks/time_ownership_witness.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/error.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_whitebox/selectable_resume_witness.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/tests.rs|\
                 crates/crucible-qemu-plugin/src/setup.rs)
                   ;;
@@ -427,6 +446,7 @@ in
             while IFS= read -r file; do
               case "$file" in
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_whitebox/tests.rs|\
                 crates/crucible-qemu-plugin/src/whitebox_doorbell.rs|\
                 crates/crucible-qemu-plugin/src/whitebox_doorbell/selectable/tests.rs|\
                 crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs)
