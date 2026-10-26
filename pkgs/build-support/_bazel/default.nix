@@ -87,6 +87,18 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    configuration-files = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "configuration-files";
+    };
+
+    configuration-files-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "configuration-files-tests";
+    };
+
     kernel-tunable = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;

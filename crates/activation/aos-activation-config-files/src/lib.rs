@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read as _;
 use std::os::unix::fs::MetadataExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, Result, ensure};
@@ -398,14 +398,29 @@ fn ownership(input: &Input) -> Result<(Option<u32>, Option<u32>)> {
     ))
 }
 
+/// Locates the companion installed with the running provider.
+fn account_lookup_executable() -> Result<PathBuf> {
+    // Test binaries live outside the installed package. Their build or runner
+    // declares the helper explicitly; production never reads this environment.
+    #[cfg(test)]
+    if let Some(executable) = option_env!("AOS_ACCOUNT_LOOKUP")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("AOS_TEST_ACCOUNT_LOOKUP").map(PathBuf::from))
+    {
+        return Ok(executable);
+    }
+
+    let provider = std::env::current_exe().context("locating configuration provider executable")?;
+    Ok(provider.with_file_name("aos-account-lookup"))
+}
+
 fn account(database: &str, name: &str) -> Result<u32> {
     ensure!(
         !name.is_empty() && !name.contains(['\0', '\n', ':']) && !name.starts_with('-'),
         "invalid account name"
     );
     // The source-built helper calls name-based NSS APIs even for numeric names.
-    let executable = option_env!("AOS_ACCOUNT_LOOKUP")
-        .context("NSS account lookup executable was not pinned at build time")?;
+    let executable = account_lookup_executable()?;
     let mut child = Command::new(executable)
         .args([database, name])
         .stdout(Stdio::piped())

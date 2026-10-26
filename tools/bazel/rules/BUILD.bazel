@@ -522,3 +522,15 @@ config_setting(
     flag_values = {":dependency_profile": "kernel-tunable-tests"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "configuration_files_dependencies",
+    flag_values = {":dependency_profile": "configuration-files"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "configuration_files_tests_dependencies",
+    flag_values = {":dependency_profile": "configuration-files-tests"},
+    visibility = ["//visibility:public"],
+)

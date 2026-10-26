@@ -1,0 +1,1619 @@
+{
+  "aos_dev_cli_check": "/nix/store/m5a2k438na49sb3gcf01zsk1pc0pnc8r-aos-dev-cli-check-0",
+  "compilations": {
+    "production": {
+      "derivation": "/nix/store/zwgfk71gxjiy3pym2gldviwzb0mqdn13-aos-bazel-configuration-provider-production-1.drv",
+      "evidence_sha256": {
+        "actions.json": "c4223e4c45d28e4ecee1642925ea9520618f5b109c05514cd7869b26dd7a5931",
+        "compiler-inputs.json": "23586c0ec6576a41cb9fefffb4348da6b005914eb3729091772b5feb03193d66",
+        "execution.json": "9776b4929e5e4bd9f6c32351efa52e01966307da32a444828a5f12c2a9cb6ab0"
+      },
+      "first_party_rust_compilations": 2,
+      "fresh_linux_sandbox_actions": 81,
+      "output": "/nix/store/j6m4ccihnc9l89anmfg159igclq5ks7i-aos-bazel-configuration-provider-production-1"
+    },
+    "release_tests": {
+      "derivation": "/nix/store/ngbaylha4xrdlbw71g02gyxdvqv6a0w3-aos-bazel-configuration-provider-release-tests-1.drv",
+      "evidence_sha256": {
+        "actions.json": "274b6e48eb39d5cf987d4d7024003423f714afbbbf69bd2acf3a920a10a6f235",
+        "compiler-inputs.json": "6ed99fb643a312acf081ff94b537458bacbc0fc9b501f7ab1c495875780a81c1",
+        "execution.json": "794b3d6cc734dcf465fd35bbc4ec8901d0e885620d2c776587e02cbd3d8386dc"
+      },
+      "first_party_rust_compilations": 4,
+      "fresh_linux_sandbox_actions": 124,
+      "output": "/nix/store/asnjmpibm0prfb88y0vaqkz8p6kpw6a2-aos-bazel-configuration-provider-release-tests-1"
+    }
+  },
+  "current_rust_compilation_coverage": {
+    "derivation": "/nix/store/mzlzpk6v5i4ai55rbqxlgd4ii0bxs36g-aos-test-targets-0.1.0.drv",
+    "edited_sources_sha256": {
+      "crates/activation/aos-activation-config-files/src/lib.rs": "3f61d42cf3a153263d72110032219bbd4f42d334fd017b6035965d5173f2f138",
+      "crates/activation/aos-activation-config-files/src/tests.rs": "b812cd2a88251649b587fa57f42ff37ad96cc866c8821f4e95a686022d415385"
+    },
+    "entry_point": "checks.rust.aos-test-targets",
+    "limits": [
+      "No compiled-target count or passing full-Rust result is claimed. Record and qualify the terminal result in a subsequent checkpoint."
+    ],
+    "matching_current_tracked_rust_source_files": 3773,
+    "observation": "The exact Nix build is still running. It was building the packaged CLI prerequisite when this checkpoint was recorded; application test-target compilation is not claimed complete.",
+    "source": "/nix/store/1zkn1pdhblkwvnhr8zhh8pw9hdbl71yr-aos-workspace-src",
+    "status": "RUNNING_NOT_QUALIFIED"
+  },
+  "dependency_profiles": {
+    "actual_compiled_features_compared_with_ordinary_package_and_independent_test_oracle": true,
+    "production": "configuration-files",
+    "release_tests": "configuration-files-tests",
+    "source_resolution_and_declaration_refresh": {
+      "new_profiles": {
+        "configuration-files": 28,
+        "configuration-files-tests": 63
+      },
+      "new_specification_build": "/nix/store/70rqypbkxdj93lyg0kvw1hal7nzvjdy1-aos-bazel-configuration-files-profile-specifications-1",
+      "old_specification_build": "/nix/store/97jq1xnv82bbbz2gmvwpvpnjz7gkb44w-aos-bazel-kernel-tunable-profile-specifications-1",
+      "source_inventory_refresh": [
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/accache-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "crates/activation/aos-activation-config-files/BUILD.bazel",
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/activation-core-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/activation-crucible-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/activation-storage-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/activation-systemd-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/aos-cli-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/boot-pilot-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/boot-preparation-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/boot-preparation-provider-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/boot-transaction-storage-provider-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/build-services-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/cli-support-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/configuration-image-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "crates/activation/aos-activation-config-files/BUILD.bazel",
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/configuration-provider-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/contracts-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/control-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/crucible-cli-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/daemon-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/deployment-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/device-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "crates/activation/aos-activation-config-files/BUILD.bazel",
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/engine-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/feature-powerset-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/filesystem-provider-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/fixture-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/formats-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/guest-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-client-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-console-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-console-wasm-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-db-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-model-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-native-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-portable-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-service-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-worker-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-worker-wasm-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/initrd-preparation-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/kernel-tunable-provider-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/native-foundation-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/network-ruleset-provider-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/package-manager-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/protocol-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/qemu-gateway-process-test-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/qemu-gpl-production-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/qemu-host-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/qemu-plugin-process-test-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/qemu-test-oracle-host-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/quota-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/registry-native-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/registry-web-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/registry-web-wasm-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/release-coordination-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/release-preparation-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/session-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/shared-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/static-storage-providers-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/storage-provisioning-provider-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/store-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/store-s3-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "crates/activation/aos-activation-config-files/BUILD.bazel",
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/test-support-audit-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/test-support-inventory.json"
+        },
+        {
+          "added_contracts": [],
+          "changed_contracts": [
+            "third_party/rust/configuration-files.bzl"
+          ],
+          "path": "tools/bazel/metadata/zfs-provider-inventory.json"
+        }
+      ],
+      "unchanged_existing_generated_files": 16427,
+      "unchanged_existing_profile_definitions": 71,
+      "unchanged_implementation_selections": true
+    },
+    "unchanged_existing_generated_files": 16427,
+    "unchanged_existing_profile_definitions": 71
+  },
+  "driver_selection": {
+    "bazel": "/nix/store/796z9f032pppq5zh3gf5lvplgb1xpnh9-aos-configuration-provider-1.drv",
+    "cargo_constructor_and_vendor_not_evaluated": true,
+    "fallback": "/nix/store/bl0r5fnjaw2qdw2y5bdx839gnnr39pgz-aos-configuration-provider-1.drv",
+    "invalid_driver_rejected": true,
+    "module_dependencies_and_runtime_declarations_preserved": true,
+    "ordinary": "/nix/store/bl0r5fnjaw2qdw2y5bdx839gnnr39pgz-aos-configuration-provider-1.drv"
+  },
+  "enrolled_build_check_derivation_matches_qualification": true,
+  "entry_point": "checks.build.bazel.configuration-provider-production.all",
+  "executed_release_test_and_macro_profiles": {
+    "actions": {
+      "//crates/activation/aos-activation-config-files:bin_aos-configuration-provider_binary": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-108081099",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "//crates/activation/aos-activation-config-files:unit_binary": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-778690143",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_configuration_files_tests_crates__serde_derive-1.0.228//:serde_derive": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2688974516",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      }
+    },
+    "build": "/nix/store/asnjmpibm0prfb88y0vaqkz8p6kpw6a2-aos-bazel-configuration-provider-release-tests-1",
+    "cargo": "/nix/store/sa9jdnmhg7ylpl342wzf951w0j992ph5-aos-bazel-configuration-provider-production-cargo-oracle-1",
+    "cargo_actions": {
+      "aos_activation_config_files": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "aos_activation_config_files",
+          "--edition=2024",
+          "activation/aos-activation-config-files/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--emit=dep-info,link",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "embed-bitcode=no",
+          "--test",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=12f4ecc8b73cb23e",
+          "-C",
+          "extra-filename=-b1ad1aa60b709693",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "anyhow=/build/target/release/deps/libanyhow-8dec632b6e5d17e6.rlib",
+          "--extern",
+          "rustix=/build/target/release/deps/librustix-c5cf663506b0799f.rlib",
+          "--extern",
+          "serde=/build/target/release/deps/libserde-b5258e5889b2674f.rlib",
+          "--extern",
+          "serde_json=/build/target/release/deps/libserde_json-a53b904d494601d8.rlib",
+          "--extern",
+          "sha2=/build/target/release/deps/libsha2-1955cabc95053aa8.rlib",
+          "--extern",
+          "tempfile=/build/target/release/deps/libtempfile-0165db47bc756a92.rlib",
+          "--extern",
+          "toml=/build/target/release/deps/libtoml-e0316b0b56b3559e.rlib"
+        ],
+        "compiler_options": {
+          "embed-bitcode": "no",
+          "extra-filename": "-b1ad1aa60b709693",
+          "opt-level": "3",
+          "strip": "debuginfo"
+        }
+      },
+      "aos_configuration_provider": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "aos_configuration_provider",
+          "--edition=2024",
+          "activation/aos-activation-config-files/src/main.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--emit=dep-info,link",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "embed-bitcode=no",
+          "--test",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=217d1e4da9161057",
+          "-C",
+          "extra-filename=-169769e68698754c",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "anyhow=/build/target/release/deps/libanyhow-8dec632b6e5d17e6.rlib",
+          "--extern",
+          "aos_activation_config_files=/build/target/release/deps/libaos_activation_config_files-acef4768605ac00f.rlib",
+          "--extern",
+          "rustix=/build/target/release/deps/librustix-c5cf663506b0799f.rlib",
+          "--extern",
+          "serde=/build/target/release/deps/libserde-b5258e5889b2674f.rlib",
+          "--extern",
+          "serde_json=/build/target/release/deps/libserde_json-a53b904d494601d8.rlib",
+          "--extern",
+          "sha2=/build/target/release/deps/libsha2-1955cabc95053aa8.rlib",
+          "--extern",
+          "tempfile=/build/target/release/deps/libtempfile-0165db47bc756a92.rlib",
+          "--extern",
+          "toml=/build/target/release/deps/libtoml-e0316b0b56b3559e.rlib"
+        ],
+        "compiler_options": {
+          "embed-bitcode": "no",
+          "extra-filename": "-169769e68698754c",
+          "opt-level": "3",
+          "strip": "debuginfo"
+        }
+      },
+      "serde_derive": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "serde_derive",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/serde_derive-1.0.228/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "-C",
+          "debug-assertions=off",
+          "--cfg",
+          "feature=\"default\"",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values(\"default\", \"deserialize_in_place\"))",
+          "-C",
+          "metadata=cb7cd3c745b68200",
+          "-C",
+          "extra-filename=-c9a46ab697c269a3",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "proc_macro2=/build/target/release/deps/libproc_macro2-3ee3281244b09f1c.rlib",
+          "--extern",
+          "quote=/build/target/release/deps/libquote-c9efc7f609302d92.rlib",
+          "--extern",
+          "syn=/build/target/release/deps/libsyn-ffa1cc8173115056.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "debug-assertions": "off",
+          "embed-bitcode": "no",
+          "extra-filename": "-c9a46ab697c269a3",
+          "strip": "debuginfo"
+        }
+      }
+    },
+    "cargo_trace_sha256": "4d4187dbc7c6967dea58cffbc6a875a852c078e7136679e1562ce1d00aa1c960",
+    "evidence_sha256": {
+      "actions.json": "274b6e48eb39d5cf987d4d7024003423f714afbbbf69bd2acf3a920a10a6f235",
+      "compiler-inputs.json": "6ed99fb643a312acf081ff94b537458bacbc0fc9b501f7ab1c495875780a81c1",
+      "execution.json": "794b3d6cc734dcf465fd35bbc4ec8901d0e885620d2c776587e02cbd3d8386dc"
+    },
+    "limits": [
+      "Checks selected target and macro profiles, not complete compiler/default, native ABI, linker, editor, production, or performance equivalence."
+    ],
+    "schema_version": 1,
+    "status": "PASS"
+  },
+  "installed_command_vm_effect_parity": {
+    "cases": [
+      "native-nss-exact-numeric-names-and-absence",
+      "installed-companion-resolves-ownership-with-ambient-paths-disabled",
+      "owned-content-and-metadata-update",
+      "foreign-edits-reject-overwrite-and-removal",
+      "structured-json-installation-and-release",
+      "owned-file-release-is-idempotent",
+      "missing-companion-fails-closed-and-adjacent-relocation-works"
+    ],
+    "status": "PASS"
+  },
+  "installed_package_report": {
+    "cli_parity": [
+      {
+        "arguments": [],
+        "status": 1,
+        "stderr_sha256": "16d46654961fbd9514e810e8051a6df35c4b78583d72340bc4ca7ddd214e3a0b",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "--state-directory"
+        ],
+        "status": 1,
+        "stderr_sha256": "437b88a6d1d290cdfc611f3acf91d285ddc2aa34f9f3180872d2ac0b0bee8bb3",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "apply",
+          "remove"
+        ],
+        "status": 1,
+        "stderr_sha256": "16d46654961fbd9514e810e8051a6df35c4b78583d72340bc4ca7ddd214e3a0b",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "invalid"
+        ],
+        "status": 1,
+        "stderr_sha256": "cc61f3abd2d6fe56ce0a13dfdb58c12f103e3b1a7434ff4bb3049f9bfbb191f4",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "apply"
+        ],
+        "status": 1,
+        "stderr_sha256": "20c11face340029f1d93052b1cce355bc719e205e829c7d1f3515c7d453cfb2e",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "remove"
+        ],
+        "status": 1,
+        "stderr_sha256": "20c11face340029f1d93052b1cce355bc719e205e829c7d1f3515c7d453cfb2e",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "20c11face340029f1d93052b1cce355bc719e205e829c7d1f3515c7d453cfb2e",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "apply"
+        ],
+        "status": 1,
+        "stderr_sha256": "56fd1e9f8d3e9acaeaa675c8f3d6a123fc81a815fc8f28b850cc131b763ddbc2",
+        "stdin_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "stdin_size": 2
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "56fd1e9f8d3e9acaeaa675c8f3d6a123fc81a815fc8f28b850cc131b763ddbc2",
+        "stdin_sha256": "64575dc13f8f25188c79762e51e77d86ff7039cae614ae78bc92d47c1c0568d2",
+        "stdin_size": 262144
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "3dcacbec9a155bdfc0e5497a130d66bc13c5644de103dab44936abb618d30043",
+        "stdin_sha256": "9408817bc040328d1c403ff97e94cea3dfd3a361b2fb7ecc7af75ff3a5157139",
+        "stdin_size": 262145
+      },
+      {
+        "arguments": [
+          "--help"
+        ],
+        "status": 0,
+        "stdout_sha256": "252762006deab73f111fa69afd8dc905f6d6d937e8ef0a1cb421b1de0df617b4"
+      },
+      {
+        "arguments": [
+          "-h"
+        ],
+        "status": 0,
+        "stdout_sha256": "252762006deab73f111fa69afd8dc905f6d6d937e8ef0a1cb421b1de0df617b4"
+      }
+    ],
+    "doctest_parity": {
+      "//crates/activation/aos-activation-config-files:doc": {}
+    },
+    "features": {
+      "production": {
+        "features": {
+          "anyhow@1.0.103": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.0": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std",
+              "prctl"
+            ]
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "proc-macro"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "proc-macro"
+            ]
+          ],
+          "rustix@1.1.4": [
+            [
+              "alloc",
+              "default",
+              "event",
+              "fs",
+              "process",
+              "std"
+            ]
+          ],
+          "serde@1.0.228": [
+            [
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_json@1.0.150": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "zmij@1.0.21": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "aos-activation-config-files": [
+            []
+          ]
+        }
+      },
+      "release_tests": {
+        "features": {
+          "anyhow@1.0.103": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.0": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "equivalent@1.0.2": [
+            []
+          ],
+          "fastrand@2.4.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "getrandom@0.4.2": [
+            []
+          ],
+          "hashbrown@0.17.1": [
+            []
+          ],
+          "indexmap@2.14.0": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "libc@0.2.186": [
+            []
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std",
+              "prctl"
+            ]
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "once_cell@1.21.4": [
+            [
+              "alloc",
+              "race",
+              "std"
+            ]
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "proc-macro"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "proc-macro"
+            ]
+          ],
+          "rustix@1.1.4": [
+            [
+              "alloc",
+              "default",
+              "event",
+              "fs",
+              "process",
+              "std"
+            ]
+          ],
+          "serde@1.0.228": [
+            [
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_json@1.0.150": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "serde_spanned@0.6.9": [
+            [
+              "serde"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "tempfile@3.27.0": [
+            [
+              "default",
+              "getrandom"
+            ]
+          ],
+          "toml@0.8.23": [
+            [
+              "default",
+              "display",
+              "parse"
+            ]
+          ],
+          "toml_datetime@0.6.11": [
+            [
+              "serde"
+            ]
+          ],
+          "toml_edit@0.22.27": [
+            [
+              "display",
+              "parse",
+              "serde"
+            ]
+          ],
+          "toml_write@0.1.2": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "winnow@0.7.15": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "zmij@1.0.21": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "aos-activation-config-files": [
+            []
+          ]
+        }
+      }
+    },
+    "first_party_rust_compilations": 2,
+    "installed": {
+      "bazel": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-account-lookup": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "libc.so.6"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/bin/aos-configuration-provider": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "ld-linux-x86-64.so.2",
+              "libc.so.6"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      },
+      "ordinary": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-account-lookup": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "libc.so.6"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/bin/aos-configuration-provider": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "ld-linux-x86-64.so.2",
+              "libc.so.6"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      }
+    },
+    "library_search_changes": {},
+    "limits": [
+      "Native dynamic installation, exact compiler features, release-profile tests and bounded input rejection only.",
+      "Privileged production-root configuration effects, foreign hosts, numeric performance budgets and default cutover remain separate gates."
+    ],
+    "native_helper": {
+      "bazel_test_helper": {
+        "helper_input": {
+          "digest": {
+            "hash": "35f1bb7cb57e0ff4b943088794f19193b04128112146a987006e7a4d4f3955a4",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "16472"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-config-files/unit.runfiles/_main/crates/activation/aos-activation-config-files/aos-account-lookup",
+          "symlinkTargetPath": ""
+        },
+        "wrapper_sha256": "aceae24c0e4b3d3169f3e553c88deffa820f941134e23574ee5e8795e8459010"
+      },
+      "cargo_test_helper": [
+        "/nix/store/b7a73khzsgzpm700djwzkf4v01naq9hx-aos-configuration-provider-cargo-account-lookup/bin/aos-account-lookup"
+      ],
+      "production": {
+        "compile_command": [
+          "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "-U_FORTIFY_SOURCE",
+          "-MD",
+          "-MF",
+          "bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-config-files/_objs/aos-account-lookup/account-lookup.pic.d",
+          "-frandom-seed=bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-config-files/_objs/aos-account-lookup/account-lookup.pic.o",
+          "-fPIC",
+          "-iquote",
+          ".",
+          "-iquote",
+          "bazel-out/k8-fastbuild/bin",
+          "-iquote",
+          "external/rules_cc+",
+          "-iquote",
+          "bazel-out/k8-fastbuild/bin/external/rules_cc+",
+          "-iquote",
+          "external/bazel_tools",
+          "-iquote",
+          "bazel-out/k8-fastbuild/bin/external/bazel_tools",
+          "-std=c11",
+          "-O2",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-c",
+          "pkgs/system/_aos-configuration-provider/account-lookup.c",
+          "-o",
+          "bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-config-files/_objs/aos-account-lookup/account-lookup.pic.o"
+        ],
+        "link_command": [
+          "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "-o",
+          "bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-config-files/aos-account-lookup",
+          "-Wl,-S",
+          "-L/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+          "-Wl,-rpath,/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+          "bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-config-files/_objs/aos-account-lookup/account-lookup.pic.o",
+          "-Wl,--as-needed",
+          "-lstdc++",
+          "-lm"
+        ],
+        "sandboxed_cache_miss_actions": 81,
+        "source_sha256": "4061d5b8e381c3fd1bdc597ec0bf409718f3f3330e6f434624c21494c02b354d"
+      },
+      "release_tests": {
+        "compile_command": [
+          "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "-U_FORTIFY_SOURCE",
+          "-MD",
+          "-MF",
+          "bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-config-files/_objs/aos-account-lookup/account-lookup.pic.d",
+          "-frandom-seed=bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-config-files/_objs/aos-account-lookup/account-lookup.pic.o",
+          "-fPIC",
+          "-iquote",
+          ".",
+          "-iquote",
+          "bazel-out/k8-fastbuild/bin",
+          "-iquote",
+          "external/rules_cc+",
+          "-iquote",
+          "bazel-out/k8-fastbuild/bin/external/rules_cc+",
+          "-iquote",
+          "external/bazel_tools",
+          "-iquote",
+          "bazel-out/k8-fastbuild/bin/external/bazel_tools",
+          "-std=c11",
+          "-O2",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-c",
+          "pkgs/system/_aos-configuration-provider/account-lookup.c",
+          "-o",
+          "bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-config-files/_objs/aos-account-lookup/account-lookup.pic.o"
+        ],
+        "link_command": [
+          "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "-o",
+          "bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-config-files/aos-account-lookup",
+          "-Wl,-S",
+          "-L/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+          "-Wl,-rpath,/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+          "bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-config-files/_objs/aos-account-lookup/account-lookup.pic.o",
+          "-Wl,--as-needed",
+          "-lstdc++",
+          "-lm"
+        ],
+        "sandboxed_cache_miss_actions": 124,
+        "source_sha256": "4061d5b8e381c3fd1bdc597ec0bf409718f3f3330e6f434624c21494c02b354d"
+      }
+    },
+    "packages": {
+      "bazel": {
+        "out": "/nix/store/318g2y1w6zlzvnc4lb3c8ykanma3zcr1-aos-configuration-provider-1"
+      },
+      "ordinary": {
+        "out": "/nix/store/kg24v178n8jxh305ik9jm346yrd5v65g-aos-configuration-provider-1"
+      }
+    },
+    "production_profiles": {
+      "bazel": {
+        "//crates/activation/aos-activation-config-files:aos-configuration-provider": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "//crates/activation/aos-activation-config-files:lib": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2884608136",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        }
+      },
+      "cargo": {
+        "aos-configuration-provider": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "aos_activation_config_files": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        }
+      }
+    },
+    "runtime_closures": {
+      "changes": {
+        "out": {
+          "added": [],
+          "removed": []
+        }
+      },
+      "closures": {
+        "bazel": {
+          "out": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "@output:out@"
+          ]
+        },
+        "ordinary": {
+          "out": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "@output:out@"
+          ]
+        }
+      }
+    },
+    "sandboxed_cache_miss_actions": 81,
+    "schema_version": 1,
+    "source_selection": {
+      "first_party_cargo_files": [],
+      "workspace": "/nix/store/szw5spxcvphhja644yvyps86wn4a3sn8-aos-bazel-workspace"
+    },
+    "test_parity": {
+      "schema_version": 1,
+      "targets": {
+        "//crates/activation/aos-activation-config-files:bin_aos-configuration-provider": {
+          "executed": [],
+          "ignored": []
+        },
+        "//crates/activation/aos-activation-config-files:unit": {
+          "executed": [
+            "io::tests::stale_temporaries_are_preserved_while_publication_recovers",
+            "tests::foreign_claims_and_symlinks_cannot_be_adopted",
+            "tests::interrupted_moves_retain_both_paths_until_recovery",
+            "tests::invalid_actions_paths_and_inputs_fail_before_mutation",
+            "tests::old_double_slash_receipts_replay_without_retiring_the_same_destination",
+            "tests::pending_same_path_removal_accepts_retained_prior_destination_evidence",
+            "tests::source_built_nss_helper_resolves_exact_names_and_rejects_absence",
+            "tests::structured_formats_and_credential_bounds_are_preserved",
+            "tests::updates_metadata_and_rejects_foreign_edits"
+          ],
+          "ignored": []
+        }
+      }
+    }
+  },
+  "limits": [
+    "Cargo remains the default and rollback; native Linux opt-in qualification does not authorize default cutover.",
+    "Nine unit cases, two empty command/doctest targets, twelve CLI comparisons and seven installed VM scenarios cover distinct scopes.",
+    "Both actual source-built Firecracker VMs require KVM. Full system activation and crash-injection qualification remain separate.",
+    "Darwin and other foreign hosts, quiet matched repeated numeric performance budgets, and concurrent-cache performance remain separate gates.",
+    "The required full workspace Rust compilation is still running, including its source-built prerequisites. This checkpoint does not claim that gate passed.",
+    "The production helper is located beside the running executable. Its unit-test helper overrides exist only in cfg(test) builds."
+  ],
+  "native_effect_vm_checks": {
+    "bazel": {
+      "derivation": "/nix/store/im6xh32n7dlxr9jy543m0g4spzr4c14n-aos-vm-test-bazel-configuration-provider-effects-0.drv",
+      "evidence_sha256": {
+        "fc.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result": "c26de83abdc9496cd1301470918ec39ecca1cf389ef0ae1c6504da1800d1c431",
+        "serial.log": "ea8b31c970c9dbd3fefece26245082bf6f8c61f098e866877106ce1a7aa2b311"
+      },
+      "output": "/nix/store/54z4akjw1alh47nhanycgr2f4r8l6r26-aos-vm-test-bazel-configuration-provider-effects-0",
+      "required_system_features": [
+        "kvm"
+      ]
+    },
+    "ordinary": {
+      "derivation": "/nix/store/wlhb44f7x67ijbh6iw7yksg1a8mzxb7s-aos-vm-test-bazel-configuration-provider-effects-0.drv",
+      "evidence_sha256": {
+        "fc.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result": "c26de83abdc9496cd1301470918ec39ecca1cf389ef0ae1c6504da1800d1c431",
+        "serial.log": "a0eac5636e1dbcc3a2465dcf433799328487601a72eadbe58d600ba39359e322"
+      },
+      "output": "/nix/store/vw8zmcvlzjs4sk248nfkhhpyaff2i8p3-aos-vm-test-bazel-configuration-provider-effects-0",
+      "required_system_features": [
+        "kvm"
+      ]
+    }
+  },
+  "native_evaluation": "/nix/store/wafaq0hnlxa01fp6gbwy284pcvlbwpb9-aos-native-evaluation-checks-0",
+  "nss_verifier_negative_controls": {
+    "baseline_matches_completed_parity": true,
+    "limits": [
+      "These controls mutate copies of retained verifier inputs; they do not alter or rerun the immutable sandbox builds."
+    ],
+    "negative_controls": [
+      {
+        "case": "altered-unit-wrapper",
+        "reason": "actual NSS test wrapper or native-helper input differs from its declaration",
+        "status": "REJECTED"
+      },
+      {
+        "case": "omitted-native-helper-runfile",
+        "reason": "actual NSS test wrapper or native-helper input differs from its declaration",
+        "status": "REJECTED"
+      }
+    ],
+    "status": "PASS"
+  },
+  "own_cargo_package_required_by_candidate": false,
+  "policy_checks": "/nix/store/qb3a7azh2a2fr7yzx11f3z7f4mpskhjm-aos-bazel-policy-checks",
+  "policy_tests": 439,
+  "qualification": "/nix/store/8h57aqzlqxpy1xcd92hqk5p4hsvf5wk3-aos-bazel-configuration-provider-production-package-checks",
+  "qualification_derivation": "/nix/store/yywl01n8b8h50dbl6n00blhxqcxb8w6y-aos-bazel-configuration-provider-production-package-checks.drv",
+  "release_tests_required_by_installed_candidate": true,
+  "schema_version": 1,
+  "selector_introduction_preserved_cargo_identity_for_identical_sources": {
+    "after": "/nix/store/bl0r5fnjaw2qdw2y5bdx839gnnr39pgz-aos-configuration-provider-1.drv",
+    "before": "/nix/store/bl0r5fnjaw2qdw2y5bdx839gnnr39pgz-aos-configuration-provider-1.drv"
+  },
+  "source_selection": {
+    "checked_inventory": "tools/bazel/metadata/configuration-provider-inventory.json",
+    "configured_targets": 114,
+    "conservative_inventory_outputs": [
+      "/nix/store/wr55iimfq69fnpcxyha3zam7v1pchh1b-aos-bazel-configuration-provider-production-inventory-1",
+      "/nix/store/17ivszsakjyay92v1jrc6l5mcr6cn9nz-aos-bazel-configuration-provider-release-tests-inventory-1"
+    ],
+    "contracts": 189,
+    "precise_and_conservative_inventories_equal": true,
+    "precise_inventory_outputs": [
+      "/nix/store/jn4mj2m7w19vq9g2rz6yy1r9v1s0zx0d-aos-bazel-configuration-provider-production-inventory-1",
+      "/nix/store/hwggxf8j3c76pjb5m76dris1na4jrkfx-aos-bazel-configuration-provider-release-tests-inventory-1"
+    ],
+    "source_directories": 1,
+    "source_files": 8,
+    "targets": 6,
+    "unchanged_existing_inventory_selections": 61
+  },
+  "status": "PASS"
+}

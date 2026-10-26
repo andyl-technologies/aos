@@ -6,6 +6,9 @@ load(":configuration-image-tests/aliases.bzl", CONFIGURATION_IMAGE_TESTS_CRATES 
 load(":kernel-tunable.bzl", "KERNEL_TUNABLE_PACKAGES", "KERNEL_TUNABLE_TESTS_PACKAGES", "KERNEL_TUNABLE_TESTS_FEATURE_VARIANTS")
 load(":kernel-tunable/aliases.bzl", KERNEL_TUNABLE_CRATES = "CRATES")
 load(":kernel-tunable-tests/aliases.bzl", KERNEL_TUNABLE_TESTS_CRATES = "CRATES")
+load(":configuration-files.bzl", "CONFIGURATION_FILES_PACKAGES", "CONFIGURATION_FILES_TESTS_PACKAGES", "CONFIGURATION_FILES_TESTS_FEATURE_VARIANTS")
+load(":configuration-files/aliases.bzl", CONFIGURATION_FILES_CRATES = "CRATES")
+load(":configuration-files-tests/aliases.bzl", CONFIGURATION_FILES_TESTS_CRATES = "CRATES")
 load(":preparation-provider/aliases.bzl", PREPARATION_PROVIDER_CRATES = "CRATES")
 load(":preparation-provider-tests/aliases.bzl", PREPARATION_PROVIDER_TESTS_CRATES = "CRATES")
 load(":boot-preparation.bzl", "BOOT_PREPARATION_FEATURE_VARIANTS", "BOOT_PREPARATION_MINIMAL_FEATURE_VARIANTS", "BOOT_PREPARATION_MINIMAL_PACKAGES", "BOOT_PREPARATION_PACKAGES")
@@ -129,6 +132,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
             "//tools/bazel/rules:configuration_image_tests_dependencies": CONFIGURATION_IMAGE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:kernel_tunable_dependencies": KERNEL_TUNABLE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:kernel_tunable_tests_dependencies": KERNEL_TUNABLE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:configuration_files_dependencies": CONFIGURATION_FILES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:configuration_files_tests_dependencies": CONFIGURATION_FILES_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:preparation_provider_dependencies": PREPARATION_PROVIDER_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:preparation_provider_tests_dependencies": PREPARATION_PROVIDER_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:boot_preparation_dependencies": BOOT_PREPARATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -200,6 +205,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         + CONFIGURATION_IMAGE_TESTS_CRATES.items()
         + KERNEL_TUNABLE_CRATES.items()
         + KERNEL_TUNABLE_TESTS_CRATES.items()
+        + CONFIGURATION_FILES_CRATES.items()
+        + CONFIGURATION_FILES_TESTS_CRATES.items()
         + PREPARATION_PROVIDER_CRATES.items()
         + PREPARATION_PROVIDER_TESTS_CRATES.items()
         + BOOT_PREPARATION_CRATES.items()
@@ -1094,6 +1101,7 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "configuration-files-tests": CONFIGURATION_FILES_TESTS_FEATURE_VARIANTS,
     "kernel-tunable-tests": KERNEL_TUNABLE_TESTS_FEATURE_VARIANTS,
     "preparation-provider-tests": {
         # Keep the native derive parser; the lock also resolves foreign-only
@@ -1946,6 +1954,8 @@ APPROVED_LICENSES = [
             "package-manager-tests": ["package-manager.bzl"],
             "kernel-tunable": ["kernel-tunable.bzl"],
             "kernel-tunable-tests": ["kernel-tunable.bzl"],
+            "configuration-files": ["configuration-files.bzl"],
+            "configuration-files-tests": ["configuration-files.bzl"],
             "boot-preparation": ["boot-preparation.bzl"],
             "boot-preparation-minimal": ["boot-preparation.bzl"],
             "registry-native": ["registry-native.bzl"],
@@ -1978,6 +1988,8 @@ APPROVED_LICENSES = [
         ("configuration-image-tests", CONFIGURATION_IMAGE_TESTS_PACKAGES, {}, "apache-host"),
         ("kernel-tunable", KERNEL_TUNABLE_PACKAGES, {}, "apache-host"),
         ("kernel-tunable-tests", KERNEL_TUNABLE_TESTS_PACKAGES, {}, "apache-host"),
+        ("configuration-files", CONFIGURATION_FILES_PACKAGES, {}, "apache-host"),
+        ("configuration-files-tests", CONFIGURATION_FILES_TESTS_PACKAGES, {}, "apache-host"),
         ("preparation-provider", PREPARATION_PROVIDER_PACKAGES, {}, "apache-host"),
         ("preparation-provider-tests", PREPARATION_PROVIDER_TESTS_PACKAGES, {}, "apache-host"),
         ("boot-preparation", BOOT_PREPARATION_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
@@ -2087,6 +2099,8 @@ APPROVED_LICENSES = [
         "configuration-image-tests",
         "kernel-tunable",
         "kernel-tunable-tests",
+        "configuration-files",
+        "configuration-files-tests",
         "preparation-provider",
         "preparation-provider-tests",
         "boot-preparation",

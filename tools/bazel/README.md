@@ -3149,6 +3149,38 @@ and 48 source files. The retained receipt is
 activation, privileged-executable and crash-injection checks, foreign hosts,
 numeric performance acceptance and default cutover remain separate gates.
 
+`pkgs.aos-configuration-provider.passthru.withBuildDriver "bazel"` selects the
+configuration-file handler and its source-built C account-lookup companion.
+Cargo remains the default and explicit rollback. Both installations retain the
+original module and service-management dependency. Production locates the helper
+beside the running executable; it never searches PATH or reads a helper override
+from the environment. Tests declare their helper through immutable build inputs
+or Bazel runfiles.
+
+`checks.build.bazel.configuration-provider-production.all`, also exposed through
+`tools/bazel/tests/configuration-provider-production.nix`, compares installed
+artifacts, exact runtime closures, dynamic loaders, resolved libraries, native
+compiler features, release-test inventories and actual compiler profiles. Its
+native-helper proof checks the exact C source and original compiler options,
+then binds the NSS unit-test wrapper and helper to actual executed input digests.
+It requires nine unit cases, both release-profile test binaries, one execution
+procedural macro, the empty command-test and doctest targets, and twelve CLI
+comparisons including the 256 KiB limit and one byte over it. Production and
+release tests execute 81 and 124 fresh Linux sandbox actions. Precise and
+conservative inventories agree on six roots, 114 configured reports and eight
+source files. The retained receipt is
+`tests/evidence/configuration-provider-production-package.json`.
+Separate production and test SDKs keep the handler's Rustix features limited to
+its inherited event, filesystem and process requirements.
+
+Both installed packages run seven effect scenarios in separate source-built
+Firecracker VMs requiring KVM: exact name-based NSS lookup including numeric
+names, ownership with ambient helper paths disabled, owned content and metadata
+updates, rejection of foreign edits, structured JSON installation and release,
+idempotent removal, and failure without the adjacent helper followed by successful
+relocation with it. Full system activation, crash recovery, Darwin and foreign
+hosts, numeric performance acceptance and default cutover remain separate gates.
+
 The broader [native evaluation gate](tests/evidence/static-storage-core-evaluation.json)
 passes for the static storage checkpoint. Reinstantiation after the OpenZFS and
 provisioning selector changes yields the identical completed root derivation;
