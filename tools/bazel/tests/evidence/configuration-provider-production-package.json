@@ -25,19 +25,20 @@
     }
   },
   "current_rust_compilation_coverage": {
+    "compiled_test_targets": 185,
     "derivation": "/nix/store/mzlzpk6v5i4ai55rbqxlgd4ii0bxs36g-aos-test-targets-0.1.0.drv",
     "edited_sources_sha256": {
       "crates/activation/aos-activation-config-files/src/lib.rs": "3f61d42cf3a153263d72110032219bbd4f42d334fd017b6035965d5173f2f138",
       "crates/activation/aos-activation-config-files/src/tests.rs": "b812cd2a88251649b587fa57f42ff37ad96cc866c8821f4e95a686022d415385"
     },
-    "entry_point": "checks.rust.aos-test-targets",
     "limits": [
-      "No compiled-target count or passing full-Rust result is claimed. Record and qualify the terminal result in a subsequent checkpoint."
+      "This completes Rust compilation coverage for the qualified implementation; later Nix and Bazel declarations are outside the frozen Cargo gate."
     ],
-    "matching_current_tracked_rust_source_files": 3773,
-    "observation": "The exact Nix build is still running. It was building the packaged CLI prerequisite when this checkpoint was recorded; application test-target compilation is not claimed complete.",
+    "matching_current_rust_source_files": 3773,
+    "output": "/nix/store/nvggbvrmb3k1s5jx7vx4ls5ylpn49q1p-aos-test-targets-0.1.0",
+    "receipt": "tools/bazel/tests/evidence/configuration-provider-full-rust-compilation.json",
     "source": "/nix/store/1zkn1pdhblkwvnhr8zhh8pw9hdbl71yr-aos-workspace-src",
-    "status": "RUNNING_NOT_QUALIFIED"
+    "status": "PASS"
   },
   "dependency_profiles": {
     "actual_compiled_features_compared_with_ordinary_package_and_independent_test_oracle": true,
@@ -1537,7 +1538,7 @@
     "Nine unit cases, two empty command/doctest targets, twelve CLI comparisons and seven installed VM scenarios cover distinct scopes.",
     "Both actual source-built Firecracker VMs require KVM. Full system activation and crash-injection qualification remain separate.",
     "Darwin and other foreign hosts, quiet matched repeated numeric performance budgets, and concurrent-cache performance remain separate gates.",
-    "The required full workspace Rust compilation is still running, including its source-built prerequisites. This checkpoint does not claim that gate passed.",
+    "The required full workspace Rust gate compiles 185 application test targets without executing them. Its frozen Rust inputs match the qualified implementation.",
     "The production helper is located beside the running executable. Its unit-test helper overrides exist only in cfg(test) builds."
   ],
   "native_effect_vm_checks": {
@@ -1591,6 +1592,7 @@
   "policy_tests": 439,
   "qualification": "/nix/store/8h57aqzlqxpy1xcd92hqk5p4hsvf5wk3-aos-bazel-configuration-provider-production-package-checks",
   "qualification_derivation": "/nix/store/yywl01n8b8h50dbl6n00blhxqcxb8w6y-aos-bazel-configuration-provider-production-package-checks.drv",
+  "qualified_implementation_commit": "828968f78f040616294ce3a878d72a3ed92779ac",
   "release_tests_required_by_installed_candidate": true,
   "schema_version": 1,
   "selector_introduction_preserved_cargo_identity_for_identical_sources": {
