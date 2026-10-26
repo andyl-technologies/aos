@@ -184,6 +184,50 @@ Initially those admission/drain/recovery steps apply to the single host.
 Fleet rolling-upgrade coordination and cordon scheduling belong to the later
 multi-node phase, not a required service for local upgrades.
 
+## METHOD46 floor initialization and recovery
+
+The initial Controller Storage-client and Storage-broker floor producers remain
+unqualified. Public admission stays closed until the genuine funded producers,
+installed journal hooks and connected QEMU/vTPM recovery gates pass. The
+canonical record codecs and a successful transport fixture do not provide an
+operator initialization command. The current status is tracked in
+[the implementation ledger](16-implementation-tasks.md).
+
+Initialization is a separate manual purpose. Normal daemon startup consumes a
+completed floor and cannot initialize one or adopt an initial intent. The two
+purposes have fixed, distinct NV indices and salt handles, as specified in
+[the initial approval format](09-protocols-and-formats.md#initial-method46-provisioning-approval).
+A producer must independently establish its normal public pins, the approval
+key's separation from endpoint/Nix/Root keys, stopped owners and native cgroups,
+exclusive main-writer custody, and exclusion of concurrent jobs and migrations.
+Its canonical request comes from that same held, schema-admitted main journal.
+A copied cut, supplied key or matching filename establishes none of these facts.
+
+Independent approval covers the entire canonical request. The producer must
+publish and fsync the separate signed `AOSBII01` intent and its parent before
+its first encrypted Extend. Cold recovery must reverify the approval and the
+same current request before interpreting authenticated TPM observations:
+
+| Retained initial state | Required disposition |
+| --- | --- |
+| Approved intent and exact authenticated Unwritten index | The first Extend remains outstanding. |
+| Same approved intent and authenticated Written value equal to its first target | Publish the initial checkpoint without another Extend. |
+| Changed request, invalid approval or conflicting Written value | Refuse initialization and preserve the retained state. |
+| Already completed initial checkpoint | Fence repeated initialization; normal startup owns subsequent recovery. |
+
+These dispositions are comparison results. Only the genuine funded owner with
+current native custody may perform the corresponding durable or TPM operation.
+The initial intent is distinct from the normal successor `AOSBTI01` intent and
+must never be converted into one to bypass startup admission.
+
+After initialization, main history, the `AOSBTF01` checkpoint, any exact prepared
+successor transaction and the authenticated NV value form one recovery state.
+A restart may complete only the exact prescribed successor. Missing, malformed,
+foreign or divergent state leaves admission closed; it cannot be repaired by
+copying an older checkpoint over a newer one. Diagnostics identify the fixed
+purpose and refusal stage without exposing private index authentication,
+hierarchy authentication or signing seeds.
+
 ## Backup and disaster recovery
 
 The local Controller journal, protected ownership/domain state, retention
@@ -200,3 +244,20 @@ A restore drill must prove that held storage snapshots and external immutable
 dependencies still match their recorded identities. Missing dependencies leave
 the sandbox stopped and `Blocked`; recovery never substitutes a different
 environment or cache object with the same display name.
+
+For a METHOD46 deployment, a disk backup is not a rollback mechanism for the
+physical TPM. Preserve the protected main journal and floor sidecar together
+with the exact immutable deployment/profile and public salt-key identity; keep
+credential recovery material under its separate secret-storage policy. An
+older disk image must still pass current authenticated NV reconciliation.
+Restoring a matching disk/TPM pair is useful in an isolated QEMU qualification
+test but does not demonstrate that an older production disk can pass a newer
+physical floor.
+
+TPM loss, clearing, replacement or an unavailable pinned salt key is not an
+ordinary daemon restart. Do not redefine the existing index, generate another
+salt key or reuse initialization to make the old history appear current. Such
+a deployment remains blocked until an explicitly authorized reprovisioning or
+migration procedure establishes its new scope and retained-state disposition.
+That procedure is a release requirement; it is not supplied by the initial
+record decoder or by the test-only provisioning fixture.
