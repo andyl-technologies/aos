@@ -93,7 +93,7 @@
     grep -Fxq PASS ${productionPluginFlight}/raw-result
     grep -Fxq 'gate=gate:production-rust-plugin-flight' ${productionPluginFlight}/raw-result
     grep -Fxq ${lib.escapeShellArg "campaign_mode=${campaignComposition.mode}"} ${productionPluginFlight}/raw-result
-    grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"} ${productionPluginFlight}/raw-result
+    grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.crucibleCampaign._runtimeIdentity}"} ${productionPluginFlight}/raw-result
     grep -Fxq ${lib.escapeShellArg "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"} ${productionPluginFlight}/raw-result
   '';
   verifyScript = ''

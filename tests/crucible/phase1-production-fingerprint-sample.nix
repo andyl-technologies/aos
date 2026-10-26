@@ -33,7 +33,7 @@
   campaignRuntimeIdentity =
     if campaignSystem == null
     then null
-    else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
+    else campaignSystem.config.aos.crucibleCampaign._runtimeIdentity;
   productionFlightEvidenceSource =
     if campaignComposition == null
     then "${productionFlight}/serial.log"

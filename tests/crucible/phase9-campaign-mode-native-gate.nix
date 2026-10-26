@@ -64,7 +64,7 @@
       })
       installedTests);
   };
-  expectedConfigurationIdentity = system.config.aos.services.crucibleCampaign._runtimeIdentity;
+  expectedConfigurationIdentity = system.config.aos.crucibleCampaign._runtimeIdentity;
   toplevel = system.config.system.build.toplevel;
   commands =
     map (command: {

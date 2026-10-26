@@ -21,7 +21,7 @@
   campaignRuntimeIdentity =
     if campaignSystem == null
     then null
-    else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
+    else campaignSystem.config.aos.crucibleCampaign._runtimeIdentity;
   inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;

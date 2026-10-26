@@ -10,7 +10,7 @@
   pkgs,
   ...
 }: let
-  cfg = config.aos.services.crucibleCampaign;
+  cfg = config.aos.crucibleCampaign;
   listenPrefix =
     if lib.hasPrefix "127.0.0.1:" cfg.listenAddress
     then "127.0.0.1:"
@@ -42,8 +42,91 @@
     schema = "aos.crucible.campaign-runtime.v1";
     inherit (cfg) enable listenAddress socketPath stateDirectory;
   });
+  command = executable: arguments: {
+    executable = {
+      path = executable;
+      inherit arguments;
+    };
+    ignore_failure = false;
+  };
+  campaignService = {
+    service = "crucible-campaign";
+    lifecycle = {
+      description = "Crucible campaign and lifecycle service";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      # A socket left by an unclean exit would make the bind fail.
+      pre_start = [(command "${pkgs.coreutils}/bin/rm" ["-f" cfg.socketPath])];
+      start = [
+        (command "${pkgs.crucible}/bin/crucible" [
+          "serve"
+          "--listen"
+          cfg.listenAddress
+          "--trusted-unauthenticated-bind"
+          "--campaign-socket"
+          cfg.socketPath
+          "--campaign-state"
+          cfg.stateDirectory
+          "--campaign-policy"
+          "/etc/crucible/campaign-policy.toml"
+          "--campaign-socket-mode"
+          "600"
+        ])
+      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "on-failure";
+      restart_delay_millis = 1000;
+      configuration_change_action = "restart";
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
+    dependencies = {
+      after = [];
+      before = [];
+      requires = [];
+      wants = [];
+      prerequisites = [];
+    };
+    # Both directories stay owner-only; the socket inherits its directory.
+    directories.managed = [
+      {
+        path = lib.removePrefix "/var/lib/" cfg.stateDirectory;
+        purpose = "state";
+        mode = "0700";
+        retention = "persistent";
+        owner = "root";
+        group = "root";
+      }
+      {
+        path = lib.removePrefix "/run/" (builtins.dirOf cfg.socketPath);
+        purpose = "runtime";
+        mode = "0700";
+        retention = "restart";
+        owner = "root";
+        group = "root";
+      }
+    ];
+    isolation = {
+      privilege = "privileged";
+      filesystem = "host";
+      network = "host";
+      process_visibility = "host";
+      termination_scope = "all-processes";
+      temporary_directory = "shared";
+      devices = [];
+      host_paths = [];
+      permit_core_dumps = true;
+    };
+  };
 in {
-  options.aos.services.crucibleCampaign = {
+  # Feature settings live in their own namespace, declared in every evaluation
+  # stage. The shared aos.services entry below carries only the service model,
+  # whose declarations exist once the service-management package is loaded.
+  options.aos.crucibleCampaign = {
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -79,10 +162,17 @@ in {
 
   config = lib.mkMerge [
     {
+      # Like other package services, the entry is declared unconditionally and
+      # its enable flag alone selects deployment.
+      aos.services."crucible-campaign" = lib.mkMerge [
+        (lib.mkDefault campaignService)
+        {enable = lib.mkDefault cfg.enable;}
+      ];
+
       assertions = [
         {
           assertion = listenPort > 0 && listenPort <= 65535;
-          message = "aos.services.crucibleCampaign.listenAddress must be a numeric loopback address with a valid nonzero TCP port";
+          message = "aos.crucibleCampaign.listenAddress must be a numeric loopback address with a valid nonzero TCP port";
         }
         {
           assertion = builtins.all hasNoControlCharacters [
@@ -94,11 +184,11 @@ in {
         }
         {
           assertion = socketPathIsOwned;
-          message = "aos.services.crucibleCampaign.socketPath must be a normalized file below /run/crucible-campaign";
+          message = "aos.crucibleCampaign.socketPath must be a normalized file below /run/crucible-campaign";
         }
         {
           assertion = stateDirectoryIsOwned;
-          message = "aos.services.crucibleCampaign.stateDirectory must be a normalized path at or below /var/lib/crucible-campaign";
+          message = "aos.crucibleCampaign.stateDirectory must be a normalized path at or below /var/lib/crucible-campaign";
         }
       ];
 
@@ -148,35 +238,6 @@ in {
         operation = "attach-campaign-runtime"
         campaign = "*"
       '';
-
-      systemd.services.crucible-campaign = {
-        description = "Crucible campaign and lifecycle service";
-        wantedBy = ["multi-user.target"];
-        after = ["local-fs.target"];
-        serviceConfig = {
-          Type = "simple";
-          Restart = "on-failure";
-          RestartSec = 1;
-        };
-        preStart = ''
-          ${pkgs.coreutils}/bin/mkdir -p \
-            ${lib.escapeShellArg cfg.stateDirectory} \
-            ${lib.escapeShellArg (builtins.dirOf cfg.socketPath)}
-          ${pkgs.coreutils}/bin/chmod 700 \
-            ${lib.escapeShellArg cfg.stateDirectory} \
-            ${lib.escapeShellArg (builtins.dirOf cfg.socketPath)}
-          ${pkgs.coreutils}/bin/rm -f ${lib.escapeShellArg cfg.socketPath}
-        '';
-        script = ''
-          exec ${pkgs.crucible}/bin/crucible serve \
-            --listen ${lib.escapeShellArg cfg.listenAddress} \
-            --trusted-unauthenticated-bind \
-            --campaign-socket ${lib.escapeShellArg cfg.socketPath} \
-            --campaign-state ${lib.escapeShellArg cfg.stateDirectory} \
-            --campaign-policy /etc/crucible/campaign-policy.toml \
-            --campaign-socket-mode 600
-        '';
-      };
     })
   ];
 }

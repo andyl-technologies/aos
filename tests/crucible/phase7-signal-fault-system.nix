@@ -122,7 +122,7 @@
     ];
   };
   expectedConfigurationIdentity =
-    campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity;
+    campaignComposition.system.config.aos.crucibleCampaign._runtimeIdentity;
   expectedToplevel = campaignComposition.system.config.system.build.toplevel;
   authenticationSource = builtins.path {
     path = ./_phase9-campaign-gate-matrix-authenticate.sh;

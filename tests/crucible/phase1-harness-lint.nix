@@ -20,7 +20,7 @@
   campaignRuntimeIdentity =
     if campaignSystem == null
     then null
-    else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
+    else campaignSystem.config.aos.crucibleCampaign._runtimeIdentity;
   allPackages = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.readFile ../../crates/Cargo.toml;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;

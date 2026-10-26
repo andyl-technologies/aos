@@ -10,7 +10,7 @@
     evaluated = mkSystem {
       modules = [
         ../../systems/server.nix
-        {aos.services.crucibleCampaign = campaignConfig;}
+        {aos.crucibleCampaign = campaignConfig;}
       ];
       systemName = "campaign-service-contract";
     };
@@ -26,12 +26,12 @@
       }
     );
     failures = builtins.tryEval (builtins.deepSeq failedMessages failedMessages);
-    identity = builtins.tryEval evaluated.config.aos.services.crucibleCampaign._runtimeIdentity;
+    identity = builtins.tryEval evaluated.config.aos.crucibleCampaign._runtimeIdentity;
   };
-  listenMessage = "aos.services.crucibleCampaign.listenAddress must be a numeric loopback address with a valid nonzero TCP port";
+  listenMessage = "aos.crucibleCampaign.listenAddress must be a numeric loopback address with a valid nonzero TCP port";
   controlMessage = "Crucible campaign runtime values must not contain control characters";
-  socketMessage = "aos.services.crucibleCampaign.socketPath must be a normalized file below /run/crucible-campaign";
-  stateMessage = "aos.services.crucibleCampaign.stateDirectory must be a normalized path at or below /var/lib/crucible-campaign";
+  socketMessage = "aos.crucibleCampaign.socketPath must be a normalized file below /run/crucible-campaign";
+  stateMessage = "aos.crucibleCampaign.stateDirectory must be a normalized path at or below /var/lib/crucible-campaign";
   valid = evaluate {
     enable = true;
     listenAddress = "127.0.0.1:18080";
