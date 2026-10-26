@@ -462,7 +462,7 @@ enum WatcherCompletionError {
     ThreadPanicked,
     Target {
         job: target_dispatcher::TargetWatchJob,
-        source: LinuxQemuCgroupError,
+        source: LinuxQemuTargetDispatcherError,
     },
 }
 
@@ -483,10 +483,7 @@ impl WatcherCompletion {
             Self::Target(job) => job
                 .retire()
                 .map(WatcherReturnedControl::Target)
-                .map_err(|(job, source)| WatcherCompletionError::Target {
-                    job,
-                    source: source.into(),
-                }),
+                .map_err(|(job, source)| WatcherCompletionError::Target { job, source }),
         }
     }
 }
@@ -749,7 +746,7 @@ impl LinuxQemuCgroupWatcher {
                 let _original_after = original.check_original();
                 Err(LinuxQemuCgroupWatcherWaitError::TargetJob {
                     watcher: Box::new(self),
-                    source,
+                    source: source.into(),
                 })
             }
             Err(WatcherCompletionError::ThreadPanicked) => {
@@ -820,7 +817,7 @@ impl LinuxQemuCgroupWatcher {
                 self.join = Some(WatcherCompletion::Target(job));
                 Err(LinuxQemuCgroupWatcherWaitError::TargetJob {
                     watcher: Box::new(self),
-                    source,
+                    source: source.into(),
                 })
             }
             Err(WatcherCompletionError::ThreadPanicked) => {
@@ -854,7 +851,7 @@ impl LinuxQemuCgroupWatcher {
             }
             Err(WatcherCompletionError::Target { job, source }) => {
                 self.join = Some(WatcherCompletion::Target(job));
-                Err(source)
+                Err(source.into())
             }
             Err(WatcherCompletionError::ThreadPanicked) => Err(LinuxQemuCgroupError::Io {
                 operation: "join QEMU cgroup cancellation watcher",

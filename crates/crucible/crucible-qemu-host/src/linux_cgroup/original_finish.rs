@@ -97,7 +97,7 @@ pub(super) enum OriginalWatcherCause {
     #[error("watcher terminated outside its guarded body")]
     ThreadPanicked,
     #[error("Target watcher control return failed: {0}")]
-    TargetJob(#[source] super::LinuxQemuCgroupError),
+    TargetJob(#[source] super::LinuxQemuTargetDispatcherError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -213,3 +213,6 @@ fn refusal(
 }
 
 use std::os::fd::AsRawFd as _;
+
+#[cfg(test)]
+mod tests;
