@@ -221,6 +221,42 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
         self.optional_public_bytes(member.slot(owner))
     }
 
+    /// Borrows one original public ownership or broker-plan pin delivered to Root.
+    ///
+    /// Only [`METHOD46_INITIAL_ROOT_POLICY_PUBLIC_KEY_MEMBERS_V1`] is accepted.
+    /// Optional absence must match both actual Root configuration samples and
+    /// the Source-bound initial credential roster. No policy or seed is lent.
+    ///
+    /// # Errors
+    /// Refuses a recipe issuer, missing/ended Source, incomplete original
+    /// admission, an entered post or a missing configured public readback.
+    pub fn normal_root_policy_public_key_bytes_v1(
+        &self,
+        member: Method46InitialPublicPinMemberV1,
+    ) -> Result<Option<Ref<'_, [u8]>>, Method46InitialStartupClosedV1> {
+        let index = METHOD46_INITIAL_ROOT_POLICY_PUBLIC_KEY_MEMBERS_V1
+            .iter()
+            .position(|expected| *expected == member)
+            .ok_or(self.startup.closed)?;
+        self.optional_public_bytes(24 + index)
+    }
+
+    /// Borrows an original normal Root or Controller genesis public verifier.
+    ///
+    /// The actual selected owner's PID1 delivery must match this Source's
+    /// captured 80-byte public credential or its compared absence. Root's two
+    /// issuers must be selected together. This grants no genesis or signer role.
+    ///
+    /// # Errors
+    /// Refuses missing/ended Source custody, incomplete original admission,
+    /// an entered post or a missing configured issuer readback.
+    pub fn normal_genesis_public_key_bytes_v1(
+        &self,
+        member: Method46InitialGenesisPublicPinV1,
+    ) -> Result<Option<Ref<'_, [u8]>>, Method46InitialStartupClosedV1> {
+        self.optional_public_bytes(member.slot())
+    }
+
     /// Borrows one original public signer credential delivered to normal Root.
     ///
     /// Only the five members in [`METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1`]
@@ -434,6 +470,12 @@ mod tests {
                         .is_err()
                 );
             }
+        }
+        for member in Method46InitialPublicPinMemberV1::ALL {
+            assert!(loan.normal_root_policy_public_key_bytes_v1(member).is_err());
+        }
+        for member in Method46InitialGenesisPublicPinV1::ALL {
+            assert!(loan.normal_genesis_public_key_bytes_v1(member).is_err());
         }
         for member in aos_sandbox_policy::signed_inputs::RootStartupCredentialMemberV1::ALL {
             assert!(loan.normal_root_public_key_bytes_v1(member).is_err());

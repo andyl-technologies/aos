@@ -26,6 +26,17 @@ pub enum Method46InitialPublicPinMemberV1 {
     MountBrokerPlan,
 }
 
+/// Lists the normal Root public policy pins in their fixed original read order.
+///
+/// Each is optional only when the actual Root delivery and Source-bound initial
+/// unit agree on absence. Root has no Nix recipe issuer in this roster.
+pub const METHOD46_INITIAL_ROOT_POLICY_PUBLIC_KEY_MEMBERS_V1: [Method46InitialPublicPinMemberV1;
+    3] = [
+    Method46InitialPublicPinMemberV1::OwnershipLease,
+    Method46InitialPublicPinMemberV1::HostBrokerPlan,
+    Method46InitialPublicPinMemberV1::MountBrokerPlan,
+];
+
 impl Method46InitialPublicPinMemberV1 {
     /// Lists the public members in their fixed original read order.
     pub const ALL: [Self; 4] = [

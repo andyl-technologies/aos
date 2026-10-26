@@ -16,11 +16,16 @@ use zeroize::Zeroizing;
 use super::*;
 
 mod entries;
+mod genesis_public;
 mod observation;
 mod provisioning_readback;
 mod public_pins;
 
-pub use public_pins::{Method46InitialPublicPinMemberV1, Method46InitialPublicPinOwnerV1};
+pub use genesis_public::Method46InitialGenesisPublicPinV1;
+pub use public_pins::{
+    METHOD46_INITIAL_ROOT_POLICY_PUBLIC_KEY_MEMBERS_V1, Method46InitialPublicPinMemberV1,
+    Method46InitialPublicPinOwnerV1,
+};
 
 pub use provisioning_readback::{
     METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1,
@@ -31,7 +36,7 @@ use entries::Entries;
 use observation::Observation;
 
 pub(super) const REQUIRED_CREDENTIAL_SLOTS: [usize; 12] = [0, 1, 2, 3, 4, 5, 6, 10, 11, 17, 18, 19];
-pub(super) const NAMES: [&str; 24] = [
+pub(super) const NAMES: [&str; 31] = [
     "broker-method46-tpm-provision-v1",
     "broker-method46-tpm-index-auth-v1",
     "method46-initial-approval-public-key-v1",
@@ -56,6 +61,13 @@ pub(super) const NAMES: [&str; 24] = [
     "method46-normal-owner-nix-ownership-public-key-v1",
     "method46-normal-owner-nix-host-plan-public-key-v1",
     "method46-normal-owner-nix-mount-plan-public-key-v1",
+    "method46-normal-root-ownership-public-key-v1",
+    "method46-normal-root-host-plan-public-key-v1",
+    "method46-normal-root-mount-plan-public-key-v1",
+    "method46-normal-root-source-seed-issuer-v1",
+    "method46-normal-root-project-authorization-issuer-v2",
+    "method46-normal-controller-source-seed-issuer-v1",
+    "method46-normal-controller-project-authorization-issuer-v2",
 ];
 const MANIFEST_BYTES: usize =
     aos_sandbox_broker_session_protocol::manifest::BROKER_SESSION_MANIFEST_BYTES;
@@ -84,6 +96,13 @@ const LENGTHS: [usize; NAMES.len()] = [
     32,
     32,
     32,
+    32,
+    32,
+    32,
+    80,
+    80,
+    80,
+    80,
 ];
 
 struct Credential {

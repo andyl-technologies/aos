@@ -31,6 +31,30 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Initial approval exclusion now includes Root's optional ownership/Host/Mount
+  policy pins and the Source/Project administrative genesis verifier credentials
+  independently selected by Root and Controller. Both actual PID1 delivery
+  samples must match the exact public sources or their compared absence. Root's
+  genesis pair must be selected together; Controller's existing independent
+  issuer selection remains supported. The same Source prepays the thirty-one
+  credential maximum, 159 descriptor carriers and all reached held/named posts.
+  Shared normal raw32 policy sources and same-role genesis sources are allowed;
+  secret, approval and foreign-format aliases remain forbidden. Explicit Nix
+  ranges keep these Root selections independent of endpoint enablement. The
+  native directory regression covers all 2,048 valid rosters. Security retains
+  each existing canonical genesis decoder's typed result, rejects foreign
+  framing/checksum changes, weak keys and approval reuse under any generation,
+  and reuses the public-policy comparison engine for Root's three pins. Recipe
+  selectors cannot read Root credentials. The expanded private layouts still
+  fit the same Source-paid 32 KiB allowance; bank capacities remain unchanged.
+  All 87 focused initializer, 430 ordinary Security and 439 online-Nix Security
+  tests pass, with two existing ignored cases per Security suite. The final
+  weak-key test extension also passes all three focused genesis tests in the
+  ordinary configuration. Complete application unit/integration target compilation is
+  running for the ten final Rust files. Root NoApply signer provenance, offline
+  Nix approval, complete endpoint provenance, durable approved intent, installed
+  TPM effects and public lifecycle qualification remain open.
+
 - Initial approval exclusion now also covers the actual Controller and Nix
   owner's recipe, ownership-lease and Host/Mount broker-plan public pins. The
   two owners may select different sources; both original PID1 delivery samples
@@ -94,7 +118,9 @@ Recent committed startup fixes close narrower prerequisites:
   existing ignored cases per Security suite. The expanded decoder fits the same
   prepaid 32 KiB allowance, including explicit error/codec scratch; resource-bank
   capacities remain unchanged. Complete application unit/integration target
-  compilation is running for the final twelve Rust files. Other Root trust
+  compilation passes for the final twelve Rust files
+  (`/nix/store/ca2cdx3a3n7apwqvjrrw9zkn9zivnkf4-aos-test-targets-0.1.0`),
+  before the Nix-owner, policy-pin and genesis additions. Other Root trust
   families, the Nix owner's ONLINE issuer and offline approval keys, full endpoint
   provenance and installed initial provisioning/effects remain open.
 

@@ -13,9 +13,15 @@ use aos_sandbox_controller_domain::method46_initial_startup::{
 };
 use ed25519_dalek::{SignatureError, VerifyingKey};
 
+#[derive(Clone, Copy)]
+enum PublicPinOwner {
+    Normal(Owner),
+    Root,
+}
+
 pub(super) struct PublicPolicyPinOriginal {
     member: Option<Member>,
-    owner: Option<Owner>,
+    owner: Option<PublicPinOwner>,
     bytes: Option<Result<[u8; 32], std::array::TryFromSliceError>>,
     key: Option<Result<VerifyingKey, SignatureError>>,
     separate: Option<bool>,
@@ -45,6 +51,25 @@ impl PublicPolicyPinOriginal {
         bytes: Option<&[u8]>,
         approval: [u8; 32],
     ) {
+        self.observe_member_once(PublicPinOwner::Normal(owner), member, bytes, approval);
+    }
+
+    pub(super) fn observe_root_once(
+        &mut self,
+        member: Member,
+        bytes: Option<&[u8]>,
+        approval: [u8; 32],
+    ) {
+        self.observe_member_once(PublicPinOwner::Root, member, bytes, approval);
+    }
+
+    fn observe_member_once(
+        &mut self,
+        owner: PublicPinOwner,
+        member: Member,
+        bytes: Option<&[u8]>,
+        approval: [u8; 32],
+    ) {
         if self.entered || self.closed {
             self.closed = true;
             return;
@@ -52,6 +77,10 @@ impl PublicPolicyPinOriginal {
         self.entered = true;
         self.owner = Some(owner);
         self.member = Some(member);
+        if matches!(owner, PublicPinOwner::Root) && member == Member::NixRecipeIssuer {
+            self.closed = true;
+            return;
+        }
         if let Some(bytes) = bytes {
             self.bytes = Some(bytes.try_into());
             if let Some(Ok(bytes)) = self.bytes.as_ref() {
@@ -63,7 +92,8 @@ impl PublicPolicyPinOriginal {
                 });
             }
         } else {
-            self.absent = owner == Owner::NixBroker || member == Member::NixRecipeIssuer;
+            self.absent = !matches!(owner, PublicPinOwner::Normal(Owner::Controller))
+                || member == Member::NixRecipeIssuer;
         }
         self.closed = !self.admitted();
     }
@@ -168,6 +198,27 @@ mod tests {
                 None => panic!("the first width decode must remain resident"),
             }
             assert_eq!(matches!(original.key, Some(Err(_))), first_key_failed);
+        }
+    }
+
+    #[test]
+    fn root_public_policy_pins_exclude_approval_and_only_admit_actual_optional_members() {
+        let key = SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes();
+        for member in Member::ALL {
+            for bytes in [None, Some(key.as_slice())] {
+                for approval in [key, [3; 32]] {
+                    let mut original = PublicPolicyPinOriginal::new();
+
+                    original.observe_root_once(member, bytes, approval);
+
+                    assert_eq!(
+                        original.admitted(),
+                        member != Member::NixRecipeIssuer && (bytes.is_none() || approval != key)
+                    );
+                    original.observe_root_once(member, bytes, approval);
+                    assert!(!original.admitted());
+                }
+            }
         }
     }
 }

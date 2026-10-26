@@ -16,7 +16,8 @@ use aos_sandbox_broker::receiving::{
     Method46InitialOriginComparisonDataV1, Method46InitialServiceRoleV1,
 };
 use aos_sandbox_controller_domain::method46_initial_startup::{
-    METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1,
+    METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, METHOD46_INITIAL_ROOT_POLICY_PUBLIC_KEY_MEMBERS_V1,
+    METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1, Method46InitialGenesisPublicPinV1,
     Method46InitialProvisionReadbackLoanV1, Method46InitialPublicPinMemberV1,
     Method46InitialPublicPinOwnerV1, Method46InitialStartupClosedV1,
 };
@@ -26,6 +27,9 @@ use root_public::RootPublicKeyOriginal;
 
 mod public_policy_pins;
 use public_policy_pins::PublicPolicyPinOriginal;
+
+mod genesis_public;
+use genesis_public::GenesisPublicPinOriginal;
 
 mod online_floor_issuer;
 use online_floor_issuer::OnlineFloorIssuerOriginal;
@@ -71,6 +75,10 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     owner_nix_floor: OnlineFloorIssuerOriginal,
     policy_public_reads: [[Option<Result<(), Method46InitialStartupClosedV1>>; 4]; 2],
     policy_public: [[PublicPolicyPinOriginal; 4]; 2],
+    root_policy_public_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; 3],
+    root_policy_public: [PublicPolicyPinOriginal; 3],
+    genesis_public_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; 4],
+    genesis_public: [GenesisPublicPinOriginal; 4],
     root_public_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; 5],
     root_public: [RootPublicKeyOriginal; 5],
     approval: RefCell<ApprovalVerificationOriginal>,
@@ -125,6 +133,10 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             policy_public: std::array::from_fn(|_| {
                 std::array::from_fn(|_| PublicPolicyPinOriginal::new())
             }),
+            root_policy_public_reads: std::array::from_fn(|_| None),
+            root_policy_public: std::array::from_fn(|_| PublicPolicyPinOriginal::new()),
+            genesis_public_reads: std::array::from_fn(|_| None),
+            genesis_public: std::array::from_fn(|_| GenesisPublicPinOriginal::new()),
             root_public_reads: std::array::from_fn(|_| None),
             root_public: std::array::from_fn(|_| RootPublicKeyOriginal::new()),
             approval: RefCell::new(ApprovalVerificationOriginal::new()),
@@ -305,6 +317,46 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             }
         }
 
+        for (index, member) in METHOD46_INITIAL_ROOT_POLICY_PUBLIC_KEY_MEMBERS_V1
+            .into_iter()
+            .enumerate()
+        {
+            let bytes = match self.readback.normal_root_policy_public_key_bytes_v1(member) {
+                Ok(bytes) => {
+                    self.root_policy_public_reads[index] = Some(Ok(()));
+                    bytes
+                }
+                Err(error) => {
+                    self.root_policy_public_reads[index] = Some(Err(error));
+                    return;
+                }
+            };
+            self.root_policy_public[index].observe_root_once(member, bytes.as_deref(), approval);
+            if !self.root_policy_public[index].admitted() {
+                return;
+            }
+        }
+
+        for (index, member) in Method46InitialGenesisPublicPinV1::ALL
+            .into_iter()
+            .enumerate()
+        {
+            let bytes = match self.readback.normal_genesis_public_key_bytes_v1(member) {
+                Ok(bytes) => {
+                    self.genesis_public_reads[index] = Some(Ok(()));
+                    bytes
+                }
+                Err(error) => {
+                    self.genesis_public_reads[index] = Some(Err(error));
+                    return;
+                }
+            };
+            self.genesis_public[index].observe_once(member, bytes.as_deref(), approval);
+            if !self.genesis_public[index].admitted() {
+                return;
+            }
+        }
+
         for (index, member) in METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1
             .into_iter()
             .enumerate()
@@ -349,6 +401,22 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
                 .iter()
                 .flatten()
                 .all(PublicPolicyPinOriginal::admitted)
+            && self
+                .root_policy_public_reads
+                .iter()
+                .all(|read| matches!(read, Some(Ok(()))))
+            && self
+                .root_policy_public
+                .iter()
+                .all(PublicPolicyPinOriginal::admitted)
+            && self
+                .genesis_public_reads
+                .iter()
+                .all(|read| matches!(read, Some(Ok(()))))
+            && self
+                .genesis_public
+                .iter()
+                .all(GenesisPublicPinOriginal::admitted)
             && self
                 .root_public_reads
                 .iter()

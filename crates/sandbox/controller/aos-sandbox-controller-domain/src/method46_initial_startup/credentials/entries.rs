@@ -38,7 +38,8 @@ impl Entries {
         if selected[8] != selected[9]
             || selected[8] != selected[15]
             || selected[8] != selected[16]
-            || selected[20..].iter().any(|value| *value != selected[8])
+            || selected[20..24].iter().any(|value| *value != selected[8])
+            || selected[27] != selected[28]
             || !REQUIRED_CREDENTIAL_SLOTS
                 .iter()
                 .all(|index| selected[*index])
@@ -155,17 +156,24 @@ mod tests {
 
     #[test]
     fn optional_native_names_match_the_exact_selected_roster() {
-        for mask in 0_u8..32 {
+        for mask in 0_u16..2048 {
             let mut selected = [true; NAMES.len()];
             selected[7] = mask & 1 != 0;
             selected[8] = mask & 2 != 0;
             selected[9] = selected[8];
             selected[15] = selected[8];
             selected[16] = selected[8];
-            selected[20..].fill(mask & 2 != 0);
+            selected[20..24].fill(mask & 2 != 0);
             selected[12] = mask & 4 != 0;
             selected[13] = mask & 8 != 0;
             selected[14] = mask & 16 != 0;
+            selected[24] = mask & 32 != 0;
+            selected[25] = mask & 64 != 0;
+            selected[26] = mask & 128 != 0;
+            selected[27] = mask & 256 != 0;
+            selected[28] = selected[27];
+            selected[29] = mask & 512 != 0;
+            selected[30] = mask & 1024 != 0;
             let directory = tempfile::tempdir().unwrap();
             for (index, name) in NAMES.iter().enumerate() {
                 if selected[index] {

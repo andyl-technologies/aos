@@ -9,6 +9,8 @@
 use aos_systemd_client::{OwnedValue, Value};
 
 use super::super::credentials::{
+    METHOD46_INITIAL_ROOT_POLICY_PUBLIC_KEY_MEMBERS_V1 as ROOT_POLICY_MEMBERS,
+    Method46InitialGenesisPublicPinV1 as GenesisMember,
     Method46InitialPublicPinMemberV1 as PublicMember,
     Method46InitialPublicPinOwnerV1 as PublicOwner, NAMES, REQUIRED_CREDENTIAL_SLOTS,
 };
@@ -88,8 +90,8 @@ fn selected_sources(
             .enumerate()
             .any(|(previous, value)| {
                 *value == source
-                    && (previous, index) != (9, 15)
-                    && !((16..24).contains(&previous) && (16..24).contains(&index))
+                    && !matches!((previous, index), (9, 15) | (27, 29) | (28, 30))
+                    && !((16..27).contains(&previous) && (16..27).contains(&index))
             })
         {
             return Err(Method46InitialStartupClosedV1);
@@ -101,9 +103,10 @@ fn selected_sources(
     if selected[8].is_empty() != selected[9].is_empty()
         || selected[8].is_empty() != selected[15].is_empty()
         || selected[8].is_empty() != selected[16].is_empty()
-        || selected[20..]
+        || selected[20..24]
             .iter()
             .any(|source| source.is_empty() != selected[8].is_empty())
+        || selected[27].is_empty() != selected[28].is_empty()
     {
         return Err(Method46InitialStartupClosedV1);
     }
@@ -198,7 +201,16 @@ pub(super) fn require_other_normal_manifest_sources(
     {
         require_source(values, name, (!expected.is_empty()).then_some(*expected))?;
     }
-    require_policy_public_sources(values, fragment, PublicOwner::Controller)
+    require_policy_public_sources(values, fragment, PublicOwner::Controller)?;
+    for member in GenesisMember::CONTROLLER {
+        let expected = sources[member.slot()];
+        require_source(
+            values,
+            member.name(),
+            (!expected.is_empty()).then_some(expected),
+        )?;
+    }
+    Ok(())
 }
 
 pub(super) fn require_normal_root_public_sources(
@@ -214,6 +226,22 @@ pub(super) fn require_normal_root_public_sources(
             values,
             member.name(),
             (!expected.is_empty()).then_some(*expected),
+        )?;
+    }
+    for (index, member) in ROOT_POLICY_MEMBERS.into_iter().enumerate() {
+        let expected = sources[24 + index];
+        require_source(
+            values,
+            member.name(),
+            (!expected.is_empty()).then_some(expected),
+        )?;
+    }
+    for member in GenesisMember::ROOT {
+        let expected = sources[member.slot()];
+        require_source(
+            values,
+            member.name(),
+            (!expected.is_empty()).then_some(expected),
         )?;
     }
     Ok(())
@@ -487,7 +515,33 @@ mod tests {
         })
         .collect::<Vec<_>>();
         rows.extend(policy_rows(PublicOwner::Controller));
+        rows.extend(GenesisMember::CONTROLLER.into_iter().map(|member| {
+            (
+                member.name().to_owned(),
+                format!("/run/credentials/@system/external-{}", member.slot()),
+            )
+        }));
         rows
+    }
+
+    fn root_extra_rows(selected: &[bool; NAMES.len()]) -> Vec<(String, String)> {
+        ROOT_POLICY_MEMBERS
+            .into_iter()
+            .enumerate()
+            .map(|(index, member)| (member.name(), 24 + index))
+            .chain(
+                GenesisMember::ROOT
+                    .into_iter()
+                    .map(|member| (member.name(), member.slot())),
+            )
+            .filter(|(_, slot)| selected[*slot])
+            .map(|(name, slot)| {
+                (
+                    name.to_owned(),
+                    format!("/run/credentials/@system/external-{slot}"),
+                )
+            })
+            .collect()
     }
 
     fn policy_rows(owner: PublicOwner) -> Vec<(String, String)> {
@@ -531,7 +585,7 @@ mod tests {
             rows.reverse();
         }
 
-        for index in 0..10 {
+        for index in 0..12 {
             let mut missing = other_normal_rows();
             missing.remove(index);
             let mut duplicate = other_normal_rows();
@@ -591,7 +645,7 @@ mod tests {
                     ));
                     text
                 });
-            let rows = MEMBERS
+            let mut rows = MEMBERS
                 .into_iter()
                 .enumerate()
                 .filter(|(index, _)| selected[index + 10])
@@ -602,6 +656,7 @@ mod tests {
                     )
                 })
                 .collect::<Vec<_>>();
+            rows.extend(root_extra_rows(&selected));
 
             assert_eq!(
                 selected_credential_roster(fragment.as_bytes()).unwrap(),
@@ -650,7 +705,7 @@ mod tests {
     fn root_public_delivery_refuses_duplicate_substituted_and_alternate_sources() {
         use super::super::super::credentials::METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1 as MEMBERS;
         let fragment = fragment();
-        let rows = MEMBERS
+        let mut rows = MEMBERS
             .into_iter()
             .enumerate()
             .map(|(index, member)| {
@@ -660,7 +715,8 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        for index in 0..MEMBERS.len() {
+        rows.extend(root_extra_rows(&[true; NAMES.len()]));
+        for index in 0..rows.len() {
             let mut duplicate = rows.clone();
             duplicate.push(rows[index].clone());
             let mut substituted = rows.clone();
@@ -715,11 +771,91 @@ mod tests {
 
                 assert_eq!(
                     selected_sources(aliased.as_bytes()).is_ok(),
-                    matches!((source, destination), (9, 15) | (15, 9))
-                        || ((16..24).contains(&source) && (16..24).contains(&destination)),
+                    matches!(
+                        (source, destination),
+                        (9, 15) | (15, 9) | (27, 29) | (29, 27) | (28, 30) | (30, 28)
+                    ) || ((16..27).contains(&source) && (16..27).contains(&destination)),
                     "source {source} destination {destination}",
                 );
             }
+        }
+    }
+
+    #[test]
+    fn root_policy_and_genesis_delivery_requires_exact_selected_presence() {
+        use super::super::super::credentials::METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1 as MEMBERS;
+        for mask in 0_u8..16 {
+            let mut selected = [true; NAMES.len()];
+            for (offset, slot) in (24..27).enumerate() {
+                selected[slot] = mask & (1 << offset) != 0;
+            }
+            selected[27] = mask & 8 != 0;
+            selected[28] = selected[27];
+            let fragment = NAMES
+                .iter()
+                .enumerate()
+                .filter(|(slot, _)| selected[*slot])
+                .fold(String::from("[Service]\n"), |mut text, (slot, name)| {
+                    text.push_str(&format!(
+                        "LoadCredential={name}:/run/credentials/@system/external-{slot}\n"
+                    ));
+                    text
+                });
+            let mut rows = MEMBERS
+                .into_iter()
+                .enumerate()
+                .map(|(index, member)| {
+                    (
+                        member.name().to_owned(),
+                        format!("/run/credentials/@system/external-{}", index + 10),
+                    )
+                })
+                .collect::<Vec<_>>();
+            rows.extend(root_extra_rows(&selected));
+
+            assert!(
+                require_normal_root_public_sources(
+                    &normal_properties(rows.clone()),
+                    fragment.as_bytes()
+                )
+                .is_ok()
+            );
+
+            for (name, slot) in ROOT_POLICY_MEMBERS
+                .into_iter()
+                .enumerate()
+                .map(|(index, member)| (member.name(), 24 + index))
+                .chain(
+                    GenesisMember::ROOT
+                        .into_iter()
+                        .map(|member| (member.name(), member.slot())),
+                )
+            {
+                let mut changed = rows.clone();
+                if selected[slot] {
+                    changed.retain(|(actual, _)| actual != name);
+                } else {
+                    changed.push((
+                        name.to_owned(),
+                        format!("/run/credentials/@system/external-{slot}"),
+                    ));
+                }
+                assert!(
+                    require_normal_root_public_sources(
+                        &normal_properties(changed),
+                        fragment.as_bytes()
+                    )
+                    .is_err()
+                );
+            }
+        }
+        for missing in [27, 28] {
+            let mismatched = fragment()
+                .lines()
+                .filter(|line| !line.starts_with(&format!("LoadCredential={}:", NAMES[missing])))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(selected_credential_roster(mismatched.as_bytes()).is_err());
         }
     }
 
@@ -821,7 +957,7 @@ mod tests {
                 selected[9] = nix;
                 selected[15] = nix;
                 selected[16] = nix;
-                selected[20..].fill(nix);
+                selected[20..24].fill(nix);
                 let fragment = NAMES
                     .iter()
                     .enumerate()
