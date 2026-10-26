@@ -4143,3 +4143,40 @@ The current default source-built Bazel bootstrap closure contains no accache
 package. Accache's production builder still uses Cargo during the migration;
 production cutover, foreign-host execution, complete compiler/linker option
 parity, and performance acceptance remain separate gates.
+
+## Installed native Hub package
+
+`aos-hub` exposes a temporary `passthru.withBuildDriver "bazel"` selector,
+reverse selector and Cargo fallback. The native Linux installer preserves the
+`aos-hub` and `aos-hub-egress` programs, deployment module metadata, runtime
+closure and qualification probe. Cargo remains the default during migration.
+
+```sh
+nix-build -A checks.build.bazel.hub-installed-production.all --no-out-link
+```
+
+The conversion compares installed ELF contracts, runtime closures, all 23
+production compiler units, 18 first-party feature units and 383 external feature
+units. It runs 15 installed-command cases per driver, including the complete
+422-statement schema dump, and 12 authenticated egress protocol cases per
+driver. The protocol checks cover current/next keys, request and response MACs,
+invalid timestamps, nonce replay and persistence across process restart.
+
+A separate native runtime comparison initializes fresh unseeded SQLite state,
+runs offline indexing and credential recovery, checks server health and password
+authentication, and requires an authenticated session to survive a restart.
+
+The existing public operator fixture remains unchanged. Separate observation
+guests retain its actual failure on the obsolete `credential encrypt --unit`
+argument and require the same failure under Cargo and Bazel. That comparison
+neither repairs the fixture nor claims its complete lifecycle passed.
+
+Precise and conservative source selections must produce identical installed
+files and modes. Browser assets remain declared build inputs, with evidence
+checked against the actual JavaScript, Wasm and stylesheet provider files.
+Initialization probes do not establish browser DOM parity. The package license
+metadata follows the workspace's Apache-2.0 declaration.
+
+Application Rust behavior is unchanged. Foreign-host execution, browser runtime
+parity, performance acceptance, production default cutover and final Cargo
+removal remain separate migration work.

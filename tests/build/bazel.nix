@@ -150,6 +150,7 @@ in
     deployment-check-production = import ./_bazel-deployment-check-production.nix {inherit pkgs;};
     release-signer-production = import ./_bazel-release-signer-production.nix {inherit pkgs;};
     hub-dialect-production = import ./_bazel-hub-dialect-production.nix {inherit pkgs;};
+    hub-installed-production = import ./_bazel-hub-installed-production.nix {inherit pkgs;};
     pilot = import ./_bazel-pilot.nix {inherit pkgs;};
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
@@ -567,6 +568,7 @@ in
             deployment-check-production.all
             release-signer-production.all
             hub-dialect-production.all
+            hub-installed-production.all
             native-xz-source
             static-runtime.all
             precision-parity
