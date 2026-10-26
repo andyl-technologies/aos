@@ -31,6 +31,29 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Normal Root's five startup public signer credentials now participate in initial
+  approval-key exclusion: Deployment and Project are required; Cache, Controller
+  and Source pins may be absent only when their actual Root and initial-unit
+  deliveries agree. The same Source prepays both retained PID1 configuration
+  samples and the fifteen-file maximum credential roster, including 79 descriptor
+  carriers. Configuration observation discovers the actual native main PID and
+  accepts only stable active/running or inactive/dead tuples. Its two samples
+  retain and compare the unique PID1 owner, complete service tuple, credential
+  properties and normal Root fragment; partial or retired observations cannot
+  substitute. A Controller/Storage refusal cannot suppress Root's independently
+  owed final sample. Readback loans require genuine current Source custody and
+  expose only the five public files. Security retains each existing role decoder's
+  typed result and rejects reuse of the approval pin under any generation, foreign
+  role framing, invalid keys and changed checksums. No policy input or signing
+  seed getter is added. All 124 SDK library tests, 84 focused initializer tests,
+  422 ordinary Security tests and 431 online-Nix Security tests pass, with two
+  existing ignored cases per Security suite. The expanded decoder fits the same
+  prepaid 32 KiB allowance, including explicit error/codec scratch; resource-bank
+  capacities remain unchanged. Complete application unit/integration target
+  compilation is running for the final twelve Rust files. Other Root trust
+  families, the Nix owner's ONLINE issuer and offline approval keys, full endpoint
+  provenance and installed initial provisioning/effects remain open.
+
 - The initial producer now captures the normal Controller's separate ONLINE Nix
   floor issuer public credential when Nix is configured. Its admitted unit must
   select the issuer and endpoint manifest together, and both actual Controller
@@ -62,8 +85,10 @@ Recent committed startup fixes close narrower prerequisites:
   allowance passes compiled layout checks; resource-bank capacities are unchanged.
   All 79 focused initializer tests, 416 ordinary Security tests and 425 online-Nix
   Security tests pass, with two existing ignored cases in each Security suite.
-  Complete unit/integration target compilation is running for the seven changed
-  Rust files. Independent Nix floor-authority/approval keys, Root key delivery,
+  Complete unit/integration target compilation passes for these seven Rust files
+  (`/nix/store/9jmvsck4b5dizjhqscn686bbd3anvbnv-aos-test-targets-0.1.0`),
+  before the Controller Nix issuer and Root additions. Independent Nix
+  floor-authority/approval keys, remaining Root key delivery,
   complete endpoint provenance, durable intent and installed TPM qualification
   remain open. These comparisons do not establish positive Source admission or
   physical-effect authority.

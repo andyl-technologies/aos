@@ -20,14 +20,15 @@ mod observation;
 mod provisioning_readback;
 
 pub use provisioning_readback::{
-    METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, Method46InitialProvisionReadbackLoanV1,
+    METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1,
+    Method46InitialProvisionReadbackLoanV1,
 };
 
 use entries::Entries;
 use observation::Observation;
 
-pub(super) const REQUIRED_CREDENTIALS: usize = 7;
-pub(super) const NAMES: [&str; 10] = [
+pub(super) const REQUIRED_CREDENTIAL_SLOTS: [usize; 9] = [0, 1, 2, 3, 4, 5, 6, 10, 11];
+pub(super) const NAMES: [&str; 15] = [
     "broker-method46-tpm-provision-v1",
     "broker-method46-tpm-index-auth-v1",
     "method46-initial-approval-public-key-v1",
@@ -38,6 +39,11 @@ pub(super) const NAMES: [&str; 10] = [
     "method46-normal-mount-fuse-manifest-v1",
     "method46-normal-nix-manifest-v1",
     "method46-normal-controller-nix-floor-issuer-v1",
+    "method46-normal-root-deployment-public-key-v1",
+    "method46-normal-root-project-public-key-v1",
+    "method46-normal-root-cache-public-key-v1",
+    "method46-normal-root-controller-public-key-v1",
+    "method46-normal-root-source-public-key-v1",
 ];
 const MANIFEST_BYTES: usize =
     aos_sandbox_broker_session_protocol::manifest::BROKER_SESSION_MANIFEST_BYTES;
@@ -52,6 +58,11 @@ const LENGTHS: [usize; NAMES.len()] = [
     MANIFEST_BYTES,
     MANIFEST_BYTES,
     48,
+    80,
+    80,
+    80,
+    80,
+    80,
 ];
 
 struct Credential {

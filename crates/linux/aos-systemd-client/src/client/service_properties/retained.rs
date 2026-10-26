@@ -172,6 +172,32 @@ impl ServicePropertiesReadOriginalV2 {
             ObservationPhase::StoppedNix).await
     }
 
+    /// Observes configuration of a stable running or inactive service once.
+    ///
+    /// The same unique-PID1 engine discovers the native main PID; callers cannot
+    /// supply it. An active/running unit requires a nonzero PID and invocation.
+    /// An inactive/dead unit requires PID zero and permits the manager's null
+    /// invocation encoding. Both full tuples and the manager owner must match.
+    /// This returns configuration DATA and grants no liveness or role authority.
+    /// The enclosing original prepays its fixed roster and retains all failures.
+    ///
+    /// # Errors
+    /// Refuses a transient activation state, inconsistent PID/invocation, changed
+    /// tuple or owner, native read failure or reentry. Once captured, the native
+    /// final bookend stays owed even after a primary property read refuses.
+    pub async fn observe_configuration_once_v1(
+        &mut self,
+        client: &SystemdClient,
+        name: &str,
+        service: &[&str],
+        unit: &[&str],
+    ) -> std::result::Result<(), ServicePropertiesReadClosedV2> {
+        self.observe_selected_once_v2(
+            client, name, 0, service, unit, ObservationPhase::Configuration,
+        )
+        .await
+    }
+
     /// Observes the completed successful invocation of a remain-after-exit oneshot.
     ///
     /// The supplied service roster must begin with Type, RemainAfterExit,
@@ -210,6 +236,27 @@ impl ServicePropertiesReadOriginalV2 {
     pub fn completed_invocation_bytes_data_v1(&self) -> Option<&[u8]> {
         if !self.complete() { return None; }
         Some(self.original.as_ref()?.before.3.as_slice())
+    }
+
+    /// Compares two complete native service tuples as read-only DATA.
+    ///
+    /// Both original manager owners, unit IDs, states, main PIDs, invocations
+    /// and substates must match. Failed, transferred or retired observations
+    /// return false. Configuration values and genuine enclosing ownership need
+    /// their own checks; this comparison produces no currentness or role grant.
+    #[must_use]
+    pub fn same_completed_service_tuple_data_v1(&self, other: &Self) -> bool {
+        if !self.complete() || !other.complete() {
+            return false;
+        }
+        match (&self.original, &other.original) {
+            (Some(left), Some(right)) => {
+                left.owner == right.owner
+                    && left.before == right.before
+                    && left.before_substate == right.before_substate
+            }
+            _ => false,
+        }
     }
 
     async fn observe_selected_once_v2(
@@ -336,7 +383,7 @@ impl ServicePropertiesReadOriginalV2 {
                 Cow::Owned(name.to_owned()),
                 expected_pid,
                 phase,
-                false,
+                matches!(phase, ObservationPhase::Configuration),
                 PropertyDecodingV1::for_client(client),
                 &mut self.capture,
             )

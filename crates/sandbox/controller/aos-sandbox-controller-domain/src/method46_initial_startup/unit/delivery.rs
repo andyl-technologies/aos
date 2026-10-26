@@ -8,7 +8,7 @@
 
 use aos_systemd_client::{OwnedValue, Value};
 
-use super::super::credentials::{NAMES, REQUIRED_CREDENTIALS};
+use super::super::credentials::{NAMES, REQUIRED_CREDENTIAL_SLOTS};
 use super::{Method46InitialServiceRoleV1, Method46InitialStartupClosedV1};
 
 const SIGNATURES: [&str; 6] = ["a(ss)", "a(ss)", "a(say)", "a(say)", "as", "a(ss)"];
@@ -73,7 +73,7 @@ fn selected_sources(
     let mut selected = [""; NAMES.len()];
     for (index, source) in sources.into_iter().enumerate() {
         let Some(source) = source else {
-            if index < REQUIRED_CREDENTIALS {
+            if REQUIRED_CREDENTIAL_SLOTS.contains(&index) {
                 return Err(Method46InitialStartupClosedV1);
             }
             continue;
@@ -178,6 +178,24 @@ pub(super) fn require_other_normal_manifest_sources(
     .zip(&sources[4..])
     {
         require_source(values, name, (!expected.is_empty()).then_some(*expected))?;
+    }
+    Ok(())
+}
+
+pub(super) fn require_normal_root_public_sources(
+    values: &[OwnedValue],
+    fragment: &[u8],
+) -> Result<(), Method46InitialStartupClosedV1> {
+    let sources = selected_sources(fragment)?;
+    for (member, expected) in super::super::credentials::METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1
+        .into_iter()
+        .zip(&sources[10..])
+    {
+        require_source(
+            values,
+            member.name(),
+            (!expected.is_empty()).then_some(*expected),
+        )?;
     }
     Ok(())
 }
@@ -481,6 +499,133 @@ mod tests {
     }
 
     #[test]
+    fn root_public_delivery_requires_both_required_keys_and_exact_optional_presence() {
+        use super::super::super::credentials::METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1 as MEMBERS;
+        for mask in 0_u8..8 {
+            let mut selected = [true; NAMES.len()];
+            for (offset, slot) in (12..15).enumerate() {
+                selected[slot] = mask & (1 << offset) != 0;
+            }
+            let fragment = NAMES
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| selected[*index])
+                .fold(String::from("[Service]\n"), |mut text, (index, name)| {
+                    text.push_str(&format!(
+                        "LoadCredential={name}:/run/credentials/@system/external-{index}\n"
+                    ));
+                    text
+                });
+            let rows = MEMBERS
+                .into_iter()
+                .enumerate()
+                .filter(|(index, _)| selected[index + 10])
+                .map(|(index, member)| {
+                    (
+                        member.name().to_owned(),
+                        format!("/run/credentials/@system/external-{}", index + 10),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                selected_credential_roster(fragment.as_bytes()).unwrap(),
+                selected
+            );
+            assert!(
+                require_normal_root_public_sources(
+                    &normal_properties(rows.clone()),
+                    fragment.as_bytes()
+                )
+                .is_ok()
+            );
+
+            for (index, member) in MEMBERS.into_iter().enumerate() {
+                let mut changed = rows.clone();
+                if selected[index + 10] {
+                    changed.retain(|(name, _)| name != member.name());
+                } else {
+                    changed.push((
+                        member.name().to_owned(),
+                        format!("/run/credentials/@system/external-{}", index + 10),
+                    ));
+                }
+                assert!(
+                    require_normal_root_public_sources(
+                        &normal_properties(changed),
+                        fragment.as_bytes()
+                    )
+                    .is_err()
+                );
+            }
+            for missing in [10, 11] {
+                let incomplete = fragment
+                    .lines()
+                    .filter(|line| {
+                        !line.starts_with(&format!("LoadCredential={}:", NAMES[missing]))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(selected_credential_roster(incomplete.as_bytes()).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn root_public_delivery_refuses_duplicate_substituted_and_alternate_sources() {
+        use super::super::super::credentials::METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1 as MEMBERS;
+        let fragment = fragment();
+        let rows = MEMBERS
+            .into_iter()
+            .enumerate()
+            .map(|(index, member)| {
+                (
+                    member.name().to_owned(),
+                    format!("/run/credentials/@system/external-{}", index + 10),
+                )
+            })
+            .collect::<Vec<_>>();
+        for index in 0..MEMBERS.len() {
+            let mut duplicate = rows.clone();
+            duplicate.push(rows[index].clone());
+            let mut substituted = rows.clone();
+            substituted[index].1.push_str("-substituted");
+            for changed in [duplicate, substituted] {
+                assert!(
+                    require_normal_root_public_sources(
+                        &normal_properties(changed),
+                        fragment.as_bytes()
+                    )
+                    .is_err()
+                );
+            }
+        }
+        for (index, changed) in [
+            (
+                1,
+                value(vec![(
+                    "deployment-public-key".to_owned(),
+                    "/external".to_owned(),
+                )]),
+            ),
+            (
+                2,
+                value(vec![("project-public-key".to_owned(), vec![1_u8])]),
+            ),
+            (
+                3,
+                value(vec![("source-hold-public-key".to_owned(), vec![1_u8])]),
+            ),
+            (4, value(vec!["*".to_owned()])),
+            (5, value(vec![("*".to_owned(), "*".to_owned())])),
+        ] {
+            let mut values = normal_properties(rows.clone());
+            values[index] = changed;
+            assert!(require_normal_root_public_sources(&values, fragment.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
     fn every_fixed_initial_credential_source_must_remain_distinct() {
         let fragment = fragment();
         for source in 0..NAMES.len() {
@@ -564,7 +709,7 @@ mod tests {
                     .is_ok()
                 );
 
-                for index in REQUIRED_CREDENTIALS..NAMES.len() {
+                for index in 7..10 {
                     let mut changed_initial = initial_rows.clone();
                     let mut changed_normal = normal_rows.clone();
                     let normal_name = other_normal_rows()[index - 4].0.clone();

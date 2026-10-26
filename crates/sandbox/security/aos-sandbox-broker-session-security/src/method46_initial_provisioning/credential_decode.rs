@@ -16,9 +16,12 @@ use aos_sandbox_broker::receiving::{
     Method46InitialOriginComparisonDataV1, Method46InitialServiceRoleV1,
 };
 use aos_sandbox_controller_domain::method46_initial_startup::{
-    METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, Method46InitialProvisionReadbackLoanV1,
-    Method46InitialStartupClosedV1,
+    METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1,
+    Method46InitialProvisionReadbackLoanV1, Method46InitialStartupClosedV1,
 };
+
+mod root_public;
+use root_public::RootPublicKeyOriginal;
 
 mod controller_nix_floor;
 use controller_nix_floor::ControllerNixFloorIssuerOriginal;
@@ -60,6 +63,8 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     other_normal: [OtherNormalManifestOriginal; PROTOCOLS.len()],
     controller_nix_floor_read: Option<Result<(), Method46InitialStartupClosedV1>>,
     controller_nix_floor: ControllerNixFloorIssuerOriginal,
+    root_public_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; 5],
+    root_public: [RootPublicKeyOriginal; 5],
     approval: RefCell<ApprovalVerificationOriginal>,
 }
 
@@ -77,6 +82,7 @@ const _: () = assert!(
         + METHOD46_INITIAL_REQUEST_BYTES_V1
         + METHOD46_INITIAL_INTENT_BYTES_V1
         + 64
+        + root_public::DECODE_SCRATCH_BYTES
         <= METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1
 );
 const _: () = assert!(
@@ -105,6 +111,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             other_normal: std::array::from_fn(|_| OtherNormalManifestOriginal::new()),
             controller_nix_floor_read: None,
             controller_nix_floor: ControllerNixFloorIssuerOriginal::new(),
+            root_public_reads: std::array::from_fn(|_| None),
+            root_public: std::array::from_fn(|_| RootPublicKeyOriginal::new()),
             approval: RefCell::new(ApprovalVerificationOriginal::new()),
         };
         original.decode();
@@ -229,6 +237,30 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
         };
         self.controller_nix_floor
             .observe_once(bytes.as_deref(), approval);
+        drop(bytes);
+        if !self.controller_nix_floor.admitted() {
+            return;
+        }
+
+        for (index, member) in METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1
+            .into_iter()
+            .enumerate()
+        {
+            let bytes = match self.readback.normal_root_public_key_bytes_v1(member) {
+                Ok(bytes) => {
+                    self.root_public_reads[index] = Some(Ok(()));
+                    bytes
+                }
+                Err(error) => {
+                    self.root_public_reads[index] = Some(Err(error));
+                    return;
+                }
+            };
+            self.root_public[index].observe_once(member, bytes.as_deref(), approval);
+            if !self.root_public[index].admitted() {
+                return;
+            }
+        }
     }
 
     fn admitted(&self) -> bool {
@@ -242,6 +274,11 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             && self.normal.admitted()
             && matches!(self.controller_nix_floor_read, Some(Ok(())))
             && self.controller_nix_floor.admitted()
+            && self
+                .root_public_reads
+                .iter()
+                .all(|read| matches!(read, Some(Ok(()))))
+            && self.root_public.iter().all(RootPublicKeyOriginal::admitted)
             && self
                 .other_normal_reads
                 .iter()

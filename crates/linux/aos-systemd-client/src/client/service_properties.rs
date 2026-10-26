@@ -24,6 +24,7 @@ pub(super) enum ObservationPhase {
     StartingOrRunning,
     StoppedNix,
     SuccessfulOneshot,
+    Configuration,
 }
 
 pub(super) async fn observe(
@@ -214,15 +215,14 @@ impl<'name> ServicePropertyBookendV1<'name> {
         }
         if discover_main_pid {
             expected_main_pid = pending.pid.ok_or_else(retained::closed)?;
-            if expected_main_pid == 0 && !(matches!(phase, ObservationPhase::OptionalActive)
-                && pending.active.as_deref() != Some("active")) {
+            if !phase.accepts_pid(pending.active.as_deref().ok_or_else(retained::closed)?, expected_main_pid) {
                 return Err(changed("service main PID is absent"));
             }
         }
         pending.substate = match phase {
             ObservationPhase::Active | ObservationPhase::OptionalActive => None,
             ObservationPhase::StartingOrRunning | ObservationPhase::StoppedNix
-            | ObservationPhase::SuccessfulOneshot => {
+            | ObservationPhase::SuccessfulOneshot | ObservationPhase::Configuration => {
                 Some(decoding.get::<String>(unit.inner(), "SubState").await?)
             }
         };
@@ -314,7 +314,7 @@ async fn finish_service_property_bookend_into_v2(
     pending.substate = match phase {
         ObservationPhase::Active | ObservationPhase::OptionalActive => None,
         ObservationPhase::StartingOrRunning | ObservationPhase::StoppedNix
-            | ObservationPhase::SuccessfulOneshot => {
+            | ObservationPhase::SuccessfulOneshot | ObservationPhase::Configuration => {
             Some(decoding.get::<String>(unit.inner(), "SubState").await?)
         }
     };
@@ -328,6 +328,7 @@ async fn finish_service_property_bookend_into_v2(
         || before_substate != pending.substate.as_deref()
         || before.0 != name || !phase.accepts(&before.1, before_substate)
         || before.2 != expected_main_pid
+        || !phase.accepts_pid(&before.1, before.2)
         || !phase.accepts_invocation(&before.1, &before.3) {
         return Err(changed("PID 1 service changed during property readback"));
     }
@@ -437,12 +438,24 @@ impl ObservationPhase {
         // A never-started, inactive/dead owner has no invocation to authenticate.
         // The caller still compares both whole bookends and requires PID zero.
         if invocation.is_empty() {
-            return matches!(self, Self::StoppedNix) && state == "inactive";
+            return matches!(self, Self::StoppedNix | Self::Configuration) && state == "inactive";
         }
         invocation.len() == 16
             && (matches!(self, Self::StoppedNix)
                 || (matches!(self, Self::OptionalActive) && state != "active")
+                || (matches!(self, Self::Configuration) && state == "inactive")
                 || invocation.iter().any(|byte| *byte != 0))
+    }
+
+    fn accepts_pid(self, state: &str, pid: u32) -> bool {
+        match self {
+            Self::Configuration => {
+                (state == "inactive" && pid == 0) || (state == "active" && pid != 0)
+            }
+            Self::StoppedNix | Self::SuccessfulOneshot => pid == 0,
+            Self::OptionalActive => state != "active" || pid != 0,
+            Self::Active | Self::StartingOrRunning => pid != 0,
+        }
     }
 
     fn accepts(self, state: &str, substate: Option<&str>) -> bool {
@@ -459,6 +472,8 @@ impl ObservationPhase {
             }
             Self::StoppedNix => matches!((state, substate), ("inactive", Some("dead"))),
             Self::SuccessfulOneshot => matches!((state, substate), ("active", Some("exited"))),
+            Self::Configuration => matches!((state, substate),
+                ("inactive", Some("dead")) | ("active", Some("running"))),
         }
     }
 }
@@ -635,6 +650,43 @@ fn changed(message: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::ObservationPhase;
+
+    #[test]
+    fn configuration_requires_a_stable_running_or_dead_unit_and_its_actual_pid() {
+        let phase = ObservationPhase::Configuration;
+        assert!(phase.accepts("inactive", Some("dead")));
+        assert!(phase.accepts("active", Some("running")));
+        assert!(phase.accepts_pid("inactive", 0));
+        assert!(phase.accepts_pid("active", 42));
+        assert!(!phase.accepts_pid("inactive", 42));
+        assert!(!phase.accepts_pid("active", 0));
+        for (state, substate) in [
+            ("activating", "start"),
+            ("deactivating", "stop"),
+            ("active", "exited"),
+            ("failed", "failed"),
+            ("reloading", "reload"),
+            ("inactive", "running"),
+        ] {
+            assert!(!phase.accepts(state, Some(substate)));
+        }
+        assert!(!phase.accepts("inactive", None));
+    }
+
+    #[test]
+    fn configuration_null_invocation_cannot_describe_a_live_process() {
+        let phase = ObservationPhase::Configuration;
+        assert!(phase.accepts_invocation("inactive", &[]));
+        assert!(phase.accepts_invocation("inactive", &[0; 16]));
+        assert!(phase.accepts_invocation("inactive", &[1; 16]));
+        assert!(phase.accepts_invocation("active", &[1; 16]));
+        assert!(!phase.accepts_invocation("active", &[]));
+        assert!(!phase.accepts_invocation("active", &[0; 16]));
+        for len in [1, 15, 17] {
+            assert!(!phase.accepts_invocation("inactive", &vec![1; len]));
+            assert!(!phase.accepts_invocation("active", &vec![1; len]));
+        }
+    }
 
     #[test]
     fn successful_oneshot_is_distinct_from_running_starting_and_never_started() {

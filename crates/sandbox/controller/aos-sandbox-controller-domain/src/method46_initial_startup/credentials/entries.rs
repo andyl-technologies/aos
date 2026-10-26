@@ -4,7 +4,7 @@ use std::fs::File;
 use std::mem::MaybeUninit;
 use std::os::fd::AsFd as _;
 
-use super::{NAMES, REQUIRED_CREDENTIALS};
+use super::{NAMES, REQUIRED_CREDENTIAL_SLOTS};
 
 struct Entry {
     name: [u8; 64],
@@ -36,9 +36,9 @@ impl Entries {
         }
         self.entered = true;
         if selected[8] != selected[9]
-            || !selected[..REQUIRED_CREDENTIALS]
+            || !REQUIRED_CREDENTIAL_SLOTS
                 .iter()
-                .all(|selected| *selected)
+                .all(|index| selected[*index])
         {
             return false;
         }
@@ -152,36 +152,37 @@ mod tests {
 
     #[test]
     fn optional_native_names_match_the_exact_selected_roster() {
-        for mount_fuse in [false, true] {
-            for nix in [false, true] {
-                let mut selected = [true; NAMES.len()];
-                selected[7] = mount_fuse;
-                selected[8] = nix;
-                selected[9] = nix;
-                let directory = tempfile::tempdir().unwrap();
-                for (index, name) in NAMES.iter().enumerate() {
-                    if selected[index] {
-                        std::fs::write(directory.path().join(name), b"data").unwrap();
-                    }
+        for mask in 0_u8..32 {
+            let mut selected = [true; NAMES.len()];
+            selected[7] = mask & 1 != 0;
+            selected[8] = mask & 2 != 0;
+            selected[9] = selected[8];
+            selected[12] = mask & 4 != 0;
+            selected[13] = mask & 8 != 0;
+            selected[14] = mask & 16 != 0;
+            let directory = tempfile::tempdir().unwrap();
+            for (index, name) in NAMES.iter().enumerate() {
+                if selected[index] {
+                    std::fs::write(directory.path().join(name), b"data").unwrap();
                 }
-                let mut original = Entries::new();
-                assert!(original.observe(&File::open(directory.path()).unwrap(), &selected));
+            }
+            let mut original = Entries::new();
+            assert!(original.observe(&File::open(directory.path()).unwrap(), &selected));
 
-                // Neither appearance nor disappearance of an optional name is
-                // interchangeable with the original configured absence/presence.
-                for index in REQUIRED_CREDENTIALS..NAMES.len() {
-                    let mut changed = selected;
-                    changed[index] = !changed[index];
-                    let mut original = Entries::new();
-                    assert!(!original.observe(&File::open(directory.path()).unwrap(), &changed));
-                }
-                for index in 0..REQUIRED_CREDENTIALS {
-                    let mut changed = selected;
-                    changed[index] = false;
-                    let mut original = Entries::new();
-                    assert!(!original.observe(&File::open(directory.path()).unwrap(), &changed));
-                    assert!(original.retained_names().is_empty());
-                }
+            // Neither appearance nor disappearance of a name is interchangeable
+            // with the original configured roster, including required Root keys.
+            for index in 7..NAMES.len() {
+                let mut changed = selected;
+                changed[index] = !changed[index];
+                let mut original = Entries::new();
+                assert!(!original.observe(&File::open(directory.path()).unwrap(), &changed));
+            }
+            for index in REQUIRED_CREDENTIAL_SLOTS {
+                let mut changed = selected;
+                changed[index] = false;
+                let mut original = Entries::new();
+                assert!(!original.observe(&File::open(directory.path()).unwrap(), &changed));
+                assert!(original.retained_names().is_empty());
             }
         }
     }

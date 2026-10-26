@@ -20,6 +20,22 @@ use super::*;
 /// enclosing file owner separately. This size alone authenticates no payer.
 pub const METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1: usize = 32 * 1024;
 
+/// Lists the existing normal-Root public signer members in their fixed read order.
+///
+/// Deployment and Project are required; Cache, Controller and Source are optional
+/// only when the actual Root and initial-unit deliveries agree on their absence.
+pub const METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1:
+    [aos_sandbox_policy::signed_inputs::RootStartupCredentialMemberV1; 5] = {
+    use aos_sandbox_policy::signed_inputs::RootStartupCredentialMemberV1 as Member;
+    [
+        Member::DeploymentKey,
+        Member::ProjectKey,
+        Member::CachePin,
+        Member::ControllerPin,
+        Member::SourcePin,
+    ]
+};
+
 /// Borrows one Source-paid original public provisioning readback for decoding.
 ///
 /// Only the actual startup owner constructs this loan after unit and credential
@@ -167,6 +183,28 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
         &self,
     ) -> Result<Option<Ref<'_, [u8]>>, Method46InitialStartupClosedV1> {
         self.optional_public_bytes(9)
+    }
+
+    /// Borrows one original public signer credential delivered to normal Root.
+    ///
+    /// Only the five members in [`METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1`]
+    /// are accepted. A public loan requires the actual Root configuration sample
+    /// to match this admitted initial unit's selected source or optional absence.
+    /// No policy input, signing seed or native Root authority is exposed.
+    /// All credential and Root configuration after observations remain owed.
+    ///
+    /// # Errors
+    /// Refuses another member, a missing/ended Source, incomplete custody, an
+    /// entered post or a missing configured original credential readback.
+    pub fn normal_root_public_key_bytes_v1(
+        &self,
+        member: aos_sandbox_policy::signed_inputs::RootStartupCredentialMemberV1,
+    ) -> Result<Option<Ref<'_, [u8]>>, Method46InitialStartupClosedV1> {
+        let index = METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1
+            .iter()
+            .position(|expected| *expected == member)
+            .ok_or(self.startup.closed)?;
+        self.optional_public_bytes(10 + index)
     }
 
     fn optional_public_bytes(
@@ -349,6 +387,9 @@ mod tests {
         assert!(loan.approval_public_key_bytes_v1().is_err());
         assert!(loan.normal_storage_manifest_bytes_v1().is_err());
         assert!(loan.controller_nix_floor_issuer_bytes_v1().is_err());
+        for member in aos_sandbox_policy::signed_inputs::RootStartupCredentialMemberV1::ALL {
+            assert!(loan.normal_root_public_key_bytes_v1(member).is_err());
+        }
         for protocol in [
             aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::MountFuse,
             aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Nix,

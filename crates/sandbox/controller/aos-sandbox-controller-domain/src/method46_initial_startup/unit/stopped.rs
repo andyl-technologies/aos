@@ -46,6 +46,7 @@ pub(super) struct InitialStoppedOwnersOriginalV1 {
     manifest_source_match: [Cell<Option<bool>>; 2],
     other_manifest_source_match: [Cell<Option<bool>>; 2],
     fragment: RefCell<normal_fragment::NormalFragmentOriginalV1>,
+    root_public: root_public::RootPublicDeliveryOriginal,
 }
 
 impl InitialStoppedOwnersOriginalV1 {
@@ -59,6 +60,7 @@ impl InitialStoppedOwnersOriginalV1 {
             manifest_source_match: std::array::from_fn(|_| Cell::new(None)),
             other_manifest_source_match: std::array::from_fn(|_| Cell::new(None)),
             fragment: RefCell::new(normal_fragment::NormalFragmentOriginalV1::new()),
+            root_public: root_public::RootPublicDeliveryOriginal::new(),
         }
     }
 
@@ -190,6 +192,12 @@ impl InitialStoppedOwnersOriginalV1 {
             })();
             refused |= result.is_err();
         }
+        // A Controller or Storage refusal cannot suppress this independent
+        // Source-paid configuration sample, including its final observation.
+        refused |= self
+            .root_public
+            .observe(round, runtime, manager, fragment)
+            .is_err();
         if refused {
             Err(Method46InitialStartupClosedV1)
         } else {
@@ -246,12 +254,14 @@ fn require_loaded(
 
 pub(super) fn receiving_memory_bytes() -> Option<usize> {
     ServicePropertiesReadOriginalV2::receiving_memory_bytes_v2(SERVICE.len(), UNIT.len())?
-        .checked_mul(4)
+        .checked_mul(4)?
+        .checked_add(root_public::receiving_memory_bytes()?)
 }
 
 impl InitialUnitOriginalV1 {
     pub(in crate::method46_initial_startup) fn stopped_units_before_completed(&self) -> bool {
         self.stopped.before_completed.get()
+            && self.stopped.root_public.admitted_before_post()
             && self
                 .stopped
                 .fragment
@@ -413,6 +423,7 @@ mod tests {
         assert!(original.observe(0, None, None, None, b"", None).is_err());
         assert!(original.observe(1, None, None, None, b"", None).is_err());
 
+        assert!(original.root_public.samples_entered_for_test());
         for round in original.samples {
             for sample in round {
                 let sample = sample.into_inner();
