@@ -6,7 +6,7 @@
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
-use super::{SourceBirthEndpoint, SourceChildState};
+use super::{SourceBirthEndpoint, SourceChildState, record_collected_child};
 
 #[test]
 fn birth_endpoint_tracks_the_actual_socket_across_descriptor_duplication() {
@@ -95,4 +95,78 @@ fn birth_journal_requires_endpoint_custody_before_accepting_a_reap_record() {
             }
         }
     }
+}
+
+// A real Rust test executable lists its cases and exits without executing them.
+// This is an ordinary kernel child, not an authenticated Source or native Main.
+fn spawn_test_child() -> std::process::Child {
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--list")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
+fn modeled_collection_journal(child: &std::process::Child) -> std::sync::Mutex<SourceChildState> {
+    let (endpoint, _) = UnixStream::pair().unwrap();
+    std::sync::Mutex::new(SourceChildState {
+        endpoint: Some(SourceBirthEndpoint::read(endpoint.as_fd()).unwrap()),
+        birth_attempted: true,
+        process: Some(child.id()),
+        reaped: false,
+    })
+}
+
+#[test]
+fn contended_collection_journal_refuses_after_actual_child_wait_without_erasing_custody() {
+    let mut child = spawn_test_child();
+    assert!(child.wait().unwrap().success());
+    let journal = modeled_collection_journal(&child);
+    let held = journal.lock().unwrap();
+
+    let error = record_collected_child(&journal, &child).unwrap_err();
+
+    assert_eq!(error.raw_os_error(), Some(libc::EBUSY));
+    assert!(!held.reaped);
+    assert!(!held.returned_or_unstarted());
+    drop(held);
+
+    record_collected_child(&journal, &child).unwrap();
+    assert!(journal.lock().unwrap().returned_or_unstarted());
+}
+
+#[test]
+fn poisoned_collection_journal_refuses_after_actual_child_wait() {
+    let mut child = spawn_test_child();
+    assert!(child.wait().unwrap().success());
+    let journal = modeled_collection_journal(&child);
+    let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _held = journal.lock().unwrap();
+        panic!("interrupt the actual collection journal");
+    }));
+    assert!(interrupted.is_err());
+
+    let error = record_collected_child(&journal, &child).unwrap_err();
+
+    assert_eq!(error.raw_os_error(), Some(libc::EOWNERDEAD));
+    let held = journal.lock().err().unwrap().into_inner();
+    assert!(!held.reaped);
+    assert!(!held.returned_or_unstarted());
+}
+
+#[test]
+fn foreign_actual_child_cannot_complete_the_original_collection_journal() {
+    let mut child = spawn_test_child();
+    let mut foreign = spawn_test_child();
+    assert_ne!(child.id(), foreign.id());
+    assert!(child.wait().unwrap().success());
+    assert!(foreign.wait().unwrap().success());
+    let journal = modeled_collection_journal(&child);
+
+    let error = record_collected_child(&journal, &foreign).unwrap_err();
+
+    assert_eq!(error.raw_os_error(), Some(libc::EPROTO));
+    assert!(!journal.lock().unwrap().reaped);
+    record_collected_child(&journal, &child).unwrap();
+    assert!(journal.lock().unwrap().returned_or_unstarted());
 }

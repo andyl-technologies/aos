@@ -493,7 +493,9 @@ impl AuthenticatedSourceChild {
     /// Checks actual process exit and records only successful kernel reap.
     ///
     /// # Errors
-    /// Returns the real wait error or poisoned same-purpose retirement state.
+    /// Returns the real wait error, busy or poisoned collection journal, or
+    /// inconsistent same-purpose retirement state. A refused journal update
+    /// retains custody even when the kernel has already collected the child.
     pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
         let result = self.child.try_wait()?;
         if result.is_some() {
@@ -505,7 +507,9 @@ impl AuthenticatedSourceChild {
     /// Waits for the actual child and records its successful physical reap.
     ///
     /// # Errors
-    /// Returns the real wait error or poisoned same-purpose retirement state.
+    /// Returns the real wait error, busy or poisoned collection journal, or
+    /// inconsistent same-purpose retirement state. A refused journal update
+    /// retains custody even when the kernel has already collected the child.
     pub fn wait(&mut self) -> std::io::Result<ExitStatus> {
         let result = self.child.wait()?;
         self.record_reap()?;
@@ -521,20 +525,26 @@ impl AuthenticatedSourceChild {
     }
 
     fn record_reap(&self) -> std::io::Result<()> {
-        let mut state = self
-            .purpose
-            .held
-            .child
-            .lock()
-            .map_err(|_| std::io::Error::other("Source reap keeper is uncertain"))?;
-        if state.process != Some(self.child.id()) {
-            return Err(std::io::Error::other(
-                "Source reap does not match retained child",
-            ));
-        }
-        state.reaped = true;
-        Ok(())
+        record_collected_child(&self.purpose.held.child, &self.child)
     }
+}
+
+// Only the actual Child keeper calls this cut, after a successful kernel wait.
+// Contention cannot make physical collection wait on an unbounded host mutex,
+// and refusal constructs no heap-backed diagnostic after collection.
+fn record_collected_child(journal: &Mutex<SourceChildState>, child: &Child) -> std::io::Result<()> {
+    let mut state = journal.try_lock().map_err(|error| {
+        let code = match error {
+            std::sync::TryLockError::WouldBlock => libc::EBUSY,
+            std::sync::TryLockError::Poisoned(_) => libc::EOWNERDEAD,
+        };
+        std::io::Error::from_raw_os_error(code)
+    })?;
+    if state.endpoint.is_none() || !state.birth_attempted || state.process != Some(child.id()) {
+        return Err(std::io::Error::from_raw_os_error(libc::EPROTO));
+    }
+    state.reaped = true;
+    Ok(())
 }
 
 impl Drop for SourceHostState {
