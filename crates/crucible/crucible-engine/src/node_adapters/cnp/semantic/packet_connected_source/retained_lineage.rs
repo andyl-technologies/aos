@@ -4,6 +4,9 @@ use super::*;
 use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use std::mem::size_of;
 
+#[path = "retained_lineage/metadata.rs"]
+mod metadata;
+
 impl PacketConnectedSemanticSource {
     pub(in crate::node_adapters::cnp::semantic) fn complete_retained_lineage_storage(
         &self,

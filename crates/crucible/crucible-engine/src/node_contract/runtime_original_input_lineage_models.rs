@@ -913,3 +913,6 @@ fn conditional_lineage_foreign_current_inventory_refuses_before_source_read() {
 
 #[path = "runtime_original_input_observation_models.rs"]
 mod stage_projection;
+
+#[path = "runtime_original_input_lineage/capacity_models.rs"]
+mod capacity_models;

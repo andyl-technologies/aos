@@ -1277,6 +1277,9 @@ impl PacketCompleteSemanticSource {
     }
 }
 
+#[path = "packet_complete_source/retained_static_lineage.rs"]
+mod retained_static_lineage;
+
 #[path = "packet_complete_source/retained_holders.rs"]
 mod retained_holders;
 

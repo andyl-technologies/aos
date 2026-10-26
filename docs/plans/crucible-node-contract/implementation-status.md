@@ -129,6 +129,22 @@ separate byte formula as an independent oracle. The pre-Child observer includes
 these bank and census controls. The live typed registry owner, callbacks and
 complete Source handoff remain separate obligations.
 
+Static-input capacity DATA now preserves the actual tuple-vector, body and
+dependency banks, including partial and failed rows. Its inline header remains
+in the enclosing Source holder. Sealed lineage views retain both original Rc
+allocations, their publication/body/dependency backing and the original batch's
+full Core activation views. Repeated retained views keep independent rows without
+address-based sharing credit. The legacy byte accounting and graph-eligibility
+gates retain their existing behavior. Controls compare static backing with the
+independent original byte formula, preserve refused prefixes and exercise all
+three Source declarations. Runtime-issued lineage controls use the explicitly
+synthetic native models and establish capacity DATA only.
+
+Packaged workspace sources now preserve ordinary Rust directories named result;
+only result out-link symlinks are excluded. A regression compares the actual
+daemon executor result module with its packaged source. The expanded Rust/Cargo
+source comparison includes that formerly omitted module.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its twelve
@@ -138,15 +154,15 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 124 focused Transport controls and 51 Engine
+Both codec configurations pass 124 focused Transport controls and 57 Engine
 census/installation/holder/startup controls. Complete Transport suites pass 2,324 tests each
-with twenty ignored; all 650 selected SDK/dependency inputs match the tested
-Transport snapshot. Complete Engine suites pass 2,122 tests each with thirty-four
+with twenty ignored; all 2,012 SDK Rust/Cargo inputs match the previously qualified
+captured source. Complete Engine suites pass 2,128 tests each with thirty-four
 ignored, using matching source-built installed packet fixtures. Five-package
-all-feature/all-target checks, six-file scoped formatting, all six architecture
+all-feature/all-target checks, twelve-file scoped Rust formatting, all six architecture
 gates and the RFC requirement-map gate pass. Required application test-target
 compilation passes with 185 artifacts across 58 packages and 76 integration targets;
-all 828 selected frozen Rust/Cargo inputs match current and captured source. User-owned
+all 4,887 selected frozen Rust/Cargo inputs match current and captured source. User-owned
 changes are preserved. These are component results; the requirement map records
 planning coverage, and no latest-source strict lint or native lifecycle result
 is claimed.

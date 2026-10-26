@@ -8,6 +8,9 @@ use super::*;
 use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crate::node_adapters::cnp::semantic::packet_lineage::Rows;
 
+#[path = "complete_static/metadata.rs"]
+mod metadata;
+
 pub(super) struct CompleteInputStaticRows {
     rows: Vec<(InputPayload, Vec<ContentRef>)>,
     complete: bool,
