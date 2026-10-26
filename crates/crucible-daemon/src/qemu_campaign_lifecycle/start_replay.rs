@@ -745,13 +745,14 @@ mod tests {
             entry(2, 39, "rng_draw", Some(7)),
             entry(3, 40, "delivery_order", None),
         ];
-        let draw = crucible::Decision::RngDraw(crucible::RngDecision {
-            stream: crucible::RngStreamId {
+        let draw = crucible::Decision::RngDraw(crucible::RngDecision::ordinal(
+            crucible::RngStreamId {
                 domain: String::from("crucible.decision-rng.link-stream.v1"),
                 name: stream.to_owned(),
             },
-            value: 7,
-        });
+            0,
+            7,
+        ));
 
         let (window, at) = observed_decision_entry_window(entries, Some(&draw));
 
