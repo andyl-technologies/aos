@@ -6,7 +6,81 @@
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
-use super::{SourceBirthEndpoint, SourceChildState, record_collected_child};
+use super::{SourceBirthEndpoint, SourceChildState, SourceControlJournal, record_collected_child};
+
+#[test]
+fn busy_control_journal_defers_exact_return_until_the_existing_gate_closes() {
+    let mut journal = SourceControlJournal::new(128, 2);
+    journal.try_reserve(1, 64).unwrap();
+    let held = journal.state.lock().unwrap();
+
+    assert!(journal.try_reserve(1, 64).is_err());
+    assert!(journal.try_return(1, 64));
+    assert_eq!((held.descriptors, held.bytes), (1, 64));
+    drop(held);
+
+    journal.try_reserve(2, 128).unwrap();
+    assert!(journal.try_return(2, 128));
+    assert!(journal.fully_returned());
+}
+
+#[test]
+fn concurrent_control_returns_preserve_every_pending_count_until_final_close() {
+    let mut journal = SourceControlJournal::new(512, 8);
+    journal.try_reserve(8, 512).unwrap();
+    let held = journal.state.lock().unwrap();
+
+    std::thread::scope(|scope| {
+        let returns: Vec<_> = (0..8)
+            .map(|_| scope.spawn(|| journal.try_return(1, 64)))
+            .collect();
+        for returned in returns {
+            assert!(returned.join().unwrap());
+        }
+    });
+
+    assert_eq!((held.descriptors, held.bytes), (8, 512));
+    drop(held);
+    assert!(journal.fully_returned());
+}
+
+#[test]
+fn inconsistent_control_returns_preserve_both_counts_and_pending_records() {
+    use std::sync::atomic::Ordering;
+
+    let mut journal = SourceControlJournal::new(128, 2);
+    journal.try_reserve(1, 64).unwrap();
+    // Inject inconsistent private bookkeeping, not a physical-return receipt.
+    journal.returned_bytes.store(64, Ordering::Relaxed);
+    journal.returned_descriptors.store(2, Ordering::Relaxed);
+
+    assert!(journal.try_reserve(0, 0).is_err());
+    assert!(!journal.try_return(1, 64));
+    assert!(!journal.fully_returned());
+
+    let held = journal.state.lock().unwrap();
+    assert_eq!((held.descriptors, held.bytes), (1, 64));
+    assert_eq!(journal.returned_bytes.load(Ordering::Relaxed), 64);
+    assert_eq!(journal.returned_descriptors.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn poisoned_control_journal_preserves_counts_and_refuses_debit_return_and_final_close() {
+    let mut journal = SourceControlJournal::new(128, 2);
+    journal.try_reserve(1, 64).unwrap();
+    let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _held = journal.state.lock().unwrap();
+        panic!("interrupt the actual control journal");
+    }));
+    assert!(interrupted.is_err());
+
+    assert!(journal.try_reserve(1, 64).is_err());
+    assert!(!journal.try_return(1, 64));
+    let held = journal.state.lock().err().unwrap().into_inner();
+    assert_eq!((held.descriptors, held.bytes), (1, 64));
+    drop(held);
+    assert!(!journal.fully_returned());
+}
 
 #[test]
 fn birth_endpoint_tracks_the_actual_socket_across_descriptor_duplication() {

@@ -9,6 +9,7 @@
 use std::os::fd::BorrowedFd;
 use std::process::{Child, ExitStatus};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
 
@@ -45,7 +46,8 @@ impl SourceHostControlPayer {
     /// Reserves actual controls from the same retained Source before birth.
     ///
     /// # Errors
-    /// Refuses changed Main custody or exhausted existing control capacity.
+    /// Refuses changed Main custody, a busy or poisoned journal, or exhausted
+    /// existing control capacity.
     pub fn reserve_controls(
         &self,
         descriptors: u64,
@@ -59,9 +61,7 @@ struct SourceHostState {
     issuer: Arc<AuthenticatedNativeSlotPurpose>,
     window: Option<AuthenticatedNativeNodeHostWindow>,
     child: Mutex<SourceChildState>,
-    controls: Mutex<SourceControlState>,
-    control_peak: u64,
-    descriptor_peak: u64,
+    controls: SourceControlJournal,
     descriptors: Option<HostServiceLease>,
     metadata: Option<HostServiceLeasePair>,
 }
@@ -81,6 +81,116 @@ pub struct SourceHostControlLease {
 struct SourceControlState {
     bytes: u64,
     descriptors: u64,
+}
+
+impl SourceControlState {
+    fn collect_returns(&mut self, bytes: &AtomicU64, descriptors: &AtomicU64) -> bool {
+        // Acquire each completed close before making its existing credit
+        // reusable. Only the gate holder removes pending returns; concurrent
+        // producers can only add to these same fixed counters.
+        let returned_bytes = bytes.load(Ordering::Acquire);
+        let returned_descriptors = descriptors.load(Ordering::Acquire);
+        let Some(next_bytes) = self.bytes.checked_sub(returned_bytes) else {
+            return false;
+        };
+        let Some(next_descriptors) = self.descriptors.checked_sub(returned_descriptors) else {
+            return false;
+        };
+
+        self.bytes = next_bytes;
+        self.descriptors = next_descriptors;
+        bytes.fetch_sub(returned_bytes, Ordering::Relaxed);
+        descriptors.fetch_sub(returned_descriptors, Ordering::Relaxed);
+        true
+    }
+}
+
+// The peaks and counters belong to the existing Source reservation. This
+// inline journal neither allocates nor creates another resource owner.
+struct SourceControlJournal {
+    state: Mutex<SourceControlState>,
+    returned_bytes: AtomicU64,
+    returned_descriptors: AtomicU64,
+    control_peak: u64,
+    descriptor_peak: u64,
+}
+
+impl SourceControlJournal {
+    fn new(control_peak: u64, descriptor_peak: u64) -> Self {
+        Self {
+            state: Mutex::new(SourceControlState::default()),
+            returned_bytes: AtomicU64::new(0),
+            returned_descriptors: AtomicU64::new(0),
+            control_peak,
+            descriptor_peak,
+        }
+    }
+
+    fn try_reserve(&self, descriptors: u64, bytes: u64) -> Result<(), ServiceBirthError> {
+        let mut state = self
+            .state
+            .try_lock()
+            .map_err(|_| ServiceBirthError::policy("Source control custody is uncertain"))?;
+        if !state.collect_returns(&self.returned_bytes, &self.returned_descriptors) {
+            return Err(ServiceBirthError::policy(
+                "Source control return counts are inconsistent",
+            ));
+        }
+        let next_bytes = state
+            .bytes
+            .checked_add(bytes)
+            .filter(|next| *next <= self.control_peak)
+            .ok_or_else(|| ServiceBirthError::policy("Source metadata peak is exhausted"))?;
+        let next_descriptors = state
+            .descriptors
+            .checked_add(descriptors)
+            .filter(|next| *next <= self.descriptor_peak)
+            .ok_or_else(|| ServiceBirthError::policy("Source descriptor peak is exhausted"))?;
+
+        state.bytes = next_bytes;
+        state.descriptors = next_descriptors;
+        Ok(())
+    }
+
+    fn try_return(&self, descriptors: u64, bytes: u64) -> bool {
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                // Every producer is one uniquely consumed control lease whose
+                // physical owners have already closed. Pending sums cannot
+                // exceed the still-debited peaks. Its strong Source reference
+                // retains both fixed counters until these posts complete.
+                self.returned_bytes.fetch_add(bytes, Ordering::Release);
+                self.returned_descriptors
+                    .fetch_add(descriptors, Ordering::Release);
+                return true;
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => return false,
+        };
+        if !state.collect_returns(&self.returned_bytes, &self.returned_descriptors) {
+            return false;
+        }
+        let Some(bytes) = state.bytes.checked_sub(bytes) else {
+            return false;
+        };
+        let Some(descriptors) = state.descriptors.checked_sub(descriptors) else {
+            return false;
+        };
+
+        state.bytes = bytes;
+        state.descriptors = descriptors;
+        true
+    }
+
+    fn fully_returned(&mut self) -> bool {
+        // Final Source destruction has exclusive access after every producer
+        // released its strong reference, so both return posts are complete.
+        self.state.get_mut().is_ok_and(|state| {
+            state.collect_returns(&self.returned_bytes, &self.returned_descriptors)
+                && state.bytes == 0
+                && state.descriptors == 0
+        })
+    }
 }
 
 #[derive(Default)]
@@ -265,9 +375,7 @@ fn construct_source_host(
             issuer,
             window: Some(window),
             child: Mutex::new(SourceChildState::default()),
-            controls: Mutex::new(SourceControlState::default()),
-            control_peak,
-            descriptor_peak,
+            controls: SourceControlJournal::new(control_peak, descriptor_peak),
             descriptors: Some(descriptors),
             metadata: Some(metadata),
         }),
@@ -313,31 +421,15 @@ impl AuthenticatedSourceHostPurpose {
     /// Borrows controls already priced by the authentic Main Source reservation.
     ///
     /// # Errors
-    /// Refuses changed custody, arithmetic overflow or overlapping controls
-    /// exceeding the originally admitted metadata and descriptor peaks.
+    /// Refuses changed custody, a busy or poisoned journal, arithmetic overflow,
+    /// or controls exceeding the admitted metadata and descriptor peaks.
     pub fn reserve_controls(
         &self,
         descriptors: u64,
         bytes: u64,
     ) -> Result<SourceHostControlLease, ServiceBirthError> {
         self.check()?;
-        let mut controls = self
-            .held
-            .controls
-            .lock()
-            .map_err(|_| ServiceBirthError::policy("Source control custody is uncertain"))?;
-        let next_bytes = controls
-            .bytes
-            .checked_add(bytes)
-            .filter(|next| *next <= self.held.control_peak)
-            .ok_or_else(|| ServiceBirthError::policy("Source metadata peak is exhausted"))?;
-        let next_descriptors = controls
-            .descriptors
-            .checked_add(descriptors)
-            .filter(|next| *next <= self.held.descriptor_peak)
-            .ok_or_else(|| ServiceBirthError::policy("Source descriptor peak is exhausted"))?;
-        controls.bytes = next_bytes;
-        controls.descriptors = next_descriptors;
+        self.held.controls.try_reserve(descriptors, bytes)?;
         Ok(SourceHostControlLease {
             purpose: self.clone(),
             bytes,
@@ -553,10 +645,7 @@ impl Drop for SourceHostState {
             .child
             .get_mut()
             .is_ok_and(|state| state.returned_or_unstarted());
-        let controls_closed = self
-            .controls
-            .get_mut()
-            .is_ok_and(|controls| controls.bytes == 0 && controls.descriptors == 0);
+        let controls_closed = self.controls.fully_returned();
         // Final physical closure does not request new work from an expired
         // issuance clock. The same retained epoch and actual kernel table
         // limits still corroborate the authentic containing owner.
@@ -636,17 +725,11 @@ impl SourceHostControlLease {
 
 impl Drop for SourceHostControlLease {
     fn drop(&mut self) {
-        let closed = self.purpose.held.controls.lock().is_ok_and(|mut controls| {
-            let Some(bytes) = controls.bytes.checked_sub(self.bytes) else {
-                return false;
-            };
-            let Some(descriptors) = controls.descriptors.checked_sub(self.descriptors) else {
-                return false;
-            };
-            controls.bytes = bytes;
-            controls.descriptors = descriptors;
-            true
-        });
+        let closed = self
+            .purpose
+            .held
+            .controls
+            .try_return(self.descriptors, self.bytes);
         if !closed {
             // Keep the same actual Main charge after uncertain control closure.
             std::mem::forget(self.purpose.clone());

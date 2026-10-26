@@ -153,10 +153,30 @@ impl SourceHostControlPayer {
                     r#"held: RetainedControl::new(SourceHostState {
     issuer, window: Some(window),
     child: Mutex::new(SourceChildState::default()),
-    controls: Mutex::new(SourceControlState::default()),
-    control_peak, descriptor_peak,
+    controls: SourceControlJournal::new(control_peak, descriptor_peak),
     descriptors: Some(descriptors), metadata: Some(metadata),
 }),"#,
+                    1,
+                ),
+                (
+                    r#"fn new(control_peak: u64, descriptor_peak: u64) -> Self {
+    Self {
+        state: Mutex::new(SourceControlState::default()),
+        returned_bytes: AtomicU64::new(0),
+        returned_descriptors: AtomicU64::new(0),
+        control_peak,
+        descriptor_peak,
+    }
+}"#,
+                    1,
+                ),
+                (
+                    r#"impl Drop for SourceHostControlLease {
+    fn drop(&mut self) {
+        let closed = self.purpose.held.controls.try_return(self.descriptors, self.bytes);
+        if !closed { std::mem::forget(self.purpose.clone()); }
+    }
+}"#,
                     1,
                 ),
             ],
