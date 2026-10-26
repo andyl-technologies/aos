@@ -110,6 +110,8 @@ mod single_scheduler_drive;
 mod single_scheduler_state;
 mod topology;
 
+pub mod network_admission_trace;
+
 pub use checkpoint::*;
 pub use concurrent_prepare::*;
 pub use control_state::*;

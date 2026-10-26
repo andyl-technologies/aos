@@ -87,6 +87,7 @@ where
         frontier,
     } = release;
     let base = custody_release_outcome(scheduler, frontier);
+    let _admission_path = crate::scheduler::network_admission_trace::enter_path("custody-release");
 
     complete_backend_outcome_on(
         BackendOutcomeAdmission {

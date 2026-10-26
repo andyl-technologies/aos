@@ -347,9 +347,27 @@ pub(crate) fn materialize_start_from_tracked<F, D>(
                 }),
                 center,
             );
+            let (observed_entries, observed_at) = observed_decision_entry_window(
+                outcome.event_log_entries.iter().map(|entry| {
+                    let payload = entry.event_payload();
+                    ReplayEntrySummary {
+                        sequence: entry.sequence(),
+                        at: entry.at().ticks,
+                        kind: payload.kind(),
+                        stream: payload.string("stream_name"),
+                        value: payload.u64("value"),
+                        delivery_at: match payload.attribute("at") {
+                            Some(crucible::EventAttributeValue::VirtualTime(at)) => Some(at.ticks),
+                            _ => None,
+                        },
+                    }
+                }),
+                next.schedule.decision_history().get(index),
+            );
+            let mut stderr = std::io::stderr().lock();
             let _ = writeln!(
-                std::io::stderr().lock(),
-                "CRUCIBLE-REPLAY-DIVERGENCE-V1 index={index} quantum_start={prior_len} quantum_end={next_len} expected=[{}] observed=[{}] observed_entries=[{entries}]",
+                stderr,
+                "CRUCIBLE-REPLAY-DIVERGENCE-V1 index={index} quantum_start={prior_len} quantum_end={next_len} expected=[{}] observed=[{}] observed_entries=[{entries}] observed_decision_entries=[{observed_entries}]",
                 replay_decision_window(
                     target.schedule.decision_history(),
                     index,
@@ -357,6 +375,18 @@ pub(crate) fn materialize_start_from_tracked<F, D>(
                 ),
                 replay_decision_window(next.schedule.decision_history(), index, next_len),
             );
+            // Admissions near either divergent position show each frame's
+            // emission coordinate beside the time its admission was logged.
+            if let Some(admission_center) = observed_at.or(center) {
+                for record in crucible::scheduler::network_admission_trace::records_near(
+                    admission_center,
+                    REPLAY_ADMISSION_HALF_WINDOW_PS,
+                    REPLAY_ADMISSION_ROWS,
+                ) {
+                    let _ = writeln!(stderr, "{}", record.row());
+                }
+            }
+
             let expected = target.schedule.decision_history().get(index);
             let observed = next.schedule.decision_history().get(index);
             return Err(AttemptWorkerFailure::Terminal(
@@ -583,6 +613,71 @@ fn replay_entry_window<'a>(
         .join(" ")
 }
 
+/// Admissions printed beside a divergence are those within this distance of
+/// the observed decision.
+const REPLAY_ADMISSION_HALF_WINDOW_PS: u64 = 100_000_000;
+
+/// Most admission rows printed beside one divergence.
+const REPLAY_ADMISSION_ROWS: usize = 48;
+
+/// One replayed log entry, reduced to what a divergence row prints.
+struct ReplayEntrySummary<'a> {
+    sequence: u64,
+    at: u64,
+    kind: &'a str,
+    stream: Option<&'a str>,
+    value: Option<u64>,
+    delivery_at: Option<u64>,
+}
+
+/// Summarizes the replayed entries around the observed divergent decision.
+///
+/// The expected side's window is centered on the recorded delivery time, so
+/// an observed decision logged far from it is invisible there. This window
+/// finds the replayed entry that carries the observed decision and prints
+/// twelve entries on either side, as `sequence@at:kind`, with each draw's
+/// stream. It also returns that entry's log time.
+fn observed_decision_entry_window<'a>(
+    entries: impl IntoIterator<Item = ReplayEntrySummary<'a>>,
+    decision: Option<&Decision>,
+) -> (String, Option<u64>) {
+    const RADIUS: usize = 12;
+
+    let entries = entries.into_iter().collect::<Vec<_>>();
+    let carries_decision = |entry: &ReplayEntrySummary<'_>| match decision {
+        Some(Decision::RngDraw(draw)) => {
+            entry.kind == "rng_draw"
+                && entry.value == Some(draw.value)
+                && entry.stream == Some(draw.stream.name.as_str())
+        }
+        Some(Decision::DeliveryOrder(order)) => {
+            entry.kind == "delivery_order" && entry.delivery_at == Some(order.at.ticks)
+        }
+        _ => false,
+    };
+    let Some(position) = entries.iter().position(carries_decision) else {
+        return (String::new(), None);
+    };
+
+    let start = position.saturating_sub(RADIUS);
+    let end = position.saturating_add(RADIUS + 1).min(entries.len());
+    let window = entries[start..end]
+        .iter()
+        .map(|entry| match entry.stream {
+            Some(stream) => format!(
+                "{}@{}:{}[{}]",
+                entry.sequence,
+                entry.at,
+                entry.kind,
+                stream.replace('\n', ";")
+            ),
+            None => format!("{}@{}:{}", entry.sequence, entry.at, entry.kind),
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    (window, Some(entries[position].at))
+}
+
 pub(super) fn start_replay_guest_selectable_failure<F, D>(
     error: GuestSelectableError,
 ) -> AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>> {
@@ -616,7 +711,7 @@ pub(super) fn map_start_replay_scheduler_failure<F, D>(
 
 #[cfg(test)]
 mod tests {
-    use super::replay_entry_window;
+    use super::{ReplayEntrySummary, observed_decision_entry_window, replay_entry_window};
 
     #[test]
     fn replayed_entries_near_the_divergence_carry_their_log_times() {
@@ -631,6 +726,43 @@ mod tests {
         assert_eq!(
             replay_entry_window(entries, Some(50_000_000)),
             "10@20000000:delivery_order 11@50000000:evaluation_boundary 12@50000000:rng_draw"
+        );
+    }
+
+    #[test]
+    fn the_observed_window_centers_on_the_entry_carrying_the_observed_draw() {
+        let stream = "link_endpoint_a=router-a\nlink_endpoint_b=router-c";
+        let entry = |sequence, at, kind, value| ReplayEntrySummary {
+            sequence,
+            at,
+            kind,
+            stream: (kind == "rng_draw").then_some(stream),
+            value,
+            delivery_at: (kind == "delivery_order").then_some(at),
+        };
+        let entries = [
+            entry(1, 10, "delivery_order", None),
+            entry(2, 39, "rng_draw", Some(7)),
+            entry(3, 40, "delivery_order", None),
+        ];
+        let draw = crucible::Decision::RngDraw(crucible::RngDecision {
+            stream: crucible::RngStreamId {
+                domain: String::from("crucible.decision-rng.link-stream.v1"),
+                name: stream.to_owned(),
+            },
+            value: 7,
+        });
+
+        let (window, at) = observed_decision_entry_window(entries, Some(&draw));
+
+        assert_eq!(at, Some(39));
+        assert_eq!(
+            window,
+            "1@10:delivery_order 2@39:rng_draw[link_endpoint_a=router-a;link_endpoint_b=router-c] 3@40:delivery_order"
+        );
+        assert_eq!(
+            observed_decision_entry_window(Vec::new(), Some(&draw)),
+            (String::new(), None)
         );
     }
 

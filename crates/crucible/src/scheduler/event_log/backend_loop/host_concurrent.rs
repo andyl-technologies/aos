@@ -770,6 +770,8 @@ where
                 observations: completed.observations,
             };
             let release_at = release_at.max(outcome.frontier);
+            let _admission_path =
+                crate::scheduler::network_admission_trace::enter_path("run-commit");
             let completed = complete_backend_outcome_on(
                 BackendOutcomeAdmission {
                     loop_impl: &mut staged_scheduler,
@@ -911,6 +913,7 @@ where
         let mut staged_pending_observations = self.pending_observations.clone();
         let mut staged_preselection = None;
         let frontier = only.frontier;
+        let _admission_path = crate::scheduler::network_admission_trace::enter_path("control-only");
         let completed = complete_backend_outcome_on(
             BackendOutcomeAdmission {
                 loop_impl: &mut staged_scheduler,

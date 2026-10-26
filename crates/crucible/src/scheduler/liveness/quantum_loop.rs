@@ -472,9 +472,8 @@ impl SingleScheduler {
                     &right.payload,
                 ))
         });
-        let admission_boundary = self
-            .frontier
-            .max(self.event_log.condition_prefix().point().at());
+        let admission_boundary =
+            self.traced_network_admission_boundary(&outputs, emission_times)?;
         let mut recorded = Vec::new();
         let mut discovered_choices = Vec::new();
         for (output_index, output) in outputs.iter().enumerate() {

@@ -150,6 +150,7 @@ where
                 ),
             });
         }
+        let _admission_path = crate::scheduler::network_admission_trace::enter_path("preselection");
         let (decisions, discoveries, configuration, append) = match &pending.selected {
             Some(selection) => self
                 .loop_impl
@@ -193,6 +194,7 @@ where
         outcome.configuration = configuration;
         append_to_outcome(&mut outcome, append);
 
+        let _admission_path = crate::scheduler::network_admission_trace::enter_path("preselection");
         for output in pending.remaining_unintercepted_outputs {
             let mut outputs = vec![output];
             let appends = super::admission::intercept_at_release_times(

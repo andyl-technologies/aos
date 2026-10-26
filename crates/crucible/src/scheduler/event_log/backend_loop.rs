@@ -576,6 +576,7 @@ where
             });
         }
         let pending_before = self.pending_network_outputs.clone();
+        let _admission_path = crate::scheduler::network_admission_trace::enter_path("pre-quantum");
         match self.settle_pending_network_outputs_at_current_frontier_inner() {
             Ok(settlement) => {
                 self.prune_frozen_network_output_times();

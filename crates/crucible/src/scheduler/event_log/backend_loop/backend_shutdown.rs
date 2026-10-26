@@ -213,6 +213,7 @@ where
                 return Ok(Vec::new());
             }
             let outputs = std::mem::take(&mut self.pending_network_outputs);
+            let _admission_path = crate::scheduler::network_admission_trace::enter_path("shutdown");
             self.loop_impl
                 .append_backend_network_outputs(
                     outputs,
