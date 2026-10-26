@@ -1,4 +1,4 @@
-//! Observes separately retained Capture results and after-confirmation data.
+//! Observes retained Capture results, confirmations and original protocol banks.
 //!
 //! Raw response maps and their decoded typed results own independent backing.
 //! Both are counted. These facts omit the caller's outer inline slots and do
@@ -10,7 +10,7 @@ use crate::reference_packet::service::confirmation::{
     PacketNativeAfterConfirmationReceipt, PacketNativeAfterConfirmationRequest,
 };
 
-/// Borrows the closed result families retained by complete Capture custody.
+/// Borrows the closed protocol families retained by complete Capture custody.
 pub enum RetainedCaptureProtocolData<'a> {
     /// Borrows a Capture registration, Capture terminal or Poll response.
     ///
@@ -18,6 +18,12 @@ pub enum RetainedCaptureProtocolData<'a> {
     Response(&'a ResponseBody),
     /// Borrows the actual independently decoded after-confirmation receipt.
     AfterConfirmation(&'a PacketNativeAfterConfirmationReceipt),
+    /// Borrows every actual bank and association in a snapshot reservation.
+    SnapshotReservation(&'a crate::protocol_snapshot::ProtocolSnapshotReservation),
+    /// Borrows the actual original encoded snapshot and its independent banks.
+    Snapshot(&'a crate::protocol_snapshot::OriginalProtocolSnapshot),
+    /// Borrows post-move custody; the moved encoded Vec remains a separate owner.
+    PayloadOwner(&'a crate::protocol_snapshot::OriginalProtocolPayloadOwner),
 }
 
 impl RetainedCaptureProtocolData<'_> {
@@ -28,17 +34,69 @@ impl RetainedCaptureProtocolData<'_> {
     /// slots, metadata traversal scratch and checked tree/header geometry.
     ///
     /// # Errors
-    /// Refuses a response from another method family, checked extent overflow
-    /// or bounded observer exhaustion. It performs no serialization or I/O.
+    /// Refuses another method family, foreign snapshot creators, borrowed Hello
+    /// custody, checked extent overflow or bounded observer exhaustion. It
+    /// performs no serialization, lifecycle operation or I/O.
     pub fn observe_retained_metadata(
         &self,
     ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        self.check_original_creator()?;
         let mut observer = MetadataObserver::new();
-        match self {
-            Self::Response(response) => observe_response(response, &mut observer)?,
-            Self::AfterConfirmation(receipt) => observer.observe(*receipt)?,
-        }
+        self.observe_into(&mut observer)?;
         Ok(observer.finish())
+    }
+
+    /// Appends actual capacity rows without clearing earlier Source components.
+    ///
+    /// Snapshot creator checks precede the bank loan. The caller separately
+    /// authenticates the complete Source and admits simultaneous observation
+    /// controls. Partial banks remain DATA and grant no lifecycle authority.
+    ///
+    /// # Errors
+    /// Refuses foreign snapshot creators, busy Hello custody, unsupported result
+    /// families, exhausted rows, invalid backing or ordinary traversal limits.
+    /// Refusal preserves all previously initialized physical rows.
+    pub fn record_retained_metadata_data(
+        &self,
+        bank: &mut records::PacketRuntimeMetadataRecordBank,
+    ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        self.check_original_creator()?;
+        let mut observer = MetadataObserver::appending(bank.recording_bank_data()?);
+        self.observe_into(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    /// Names concrete borrowed capture, snapshot and observer controls.
+    pub fn capacity_counter_scratch_data() -> usize {
+        crate::protocol_snapshot::capture_capacity_counter_scratch_data()
+            + size_of::<Self>()
+            + size_of::<&Self>()
+            + size_of::<MetadataObserver<'static>>()
+            + size_of::<&mut MetadataObserver<'static>>()
+            + size_of::<&mut records::PacketRuntimeMetadataRecordBank>()
+            + size_of::<Result<&mut MetadataRecordBank, ProviderError>>()
+            + size_of::<RetainedProtocolMetadataFacts>()
+            + size_of::<Result<RetainedProtocolMetadataFacts, ProviderError>>()
+            + size_of::<Result<(), ProviderError>>()
+    }
+
+    fn check_original_creator(&self) -> Result<(), ProviderError> {
+        match self {
+            Self::Response(_) | Self::AfterConfirmation(_) => Ok(()),
+            Self::SnapshotReservation(value) => value.check_capacity_creator_data(),
+            Self::Snapshot(value) => value.check_capacity_creator_data(),
+            Self::PayloadOwner(value) => value.check_capacity_creator_data(),
+        }
+    }
+
+    fn observe_into(&self, observer: &mut MetadataObserver<'_>) -> Result<(), ProviderError> {
+        match self {
+            Self::Response(response) => observe_response(response, observer),
+            Self::AfterConfirmation(receipt) => observer.observe(*receipt),
+            Self::SnapshotReservation(value) => value.observe_capacity_data(observer),
+            Self::Snapshot(value) => value.observe_capacity_data(observer),
+            Self::PayloadOwner(value) => value.observe_capacity_data(observer),
+        }
     }
 }
 

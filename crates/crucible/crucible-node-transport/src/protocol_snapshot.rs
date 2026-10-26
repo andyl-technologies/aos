@@ -17,6 +17,9 @@ pub use crate::retained_metadata::records::{
     MetadataCapacityRecord, MetadataRecordBank, MetadataRecordKind, ValidatedMetadataRecords,
 };
 
+mod capacities;
+pub(crate) use capacities::capture_capacity_counter_scratch_data;
+
 mod payload;
 pub use payload::OriginalProtocolPayloadOwner;
 

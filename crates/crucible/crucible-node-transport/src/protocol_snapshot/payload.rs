@@ -6,6 +6,8 @@
 
 use super::*;
 
+mod capacities;
+
 /// Retains the actual source-issued owner after its encoded bytes move once.
 ///
 /// The source still joins exact signed archive/target context and native semantic

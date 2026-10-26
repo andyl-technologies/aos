@@ -9,6 +9,9 @@ use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::
 
 #[path = "capture_banks/retained.rs"]
 mod retained;
+
+#[path = "capture_banks/metadata.rs"]
+mod metadata;
 use crate::node_adapters::cnp::{CnpOriginalSemanticSnapshot, CnpSemanticSnapshotReservation};
 use crucible_node_transport::protocol_snapshot::{
     OriginalProtocolPayloadOwner, OriginalProtocolSnapshot, ProtocolSnapshotReservation,

@@ -330,6 +330,28 @@ impl MetadataAliasBank {
             + self.keys.capacity() * std::mem::size_of::<AliasKey>()
     }
 
+    /// Counts actual private vectors without reading lookup addresses or edges.
+    pub(crate) fn observe_retained_capacity_data(
+        &self,
+        observer: &mut super::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            rows,
+            keys,
+            maximum,
+            comparisons,
+            reservation,
+        } = self;
+        observer.vector::<AliasRow>(rows.capacity())?;
+        observer.vector::<AliasKey>(keys.capacity())?;
+        observer.observe(maximum)?;
+        observer.observe(comparisons)?;
+        match reservation {
+            ReservationState::Unallocated | ReservationState::Failed | ReservationState::Ready => {}
+        }
+        Ok(())
+    }
+
     /// Counts every recorded shared view, including repeated group edges.
     pub fn retained_rows(&self) -> usize {
         self.rows.len()

@@ -51,6 +51,29 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
         owner.capacities(0, &mut |row| self.record(packet_row_data(row)?))
     }
 
+    /// Joins a closed SDK capture component and preserves earlier physical rows.
+    ///
+    /// # Errors
+    /// Refuses SDK origin, borrow, layout or ordinary traversal failures, exhausted
+    /// aggregate rows or unavailable physical backing. The SDK owns its defining
+    /// roster and checks creator identity before touching the physical bank.
+    pub(crate) fn observe_capture_protocol_data(
+        &mut self,
+        owner: crucible_node_transport::retained_metadata::RetainedCaptureProtocolData<'_>,
+    ) -> Result<(), RuntimeError> {
+        let additional = match self.bank.as_deref_mut() {
+            Some(bank) => owner.record_retained_metadata_data(bank),
+            None => owner.observe_retained_metadata(),
+        }
+        .map_err(metadata_error)?;
+        self.facts
+            .capacity_records
+            .checked_add(additional.capacity_records)
+            .filter(|rows| *rows <= self.maximum_rows)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        merge_capacity_metadata_data(&mut self.facts, &additional)
+    }
+
     /// Keeps a Copy field in the defining allocation-free roster.
     ///
     /// This compile-time bound prevents a fixed field from silently acquiring an

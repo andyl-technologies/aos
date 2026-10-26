@@ -14,6 +14,8 @@ use crate::{
 use crucible_node_format::canonical;
 use std::io::{self, Write};
 
+pub(super) mod capacities;
+
 mod view;
 pub(super) use view::restored_base17_counter_scratch_data;
 pub(super) use view::{ActivationView, BatchView, RestoredBaseCustodyView};

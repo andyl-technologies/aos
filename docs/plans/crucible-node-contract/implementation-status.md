@@ -145,6 +145,19 @@ only result out-link symlinks are excluded. A regression compares the actual
 daemon executor result module with its packaged source. The expanded Rust/Cargo
 source comparison includes that formerly omitted module.
 
+Capture-bank capacity DATA now includes every present semantic, ancestry,
+settlement and native-return slot, independently retained responses and receipts,
+and all three SDK protocol-owner stages. The SDK's closed borrowed roster keeps
+encoded, literal, descriptor, record and both alias vectors at actual capacity,
+alongside issuer, codec, registrar and Hello views. Post-move owners exclude the
+historical encoded capacity; the containing Source counts the current Vec.
+Semantic snapshots include their original payload and full Core activation views.
+Partial, failed or inconsistent slots retain backing without acquiring lifecycle
+eligibility. Nine controls cover independent spare banks, original moves, refused
+prefixes, busy/foreign custody and the original separate byte formula. Existing
+byte accounting and association gates remain unchanged. SDK scalar observations
+and capacity-only Core rows do not establish whole-Source traversal-work credit.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its twelve
@@ -154,15 +167,14 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 124 focused Transport controls and 57 Engine
-census/installation/holder/startup controls. Complete Transport suites pass 2,324 tests each
-with twenty ignored; all 2,012 SDK Rust/Cargo inputs match the previously qualified
-captured source. Complete Engine suites pass 2,128 tests each with thirty-four
+Both codec configurations pass 128 focused Transport controls and 62 Engine
+census/installation/holder/startup controls. Complete Transport suites pass 2,328 tests each
+with twenty ignored. Complete Engine suites pass 2,133 tests each with thirty-four
 ignored, using matching source-built installed packet fixtures. Five-package
-all-feature/all-target checks, twelve-file scoped Rust formatting, all six architecture
+all-feature/all-target checks, fifteen-file scoped Rust formatting, all six architecture
 gates and the RFC requirement-map gate pass. Required application test-target
 compilation passes with 185 artifacts across 58 packages and 76 integration targets;
-all 4,887 selected frozen Rust/Cargo inputs match current and captured source. User-owned
+all 4,894 selected frozen Rust/Cargo inputs match current and captured source. User-owned
 changes are preserved. These are component results; the requirement map records
 planning coverage, and no latest-source strict lint or native lifecycle result
 is claimed.

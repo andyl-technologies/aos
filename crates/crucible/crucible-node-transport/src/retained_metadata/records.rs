@@ -246,6 +246,24 @@ impl MetadataRecordBank {
         }
     }
 
+    /// Observes this bank's actual backing without interpreting recorded rows.
+    pub(crate) fn observe_retained_capacity_data(
+        &self,
+        observer: &mut super::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            rows,
+            maximum_rows,
+            reservation,
+        } = self;
+        observer.vector::<MetadataCapacityRecord>(rows.capacity())?;
+        observer.observe(maximum_rows)?;
+        match reservation {
+            ReservationState::Unallocated | ReservationState::Failed | ReservationState::Ready => {}
+        }
+        Ok(())
+    }
+
     /// Names the actual bank, vector loan and returned capacity-row controls.
     pub const fn retained_capacity_counter_scratch_data() -> usize {
         std::mem::size_of::<&Self>()
