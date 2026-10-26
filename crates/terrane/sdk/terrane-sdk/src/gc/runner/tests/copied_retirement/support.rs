@@ -357,6 +357,18 @@ impl CopiedFixture {
                 .await
                 .unwrap();
             logical.insert("CAPABILITIES".into(), Some(bytes));
+
+            // A full portable checkpoint requires one ref row for every
+            // selected history branch. Omit both sides of that relationship
+            // while this copy candidate is still untrusted.
+            let key = "publication/SELECTED-HISTORY";
+            let mut history = SelectedHistory::decode(logical[key].as_deref().unwrap()).unwrap();
+            history.branches.clear();
+            let bytes = history.encode().unwrap();
+            tokio::fs::write(config.root.join(key), &bytes)
+                .await
+                .unwrap();
+            logical.insert(key.into(), Some(bytes));
         }
         let manifest_key = format!(
             "objects/index/{}/MANIFEST",
