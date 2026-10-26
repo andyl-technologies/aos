@@ -355,6 +355,37 @@ pub struct NativePublicationWorker {
     sender: mpsc::Sender<Command>,
 }
 
+/// Joins a configured native owner after every command sender has been dropped.
+///
+/// Retaining this handle makes process shutdown wait for the worker's runtime,
+/// accepted physical effects and actual directory guards to finish together.
+pub(crate) struct NativePublicationOwner(Option<std::thread::JoinHandle<()>>);
+
+impl NativePublicationOwner {
+    /// Waits for physical owner exit; callers first drop every worker clone.
+    ///
+    /// # Errors
+    /// Returns an error if the actual native owner panics.
+    pub(crate) fn join(mut self) -> io::Result<()> {
+        match self.0.take() {
+            Some(thread) => thread
+                .join()
+                .map_err(|_| io::Error::other("native publication owner panicked")),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for NativePublicationOwner {
+    fn drop(&mut self) {
+        if let Some(thread) = self.0.take() {
+            // Startup errors must also wait for already started physical
+            // owners. Configured composition drops all senders first.
+            let _ = thread.join();
+        }
+    }
+}
+
 impl NativePublicationWorker {
     /// Starts a domain-bound publisher with an independently owned runtime.
     ///
@@ -392,6 +423,23 @@ impl NativePublicationWorker {
         let (worker, thread) = started?;
         drop(thread);
         Ok(worker)
+    }
+
+    /// Starts a configured owner whose actual thread is joined at service exit.
+    ///
+    /// # Errors
+    /// Returns the custody, recovery, runtime and thread creation errors of
+    /// [`Self::start_prepared`].
+    pub(crate) fn start_prepared_owned(
+        prepared: NativePublisherPrepared,
+    ) -> io::Result<(Self, NativePublicationOwner)> {
+        prepared.check_custody()?;
+        #[cfg(feature = "native-test-fixtures")]
+        let started = Self::start_prepared_thread(prepared, None, None);
+        #[cfg(not(feature = "native-test-fixtures"))]
+        let started = Self::start_prepared_thread(prepared);
+        let (worker, thread) = started?;
+        Ok((worker, NativePublicationOwner(Some(thread))))
     }
 
     #[cfg(feature = "native-test-fixtures")]

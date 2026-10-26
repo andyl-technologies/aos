@@ -253,6 +253,36 @@ original listener inode; startup must continue refusing existing names.
 Managed restart remains unaccepted, no recovery fix is claimed, and trunk
 acceptance remains 27/64.
 
+The publisher correction now registers termination signals before starting
+native workers and reports manager readiness only after original recovery,
+seal probes and listener binding. Managed Serve requires the configured managed
+publisher's readiness; externally managed publishers retain their independent
+deployment. Shutdown stops acceptance, wakes blocked transport I/O, joins
+connection owners without cancelling accepted native effects, and explicitly
+retires only the retained original socket. Configured composition drops all
+command senders and joins the actual native worker threads before successful
+process exit, including completion on startup errors. Ordinary drop and bind
+continue preserving existing names. Five added native socket cases cover fresh
+binding, replacement refusal, retained ancestry, ordinary drop and writable
+parent refusal. The actual binding-durability cancellation case now checks that
+the configured owner join remains blocked until the physical operation finishes.
+The manager fixture requires automatic publisher readiness through the real
+Serve dependency and a fresh publisher process/listener after clean stop.
+Strict AOS-built all-target Clippy passes with native fixtures and the production
+CLI feature profile; module evaluation, Nix formatting, PLAN-2 and diff checks
+pass. Required application compilation and native runtime qualification of this
+correction remain pending. No complete task is newly accepted.
+
+The full feature matrix at the earlier frozen `e6f214f3ce` checkpoint passes in
+19,245.158 seconds in the isolated 32 GiB AOS builder. Independent review matches
+the immutable source and both native profile compiler records, all 21 passing
+suite summaries, and the previously reviewed base/all-feature native guest
+prerequisites. The fresh capability-free ext4 probe, two exact remote dispatches,
+disabled host-native fallback and clean shutdown are verified. Seven raw
+controller records are preserved and owned scratch is removed. This qualifies
+only that earlier source; it cannot qualify the publisher correction or other
+later changes and adds no complete-task acceptance.
+
 The actual service-manager fixture now declares the public issuer file and
 independent startup Read required by the configured SDK launcher. Its guest
 comparison also requires those rendered token settings to match the genuine

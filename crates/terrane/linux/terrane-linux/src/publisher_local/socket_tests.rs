@@ -8,6 +8,133 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use terrane_format::identity::TERRANE_V1;
 
+struct ListenerFixture {
+    directory: std::path::PathBuf,
+    identities: RoleIdentities,
+}
+
+impl ListenerFixture {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let directory =
+            std::env::temp_dir().join(format!("pub-retire-{}-{sequence}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let publish_uid = rustix::process::geteuid().as_raw();
+        Self {
+            directory,
+            identities: RoleIdentities {
+                publish_uid,
+                serve_uid: publish_uid.checked_add(1).unwrap(),
+            },
+        }
+    }
+
+    fn path(&self) -> std::path::PathBuf {
+        self.directory.join("publisher.sock")
+    }
+
+    fn bind(&self) -> Listener {
+        Listener::bind(&self.path(), self.identities).unwrap()
+    }
+}
+
+impl Drop for ListenerFixture {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.directory).unwrap();
+    }
+}
+
+fn socket_inode(path: &Path) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(path).unwrap();
+    (metadata.dev(), metadata.ino())
+}
+
+#[test]
+fn explicit_retirement_removes_original_name_and_allows_fresh_binding() {
+    let fixture = ListenerFixture::new();
+    let listener = fixture.bind();
+    let original = socket_inode(&fixture.path());
+    let retained = rustix::fs::open(fixture.path(), OFlags::PATH, Mode::empty()).unwrap();
+
+    listener.retire().unwrap();
+
+    assert!(!fixture.path().try_exists().unwrap());
+    let replacement = fixture.bind();
+    assert_ne!(socket_inode(&fixture.path()), original);
+    replacement.retire().unwrap();
+    drop(retained);
+}
+
+#[test]
+fn retirement_refuses_replacement_without_removing_either_inode() {
+    let fixture = ListenerFixture::new();
+    let listener = fixture.bind();
+    let original = socket_inode(&fixture.path());
+    let moved = fixture.directory.join("original.sock");
+    std::fs::rename(fixture.path(), &moved).unwrap();
+    std::fs::write(fixture.path(), b"replacement custody").unwrap();
+    let replacement = socket_inode(&fixture.path());
+
+    assert!(listener.retire().is_err());
+
+    assert_eq!(socket_inode(&moved), original);
+    assert_eq!(socket_inode(&fixture.path()), replacement);
+    assert_eq!(
+        std::fs::read(fixture.path()).unwrap(),
+        b"replacement custody"
+    );
+}
+
+#[test]
+fn retirement_uses_retained_parent_after_ancestor_replacement() {
+    let fixture = ListenerFixture::new();
+    let parent = fixture.directory.join("parent");
+    std::fs::create_dir(&parent).unwrap();
+    let path = parent.join("publisher.sock");
+    let listener = Listener::bind(&path, fixture.identities).unwrap();
+    let original = socket_inode(&path);
+    let moved = fixture.directory.join("original-parent");
+    std::fs::rename(&parent, &moved).unwrap();
+    std::fs::create_dir(&parent).unwrap();
+    let replacement = Listener::bind(&path, fixture.identities).unwrap();
+    let replacement_inode = socket_inode(&path);
+    assert_ne!(replacement_inode, original);
+
+    listener.retire().unwrap();
+
+    assert!(!moved.join("publisher.sock").try_exists().unwrap());
+    assert_eq!(socket_inode(&path), replacement_inode);
+    replacement.retire().unwrap();
+}
+
+#[test]
+fn ordinary_drop_preserves_name_for_failed_startup_diagnosis() {
+    let fixture = ListenerFixture::new();
+    let listener = fixture.bind();
+    let original = socket_inode(&fixture.path());
+
+    drop(listener);
+
+    assert_eq!(socket_inode(&fixture.path()), original);
+    assert!(Listener::bind(&fixture.path(), fixture.identities).is_err());
+}
+
+#[test]
+fn retirement_refuses_newly_writable_parent_without_removing_socket() {
+    let fixture = ListenerFixture::new();
+    let listener = fixture.bind();
+    let original = socket_inode(&fixture.path());
+    std::fs::set_permissions(&fixture.directory, std::fs::Permissions::from_mode(0o722)).unwrap();
+
+    assert!(listener.retire().is_err());
+
+    assert_eq!(socket_inode(&fixture.path()), original);
+}
+
 struct SocketModeFixture {
     path: std::path::PathBuf,
     parent: OwnedFd,

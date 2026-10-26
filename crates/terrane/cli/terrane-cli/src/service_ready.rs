@@ -1,7 +1,8 @@
-//! Reports completed native serving startup to the service manager.
+//! Reports completed native role startup to the service manager.
 //!
-//! The configured serving callback calls this only after original cache owners,
-//! snapshots and maintenance listeners are ready. An absent manager endpoint
+//! The configured role callbacks call this after actual native startup: serving
+//! waits for cache owners, snapshots and maintenance listeners; publication
+//! waits for recovery, seal probes and its listener. An absent manager endpoint
 //! preserves standalone operation; a configured endpoint must accept the whole
 //! notification before startup succeeds.
 
@@ -23,14 +24,26 @@ const READY: &[u8] = b"READY=1\nSTATUS=Serving configured Terrane snapshots and 
 /// Rejects an invalid configured endpoint, socket creation or send failures,
 /// including a full manager queue and an incomplete notification datagram.
 pub(crate) fn notify() -> io::Result<()> {
+    notify_message(READY)
+}
+
+/// Reports the recovered, seal-probed and bound native publisher to its manager.
+///
+/// # Errors
+/// Returns invalid endpoints and native notification creation or send failures.
+pub(crate) fn notify_publisher() -> io::Result<()> {
+    notify_message(b"READY=1\nSTATUS=Serving configured Terrane native publisher")
+}
+
+fn notify_message(message: &[u8]) -> io::Result<()> {
     let Some(endpoint) = std::env::var_os("NOTIFY_SOCKET") else {
         return Ok(());
     };
     let address = address(&endpoint)?;
     let socket = UnixDatagram::unbound()?;
     socket.set_nonblocking(true)?;
-    let written = socket.send_to_addr(READY, &address)?;
-    if written != READY.len() {
+    let written = socket.send_to_addr(message, &address)?;
+    if written != message.len() {
         return Err(io::Error::new(
             io::ErrorKind::WriteZero,
             "incomplete service readiness notification",

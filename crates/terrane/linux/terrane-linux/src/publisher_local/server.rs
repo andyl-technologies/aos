@@ -5,6 +5,9 @@
 //! another command is accepted. The native actor retains physical custody
 //! even when this socket or its runtime disappears.
 
+#[path = "server_shutdown.rs"]
+mod shutdown;
+
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -13,7 +16,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
@@ -71,6 +74,7 @@ pub struct Server {
     metadata: Arc<MetadataVerification>,
 }
 
+/// Retains the server-wide bound and exclusion for received metadata decoding.
 struct MetadataVerification {
     limits: HostReadLimits,
     gate: Mutex<()>,
@@ -179,9 +183,26 @@ impl Server {
                     let _permit = permit;
                     let _custody = custody;
                     // Connection failures close all retained packet/reply files.
-                    let _ = run_connection(connection, &domains, &metadata);
+                    let _ = run_connection(&connection, &domains, &metadata, None);
                 })?;
         }
+    }
+
+    /// Stops new requests, joins accepted work and retires the owned listener.
+    ///
+    /// The readiness callback runs after listener registration. The configured
+    /// caller additionally joins its native workers after this server drops all
+    /// domain senders. Cancellation of this future is not graceful shutdown.
+    ///
+    /// # Errors
+    /// Returns listener, readiness, shutdown or connection-owner failures, and
+    /// refuses retirement if the retained listener's custody has changed.
+    pub(crate) async fn run_until(
+        self,
+        shutdown: impl std::future::Future<Output = io::Result<()>>,
+        ready: impl FnOnce() -> io::Result<()>,
+    ) -> Result<(), Error> {
+        shutdown::run_until(self, shutdown, ready).await
     }
 }
 
@@ -199,10 +220,15 @@ struct Cursor {
     native: Vec<u8>,
 }
 
+/// Completes accepted effects even when transport waits expire or shutdown begins.
+///
+/// # Errors
+/// Returns invalid packets, native failures and disconnected transport errors.
 fn run_connection(
-    connection: Connection,
+    connection: &Connection,
     domains: &BTreeMap<String, DomainPublisher>,
     metadata: &MetadataVerification,
+    stopping: Option<&AtomicBool>,
 ) -> Result<(), Error> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -217,7 +243,13 @@ fn run_connection(
         .collect::<Vec<_>>();
     let mut cursors = BTreeMap::<Vec<u8>, Cursor>::new();
     loop {
+        if stopping.is_some_and(|stopping| stopping.load(Ordering::Acquire)) {
+            return Ok(());
+        }
         let request = connection.receive_selected(&policies)?;
+        if stopping.is_some_and(|stopping| stopping.load(Ordering::Acquire)) {
+            return Ok(());
+        }
         let header = request.packet.clone();
         let selected = domains.get(&header.domain).ok_or(Error::Denied)?;
         let policy = ValidationPolicy {

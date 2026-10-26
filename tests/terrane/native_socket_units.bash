@@ -74,5 +74,5 @@ while IFS= read -r socket_case; do
   executed=$((executed + 1))
 done < "$image/share/native-socket-cases"
 
-[ "$executed" -eq 12 ]
-printf '%s\n' 'PASS twelve actual native socket custody cases under the ordinary publisher identity'
+[ "$executed" -eq 17 ]
+printf '%s\n' 'PASS seventeen actual native socket custody cases under the ordinary publisher identity'

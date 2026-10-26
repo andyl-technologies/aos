@@ -5,7 +5,7 @@
 
 use std::{
     collections::BTreeMap,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs::File,
     io::{self, IoSlice},
     mem::{self, MaybeUninit},
@@ -65,8 +65,10 @@ pub struct Listener {
     descriptor: OwnedFd,
     identities: RoleIdentities,
     // Retaining every ancestor prevents configuration from losing custody.
-    _directories: Vec<OwnedFd>,
-    _socket_node: OwnedFd,
+    directories: Vec<OwnedFd>,
+    socket_node: OwnedFd,
+    name: OsString,
+    group: u32,
 }
 
 /// Retains checked socket ancestry before native startup can allocate.
@@ -118,13 +120,75 @@ impl Listener {
             Mode::empty(),
         )?;
         set_bound_socket_mode(parent, name, &socket_node, identities.publish_uid)?;
+        let group = rustix::fs::fstat(&socket_node)?.st_gid;
         net::listen(&descriptor, 32)?;
         Ok(Self {
             descriptor,
             identities,
-            _directories: directories,
-            _socket_node: socket_node,
+            directories,
+            socket_node,
+            name: name.to_owned(),
+            group,
         })
+    }
+
+    /// Closes the listener and removes its checked original socket name.
+    ///
+    /// Callers first stop accepting and join every connection owner. Retained
+    /// ancestry anchors removal even if a directory moves. Existing names are
+    /// never removed during bind or ordinary drop; failed startup preserves
+    /// them for diagnosis. Processes sharing the publisher UID share its
+    /// administrative trust over the protected parent.
+    ///
+    /// # Errors
+    /// Refuses changed credentials, unsafe retained ancestors, substituted or
+    /// missing sockets, changed ownership, links or mode, and native metadata
+    /// or removal failures. A replacement name is left untouched.
+    pub fn retire(self) -> Result<(), Error> {
+        let Self {
+            descriptor,
+            identities,
+            directories,
+            socket_node,
+            name,
+            group,
+        } = self;
+        drop(descriptor);
+        identities.check()?;
+        if rustix::process::geteuid().as_raw() != identities.publish_uid {
+            return Err(Error::Denied);
+        }
+
+        for directory in &directories {
+            let metadata = rustix::fs::fstat(directory)?;
+            if rustix::fs::FileType::from_raw_mode(metadata.st_mode)
+                != rustix::fs::FileType::Directory
+                || ![0, identities.publish_uid].contains(&metadata.st_uid)
+                || metadata.st_mode & 0o022 != 0
+                || metadata.st_nlink == 0
+            {
+                return Err(Error::Invalid("publisher socket ancestor custody changed"));
+            }
+        }
+
+        let parent = directories.last().ok_or(Error::Invalid("socket parent"))?;
+        let original = rustix::fs::fstat(&socket_node)?;
+        let named = rustix::fs::statat(parent, &name, AtFlags::SYMLINK_NOFOLLOW)?;
+        check_bound_socket(&original, &original, identities.publish_uid, group, true)?;
+        check_bound_socket(&original, &named, identities.publish_uid, group, true)?;
+        rustix::fs::unlinkat(parent, &name, AtFlags::empty())?;
+        Ok(())
+    }
+
+    /// Registers only the listener as nonblocking; accepted endpoints stay blocking.
+    ///
+    /// # Errors
+    /// Returns native descriptor flag query or update failures.
+    #[cfg(feature = "tokio")]
+    pub(crate) fn nonblocking_descriptor(&self) -> io::Result<BorrowedFd<'_>> {
+        let flags = rustix::fs::fcntl_getfl(&self.descriptor)?;
+        rustix::fs::fcntl_setfl(&self.descriptor, flags | OFlags::NONBLOCK)?;
+        Ok(self.descriptor.as_fd())
     }
 
     /// Accepts and authenticates a serve-role connection before receiving data.
@@ -242,6 +306,16 @@ fn chmod_retained_socket(_node: BorrowedFd<'_>) -> io::Result<()> {
 }
 
 impl Connection {
+    /// Wakes blocked transport I/O without cancelling submitted native effects.
+    ///
+    /// # Errors
+    /// Returns native socket shutdown failures, including a disconnected peer.
+    #[cfg(feature = "tokio")]
+    pub(crate) fn stop_transport(&self) -> io::Result<()> {
+        net::shutdown(&self.descriptor, net::Shutdown::Both)?;
+        Ok(())
+    }
+
     /// Connects as serve and independently authenticates the publisher peer.
     ///
     /// # Errors

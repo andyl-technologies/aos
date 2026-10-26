@@ -41,7 +41,7 @@ use crate::{
     },
 };
 
-/// Runs the actual configured native publisher until its listener fails.
+/// Runs the actual configured native publisher until shutdown or listener failure.
 ///
 /// Validates every domain before installing one irreversible process boundary.
 /// Actual authenticated quota/root evidence precedes all native startup writes;
@@ -62,6 +62,25 @@ use crate::{
 /// Publisher confinement also rejects inherited undeclared or network descriptors
 /// and a kernel socket restriction that fails its actual startup probes.
 pub fn run_configured_publisher(host: &HostTier) -> io::Result<()> {
+    run_configured_publisher_with_ready(host, || Ok(()))
+}
+
+/// Runs a configured publisher with notification after native listener readiness.
+///
+/// Registers SIGTERM and SIGINT before starting native workers. On shutdown,
+/// stops accepting requests, wakes idle connections, joins accepted physical
+/// work and retires the retained original socket name. Every native worker is
+/// then joined before the process may report successful exit. The callback
+/// runs after quota checks, recovery, actual seal probes and listener binding.
+///
+/// # Errors
+/// Returns the startup errors of [`run_configured_publisher`], signal/runtime
+/// registration or notification failures, changed listener retirement custody,
+/// and connection or native owner panics. Failed startup preserves socket names.
+pub fn run_configured_publisher_with_ready(
+    host: &HostTier,
+    ready: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     let config = preflight(host)?;
     let network = Arc::new(crate::quota_confinement::install_publisher()?);
     let confinement = Arc::clone(network.quota());
@@ -86,11 +105,26 @@ pub fn run_configured_publisher(host: &HostTier) -> io::Result<()> {
         prepared.retain_configured_custody(custody.clone())?;
         prepared_domains.push((prepared, domain.profile_name));
     }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let (mut terminate, mut interrupt) = {
+        let _entered = runtime.enter();
+        (
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?,
+        )
+    };
+
+    // Reverse local destruction order drops all command senders before joining
+    // native owners, including when a later domain fails startup.
+    let mut owners = Vec::with_capacity(prepared_domains.len());
     let mut domains = Vec::with_capacity(prepared_domains.len());
     for (prepared, profile_name) in prepared_domains {
         let domain = prepared.configuration().domain.clone();
         let profile = prepared.configuration().profile.clone();
-        let worker = NativePublicationWorker::start_prepared(prepared)?;
+        let (worker, owner) = NativePublicationWorker::start_prepared_owned(prepared)?;
+        owners.push(owner);
         domains.push(DomainPublisher {
             domain,
             chunk_profile_name: profile_name,
@@ -99,9 +133,6 @@ pub fn run_configured_publisher(host: &HostTier) -> io::Result<()> {
         });
     }
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
     let mut bootstrap_incarnation = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut bootstrap_incarnation)?;
     for domain in &domains {
@@ -129,13 +160,29 @@ pub fn run_configured_publisher(host: &HostTier) -> io::Result<()> {
             _ => return Err(invalid("unexpected native startup probe result")),
         }
     }
-    drop(runtime);
     confinement.check_current()?;
-    Server::bind(config.endpoint, domains)
+    let server = Server::bind(config.endpoint, domains)
         .map_err(io::Error::other)?
-        .with_configured_custody(custody)
-        .run()
-        .map_err(io::Error::other)
+        .with_configured_custody(custody);
+    let shutdown = async {
+        let received = tokio::select! {
+            received = terminate.recv() => received,
+            received = interrupt.recv() => received,
+        };
+        received.ok_or_else(|| io::Error::other("publisher signal stream closed"))
+    };
+    let result = runtime
+        .block_on(server.run_until(shutdown, ready))
+        .map_err(io::Error::other);
+
+    let mut completion = Ok(());
+    for owner in owners {
+        if let Err(error) = owner.join() {
+            completion = Err(error);
+        }
+    }
+    result?;
+    completion
 }
 
 struct Preflight {

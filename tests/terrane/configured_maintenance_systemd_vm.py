@@ -275,20 +275,29 @@ def run(driver, image):
     original_state = common["verify_owner_locks"](driver, False)
     sockets = [pathlib.Path("/run/terrane-maintenance") / name for name in ["public.sock", "private.sock"]]
     completed = False
+    publisher_node = None
     try:
         for role in ROLES:
             unit = properties(driver, role, ["FragmentPath", "ActiveState"])
             driver.require(unit["ActiveState"] != "active", "managed role started before enrollment")
             driver.require(pathlib.Path(unit["FragmentPath"]).read_text() == expected["units"]["terrane-" + role + ".service"],
                            "manager unit differs from the rendered module")
-        command(driver, ["systemctl", "start", "terrane-publish.service"])
-        deadline = min(driver.DEADLINE, time.monotonic() + 20)
-        while not pathlib.Path("/run/terrane-publish/publisher.sock").exists():
-            driver.require(time.monotonic() < deadline, "managed publisher listener deadline")
-            time.sleep(0.02)
-
+        # PID 1 must start and await the native publisher through Serve's real
+        # dependency. A pathname-existence loop cannot establish readiness.
         command(driver, ["systemctl", "start", "terrane-gc.service"])
         serve = properties(driver, "serve", ["MainPID", "Type", "NotifyAccess", "ActiveState", "ActiveEnterTimestampMonotonic"])
+        publisher = properties(driver, "publish", ["MainPID", "Type", "NotifyAccess", "ActiveState", "ActiveEnterTimestampMonotonic"])
+        driver.require(publisher["Type"] == "notify" and publisher["NotifyAccess"] == "main"
+                       and publisher["ActiveState"] == "active" and int(publisher["MainPID"]) > 0,
+                       "managed publisher did not notify readiness")
+        driver.require(0 < int(publisher["ActiveEnterTimestampMonotonic"])
+                       <= int(serve["ActiveEnterTimestampMonotonic"]),
+                       "managed Serve preceded publisher readiness")
+        publisher_socket = pathlib.Path("/run/terrane-publish/publisher.sock")
+        publisher_inode = (publisher_socket.stat().st_dev, publisher_socket.stat().st_ino)
+        # Retain the original node so an inode-number recycle cannot masquerade
+        # as binding a fresh listener during the actual managed restart.
+        publisher_node = os.open(publisher_socket, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
         gc = properties(driver, "gc", ["ExecMainStatus", "Result", "ExecMainStartTimestampMonotonic"])
         driver.require(serve["Type"] == "notify" and serve["NotifyAccess"] == "main"
                        and serve["ActiveState"] == "active" and int(serve["MainPID"]) > 0,
@@ -379,6 +388,29 @@ def run(driver, image):
         driver.require(all(not path.exists() and not path.is_symlink() for path in sockets),
                        "managed shutdown retained or replaced listener names")
         command(driver, ["systemctl", "stop", "terrane-publish.service"])
+        driver.require(properties(driver, "publish", ["Result", "MainPID"]) == {"Result": "success", "MainPID": "0"},
+                       "managed publisher did not acknowledge physical owner shutdown")
+        driver.require(not publisher_socket.exists() and not publisher_socket.is_symlink(),
+                       "managed publisher retained its listener name")
+        command(driver, ["systemctl", "start", "terrane-publish.service"])
+        restarted_publisher = properties(driver, "publish", ["MainPID", "Type", "NotifyAccess", "ActiveState"])
+        driver.require(restarted_publisher["Type"] == "notify"
+                       and restarted_publisher["NotifyAccess"] == "main"
+                       and restarted_publisher["ActiveState"] == "active"
+                       and int(restarted_publisher["MainPID"]) > 0
+                       and restarted_publisher["MainPID"] != publisher["MainPID"],
+                       "managed publisher did not recover and notify from a fresh process")
+        fresh_metadata = publisher_socket.lstat()
+        driver.require(stat.S_ISSOCK(fresh_metadata.st_mode) and fresh_metadata.st_mode & 0o7777 == 0o660
+                       and fresh_metadata.st_uid == 841 and fresh_metadata.st_gid == 845
+                       and (fresh_metadata.st_dev, fresh_metadata.st_ino) != publisher_inode,
+                       "managed publisher did not bind a fresh owned listener")
+        command(driver, ["systemctl", "stop", "terrane-publish.service"])
+        driver.require(properties(driver, "publish", ["Result", "MainPID"]) == {"Result": "success", "MainPID": "0"}
+                       and not publisher_socket.exists() and not publisher_socket.is_symlink(),
+                       "restarted publisher did not retire its fresh listener")
+        os.close(publisher_node)
+        publisher_node = None
         common["actor"](driver, image, "managed-publication",
                         ["configured-sdk-cache-example", "verify-reopen-publication", repository, 840])
         for name in ["first", "second"]:
@@ -394,11 +426,15 @@ def run(driver, image):
             "units_sha256": {name: hashlib.sha256(text.encode()).hexdigest() for name, text in expected["units"].items()},
             "systemd_pid1": True, "restart_recovery": False, "physical_release": False,
             "publisher_mount_policy": publisher_policy[0], "publisher_identity": publisher_identity[0],
+            "publisher": publisher, "restarted_publisher": restarted_publisher,
+            "publisher_listener_retired": True, "publisher_restart": True,
             "gc_manager_journal": gc_events,
         }, sort_keys=True), flush=True)
         print("PASS actual systemd starts GC only after original Serve owners and listeners are ready; fresh confined roles preserve custody and acknowledge shutdown", flush=True)
         completed = True
     finally:
+        if publisher_node is not None:
+            os.close(publisher_node)
         if not completed:
             for role in ROLES:
                 result = subprocess.run(["journalctl", "--no-pager", "--output=cat", "--unit=terrane-" + role + ".service"],

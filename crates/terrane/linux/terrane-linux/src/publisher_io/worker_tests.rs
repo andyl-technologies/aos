@@ -145,8 +145,20 @@ fn canceled_waiter_retains_owner_through_actual_binding_durability(
         .is_err(),
         "canceling every client must not release the active publisher exclusion"
     );
+    let owner = super::NativePublicationOwner(Some(owner));
+    let (finished, completion) = mpsc::sync_channel(1);
+    let joining = std::thread::spawn(move || finished.send(owner.join()).unwrap());
+    assert!(matches!(
+        completion.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+
     release.send(()).unwrap();
-    owner.join().unwrap();
+    completion
+        .recv_timeout(Duration::from_secs(20))
+        .unwrap()
+        .unwrap();
+    joining.join().unwrap();
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -673,6 +673,37 @@
     }
 
     {
+      name = "configured-publisher-readiness-orders-serve";
+      pass =
+        native.systemd.services.terrane-publish.serviceConfig.Type
+        == "notify"
+        && native.systemd.services.terrane-publish.serviceConfig.NotifyAccess == "main"
+        && builtins.elem "terrane-publish.service" native.systemd.services.terrane-serve.after
+        && builtins.elem "terrane-publish.service" native.systemd.services.terrane-serve.requires;
+    }
+    {
+      name = "sdk-only-publisher-has-no-native-readiness-dependency";
+      pass =
+        (service "publish").Type
+        == "simple"
+        && !(builtins.elem "terrane-publish.service" enabled.systemd.services.terrane-serve.after)
+        && !(builtins.elem "terrane-publish.service" enabled.systemd.services.terrane-serve.requires);
+    }
+    {
+      name = "external-publisher-has-no-managed-unit-dependency";
+      pass = let
+        cfg =
+          (mkSystem {
+            modules = [fixture nativeFixture {aos.terrane.roles.publish.enable = false;}];
+            systemName = "terrane-external-publisher";
+          }).config;
+      in
+        !(cfg.systemd.services ? terrane-publish)
+        && !(builtins.elem "terrane-publish.service" cfg.systemd.services.terrane-serve.after)
+        && !(builtins.elem "terrane-publish.service" cfg.systemd.services.terrane-serve.requires);
+    }
+
+    {
       name = "content-and-pin-state-groups-separated";
       pass =
         enabled.aos.users.groups.terrane-content.gid

@@ -80,7 +80,10 @@ fn run(arguments: Arguments) -> Result<(), Box<dyn std::error::Error>> {
     if let (Role::Publish, Some(host)) = (role, config.host_tier()) {
         // Pass only host-tier inputs: this role must not open repository
         // authority or resolve exposure credentials before native startup.
-        terrane_linux::configured::run_configured_publisher(host)?;
+        terrane_linux::configured::run_configured_publisher_with_ready(
+            host,
+            service_ready::notify_publisher,
+        )?;
         return Ok(());
     }
 

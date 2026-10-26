@@ -13,6 +13,7 @@
   maintenance = import ./_maintenance.nix {inherit lib;};
   sdkOutput = import ./_sdk-output.nix {inherit lib;};
   maintenanceEnabled = cfg.hostTier.maintenance != null;
+  managedPublisher = cfg.hostTier.publisher != null && cfg.roles.publish.enable;
   # Reject traversal and unit-file metacharacters before paths reach tmpfiles
   # or systemd. Parent ownership is part of the publisher's security boundary.
   pathType = types.strMatching "/[A-Za-z0-9_./-]+";
@@ -258,13 +259,13 @@
   service = role: {
     description = "Terrane ${role} role";
     wantedBy = lib.optional (role != "gc") "multi-user.target";
-    after = ["systemd-tmpfiles-setup.service"] ++ lib.optional (cfg.hostHelper.enable && role != "realize") "aos-terrane-host-quota.service" ++ lib.optional (role == "gc" && maintenanceEnabled) "terrane-serve.service";
-    requires = ["systemd-tmpfiles-setup.service"] ++ lib.optional (cfg.hostHelper.enable && role != "realize") "aos-terrane-host-quota.service" ++ lib.optional (role == "gc" && maintenanceEnabled) "terrane-serve.service";
+    after = ["systemd-tmpfiles-setup.service"] ++ lib.optional (cfg.hostHelper.enable && role != "realize") "aos-terrane-host-quota.service" ++ lib.optional (role == "gc" && maintenanceEnabled) "terrane-serve.service" ++ lib.optional (role == "serve" && managedPublisher) "terrane-publish.service";
+    requires = ["systemd-tmpfiles-setup.service"] ++ lib.optional (cfg.hostHelper.enable && role != "realize") "aos-terrane-host-quota.service" ++ lib.optional (role == "gc" && maintenanceEnabled) "terrane-serve.service" ++ lib.optional (role == "serve" && managedPublisher) "terrane-publish.service";
     serviceConfig = {
       Type =
         if role == "gc"
         then "oneshot"
-        else if role == "serve" && maintenanceEnabled
+        else if (role == "serve" && maintenanceEnabled) || (role == "publish" && managedPublisher)
         then "notify"
         else "simple";
       NotifyAccess = "main";

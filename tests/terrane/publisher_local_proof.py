@@ -34,6 +34,11 @@ EXPECTED = {
         "retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group",
         "replaced_socket_name_is_rejected_without_changing_either_inode",
         "socket_chmod_rejects_wrong_type_and_owner_before_mutation",
+        "explicit_retirement_removes_original_name_and_allows_fresh_binding",
+        "retirement_refuses_replacement_without_removing_either_inode",
+        "retirement_uses_retained_parent_after_ancestor_replacement",
+        "ordinary_drop_preserves_name_for_failed_startup_diagnosis",
+        "retirement_refuses_newly_writable_parent_without_removing_socket",
     },
     "publisher_local_protocol": {
         "quarantine_inspection_returns_only_one_unverified_descriptor",
@@ -225,9 +230,9 @@ def install_and_execute():
     require(source_hashes(workspace, source) == {key: value for key, value in hashes.items()
                                                if not key.startswith("tests/")},
             "source changed during transport discovery/execution")
-    require(len(NATIVE_SOCKET_CASES) == 12 and len(SETGID_SOCKET_CASES) == 3
+    require(len(NATIVE_SOCKET_CASES) == 17 and len(SETGID_SOCKET_CASES) == 3
             and SETGID_SOCKET_CASES <= NATIVE_SOCKET_CASES,
-            "native socket inventory must retain all twelve original source cases")
+            "native socket inventory must retain all twelve original and five retirement cases")
     native_cases = ["publisher_local::socket::tests::" + case
                     for case in sorted(NATIVE_SOCKET_CASES)]
     (output / "share/native-socket-cases").write_text("\n".join(native_cases) + "\n")
