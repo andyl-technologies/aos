@@ -91,6 +91,29 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The repository-backed local Ref read service now connects authenticated native
+socket requests to the original repository's current-policy guard. It reads
+actual selected whole records, finite guarded inventories and committed history;
+it holds no signing key and refuses cache/driver-composed authority bindings.
+Native home reads support all three freshness modes with zero reported staleness.
+Identity is checked independently against the repository's keys and clock around
+awaited reads, including streamed rows and empty/final completion. Response row
+and represented-content limits do not bound the backend APIs' earlier inventory
+or history materialization. Unsupported CAS and watch methods refuse explicitly.
+
+Seven new native integration cases cover actual publication changes, genuine
+signed principals outside the current ACL, canonical listings/history, malformed
+requests and home freshness, exact response budgets, missing authentication and
+unavailable mutations, and expiry after authenticated middleware dispatch.
+Strict all-target Clippy passes for both native SDK profiles. Portable library
+and wire-contract compilation pass with the six existing Guard warning groups;
+SDK formatting and PLAN-2 pass. The new source-bound retained-artifact check
+keeps the existing thirty-second per-case limit. Native qualification and required
+application-target compilation of this service increment remain pending. This
+is a local read-service component, not production role deployment, remote/home
+routing, CAS publication, resumable watch or full protocol acceptance. Task
+acceptance remains 28/64.
+
 The native client now receives finite `ListRefs` streams under explicit row,
 content, message, element-memory and whole-call bounds. It validates root-free
 ref patterns using the existing guarded-enumeration grammar, checks canonical
@@ -136,7 +159,10 @@ and the portable executable hash (whose bytes are not retained). The fresh
 nonce-bound private-builder proof confirms ext4, a capability-free build user,
 AOS kernel 7.2.3 and exactly the three expected remote derivations. Raw controller
 records are preserved before removing owned terminal scratch. Required
-application compilation remains pending.
+application-target compilation at the same revision passes in 1,489.244 seconds.
+Independent review matches all 8,276 immutable source files and 190 test-executable
+records across 59 packages; executable bytes are not retained and no execution
+is inferred.
 Production Ref services, reflog retention/selection and gap-free watch recovery
 remain open.
 
@@ -144,7 +170,7 @@ Required application-target compilation at `8b012824d4` passes in 1,450.366
 seconds. Independent review matches all 8,274 immutable source files and 190
 test-executable records across 59 packages. This qualifies the GetRef client
 revision's compilation only, with no retained executable bytes. The subsequent
-reflog increment needs separate required compilation.
+reflog increment passes its separate required compilation as recorded above.
 
 The native client now receives bounded `GetRef` observations through the
 generated Ref service. It rejects malformed names, unknown freshness modes and
@@ -225,8 +251,8 @@ per-feature, intentional-incompatibility and doctest commands remain, including
 the SDK's one-thread execution and removal of DAC bypass. Host-native fallback
 is disabled and no nested KVM is required. No matrix success or additional task
 acceptance is claimed. The later reflog client at `8c10438255` passes its separate
-30-socket/22-portable execution as recorded above; its required application
-compilation remains in progress. The listing increment at `71c29c7675` passes
+30-socket/22-portable execution and required application compilation as recorded
+above. The listing increment at `71c29c7675` passes
 its fresh 35-socket/22-portable run; required application compilation is running.
 Neither later increment is qualified by the older feature matrix.
 
@@ -235,7 +261,7 @@ seconds. Independent review matches all 8,272 immutable source files and 190
 test-executable build records across 59 packages. This covers compilation of
 the held-index increment, with no retained executable bytes or native runtime
 claim. The later GetRef client compilation also passes at `8b012824d4` as
-reviewed above; the new reflog increment still needs its required compilation.
+reviewed above; the reflog increment passes its own required compilation.
 
 Required application-target compilation at `513ed9e29a` passes in 1,546.300
 seconds. Independent review matches all 8,268 immutable source files and 190

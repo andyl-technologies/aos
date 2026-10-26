@@ -720,6 +720,7 @@ in {
   integration.bundle-client = import ./bundle-client.nix {inherit sourceGate;};
   integration.bundle-receive = import ./bundle-receive.nix {inherit sourceGate;};
   integration.ref-head = import ./ref-head.nix {inherit sourceGate;};
+  integration.local-ref-service = import ./local-ref-service.nix {inherit sourceGateWithInputs;};
   integration.ref-listing = import ./ref-listing.nix {inherit sourceGate;};
   integration.root-nodes = import ./root-nodes.nix {inherit sourceGate;};
   integration.configured-workload-issuer = configuredIssuerProof;

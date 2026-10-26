@@ -197,6 +197,13 @@ where
         &self.coordinator
     }
 
+    // Only the native open/initialize factories retain this original route marker.
+    // Read-cache and driver composition deliberately clear it.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(crate) fn has_native_ref_authority(&self) -> bool {
+        self.local_backend_root.is_some()
+    }
+
     /// Returns the profile used by directory import and object reconstruction.
     pub fn chunk_profile(&self) -> &ChunkProfile {
         &self.coordinator().guard().config().chunk_profile

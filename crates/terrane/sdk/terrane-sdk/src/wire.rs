@@ -30,6 +30,10 @@ pub mod client;
 #[cfg(feature = "tokio")]
 pub mod transport;
 
+/// Serves local reference reads through fresh repository authorization.
+#[cfg(all(feature = "tokio", unix))]
+pub mod local_refs;
+
 /// Contains generated `terrane.v1` protobuf and ProtoJSON data contracts.
 #[allow(
     clippy::derivable_impls,
