@@ -327,10 +327,8 @@ async fn finish_service_property_bookend_into_v2(
         || Some(before.2) != pending.pid || Some(before.3.as_slice()) != pending.invocation.as_deref()
         || before_substate != pending.substate.as_deref()
         || before.0 != name || !phase.accepts(&before.1, before_substate)
-        || before.2 != expected_main_pid || before.3.len() != 16
-        || (!matches!(phase, ObservationPhase::StoppedNix)
-            && !(matches!(phase, ObservationPhase::OptionalActive) && before.1 != "active")
-            && before.3.iter().all(|byte| *byte == 0)) {
+        || before.2 != expected_main_pid
+        || !phase.accepts_invocation(&before.1, &before.3) {
         return Err(changed("PID 1 service changed during property readback"));
     }
     pending.owner = Some(bus.get_name_owner(manager_name).await?);
@@ -434,6 +432,19 @@ pub(crate) async fn capture_mount_fd_store_bookend_v1(
 }
 
 impl ObservationPhase {
+    fn accepts_invocation(self, state: &str, invocation: &[u8]) -> bool {
+        // systemd's bus_property_get_id128 emits an empty ay for a null ID.
+        // A never-started, inactive/dead owner has no invocation to authenticate.
+        // The caller still compares both whole bookends and requires PID zero.
+        if invocation.is_empty() {
+            return matches!(self, Self::StoppedNix) && state == "inactive";
+        }
+        invocation.len() == 16
+            && (matches!(self, Self::StoppedNix)
+                || (matches!(self, Self::OptionalActive) && state != "active")
+                || invocation.iter().any(|byte| *byte != 0))
+    }
+
     fn accepts(self, state: &str, substate: Option<&str>) -> bool {
         match self {
             Self::Active => state == "active",
@@ -683,6 +694,35 @@ mod tests {
         }
         assert!(!ObservationPhase::Active.accepts("inactive", Some("dead")));
         assert!(!ObservationPhase::StartingOrRunning.accepts("inactive", Some("dead")));
+    }
+
+    #[test]
+    fn stopped_nix_readback_accepts_the_managers_null_invocation_encoding() {
+        let stopped = ObservationPhase::StoppedNix;
+        assert!(stopped.accepts_invocation("inactive", &[]));
+        assert!(stopped.accepts_invocation("inactive", &[0; 16]));
+        assert!(stopped.accepts_invocation("inactive", &[1; 16]));
+        assert!(!stopped.accepts_invocation("active", &[]));
+
+        for length in [1, 15, 17] {
+            assert!(!stopped.accepts_invocation("inactive", &vec![1; length]));
+        }
+    }
+
+    #[test]
+    fn absent_stopped_invocation_cannot_authenticate_an_active_or_completed_service() {
+        for phase in [
+            ObservationPhase::Active,
+            ObservationPhase::OptionalActive,
+            ObservationPhase::StartingOrRunning,
+            ObservationPhase::SuccessfulOneshot,
+        ] {
+            assert!(!phase.accepts_invocation("active", &[]));
+            assert!(!phase.accepts_invocation("inactive", &[]));
+            assert!(!phase.accepts_invocation("active", &[0; 16]));
+            assert!(phase.accepts_invocation("active", &[1; 16]));
+        }
+        assert!(ObservationPhase::OptionalActive.accepts_invocation("inactive", &[0; 16]));
     }
 
     #[test]

@@ -444,6 +444,23 @@ Recent committed startup fixes close narrower prerequisites:
   not live kernel/device proof, complete unit-input admission, installed
   production qualification or writer/TPM authority.
 
+- The latest installed offline key-preparation candidate passes its service
+  property stage, then exits with the stopped-runtime invalid-unit class 95.
+  Its Controller is inactive/dead with PID zero and an empty InvocationID.
+  Packaged systemd 261.2's `bus_property_get_id128` serializes a null ID as an
+  empty byte array; the SDK incorrectly required sixteen bytes even for a
+  stopped owner. The shared bookend now accepts that representation only for
+  the stopped inactive phase. It still requires exact before/after tuples,
+  inactive/dead state, PID zero and the same unique PID1; the caller separately
+  checks native empty/absent cgroups. Active, starting and successful-oneshot
+  phases retain their nonzero sixteen-byte invocation requirement. All seven
+  focused SDK regressions pass, including cross-phase rejection and malformed
+  widths. Complete Rust target compilation and the corrected hardware-free
+  enforcing QEMU preparation test are running. The failed frozen candidate
+  includes pending combined policy/custody changes and older Parent05;
+  this finding does not qualify that candidate, physical floor initialization
+  or the public lifecycle.
+
 - The isolated manager candidate gives initrd SwitchRoot its own appended
   `system:aos_switch_root` permission. Production grants only `init_t` to itself;
   whole-policy checks reject foreign grants, including disabled and attribute
