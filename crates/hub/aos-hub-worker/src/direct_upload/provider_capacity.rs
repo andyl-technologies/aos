@@ -325,7 +325,8 @@ pub(crate) async fn acquire_class_checked<F: Fn() -> Result<()>>(
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
-async fn poll_with_runtime_ticks<F, T>(
+/// Re-polls pending work in its runtime context when a foreign wakeup is missed.
+pub(crate) async fn poll_with_runtime_ticks<F, T>(
     pending: F,
     mut tick: impl FnMut(std::time::Duration) -> T,
 ) -> F::Output
@@ -335,10 +336,9 @@ where
 {
     let mut pending = Box::pin(pending);
     loop {
-        // Runtime I/O keeps the wait in its original context and repeats the
-        // caller's cutoff check when another object releases provider capacity.
-        // Short metadata requests must not leave an eligible FIFO head asleep
-        // for tens of milliseconds after its provider slot becomes available.
+        // Runtime I/O keeps the wait in its original context. A missed foreign
+        // wakeup must not leave capacity idle or an already completed response
+        // holding its provider slot for tens of milliseconds.
         let timer = Box::pin(tick(std::time::Duration::from_millis(5)));
         match futures_util::future::select(pending, timer).await {
             futures_util::future::Either::Left((result, _)) => return result,

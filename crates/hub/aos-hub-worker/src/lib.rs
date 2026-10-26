@@ -186,6 +186,9 @@ mod e2e_surface;
 pub mod edgeratelimit;
 #[cfg(any(test, target_arch = "wasm32"))]
 pub mod external_object;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "external_object/request_capacity/progress.rs"]
+mod provider_response_progress_tests;
 #[cfg(any(target_arch = "wasm32", test))]
 mod frozen_surface_access;
 #[cfg(target_arch = "wasm32")]

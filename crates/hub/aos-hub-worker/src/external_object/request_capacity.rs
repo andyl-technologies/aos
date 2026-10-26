@@ -16,6 +16,7 @@ use worker::{Env, Fetch, Headers, Request, Response, ResponseBody};
 use super::copy::{lifetime::Lifetime, stream::Reader};
 use crate::direct_upload::provider_capacity::{self, policy, Class};
 
+mod progress;
 pub(super) mod raw;
 
 /// Distinguishes legacy forwarding from an installed scoped request.
@@ -181,14 +182,7 @@ impl<'a> Scope<'a> {
                 Either::Left((result, _)) | Either::Right((result, _)) => result,
             }
         };
-        futures_util::pin_mut!(work, stop);
-        match select(work, stop).await {
-            Either::Left((result, _)) => {
-                self.check()?;
-                result
-            }
-            Either::Right((result, _)) => result,
-        }
+        progress::run(work, stop, &|| self.check(), worker::Delay::from).await
     }
 }
 
