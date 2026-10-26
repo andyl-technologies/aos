@@ -91,6 +91,19 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+Both complete publisher owning gates at `330e82243d` pass in 1,216.385
+seconds. Independent review verifies all eight original KVM guests, all eleven
+original outputs, 135 ordinary plus five administrator filesystem cases,
+seventeen socket cases, ten publication selectors, seven distinct role
+identities and the enrollment/reassembly controls. Source and retained Cargo
+executable checks pass; 39 regular raw files and three validated aggregate
+symlink records are preserved. The original aggregate success wording is
+checked exactly after preserving the reviewer's incorrect `PASS`-prefix
+assumption. No runtime control changes. The [publisher audit](acceptance/publisher-role.md)
+records this renewal and PROTO-58's remaining separately named crash-recovery
+gate. Its current-source preflight leaves 28 original derivations. Acceptance
+remains 27/64 pending that gate and complete clause reconciliation.
+
 Complete publisher owning-gate renewal at `d70df3c1a2` stops during AOS
 prerequisite construction in 525.215 seconds. The host-cache image's source
 inventory omits exactly the five new publisher listener-retirement cases;
@@ -13591,7 +13604,7 @@ requirements; it does not grant acceptance.
   `checks.terrane.gates.host-publish-sequence`.
   The [publisher role audit](acceptance/publisher-role.md) maps all ten assigned
   clauses to implementation, required evidence and current qualification limits;
-  complete owning-gate renewal remains pending.
+  both owning gates pass; PROTO-58 crash-recovery renewal remains pending.
 - [ ] **T-STORE-3** `shared-dir` backend and per-domain object directories.
   — satisfies STORE-14, DOM-12 to DOM-15, HOST-27;
   `checks.terrane.gates.shared-dir-read-only`,

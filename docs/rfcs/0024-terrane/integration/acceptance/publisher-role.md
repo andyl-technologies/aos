@@ -1,10 +1,10 @@
 # T-HOST-2 publisher role audit
 
 This audit inspects the publisher implementation at
-`d70df3c1a2d4558c84322ec7acca21f66ee8a146`. It does not accept T-HOST-2.
+`330e82243d9441a63e9fbbb7672b9e4fd6883041`. It does not accept T-HOST-2.
 The complete `publisher-sole-writer` and `host-publish-sequence` owning gates
-still require renewal at this source. Passing a focused component check does
-not replace either gate or the clause review below.
+pass at this source. PROTO-58 also names `host-crash-recovery`; that gate
+requires renewal before completing this clause review.
 
 ## Requirement coverage
 
@@ -32,25 +32,42 @@ listener identities, and two clean stops. Required application-target
 compilation separately passes in 703.613 seconds for 190 targets across 59
 packages; compilation establishes no execution.
 
-The owning-verifier correction at `5c4a228973` adds the five retirement cases
-to its expected socket inventory. It does not change the Rust implementation
-or qualify the complete owning gates. Renewal at `d70df3c1a2` must include this
-corrected verifier and the original full dependency graph.
+At frozen `330e82243d`, both complete owning gates pass in 1,216.385
+seconds. Independent review matches all 9,596 tracked source files, 8,297
+immutable image-source files, 5,535 cache-image inputs, the actual retained
+Cargo executables and all eleven originally missing derivations. All eight
+original KVM guests pass: publication, cache units, recovery, eviction,
+multi-identity transport, native transport, enrollment and reassembly. The
+cache unit guest executes exactly 135 ordinary and five administrator cases
+with its original ext4, identity, empty-capability and no-new-privileges controls.
 
-That renewal stops during AOS prerequisite construction in 525.215 seconds:
-the host-cache image's separate native source inventory omits the same five
-publisher retirement cases. All original cases remain declared. The inventory
-correction preserves them and requires 135 ordinary base cases or 263 ordinary
-FUSE-profile cases, with the original five administrator creator cases in each
-profile. Both source contracts pass; native image construction and complete
-owning-gate renewal still require a fresh run. The failed run's raw records and
-independent attribution review remain preserved.
+The current transport executes all seventeen socket cases and twelve pure
+protocol cases. The publication guest executes all ten original selectors,
+including cancellation through actual binding durability and failed-binding
+rollback. Seven distinct kernel role identities retain the original six
+non-publisher namespace-refusal controls; native handoff remains read-only
+and cannot be reopened writable. Enrollment and reassembly retain all fifteen
+common controls, fresh quota queries and distinct sealed inodes. Their original
+capabilities-update refusal remains explicitly unqualified. These results do
+not supply a global NativeReady or physical-release claim.
 
-The corrected image builds at `c6a9a68393`. Its metadata review finds that the
-publisher verifier also omits the image's recorded `host_cache_mount_views_vm.py`
-input. The expected helper inventory now includes it and preserves exact
-source equality. This is a source-verifier correction; complete owning-gate
-execution and acceptance remain pending.
+Earlier renewal attempts exposed two stale expected inventories: five listener
+retirement cases and the recorded `host_cache_mount_views_vm.py` helper. The
+corrections preserve every original case and exact input equality. Independent
+review preserves each refusal and its attribution. The successful run's eleven
+original outputs are retained as 39 hashed regular files and three checked
+cache-aggregate symlink records. The reviewer's initial assumption that every
+aggregate result begins with `PASS` is also preserved; the original publication
+aggregate's exact descriptive success message is checked against its source.
+No original runtime assertion or guest resource limit changes.
+
+PROTO-58 still requires the separately named `host-crash-recovery` gate. Its
+current-source preflight identifies 28 remaining derivations, including the
+original configured-SDK, private-release, cold-pressure and recovery-selector
+prerequisites. The passing publisher gates do not replace that dependency graph.
+The earlier manager result retains its original source attribution: production
+source equality alone cannot transfer execution evidence between executables
+whose actual hashes differ.
 
 The separate 194.410-second warm Serve-restart observation at `10699f7b5d`
 preserves the original units, credentials, endpoints, configuration and limits.
@@ -60,9 +77,9 @@ metadata. This is a qualified failure observation, not Serve restart acceptance.
 SDK checkout still requires a new private directory; deleting or reusing the
 completed snapshots would not qualify that original contract.
 
-Acceptance requires complete current-source gate results, their source and
-actual-executable review, and reconciliation of every clause above. These
-results do not accept T-HOST-1, other process roles, protocol services or global
+Acceptance requires the remaining current-source crash-recovery gate result,
+its source and actual-executable review, and reconciliation of every clause
+above. These results do not accept T-HOST-1, other process roles, protocol services or global
 architecture conformance.
 
 [configured]: ../../../../../crates/terrane/linux/terrane-linux/src/configured.rs
