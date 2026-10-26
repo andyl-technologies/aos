@@ -43,11 +43,7 @@ fn child_poll_preserves_signal_termination_as_unclean() -> Result<(), Box<dyn Er
 
     let child = Command::new("sleep").arg("60").spawn()?;
     let mut child = QemuNodeChild::new(child);
-    signal_child(
-        child.child.id(),
-        libc::SIGTERM,
-        "terminate child test fixture",
-    )?;
+    child.send_sigterm()?;
     wait_for_test_child_exit_pending(&child)?;
     let status = child
         .try_wait_natural_exit()?
@@ -56,6 +52,29 @@ fn child_poll_preserves_signal_termination_as_unclean() -> Result<(), Box<dyn Er
     assert!(!status.success());
     assert_eq!(status.signal(), Some(libc::SIGTERM));
     assert!(child.reaped());
+    Ok(())
+}
+
+#[test]
+fn shutdown_signals_collect_an_exited_child_before_using_its_pid() -> Result<(), Box<dyn Error>> {
+    for signal in [libc::SIGTERM, libc::SIGKILL] {
+        let child = Command::new("true").spawn()?;
+        let mut child = QemuNodeChild::new(child);
+        // NOWAIT keeps the exited child's PID reserved until the production
+        // signal path consumes its actual wait status. No reused PID is used.
+        wait_for_test_child_exit_pending(&child)?;
+
+        if signal == libc::SIGTERM {
+            child.send_sigterm()?;
+        } else {
+            child.send_sigkill()?;
+        }
+
+        assert!(child.reaped());
+        child.send_sigterm()?;
+        child.send_sigkill()?;
+        assert!(child.reaped());
+    }
     Ok(())
 }
 

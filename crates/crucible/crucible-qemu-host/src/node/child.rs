@@ -232,11 +232,33 @@ impl QemuNodeChild {
     }
 
     pub(super) fn send_sigterm(&mut self) -> Result<(), QemuShutdownTargetError> {
-        signal_child(self.child.id(), libc::SIGTERM, "send SIGTERM")
+        self.signal_running_child(libc::SIGTERM, "send SIGTERM")
     }
 
     pub(super) fn send_sigkill(&mut self) -> Result<(), QemuShutdownTargetError> {
-        signal_child(self.child.id(), libc::SIGKILL, "send SIGKILL")
+        self.signal_running_child(libc::SIGKILL, "send SIGKILL")
+    }
+
+    fn signal_running_child(
+        &mut self,
+        signal: libc::c_int,
+        operation: &'static str,
+    ) -> Result<(), QemuShutdownTargetError> {
+        if self.reaped {
+            return Ok(());
+        }
+
+        // A successful kernel wait can precede a refused Source journal post.
+        // Consult the actual wait owner before using its numeric PID: an error
+        // retains custody, and a collected child's PID is never signaled again.
+        match self.child.try_wait() {
+            Ok(Some(_)) => {
+                self.mark_reaped();
+                Ok(())
+            }
+            Ok(None) => signal_child(self.child.id(), signal, operation),
+            Err(source) => Err(QemuShutdownTargetError::io(operation, source)),
+        }
     }
 
     pub(super) fn wait_for_exit(
