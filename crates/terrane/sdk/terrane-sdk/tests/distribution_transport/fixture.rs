@@ -24,6 +24,9 @@ pub(super) struct Services {
     pub(super) has_delay: std::time::Duration,
     pub(super) negotiation_response: Option<v1::NegotiateResponse>,
     pub(super) negotiation_delay: std::time::Duration,
+    pub(super) ref_response: Option<v1::RefState>,
+    pub(super) ref_delay: std::time::Duration,
+    pub(super) ref_requests: std::sync::Mutex<Vec<v1::GetRefRequest>>,
 }
 
 fn unsupported() -> connectrpc::ConnectError {
@@ -182,7 +185,25 @@ impl Drop for PendingBody {
 
 #[allow(refining_impl_trait)]
 impl RefService for Services {
-    unavailable_unary!(get_ref, v1::GetRefRequest, v1::RefState);
+    async fn get_ref(
+        &self,
+        _context: RequestContext,
+        request: ServiceRequest<'_, v1::GetRefRequest>,
+    ) -> ServiceResult<v1::RefState> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.ref_requests
+            .lock()
+            .map_err(|_| unsupported())?
+            .push(request.to_owned_message());
+        if !self.ref_delay.is_zero() {
+            tokio::time::sleep(self.ref_delay).await;
+        }
+        match &self.ref_response {
+            Some(response) => Ok(Response::new(response.clone())),
+            None => Err(unsupported()),
+        }
+    }
+
     unavailable_unary!(
         compare_and_swap_ref,
         v1::CompareAndSwapRefRequest,

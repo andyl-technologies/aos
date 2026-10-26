@@ -20,6 +20,75 @@ pub struct RefCodec {
     max_record_bytes: usize,
 }
 
+/// Retains a consistent remote ref value before its commit context is verified.
+///
+/// The canonical record remains private until [`Self::verify`] matches an
+/// independently verified commit and registered profile. Its hints are peer
+/// assertions, never authority to fetch content, perform CAS or select policy.
+#[derive(Clone)]
+pub struct ObservedRefValue {
+    record: RefRecord,
+    profile: String,
+}
+
+impl fmt::Debug for ObservedRefValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ObservedRefValue")
+            .field("commit_hint", &self.record.commit)
+            .field("profile_hint", &self.profile)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ObservedRefValue {
+    /// Borrows the peer's commit hint for independent verification.
+    pub fn commit_hint(&self) -> &Digest {
+        &self.record.commit
+    }
+
+    /// Borrows the peer's untrusted profile name for independent resolution.
+    pub fn profile_hint(&self) -> &str {
+        &self.profile
+    }
+
+    /// Checks an outer home summary without treating it as execution evidence.
+    #[cfg(feature = "tokio")]
+    pub(crate) fn check_home(&self, home: &v1::Locality) -> Result<(), RefWireError> {
+        if self.record.home.region.as_deref().unwrap_or_default() != home.region
+            || self.record.home.zone.as_deref().unwrap_or_default() != home.zone
+            || self.record.home.host.as_deref().unwrap_or_default() != home.host
+        {
+            return Err(RefWireError::SummaryMismatch);
+        }
+        Ok(())
+    }
+
+    /// Returns the complete record after matching independently verified context.
+    ///
+    /// Callers verify the commit and resolve its registered profile themselves.
+    /// Passing the observation's own hints back establishes no such verification.
+    /// Success grants no current permission or future CAS acknowledgement.
+    ///
+    /// # Errors
+    /// Rejects a different commit, an empty verified profile or a profile mismatch.
+    pub fn verify(
+        self,
+        verified_commit: &Digest,
+        verified_profile: &str,
+    ) -> Result<RefRecord, RefWireError> {
+        require_profile(verified_profile)?;
+        if self.record.commit != *verified_commit {
+            return Err(RefWireError::CommitMismatch);
+        }
+        if self.profile != verified_profile {
+            return Err(RefWireError::ProfileMismatch);
+        }
+
+        Ok(self.record)
+    }
+}
+
 impl RefCodec {
     /// Creates a codec with a positive explicit canonical-record byte limit.
     ///
@@ -81,6 +150,35 @@ impl RefCodec {
         verified_profile: &str,
     ) -> Result<RefRecord, RefWireError> {
         require_profile(verified_profile)?;
+        let record = self.decode_summary(value)?;
+        if record.commit != *verified_commit {
+            return Err(RefWireError::CommitMismatch);
+        }
+        if value.profile != verified_profile {
+            return Err(RefWireError::ProfileMismatch);
+        }
+
+        Ok(record)
+    }
+
+    /// Retains a bounded canonical value without accepting its commit context.
+    ///
+    /// This first stage checks canonical encoding and redundant summaries only.
+    /// The private result exposes untrusted hints for acquiring and verifying
+    /// the commit before [`ObservedRefValue::verify`] can return a whole record.
+    ///
+    /// # Errors
+    /// Rejects absent, oversized or malformed canonical records, inconsistent
+    /// summary fields and an empty profile hint.
+    pub fn observe_value(&self, value: &v1::RefValue) -> Result<ObservedRefValue, RefWireError> {
+        require_profile(&value.profile)?;
+        Ok(ObservedRefValue {
+            record: self.decode_summary(value)?,
+            profile: value.profile.clone(),
+        })
+    }
+
+    fn decode_summary(&self, value: &v1::RefValue) -> Result<RefRecord, RefWireError> {
         self.check_size(&value.canonical_ref_record)?;
         let record =
             RefRecord::decode(&value.canonical_ref_record).map_err(RefWireError::Record)?;
@@ -91,13 +189,6 @@ impl RefCodec {
         {
             return Err(RefWireError::SummaryMismatch);
         }
-        if record.commit != *verified_commit {
-            return Err(RefWireError::CommitMismatch);
-        }
-        if value.profile != verified_profile {
-            return Err(RefWireError::ProfileMismatch);
-        }
-
         Ok(record)
     }
 

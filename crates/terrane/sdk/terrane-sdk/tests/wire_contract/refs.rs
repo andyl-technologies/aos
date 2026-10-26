@@ -31,6 +31,44 @@ fn codec() -> RefCodec {
 }
 
 #[test]
+fn observations_require_independent_commit_context_before_whole_record_delivery() {
+    let original = record();
+    let value = codec().encode_value(&original, "terrane-v1").unwrap();
+
+    let observation = codec().observe_value(&value).unwrap();
+
+    assert_eq!(observation.commit_hint(), &original.commit);
+    assert_eq!(observation.profile_hint(), "terrane-v1");
+    assert!(matches!(
+        observation.clone().verify(&[8; 32], "terrane-v1"),
+        Err(RefWireError::CommitMismatch)
+    ));
+    for profile in ["", "other-profile"] {
+        assert!(matches!(
+            observation.clone().verify(&original.commit, profile),
+            Err(RefWireError::ProfileMismatch)
+        ));
+    }
+    assert_eq!(
+        observation.verify(&original.commit, "terrane-v1").unwrap(),
+        original
+    );
+
+    let mut malformed = value.clone();
+    malformed.writer_epoch += 1;
+    assert!(matches!(
+        codec().observe_value(&malformed),
+        Err(RefWireError::SummaryMismatch)
+    ));
+    malformed = value;
+    malformed.profile.clear();
+    assert!(matches!(
+        codec().observe_value(&malformed),
+        Err(RefWireError::ProfileMismatch)
+    ));
+}
+
+#[test]
 fn whole_records_preserve_policy_home_and_candidate_through_wire_roundtrip() {
     let original = record();
     let encoded = codec()

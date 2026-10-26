@@ -33,6 +33,9 @@ pub mod presence;
 /// Receives bounded ancestry, frontier and request-order missing-content hints.
 pub mod negotiation;
 
+/// Receives bounded whole-ref observations before independent commit verification.
+pub mod references;
+
 /// Reads a complete bounded bundle through the generated native RPC client.
 ///
 /// `options` must explicitly set positive message and element-memory limits and

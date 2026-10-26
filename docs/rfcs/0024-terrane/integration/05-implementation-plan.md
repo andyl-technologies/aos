@@ -91,6 +91,40 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The native client now receives bounded `GetRef` observations through the
+generated Ref service. It rejects malformed names, unknown freshness modes and
+missing bounded-read durations before connecting. Complete response reception
+and canonical validation share one absolute deadline. A response must retain
+the exact requested name, report staleness within the requested policy, and
+match every canonical value summary, including a supplied outer home. The
+private observed value exposes only untrusted commit/profile hints; delivering
+its whole record requires matching independently verified commit context. Peer
+metadata does not prove actual freshness, home execution or current permission.
+
+Five new actual-socket cases cover these refusals, exact boundaries, absence,
+preserved policy/candidate fields, record/message limits, transport failure and
+deadline expiry. A portable codec case separately checks the staged context
+boundary without Tokio. The original twenty cases in each owning contract keep
+their relative order, assertions and thirty-second bounds. Formatting, source
+parsing, exact selector registration and PLAN-2 pass; strict compilation and
+fresh native qualification remain pending. This does not implement the
+production Ref service or accept T-PROTO-1.
+
+Renewed native cache prerequisites are running at `e6f214f3ce`. The complete
+preflight classifies all 22 missing prerequisites: two compile-only retained
+images, twelve image-assembly derivations, six actual AOS KVM checks and two
+result aggregates. Their constructors and drivers are unchanged from qualified
+`31aa0ae05f`; every guest retains its 870-second bound, 1,024 MiB and one CPU.
+The remaining matrix and fresh private-builder probe will run only after these
+prerequisites complete and are independently reviewed. No matrix success or
+additional task acceptance is claimed.
+
+Required application-target compilation at `e6f214f3ce` passes in 1,498.897
+seconds. Independent review matches all 8,272 immutable source files and 190
+test-executable build records across 59 packages. This covers compilation of
+the held-index increment, with no retained executable bytes or native runtime
+claim. The later ref-client changes still need their own required compilation.
+
 Required application-target compilation at `513ed9e29a` passes in 1,546.300
 seconds. Independent review matches all 8,268 immutable source files and 190
 test-executable build records across 59 packages. This qualifies compilation
@@ -127,8 +161,8 @@ avoids reacquiring the adapter's own exclusion and grants no mutation authority
 to a read-only holder. Two genuine native fixture cases cover index-only results
 with the actual pack body withheld, original exclusion retention and release,
 duplicate and maximum batches, and refusal of a replaced coordination inode.
-A dedicated exact-selector AOS check is registered. Native qualification and
-required application-target compilation remain pending. Strict all-target Clippy
+A dedicated exact-selector AOS check is registered. Native qualification remains
+pending; required application compilation is reviewed above. Strict all-target Clippy
 passes for default Tokio and explicit `tokio,surface-sdk` native profiles; SDK
 Rust formatting, Nix formatting and parsing, guest-driver parsing and PLAN-2
 pass. All ten preexisting driver case groups retain their exact ordered selector
@@ -146,8 +180,8 @@ cover routing, root-only and foreign decisions, request bounds, malformed replie
 and maximum-length duplicate requests; a dedicated exact-selector AOS check is
 registered. Strict all-target Clippy passes for default Tokio and explicit
 `tokio,surface-sdk` native profiles; SDK Rust formatting, Nix formatting and
-parsing, PLAN-2 and diff checks pass. Runtime qualification and required
-application-target compilation remain pending. This is a scoped backend
+parsing, PLAN-2 and diff checks pass. Runtime qualification remains pending;
+required application compilation is reviewed above. This is a scoped backend
 primitive: the production service must
 still obtain fresh token, revocation and current-ACL authorization for each
 operation. It does not implement the Distribution service or accept T-PROTO-1.

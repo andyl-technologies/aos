@@ -32,6 +32,11 @@ CASES = [
     "negotiation::empty_and_invalid_inputs_never_connect",
     "negotiation::refuses_unsolicited_and_malformed_hints_without_partial_results",
     "negotiation::retains_transport_bounds_deadlines_and_unused_tail_bits",
+    "references::retains_complete_record_until_independent_context_matches",
+    "references::accepts_absence_and_exact_freshness_boundaries_as_peer_claims",
+    "references::invalid_requests_and_call_limits_never_connect",
+    "references::refuses_changed_names_invalid_values_and_exceeded_freshness",
+    "references::preserves_record_message_transport_and_whole_call_bounds",
 ]
 
 
@@ -103,7 +108,7 @@ def main():
     (output / "source-review.json").write_text(json.dumps({
         "source": str(source), "input_sha256": inputs, "artifact": artifact, "executable_sha256": digest,
         "retained_executable": str(retained),
-        "executed_cases": CASES, "scope": "Native HTTP/TLS binding, optional capability-header authentication and bounded membership/negotiation reception over real sockets; no repository authorization or durability claim",
+        "executed_cases": CASES, "scope": "Native HTTP/TLS binding, optional capability-header authentication and bounded membership, negotiation and whole-ref reception over real sockets; no repository authorization, actual ref freshness or durability claim",
     }, indent=2) + "\n")
 
 
