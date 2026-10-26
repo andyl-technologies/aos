@@ -202,6 +202,25 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
         self.optional_public_bytes(15)
     }
 
+    /// Borrows a fixed normal recipe or policy authority's public key.
+    ///
+    /// The original Controller or Nix-owner PID1 delivery must match this
+    /// Source's captured raw32 public credential. Controller ownership and
+    /// broker-plan keys are always required. Its recipe issuer and Nix-owner
+    /// keys may be absent only with the compared disabled Nix endpoint. This
+    /// lends no signing seed, policy authority or caller-selected file.
+    ///
+    /// # Errors
+    /// Refuses missing/ended Source custody, incomplete original admission,
+    /// an entered post or a missing configured public readback.
+    pub fn normal_policy_public_key_bytes_v1(
+        &self,
+        owner: Method46InitialPublicPinOwnerV1,
+        member: Method46InitialPublicPinMemberV1,
+    ) -> Result<Option<Ref<'_, [u8]>>, Method46InitialStartupClosedV1> {
+        self.optional_public_bytes(member.slot(owner))
+    }
+
     /// Borrows one original public signer credential delivered to normal Root.
     ///
     /// Only the five members in [`METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1`]
@@ -405,6 +424,17 @@ mod tests {
         assert!(loan.normal_storage_manifest_bytes_v1().is_err());
         assert!(loan.controller_nix_floor_issuer_bytes_v1().is_err());
         assert!(loan.owner_nix_floor_issuer_bytes_v1().is_err());
+        for owner in [
+            Method46InitialPublicPinOwnerV1::Controller,
+            Method46InitialPublicPinOwnerV1::NixBroker,
+        ] {
+            for member in Method46InitialPublicPinMemberV1::ALL {
+                assert!(
+                    loan.normal_policy_public_key_bytes_v1(owner, member)
+                        .is_err()
+                );
+            }
+        }
         for member in aos_sandbox_policy::signed_inputs::RootStartupCredentialMemberV1::ALL {
             assert!(loan.normal_root_public_key_bytes_v1(member).is_err());
         }

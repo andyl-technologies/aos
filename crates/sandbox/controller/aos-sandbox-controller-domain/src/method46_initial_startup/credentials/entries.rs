@@ -37,6 +37,8 @@ impl Entries {
         self.entered = true;
         if selected[8] != selected[9]
             || selected[8] != selected[15]
+            || selected[8] != selected[16]
+            || selected[20..].iter().any(|value| *value != selected[8])
             || !REQUIRED_CREDENTIAL_SLOTS
                 .iter()
                 .all(|index| selected[*index])
@@ -159,6 +161,8 @@ mod tests {
             selected[8] = mask & 2 != 0;
             selected[9] = selected[8];
             selected[15] = selected[8];
+            selected[16] = selected[8];
+            selected[20..].fill(mask & 2 != 0);
             selected[12] = mask & 4 != 0;
             selected[13] = mask & 8 != 0;
             selected[14] = mask & 16 != 0;

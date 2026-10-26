@@ -17,11 +17,15 @@ use aos_sandbox_broker::receiving::{
 };
 use aos_sandbox_controller_domain::method46_initial_startup::{
     METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1,
-    Method46InitialProvisionReadbackLoanV1, Method46InitialStartupClosedV1,
+    Method46InitialProvisionReadbackLoanV1, Method46InitialPublicPinMemberV1,
+    Method46InitialPublicPinOwnerV1, Method46InitialStartupClosedV1,
 };
 
 mod root_public;
 use root_public::RootPublicKeyOriginal;
+
+mod public_policy_pins;
+use public_policy_pins::PublicPolicyPinOriginal;
 
 mod online_floor_issuer;
 use online_floor_issuer::OnlineFloorIssuerOriginal;
@@ -65,6 +69,8 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     controller_nix_floor: OnlineFloorIssuerOriginal,
     owner_nix_floor_read: Option<Result<(), Method46InitialStartupClosedV1>>,
     owner_nix_floor: OnlineFloorIssuerOriginal,
+    policy_public_reads: [[Option<Result<(), Method46InitialStartupClosedV1>>; 4]; 2],
+    policy_public: [[PublicPolicyPinOriginal; 4]; 2],
     root_public_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; 5],
     root_public: [RootPublicKeyOriginal; 5],
     approval: RefCell<ApprovalVerificationOriginal>,
@@ -115,6 +121,10 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             controller_nix_floor: OnlineFloorIssuerOriginal::new(),
             owner_nix_floor_read: None,
             owner_nix_floor: OnlineFloorIssuerOriginal::new(),
+            policy_public_reads: std::array::from_fn(|_| std::array::from_fn(|_| None)),
+            policy_public: std::array::from_fn(|_| {
+                std::array::from_fn(|_| PublicPolicyPinOriginal::new())
+            }),
             root_public_reads: std::array::from_fn(|_| None),
             root_public: std::array::from_fn(|_| RootPublicKeyOriginal::new()),
             approval: RefCell::new(ApprovalVerificationOriginal::new()),
@@ -263,6 +273,38 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             return;
         }
 
+        for (owner_index, owner) in [
+            Method46InitialPublicPinOwnerV1::Controller,
+            Method46InitialPublicPinOwnerV1::NixBroker,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (member_index, member) in Method46InitialPublicPinMemberV1::ALL
+                .into_iter()
+                .enumerate()
+            {
+                let bytes = match self
+                    .readback
+                    .normal_policy_public_key_bytes_v1(owner, member)
+                {
+                    Ok(bytes) => {
+                        self.policy_public_reads[owner_index][member_index] = Some(Ok(()));
+                        bytes
+                    }
+                    Err(error) => {
+                        self.policy_public_reads[owner_index][member_index] = Some(Err(error));
+                        return;
+                    }
+                };
+                let original = &mut self.policy_public[owner_index][member_index];
+                original.observe_once(owner, member, bytes.as_deref(), approval);
+                if !original.admitted() {
+                    return;
+                }
+            }
+        }
+
         for (index, member) in METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1
             .into_iter()
             .enumerate()
@@ -297,6 +339,16 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             && self.controller_nix_floor.admitted()
             && matches!(self.owner_nix_floor_read, Some(Ok(())))
             && self.owner_nix_floor.admitted()
+            && self
+                .policy_public_reads
+                .iter()
+                .flatten()
+                .all(|read| matches!(read, Some(Ok(()))))
+            && self
+                .policy_public
+                .iter()
+                .flatten()
+                .all(PublicPolicyPinOriginal::admitted)
             && self
                 .root_public_reads
                 .iter()

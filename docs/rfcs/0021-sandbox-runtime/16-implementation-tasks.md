@@ -31,6 +31,28 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Initial approval exclusion now also covers the actual Controller and Nix
+  owner's recipe, ownership-lease and Host/Mount broker-plan public pins. The
+  two owners may select different sources; both original PID1 delivery samples
+  must match each selected source independently. Controller ownership and plan
+  pins remain mandatory with Nix disabled; recipe and Nix-owner pins require
+  the compared endpoint selection. The same Source retains all eight added
+  raw32 files and their held/named posts, prepaying the twenty-four-file maximum
+  and 124 descriptor carriers. The existing 32 KiB codec allowance still passes
+  both compiled feature-layout checks; bank capacities remain unchanged.
+  Separate typed width/key decode results exclude malformed or weak keys and
+  reuse of approval by any member, without requiring independent normal owners
+  to use different signing keys. Source aliases are limited to the explicit
+  same-format normal public-pin groups; approval, auth and other formats remain
+  excluded. The genuine loan has only closed owner/member selectors and no
+  private authentication or signing-seed accessor. All 86 focused initializer,
+  426 ordinary Security and 435 online-Nix Security tests pass; each Security
+  suite retains two existing ignored cases. Complete application unit/integration
+  target compilation is running for the eight final Rust inputs. Offline Nix
+  approval provenance, remaining Root trust families, full endpoint provenance,
+  durable intent, installed TPM effects and public lifecycle qualification
+  remain open.
+
 - The configured Nix owner's ONLINE floor issuer now follows the Controller
   issuer's initial approval-key exclusion. Its public credential, Nix endpoint
   manifest and Controller issuer must be selected together in the actual
@@ -91,7 +113,9 @@ Recent committed startup fixes close narrower prerequisites:
   428 online-Nix Security tests pass; each Security suite retains two existing
   ignored cases. The expanded decoders fit the existing prepaid 32 KiB allowance
   checked against compiled layouts. Complete application unit/integration
-  target compilation is running for the final seven Rust inputs.
+  target compilation passes for the final seven Rust inputs
+  (`/nix/store/p00azhns0mb4k3aqlgxbrnzbhhn8wrbg-aos-test-targets-0.1.0`),
+  before the Root, Nix-owner and policy-pin additions.
   The Nix owner's ONLINE issuer, offline Nix approval keys, Root public-key
   delivery, remaining provenance and installed effects remain unqualified.
 

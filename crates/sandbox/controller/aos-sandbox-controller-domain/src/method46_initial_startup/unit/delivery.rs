@@ -8,7 +8,10 @@
 
 use aos_systemd_client::{OwnedValue, Value};
 
-use super::super::credentials::{NAMES, REQUIRED_CREDENTIAL_SLOTS};
+use super::super::credentials::{
+    Method46InitialPublicPinMemberV1 as PublicMember,
+    Method46InitialPublicPinOwnerV1 as PublicOwner, NAMES, REQUIRED_CREDENTIAL_SLOTS,
+};
 use super::{Method46InitialServiceRoleV1, Method46InitialStartupClosedV1};
 
 const SIGNATURES: [&str; 6] = ["a(ss)", "a(ss)", "a(say)", "a(say)", "as", "a(ss)"];
@@ -78,12 +81,16 @@ fn selected_sources(
             }
             continue;
         };
-        // ONLINE Controller and owner may deliberately share one public issuer.
-        // No other alias is valid, especially approval or private index auth.
+        // Normal owners may share public raw32 policy pins or the two raw48
+        // ONLINE issuers. Approval and private index auth cannot alias either.
         if selected[..index]
             .iter()
             .enumerate()
-            .any(|(previous, value)| *value == source && (previous, index) != (9, 15))
+            .any(|(previous, value)| {
+                *value == source
+                    && (previous, index) != (9, 15)
+                    && !((16..24).contains(&previous) && (16..24).contains(&index))
+            })
         {
             return Err(Method46InitialStartupClosedV1);
         }
@@ -93,6 +100,10 @@ fn selected_sources(
     // this actual Controller is configured with the Nix endpoint.
     if selected[8].is_empty() != selected[9].is_empty()
         || selected[8].is_empty() != selected[15].is_empty()
+        || selected[8].is_empty() != selected[16].is_empty()
+        || selected[20..]
+            .iter()
+            .any(|source| source.is_empty() != selected[8].is_empty())
     {
         return Err(Method46InitialStartupClosedV1);
     }
@@ -187,7 +198,7 @@ pub(super) fn require_other_normal_manifest_sources(
     {
         require_source(values, name, (!expected.is_empty()).then_some(*expected))?;
     }
-    Ok(())
+    require_policy_public_sources(values, fragment, PublicOwner::Controller)
 }
 
 pub(super) fn require_normal_root_public_sources(
@@ -220,7 +231,25 @@ pub(super) fn require_normal_nix_owner_source(
     if expected.is_empty() {
         return Err(Method46InitialStartupClosedV1);
     }
-    require_named_source(values, "nix-online-floor-issuer-v1", expected)
+    require_named_source(values, "nix-online-floor-issuer-v1", expected)?;
+    require_policy_public_sources(values, fragment, PublicOwner::NixBroker)
+}
+
+fn require_policy_public_sources(
+    values: &[OwnedValue],
+    fragment: &[u8],
+    owner: PublicOwner,
+) -> Result<(), Method46InitialStartupClosedV1> {
+    let sources = selected_sources(fragment)?;
+    for member in PublicMember::ALL {
+        let expected = sources[member.slot(owner)];
+        require_source(
+            values,
+            member.name(),
+            (!expected.is_empty()).then_some(expected),
+        )?;
+    }
+    Ok(())
 }
 
 fn require_named_source(
@@ -440,7 +469,7 @@ mod tests {
     }
 
     fn other_normal_rows() -> Vec<(String, String)> {
-        [
+        let mut rows = [
             "host-manifest",
             "mount-manifest",
             "network-manifest",
@@ -456,7 +485,30 @@ mod tests {
                 format!("/run/credentials/@system/external-{}", index + 4),
             )
         })
-        .collect()
+        .collect::<Vec<_>>();
+        rows.extend(policy_rows(PublicOwner::Controller));
+        rows
+    }
+
+    fn policy_rows(owner: PublicOwner) -> Vec<(String, String)> {
+        PublicMember::ALL
+            .into_iter()
+            .map(|member| {
+                (
+                    member.name().to_owned(),
+                    format!("/run/credentials/@system/external-{}", member.slot(owner)),
+                )
+            })
+            .collect()
+    }
+
+    fn nix_owner_rows() -> Vec<(String, String)> {
+        let mut rows = vec![(
+            "nix-online-floor-issuer-v1".to_owned(),
+            "/run/credentials/@system/external-15".to_owned(),
+        )];
+        rows.extend(policy_rows(PublicOwner::NixBroker));
+        rows
     }
 
     #[test]
@@ -479,7 +531,7 @@ mod tests {
             rows.reverse();
         }
 
-        for index in 0..6 {
+        for index in 0..10 {
             let mut missing = other_normal_rows();
             missing.remove(index);
             let mut duplicate = other_normal_rows();
@@ -649,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_two_online_public_issuer_sources_may_alias() {
+    fn only_normal_public_pins_with_the_same_format_may_alias() {
         let fragment = fragment();
         for source in 0..NAMES.len() {
             for destination in 0..NAMES.len() {
@@ -663,7 +715,8 @@ mod tests {
 
                 assert_eq!(
                     selected_sources(aliased.as_bytes()).is_ok(),
-                    matches!((source, destination), (9, 15) | (15, 9)),
+                    matches!((source, destination), (9, 15) | (15, 9))
+                        || ((16..24).contains(&source) && (16..24).contains(&destination)),
                     "source {source} destination {destination}",
                 );
             }
@@ -672,7 +725,7 @@ mod tests {
 
     #[test]
     fn configured_nix_requires_its_controller_floor_issuer_source() {
-        for missing in [8, 9, 15] {
+        for missing in [8, 9, 15, 16, 20, 21, 22, 23] {
             let text = fragment();
             let mismatched = text
                 .lines()
@@ -695,7 +748,7 @@ mod tests {
         assert!(nix_owner_selected(fragment.as_bytes()).unwrap());
         assert!(
             require_normal_nix_owner_source(
-                &normal_properties(vec![expected.clone()]),
+                &normal_properties(nix_owner_rows()),
                 fragment.as_bytes(),
             )
             .is_ok()
@@ -703,30 +756,28 @@ mod tests {
 
         // The same public ONLINE issuer may be delivered to both owners.
         let shared = fragment.replace("@system/external-15\n", "@system/external-9\n");
+        let mut shared_rows = nix_owner_rows();
+        shared_rows[0].1 = "/run/credentials/@system/external-9".to_owned();
         assert!(
-            require_normal_nix_owner_source(
-                &normal_properties(vec![(
-                    expected.0.clone(),
-                    "/run/credentials/@system/external-9".to_owned()
-                )]),
-                shared.as_bytes(),
-            )
-            .is_ok()
+            require_normal_nix_owner_source(&normal_properties(shared_rows), shared.as_bytes(),)
+                .is_ok()
         );
 
-        for rows in [
-            vec![],
-            vec![expected.clone(), expected.clone()],
-            vec![(
-                expected.0.clone(),
-                "/run/credentials/@system/foreign".to_owned(),
-            )],
-            vec![("foreign-issuer".to_owned(), expected.1.clone())],
-        ] {
-            assert!(
-                require_normal_nix_owner_source(&normal_properties(rows), fragment.as_bytes())
-                    .is_err()
-            );
+        for index in 0..5 {
+            let mut missing = nix_owner_rows();
+            missing.remove(index);
+            let mut duplicate = nix_owner_rows();
+            duplicate.push(duplicate[index].clone());
+            let mut substituted = nix_owner_rows();
+            substituted[index].1 = "/run/credentials/@system/foreign".to_owned();
+            let mut renamed = nix_owner_rows();
+            renamed[index].0 = "foreign-public-pin".to_owned();
+            for rows in [missing, duplicate, substituted, renamed] {
+                assert!(
+                    require_normal_nix_owner_source(&normal_properties(rows), fragment.as_bytes())
+                        .is_err()
+                );
+            }
         }
         for (index, changed) in [
             (1, value(vec![(expected.0.clone(), expected.1.clone())])),
@@ -735,7 +786,7 @@ mod tests {
             (4, value(vec!["*".to_owned()])),
             (5, value(vec![("*".to_owned(), "*".to_owned())])),
         ] {
-            let mut values = normal_properties(vec![expected.clone()]);
+            let mut values = normal_properties(nix_owner_rows());
             values[index] = changed;
             assert!(require_normal_nix_owner_source(&values, fragment.as_bytes()).is_err());
         }
@@ -746,7 +797,7 @@ mod tests {
         let fragment = fragment()
             .lines()
             .filter(|line| {
-                ![8, 9, 15]
+                ![8, 9, 15, 16, 20, 21, 22, 23]
                     .into_iter()
                     .any(|index| line.starts_with(&format!("LoadCredential={}:", NAMES[index])))
             })
@@ -769,6 +820,8 @@ mod tests {
                 selected[8] = nix;
                 selected[9] = nix;
                 selected[15] = nix;
+                selected[16] = nix;
+                selected[20..].fill(nix);
                 let fragment = NAMES
                     .iter()
                     .enumerate()
@@ -792,9 +845,13 @@ mod tests {
                     .collect::<Vec<_>>();
                 let normal_rows = other_normal_rows()
                     .into_iter()
-                    .enumerate()
-                    .filter(|(index, _)| selected[index + 4])
-                    .map(|(_, row)| row)
+                    .filter(|(name, _)| match name.as_str() {
+                        "mount-fuse-manifest" => mount_fuse,
+                        "nix-broker-session-manifest-v1"
+                        | "nix-online-floor-issuer-v1"
+                        | "nix-recipe-issuer-v2" => nix,
+                        _ => true,
+                    })
                     .collect::<Vec<_>>();
                 let mut values = properties();
                 values[12] = value(initial_rows.clone());
