@@ -91,6 +91,25 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The corrected current-read AOS batch at `3f05115d6d` fails in 307.015
+seconds. Both deterministic stream controls and the original publication-change
+point read execute successfully, providing measured evidence for the native
+context refresh. The next ACL-refusal fixture incorrectly expects server-stream
+construction to return a protocol error; Connect delivers that error when its
+first message is polled. No message was consumed by the failed assertion, so
+it establishes no disclosure. The original nine-case inventory, source
+fingerprint and complete failed diagnostics are preserved; the complete service
+check remains failed.
+
+The refusal fixtures now poll the first message and require an error, refusing
+both a disclosed row and clean empty completion. They retain the exact expected
+NOT_FOUND, INVALID_ARGUMENT and UNIMPLEMENTED codes for denied history,
+malformed listing, response budgets and unavailable watch. All nine selectors,
+original limits and production code remain unchanged. Strict Clippy passes for
+both native SDK profiles, SDK formatting and PLAN-2 pass. Fresh complete AOS
+qualification and required application compilation remain pending. Acceptance
+remains 28/64.
+
 The first local Ref service AOS batch at `b4da3201d2` fails in 299.524
 seconds. Its first case reads the initial whole record successfully, then the
 second RPC refuses after the independent writer publishes a genuine successor.

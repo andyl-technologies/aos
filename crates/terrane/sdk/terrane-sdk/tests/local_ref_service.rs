@@ -302,7 +302,7 @@ async fn genuine_signatures_and_broad_grants_do_not_override_repository_acl() ->
     )
     .await?;
     assert!(denied.entries.is_empty());
-    let error = running
+    let mut stream = running
         .client
         .get_ref_log_with_options(
             v1::GetRefLogRequest {
@@ -311,6 +311,9 @@ async fn genuine_signatures_and_broad_grants_do_not_override_repository_acl() ->
             },
             options(&foreign)?,
         )
+        .await?;
+    let error = stream
+        .message()
         .await
         .err()
         .ok_or("denied history unexpectedly disclosed")?;
@@ -460,7 +463,7 @@ async fn malformed_requests_refuse_and_home_reads_satisfy_all_freshness_modes() 
         assert_eq!(record, expected);
     }
     for pattern in ["refs/heads/**:/root", "refs/heads/../main", ""] {
-        let error = running
+        let mut stream = running
             .client
             .list_refs_with_options(
                 v1::ListRefsRequest {
@@ -469,6 +472,9 @@ async fn malformed_requests_refuse_and_home_reads_satisfy_all_freshness_modes() 
                 },
                 options(fixture.authority.token())?,
             )
+            .await?;
+        let error = stream
+            .message()
             .await
             .err()
             .ok_or("malformed list request succeeded")?;
@@ -526,7 +532,7 @@ async fn response_budgets_refuse_whole_results_at_exact_boundaries() -> TestResu
         )
         .await?;
     let running = start(&fixture, bounds).await?;
-    let error = running
+    let mut stream = running
         .client
         .list_refs_with_options(
             v1::ListRefsRequest {
@@ -535,11 +541,14 @@ async fn response_budgets_refuse_whole_results_at_exact_boundaries() -> TestResu
             },
             options(fixture.authority.token())?,
         )
+        .await?;
+    let error = stream
+        .message()
         .await
         .err()
         .ok_or("over-budget listing succeeded")?;
     assert_eq!(error.code, ErrorCode::InvalidArgument);
-    let error = running
+    let mut stream = running
         .client
         .get_ref_log_with_options(
             v1::GetRefLogRequest {
@@ -548,6 +557,9 @@ async fn response_budgets_refuse_whole_results_at_exact_boundaries() -> TestResu
             },
             options(fixture.authority.token())?,
         )
+        .await?;
+    let error = stream
+        .message()
         .await
         .err()
         .ok_or("over-budget history succeeded")?;
@@ -593,12 +605,15 @@ async fn missing_authentication_and_unavailable_mutations_preserve_the_head() ->
                 .err()
                 .ok_or("unimplemented CAS acknowledged")?;
             assert_eq!(error.code, ErrorCode::Unimplemented);
-            let error = running
+            let mut stream = running
                 .client
                 .watch_refs_with_options(
                     v1::WatchRefsRequest::default(),
                     options(fixture.authority.token())?,
                 )
+                .await?;
+            let error = stream
+                .message()
                 .await
                 .err()
                 .ok_or("unimplemented watch succeeded")?;
