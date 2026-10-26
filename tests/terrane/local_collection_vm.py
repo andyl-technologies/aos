@@ -93,13 +93,37 @@ READONLY_REPOSITORY_CASES = [
 ]
 
 
-def verify_image(source, image):
+SCOPED_INDEX_CASES = [
+    "domain::indexed_presence_tests::" + name for name in [
+        "scoped_indexed_presence_filters_unreachable_hashes_before_index_query",
+        "scoped_indexed_presence_bounds_empty_root_only_and_foreign_requests",
+        "scoped_indexed_presence_rejects_short_long_and_failed_index_replies",
+        "scoped_indexed_presence_accepts_maximum_request_order_and_duplicates",
+    ]
+]
+
+HELD_INDEX_CASES = [
+    "bucket::held_indexed_presence_tests::" + name for name in [
+        "held_index_presence_uses_original_exclusion_without_pack_body_reads",
+        "held_index_presence_bounds_requests_and_refuses_replaced_coordination",
+    ]
+]
+
+
+def verify_image(source, image, variant="surface-sdk"):
     """Binds the actual retained Cargo test image to every immutable crate input."""
     identity = json.loads((image / "share/identity.json").read_text())
     assert identity["schema_version"] == 1 and identity["source"] == str(source)
-    assert identity["default_features"] is False
-    assert identity["requested_features"] == ["tokio", "surface-sdk"]
-    assert identity["features"] == ["send", "std", "surface-sdk", "tokio"]
+    if variant == "surface-sdk":
+        assert identity["default_features"] is False
+        assert identity["requested_features"] == ["tokio", "surface-sdk"]
+        assert identity["features"] == ["send", "std", "surface-sdk", "tokio"]
+    elif variant == "default-tokio":
+        assert identity["default_features"] is True
+        assert identity["requested_features"] == ["tokio"]
+        assert identity["features"] == ["default", "send", "std", "tokio"]
+    else:
+        raise ValueError("unknown native SDK test image variant")
     assert identity["cargo_profile"] == "test"
     assert identity["profile"]["test"] is True
     assert identity["profile"]["opt_level"] == "s"
@@ -141,6 +165,7 @@ def main():
     image = Path(os.environ["TERRANE_COLLECTION_TEST_IMAGE"])
     evidence = Path(os.environ["TERRANE_COLLECTION_EVIDENCE"])
     suite = os.environ.get("TERRANE_COLLECTION_SUITE", "collection-reconciliation")
+    case_timeout = 180
     if suite == "collection-reconciliation":
         cases = CASES
     elif suite == "maintenance-owner-hints":
@@ -161,11 +186,19 @@ def main():
         cases = COORDINATION_LOCK_CASES
     elif suite == "readonly-repository":
         cases = READONLY_REPOSITORY_CASES
+    elif suite == "scoped-indexed-presence":
+        cases = SCOPED_INDEX_CASES
+        case_timeout = 30
+    elif suite == "held-indexed-presence":
+        cases = HELD_INDEX_CASES
+        case_timeout = 60
     else:
         raise ValueError("unknown native collection qualification suite")
 
     os.chdir(source / "crates")
-    binary_hash = verify_image(source, image)
+    variant = ("default-tokio" if suite in {"scoped-indexed-presence", "held-indexed-presence"}
+               else "surface-sdk")
+    binary_hash = verify_image(source, image, variant)
     binary = image / "bin/terrane-native-sdk-tests"
     checker = source / "tests/terrane/check_native_gate.py"
     inventory = evidence / "inventory.log"
@@ -178,18 +211,21 @@ def main():
         log = evidence / (case.rsplit("::", 1)[-1] + ".log")
         with log.open("wb") as output:
             completed = subprocess.run([str(binary), case, "--exact", "--test-threads=1"],
-                                       stdout=output, stderr=subprocess.STDOUT, timeout=180)
+                                       stdout=output, stderr=subprocess.STDOUT, timeout=case_timeout)
         print(log.read_text(), end="", flush=True)
         completed.check_returncode()
         subprocess.run([sys.executable, str(checker), "execution", str(log),
                         json.dumps([case])], check=True, timeout=5,
                        stdout=subprocess.DEVNULL)
-    assert verify_image(source, image) == binary_hash
-    print("LOCAL_COLLECTION_RECONCILIATION_PROOF " + json.dumps({
+    assert verify_image(source, image, variant) == binary_hash
+    proof = {
         "source": str(source), "image": str(image), "cases": cases,
         "uid": os.getuid(), "capabilities": 0, "no_new_privileges": True,
         "binary_sha256": binary_hash, "configured_gc_runtime": False,
-    }, sort_keys=True), flush=True)
+    }
+    if suite in {"scoped-indexed-presence", "held-indexed-presence"}:
+        proof.update(suite=suite, case_timeout_seconds=case_timeout)
+    print("LOCAL_COLLECTION_RECONCILIATION_PROOF " + json.dumps(proof, sort_keys=True), flush=True)
     if suite == "collection-reconciliation":
         print("PASS original collection session reconciles actual permanent residues and retains "
               "marking; recovery lease, hardlink and cancellation controls pass", flush=True)
@@ -218,6 +254,12 @@ def main():
     elif suite == "restoration-session":
         print("PASS restoration and fresh marking retain original session poison and lease; "
               "expired handoff has no effects and original Meta restoration still passes", flush=True)
+    elif suite == "scoped-indexed-presence":
+        print("PASS four exact scoped index routing cases preserve bounds, read reachability "
+              "and complete reply validation", flush=True)
+    elif suite == "held-indexed-presence":
+        print("PASS two exact held index cases preserve native exclusion and refuse replaced "
+              "coordination without pack body reads", flush=True)
     else:
         print("PASS actual local-v1 intent discovery survives exact full-D deletion and durable Done",
               flush=True)

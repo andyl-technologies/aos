@@ -169,6 +169,7 @@
   bucketSdkTestImage = import ./native-sdk-test-image.nix {
     variant = "default-tokio";
     sourceGate = sourceGateWithInputs {
+      preserveArtifactBytes = true;
       runtimeDeps = [pkgs.rust pkgs.rust.dev pkgs.diffutils] ++ (pkgs.rust.runtimeDeps or []);
       nukeRefsKeep = [pkgs.terrane.src];
       extraBuildDeps = [pkgs.binutils];
@@ -617,7 +618,14 @@ in {
   integration.store-expression-opened = import ./store-expression-opened.nix {inherit sourceGate;};
   integration.ref-history = import ./ref-history.nix {inherit sourceGate;};
   integration.indexed-presence = import ./indexed-presence.nix {inherit sourceGate;};
-  integration.scoped-indexed-presence = import ./scoped-indexed-presence.nix {inherit sourceGate;};
+  integration.scoped-indexed-presence = import ./scoped-indexed-presence.nix {
+    inherit pkgs lib;
+    image = bucketSdkTestImage;
+  };
+  integration.held-indexed-presence = import ./held-indexed-presence.nix {
+    inherit pkgs lib;
+    image = bucketSdkTestImage;
+  };
   integration.structural-index = import ./structural-index.nix {inherit pkgs sourceGateWithInputs;};
   integration.structural-mapping = (import ./structural-mapping.nix {inherit pkgs lib sourceGateWithInputs;}).native;
   integration.structural-mapping-image = (import ./structural-mapping.nix {inherit pkgs lib sourceGateWithInputs;}).image;

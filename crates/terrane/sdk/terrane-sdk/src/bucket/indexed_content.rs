@@ -3,6 +3,7 @@
 //! Only committed Live merged-index entries count as present. Body verification
 //! remains the ordinary content read path's responsibility; neither standalone
 //! container inventory nor the virtual empty chunk supplies an index entry.
+//! Held adapters use the same observation without reacquiring their namespace.
 
 use std::collections::BTreeSet;
 
@@ -26,18 +27,46 @@ where
     V: ContentValidator + BucketBinding,
 {
     async fn indexed_presence(&self, hashes: &[Digest]) -> Result<Vec<bool>, StoreFailure> {
-        if hashes.len() > MAX_INDEXED_HASHES {
-            return Err(StoreFailure::new(StoreErrorKind::Invalid(
-                InvalidReason::Upload {
-                    rule_id: "PROTO-10",
-                },
-            )));
-        }
+        validate_request(hashes)?;
         if hashes.is_empty() {
             return Ok(Vec::new());
         }
 
         let _exclusion = self.read_exclusion().await?;
+        self.indexed_presence_locked(hashes).await
+    }
+}
+
+/// Rejects excessive batches before acquiring or inspecting a namespace.
+///
+/// # Errors
+/// Returns `Invalid` when more than 4,096 digests were supplied.
+pub(super) fn validate_request(hashes: &[Digest]) -> Result<(), StoreFailure> {
+    if hashes.len() > MAX_INDEXED_HASHES {
+        return Err(StoreFailure::new(StoreErrorKind::Invalid(
+            InvalidReason::Upload {
+                rule_id: "PROTO-10",
+            },
+        )));
+    }
+    Ok(())
+}
+
+impl<F, C, V> FileBucket<F, C, V>
+where
+    F: LocalFs + BucketBinding,
+    C: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+{
+    /// Observes a prevalidated nonempty request under its caller's exclusion.
+    ///
+    /// # Errors
+    /// Refuses malformed catalogs, failed metadata reads and changed selected
+    /// capabilities. This method neither acquires a lock nor reads pack bodies.
+    pub(super) async fn indexed_presence_locked(
+        &self,
+        hashes: &[Digest],
+    ) -> Result<Vec<bool>, StoreFailure> {
         let catalog = self.catalog().await?;
         // Legacy tombstones also exclude their physical pack. Build the complete
         // set once so a batch does not rescan all catalog entries for each hash.

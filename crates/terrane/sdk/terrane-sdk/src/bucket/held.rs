@@ -24,12 +24,12 @@ pub(crate) use super::content::overlay_node_reads::OverlayNodeReads;
 use super::{BucketBinding, FileBucket, files};
 use crate::store::{
     ByteRange, Capabilities, CapabilityReport, Clock, ContentStore, ContentUpload,
-    ContentValidator, IdentityPrefix, LocalFs, RefCasOutcome, RefLogAppendOutcome, RefStore,
-    RefWatch, StoreErrorKind, StoreFailure,
+    ContentValidator, IdentityPrefix, IndexedContent, LocalFs, RefCasOutcome, RefLogAppendOutcome,
+    RefStore, RefWatch, StoreErrorKind, StoreFailure,
 };
 use std::sync::Arc;
 use terrane_format::bucket::BucketKey;
-use terrane_format::identity::Identity;
+use terrane_format::identity::{Digest, Identity};
 use terrane_format::refs::{RefLogRecord, RefRecord};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -565,6 +565,35 @@ impl<
 
     async fn list(&self, prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
         self.bucket.list_locked(prefix).await
+    }
+}
+
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
+impl<
+    F: LocalFs + BucketBinding,
+    C: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+    const WRITABLE: bool,
+> IndexedContent for HeldBucket<'_, F, C, V, WRITABLE>
+{
+    async fn indexed_presence(&self, hashes: &[Digest]) -> Result<Vec<bool>, StoreFailure> {
+        super::indexed_content::validate_request(hashes)?;
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Read access borrows the actual holder; it grants no mutation right.
+        // Calling the unlocked trait here would reacquire our own exclusion.
+        self.retention.receipt()?;
+        if identity(self.bucket).await? != self.identity {
+            return Err(files::layout_corrupt());
+        }
+        let present = self.bucket.indexed_presence_locked(hashes).await?;
+        if identity(self.bucket).await? != self.identity {
+            return Err(files::layout_corrupt());
+        }
+        Ok(present)
     }
 }
 

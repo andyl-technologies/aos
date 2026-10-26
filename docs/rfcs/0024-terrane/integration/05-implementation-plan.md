@@ -91,6 +91,46 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+Required application-target compilation at `513ed9e29a` passes in 1,546.300
+seconds. Independent review matches all 8,268 immutable source files and 190
+test-executable build records across 59 packages. This qualifies compilation
+only, without retained executable bytes. That source's collection run reaches
+actual reconciliation but fails in 1,613.058 seconds: it acknowledges removal of
+both the copied pack and first ownership's real Trash, while the test expects
+one request. The first selector takes 97.30 seconds. Complete failed-guest logs
+and configuration are retained. The corrected test requires exactly those two
+original residues before reconciliation, including the owner's decoded tombstone
+identity, then their exact completion count and physical absence. The late
+single-pack assertion, original owner and lease controls remain unchanged.
+Native confirmation is still required; no collection success is claimed.
+
+The focused scoped-index run at `4a3d4343cb` ends in 795.484 seconds before any
+test executes: the 16 GiB AOS builder's OOM killer terminates full SDK test
+compilation. Raw controller and compiler logs are retained; diagnosed terminal
+VM scratch is removed. Focused index checks now share the existing retained
+default-plus-Tokio SDK test image and run their exact selectors in separate
+capability-free AOS ext4 guests. Compilation remains separate from execution;
+the scoped cases retain their 30-second bounds and new held cases use 60 seconds.
+Artifact bytes are preserved for this image, and the guest verifies the actual
+Cargo test artifact, complete crate inputs and exact native feature selection.
+No native index or routing success is claimed from the failed compilation.
+
+Held native bucket adapters now expose the same committed-index observation as
+the ordinary bucket, using their existing retained namespace exclusion. They
+check original root and coordination inode identities before and after the
+query; empty and excessive batches finish before physical observation. This
+avoids reacquiring the adapter's own exclusion and grants no mutation authority
+to a read-only holder. Two genuine native fixture cases cover index-only results
+with the actual pack body withheld, original exclusion retention and release,
+duplicate and maximum batches, and refusal of a replaced coordination inode.
+A dedicated exact-selector AOS check is registered. Native qualification and
+required application-target compilation remain pending. Strict all-target Clippy
+passes for default Tokio and explicit `tokio,surface-sdk` native profiles; SDK
+Rust formatting, Nix formatting and parsing, guest-driver parsing and PLAN-2
+pass. All ten preexisting driver case groups retain their exact ordered selector
+inventories. This does not supply fresh request authorization or a production
+Distribution service.
+
 `DomainStore::indexed_presence` now routes committed-index queries through the
 operation's Guard-proven read set. It rejects more than 4,096 digests, performs
 no index I/O for empty or entirely unreadable requests, and forwards only the

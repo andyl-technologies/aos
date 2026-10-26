@@ -24,6 +24,8 @@ pub(crate) mod content_observation;
 mod files;
 pub(crate) mod held;
 #[cfg(all(test, feature = "tokio", unix))]
+mod held_indexed_presence_tests;
+#[cfg(all(test, feature = "tokio", unix))]
 mod held_tests;
 #[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
 mod metadata_test_support;
