@@ -1,32 +1,39 @@
-From 0703c5dfef1633a397e8f73d2d94874eec7d6a5f Mon Sep 17 00:00:00 2001
+From ac77c71918f9fabef298e9134ff0754eaf9c54d7 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: preserve ownership integration with unarmed Cleanup
- backing
+Subject: [PATCH] crucible: preserve ownership integration with uncreated
+ Cleanup return
 
 Retain the complete Crucible Source integration, Core quantum bank borrowers,
 fixed Module callbacks, opaque frame acquisition and bounded provider ownership
 interfaces as one complete source tree over the selected base.
 
-Provide canonical application-paid guarded stack custody, checked expanded
-fixed-control payment and separately charged native startup and libc arena
-backing. Connect the retained stack interior and real caller-backed unarmed
-storage to the actual bounded provider initializer. Preserve exact outputs and
-once-only journals before independent posts, including both ranges consumed
-by one initialization. Keep the existing armed constructor's entry contract;
-unarmed creation refuses before physical effects and has no binding operation.
+Provide application-paid guarded stack custody, checked expanded fixed-control
+payment and separately charged startup and libc arena backing. Connect real
+unarmed caller-backed storage and the retained stack interior to actual native
+provider initialization, preserving both-span outcomes before independent posts.
+The existing armed constructor still requires an entry; unarmed creation
+refuses before physical effects and has no entry-binding operation.
 
-Complete-profile Current, containing prebirth payment, workload bounds,
-allocator ownership and genuine terminal producers remain unavailable. This
-resource component enables no Cleanup worker or accepting admission. Physical
-return still requires distinct provider, context/cache/RCU and final outer
-last-use production; byte geometry or a successful join cannot supply them.
+Add a distinct once-only initialized-but-never-created return operation. It
+authenticates retained canonical request/account/process/payment coordinates
+without repeating permission Current after refusal. Actual provider retirement
+and exact uncreated backing receipts precede canonical startup unlink, separate
+resource last-use posts and both physical unmaps. Each application charge
+returns last. Fixed snapshots and independent return failures preserve every
+partial outcome without changing the initiating child failure or issue state.
 
-Source syntax checks pass in default and authentic-header provider compile-only
-configurations. Native owner and component-control objects compile in both;
-Source objects retain the existing unused quantum_rr_actor_birth diagnostic
-with the unchanged warning policy. Source extraction passes. No component,
-provider/startup experiment, guest or runtime activation is executed.
+No worker/kernel/TLS terminal facts or guarded-stack last use are fabricated.
+Complete-profile ownership, genuine containing prebirth payment, complete
+workload bounds, allocator ownership and actual Cleanup execution/terminal
+producers remain missing. This source progress enables no accepting admission,
+worker birth, new Original or complete Cleanup return.
+
+Six Source/native/control syntax checks and four native/control object checks
+pass in default and authentic-header provider compile-only configurations.
+Source extraction passes. Source objects retain the existing unused
+quantum_rr_actor_birth diagnostic with the warning policy unchanged. No
+component, provider/startup experiment, guest or runtime activation is executed.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -20906,10 +20913,10 @@ index 0000000000000000000000000000000000000000..f7f9aec92d438afcb3f8fc93721b9447
 +resource cursor supplies either missing owner.
 diff --git a/docs/devel/crucible-deferred-cleanup-installation.rst b/docs/devel/crucible-deferred-cleanup-installation.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..23adedc669261885ce5533c0e68e7250bd747ce2
+index 0000000000000000000000000000000000000000..8f0b0565d6862f41aabc698f8e49715af8ac6773
 --- /dev/null
 +++ b/docs/devel/crucible-deferred-cleanup-installation.rst
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,287 @@
 +Clock-free Cleanup delegation installation
 +=========================================
 +
@@ -21132,7 +21139,7 @@ index 0000000000000000000000000000000000000000..23adedc669261885ce5533c0e68e7250
 +or turns a failure into custody return.
 +
 +No complete execution profile or terminal producer is supplied. In particular,
-+there is no Cleanup entry, actual worker birth, genuine provider retirement and
++there is no Cleanup entry, actual worker birth, born-worker retirement and
 +storage-return integration, complete allocator owner, context/cache/RCU terminal
 +actor or independent outer-stack-last-use producer. Future return must observe
 +the real provider's exact incarnation and physical backing return before QEMU
@@ -21140,6 +21147,63 @@ index 0000000000000000000000000000000000000000..23adedc669261885ce5533c0e68e7250
 +unmap and final application debit return. A successful join cannot replace those
 +facts. Core bank borrowers, fixed Module callbacks and publisher3/Source
 +admission remain unchanged.
++
++Uncreated native worker return component
++---------------------------------------
++
++A distinct once-only operation can now return the startup and libc mappings of
++an actually initialized, never-created unarmed owner. It authenticates only the
++retained account, exact compiled paid floor, canonical request subextents,
++original construction serial/thread/coroutine and containing process payment.
++The retained request identity does not require a still-held construction and
++does not call permission-granting Current after its terminal or refused state.
++The original preparation/profile/payment requirements remain closed; an empty
++owner, nominated coordinates or a failed admission cannot supply resources.
++This operation changes neither the initiating child failure nor issue state.
++
++The operation first observes actual canonical native provider and storage
++state. It requires unarmed storage with no creation attempt, uncertainty or
++prior return, matching the retained startup mapping and storage incarnation.
++One real ``qemu_thread_bounded_provider_tryretire_v1`` call must produce a
++successful terminal receipt for the exact provider incarnation and libc arena.
++No worker birth, kernel join or TLS-return flags are manufactured for a worker
++that never existed. The real ``provider_storage_return`` then unlinks the
++canonical startup storage and returns its snapshot into fixed Source control.
++These native APIs return custody; Source still owns both mappings and debts.
++
++The initializer supplies only the libc arena to libc; QEMU's paid native wrapper
++retains the stack reservation. Returning an uncreated wrapper does not produce
++the guarded stack's worker or external-last-use facts. The guarded mapping,
++its charge and all of its existing terminal prerequisites remain retained.
++
++Actual completion of the native return is the last native use of both resource
++mappings: libc has returned its backing and the wrapper has left the membership
++list before public native APIs can read it again. Separate retained-teardown
++posts record each resource last use before either unmap. The operation unmaps
++both native mappings, completes independent settlement observations, then
++returns each actual application charge as the last gated effects. No fallible
++post follows reusable capacity. Inline return snapshots and journals are paid
++by the recomputed complete fixed-control floor and exact account subextent.
++
++Return failures have a separate sticky journal and never overwrite
++``child.first_status``. Every native call, receipt, mapping return and refund
++retains its once-only outcome before any independent teardown observation.
++An unsuccessful or interrupted observation leaves exact current custody:
++returned native backing may coexist with a still-mapped, still-charged Source
++owner; an unmapped resource can retain debt. There is no return retry, rearm,
++worker entry or new Original. In particular an unfinished initialization, or
++one lacking a real control/incarnation, cannot be discharged through an empty
++receipt. A negative initialization with real retained outputs may be passed to
++the actual retire API, but only its genuine terminal receipt can release
++backing. The operation supplies no complete Cleanup return or accepting profile.
++
++Without the actual request owner, POSIX and bounded provider, this return API
++returns ``ENOTSUP``. Uninitialized storage is outside this operation's scope;
++its existing native ``return_unstarted`` path cannot bypass an attempted
++initializer. An init-attempted owner with incomplete or absent native outputs
++remains mapped and charged. A successful init followed by a negative parent
++post retains its real canonical native outputs and may use the teardown-only
++boundary; the failed permission observation is never called again or reset.
 diff --git a/docs/devel/crucible-deferred-main-finish.rst b/docs/devel/crucible-deferred-main-finish.rst
 new file mode 100644
 index 0000000000000000000000000000000000000000..0285c0f5d3aca13ee00bdfbc042310b4afe53f97
@@ -100905,10 +100969,10 @@ index 0000000000000000000000000000000000000000..993d837a72a8b7d4a4dbf052e684170d
 +#endif
 diff --git a/include/system/crucible-application.h b/include/system/crucible-application.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..acc41fa1209a74e7e9a977d487dd0b8ee6aa6d12
+index 0000000000000000000000000000000000000000..311aef25ff48165a39e10120addd2a6aeeeb0c1e
 --- /dev/null
 +++ b/include/system/crucible-application.h
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,180 @@
 +/*
 + * Finite TCG context-root resource production, separate from RR admission.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -101019,6 +101083,13 @@ index 0000000000000000000000000000000000000000..acc41fa1209a74e7e9a977d487dd0b8e
 +    QemuCrucibleApplicationCleanupProducer *producer,
 +    const QemuCrucibleApplicationCleanupRequestView *view);
 +
++/* Teardown-only immutable request identity after construction or Current has
++ * ended/refused. The caller separately proves retained physical resources;
++ * this leaf supplies no issue, entry, rearm or admission authority. */
++int qemu_crucible_deferred_cleanup_request_retained_identity_locked_v1(
++    QemuCrucibleApplicationCleanupProducer *producer,
++    const QemuCrucibleApplicationCleanupRequestView *view);
++
 +int qemu_crucible_deferred_cleanup_producer_current_v1(
 +    QemuCrucibleApplicationCleanupProducer *producer);
 +
@@ -101050,6 +101121,13 @@ index 0000000000000000000000000000000000000000..acc41fa1209a74e7e9a977d487dd0b8e
 + * component configuration is not a complete workload bound. Missing provider,
 + * complete-profile Current or containing process payment refuses preeffect. */
 +int qemu_crucible_source_application_cleanup_worker_prepare_v1(
++    QemuCrucibleApplicationCleanupProducer *producer);
++
++/* Once-only teardown of this exact initialized, never-created native owner.
++ * Genuine provider/storage return precedes last use, unmap and final charge
++ * return. Negative or partial outcomes remain retained. This grants no worker
++ * terminal facts, guarded-stack return or complete Cleanup return. */
++int qemu_crucible_source_application_cleanup_worker_return_uncreated_v1(
 +    QemuCrucibleApplicationCleanupProducer *producer);
 +
 +/* Factual retained resource custody, independent of ended construction/Work
@@ -145301,10 +145379,10 @@ index 0000000000000000000000000000000000000000..519afa3957f4cc3aa673d1e343b75ce3
 +}
 diff --git a/plugins/crucible-application-account.h b/plugins/crucible-application-account.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..74c8459da695bc45e80966fa11aa44861d2278a7
+index 0000000000000000000000000000000000000000..5da28c2b628d3bb96878a4562fac8980c91e0438
 --- /dev/null
 +++ b/plugins/crucible-application-account.h
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,346 @@
 +/*
 + * Source-owned application resource parent and independent issuance facts.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -145469,10 +145547,32 @@ index 0000000000000000000000000000000000000000..74c8459da695bc45e80966fa11aa4486
 +    bool returned;
 +} QemuCrucibleApplicationCleanupStackOwner;
 +
++/* Independent teardown failures never replace the initiating child failure.
++ * The fixed output buffers survive provider return, unmap and failed posts. */
++typedef struct QemuCrucibleApplicationCleanupWorkerReturn {
++    QemuCrucibleApplicationAccountEffect provider_before;
++    QemuCrucibleApplicationAccountEffect storage_before;
++    QemuCrucibleApplicationAccountEffect retire;
++    QemuCrucibleApplicationAccountEffect provider_after;
++    int first_status;
++    bool attempted;
++    bool busy;
++    bool returned;
++#ifdef CONFIG_POSIX
++    QemuThreadBoundedStorageSnapshot storage_snapshot;
++#endif
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++    QemuThreadBoundedProviderSnapshot before_snapshot;
++    QemuThreadBoundedProviderSnapshot retired_snapshot;
++    QemuThreadBoundedProviderSnapshot storage_return_snapshot;
++#endif
++} QemuCrucibleApplicationCleanupWorkerReturn;
++
 +/* Retains separately paid QEMU startup and libc arena mappings. The native
 + * storage is deliberately unarmed: provider initialization binds real backing
 + * custody without supplying a worker entry or permitting creation. */
 +typedef struct QemuCrucibleApplicationCleanupWorkerOwner {
++    QemuCrucibleApplicationCleanupWorkerReturn returning;
 +    QemuCrucibleApplicationAccountEffect storage_current;
 +    QemuCrucibleApplicationAccountEffect provider_query;
 +    QemuCrucibleApplicationAccountEffect provider_current;
@@ -146890,6 +146990,442 @@ index 0000000000000000000000000000000000000000..6ca57beef5ba149b48ab6b2b85dc60b1
 +    return -ENOTSUP;
 +}
 +#endif
+diff --git a/plugins/crucible-application-cleanup-worker-return.inc.h b/plugins/crucible-application-cleanup-worker-return.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ad6cfe75024f02d6466becfb6882f66bbdf4ea5a
+--- /dev/null
++++ b/plugins/crucible-application-cleanup-worker-return.inc.h
+@@ -0,0 +1,430 @@
++/*
++ * Teardown-only return of initialized, never-created native worker backing.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#if defined(QEMU_CRUCIBLE_DEFERRED_CLEANUP_REQUEST_OWNER) && \
++    defined(CONFIG_POSIX) && defined(CONFIG_PTHREAD_BOUNDED_PROVIDER)
++
++/* Factual ownership survives a negative admission post. Only this retained
++ * allocation's teardown may use these facts; no permission Current is called
++ * and neither the child's initiating failure nor its issue state is changed. */
++static int application_cleanup_worker_return_identity_locked(
++    QemuCrucibleApplicationCleanupProducer *producer, pid_t process,
++    Coroutine *coroutine, uint64_t fixed_extent)
++{
++    QemuCrucibleApplicationAccount *account = &startup_source.application_account;
++    QemuCrucibleApplicationCleanupChild *child = &account->cleanup_child;
++    QemuCrucibleApplicationCleanupWorkerOwner *owner = &child->worker;
++    QemuCrucibleApplicationCleanupRequestView *view = &child->fixed_request_view;
++    QemuCrucibleApplicationCleanupStorage *startup =
++        &child->storage[APPLICATION_CLEANUP_THREAD_STARTUP];
++    QemuCrucibleApplicationCleanupStorage *arena =
++        &child->storage[APPLICATION_CLEANUP_TLS];
++    QemuCrucibleApplicationCleanupStorage *parts[] = { startup, arena };
++    int status = application_account_identity_locked(account, process);
++
++    if (status) {
++        return status;
++    }
++    if (!fixed_extent || account->fixed_native_extent != fixed_extent ||
++        child->canonical_owner != child || child->account != account ||
++        child->producer != producer || child->issued || !child->busy ||
++        !child->storage_retained || child->uncertain ||
++        child->process != process || !qemu_thread_is_self(&child->creator) ||
++        child->construction_serial != account->construction_serial ||
++        !child->serial || !child->fixed_request_retained ||
++        !child->fixed_request.attempted || !child->fixed_request.returned ||
++        child->fixed_request.status || !child->fixed_request.consumed ||
++        !child->profile_current.attempted || !child->profile_current.returned ||
++        child->profile_current.status ||
++        !qatomic_load_acquire(&child->profile_observed) ||
++        child->profile_observed_status || child->profile_capture_failure ||
++        view->producer != producer || view->process != process ||
++        view->construction != account->binding || view->frame != account->frame ||
++        view->partition != account->partition ||
++        view->construction_serial != child->construction_serial ||
++        view->producer_serial != child->producer_serial ||
++        view->process_generation != account->process_generation ||
++        view->account_generation != account->account_generation ||
++        !qemu_thread_is_self(&view->thread) || view->coroutine != coroutine ||
++        !owner->attempted || !owner->storage || !owner->storage_incarnation ||
++        !startup->provider.attempted || !startup->provider.returned ||
++        !startup->provider.consumed ||
++        owner->returning.returned ||
++        !crucible_metadata_partition_residual_valid(account->partition)) {
++        return -ESTALE;
++    }
++    status = qemu_crucible_deferred_cleanup_request_retained_identity_locked_v1(
++        producer, view);
++    if (!status) {
++        status = application_process_reference_locked(child->process_owner,
++            child->process_owner_serial, process);
++    }
++    if (status) {
++        return status;
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(parts); index++) {
++        QemuCrucibleApplicationCleanupStorage *part = parts[index];
++
++        if (part->origin != APPLICATION_CLEANUP_ORIGIN_NATIVE_MAPPING ||
++            part->fixed_source || part->fixed_offset || !part->mapping_bytes ||
++            !part->alignment || !part->debit.attempted || !part->debit.returned ||
++            part->debit.status || !part->debit.consumed ||
++            !part->map.attempted || !part->map.returned || part->map.status ||
++            !part->map.consumed ||
++            (part->charge.held ? part->charge.bytes != part->mapping_bytes :
++             (part->charge.bytes || !part->debit_return.attempted ||
++              !part->debit_return.returned || part->debit_return.status ||
++              !part->debit_return.consumed)) ||
++            (!part->mapping &&
++             (!part->unmap.attempted || !part->unmap.returned ||
++              part->unmap.status || !part->unmap.consumed))) {
++            return -ESTALE;
++        }
++    }
++    if (startup->mapping && startup->mapping != owner->storage) {
++        return -ESTALE;
++    }
++    return 0;
++}
++
++static int application_cleanup_worker_return_current(
++    QemuCrucibleApplicationCleanupChild *child)
++{
++    QemuCrucibleMetadataPartition *partition = &startup_source.metadata_partition;
++    uint64_t fixed_extent = qemu_crucible_startup_source_fixed_control_extent();
++    pid_t process = getpid();
++    Coroutine *coroutine = qemu_in_coroutine() ? qemu_coroutine_self() : NULL;
++    int status;
++
++    if (!crucible_metadata_partition_enter(partition)) {
++        return -EAGAIN;
++    }
++    status = application_cleanup_worker_return_identity_locked(child->producer,
++        process, coroutine, fixed_extent);
++    if (!status && (!child->worker.returning.attempted ||
++                    !child->worker.returning.busy)) {
++        status = -ESTALE;
++    }
++    crucible_metadata_partition_leave(partition);
++    return status;
++}
++
++static void application_cleanup_worker_return_record(
++    QemuCrucibleApplicationCleanupWorkerReturn *returning,
++    QemuCrucibleApplicationAccountEffect *effect, int status)
++{
++    effect->status = status;
++    effect->returned = true;
++    if (status < 0) {
++        qatomic_cmpxchg(&returning->first_status, 0, status);
++    }
++}
++
++/* These independent observations authenticate retained teardown only. A
++ * negative result never erases physical return or calls permission Current. */
++static int application_cleanup_worker_return_post(
++    QemuCrucibleApplicationCleanupChild *child,
++    QemuCrucibleApplicationAccountEffect *effect)
++{
++    int post;
++    int capture;
++
++    effect->post_attempted = true;
++    post = application_cleanup_worker_return_current(child);
++    effect->post_status = post;
++    effect->post_returned = true;
++    effect->post_capture_attempted = true;
++    capture = application_cleanup_worker_return_current(child);
++    effect->post_capture_status = capture;
++    qatomic_store_release(&effect->post_capture_returned, true);
++    if (post < 0) {
++        qatomic_cmpxchg(&child->worker.returning.first_status, 0, post);
++    }
++    if (capture < 0) {
++        qatomic_cmpxchg(&child->worker.returning.first_status, 0, capture);
++    }
++    return effect->status ? effect->status : post ? post : capture;
++}
++
++static bool application_cleanup_worker_uncreated(
++    const QemuThreadBoundedProviderSnapshot *snapshot)
++{
++    return snapshot->init_attempted && snapshot->init_returned &&
++        snapshot->provider_incarnation && !snapshot->create_attempted &&
++        !snapshot->create_returned && !snapshot->worker_entered &&
++        !snapshot->registry_registered && !snapshot->receipt.create_attempted &&
++        !snapshot->receipt.clone_attempted && !snapshot->receipt.born &&
++        !snapshot->receipt.entered;
++}
++
++static bool application_cleanup_worker_uncreated_receipt(
++    const QemuThreadBoundedProviderSnapshot *snapshot,
++    const QemuCrucibleApplicationCleanupStorage *arena, uint64_t incarnation)
++{
++    const struct pthread_bounded_receipt *receipt = &snapshot->receipt;
++
++    return application_cleanup_worker_uncreated(snapshot) &&
++        snapshot->provider_incarnation == incarnation &&
++        snapshot->retire_attempted && snapshot->retire_returned &&
++        !snapshot->retire_status && receipt->version == PTHREAD_BOUNDED_VERSION &&
++        receipt->size == sizeof(*receipt) && receipt->incarnation == incarnation &&
++        receipt->backing == (uintptr_t)arena->mapping &&
++        receipt->backing_bytes == arena->mapping_bytes &&
++        receipt->backing_returned && !receipt->retire_status;
++}
++
++int qemu_crucible_source_application_cleanup_worker_return_uncreated_v1(
++    QemuCrucibleApplicationCleanupProducer *producer)
++{
++    QemuCrucibleApplicationCleanupChild *child =
++        &startup_source.application_account.cleanup_child;
++    QemuCrucibleApplicationCleanupWorkerOwner *owner = &child->worker;
++    QemuCrucibleApplicationCleanupWorkerReturn *returning = &owner->returning;
++    QemuCrucibleApplicationCleanupStorage *startup =
++        &child->storage[APPLICATION_CLEANUP_THREAD_STARTUP];
++    QemuCrucibleApplicationCleanupStorage *arena =
++        &child->storage[APPLICATION_CLEANUP_TLS];
++    QemuCrucibleApplicationCleanupStorage *parts[] = { arena, startup };
++    QemuCrucibleMetadataPartition *partition = &startup_source.metadata_partition;
++    uint64_t fixed_extent = qemu_crucible_startup_source_fixed_control_extent();
++    pid_t process = getpid();
++    Coroutine *coroutine = qemu_in_coroutine() ? qemu_coroutine_self() : NULL;
++    uint64_t debt;
++    int status;
++
++    if (!crucible_metadata_partition_enter(partition)) {
++        return -EAGAIN;
++    }
++    status = application_cleanup_worker_return_identity_locked(producer, process,
++                                                              coroutine,
++                                                              fixed_extent);
++    if (!status && returning->attempted) {
++        status = -EALREADY;
++    }
++    if (!status && !application_cleanup_bytes_unentered(returning,
++                                                       sizeof(*returning))) {
++        status = -ESTALE;
++    }
++    for (size_t index = 0; !status && index < G_N_ELEMENTS(parts); index++) {
++        QemuCrucibleApplicationCleanupStorage *part = parts[index];
++
++        if (!part->charge.held || !part->mapping ||
++            !application_cleanup_effect_unentered(&part->custody_return) ||
++            !application_cleanup_effect_unentered(&part->last_use) ||
++            !application_cleanup_effect_unentered(&part->unmap) ||
++            !application_cleanup_effect_unentered(&part->settlement) ||
++            !application_cleanup_effect_unentered(&part->debit_return)) {
++            status = -ESTALE;
++        }
++    }
++    if (!status) {
++        returning->attempted = true;
++        returning->busy = true;
++    }
++    crucible_metadata_partition_leave(partition);
++    if (status) {
++        return status;
++    }
++
++    /* Actual membership and provider outputs are observed even after a lost
++     * preparation post. An unfinished or output-less init remains retained;
++     * no errno, empty receipt or copied no-birth flag can release its spans. */
++    returning->provider_before.attempted = true;
++    status = qemu_thread_bounded_provider_observe_v1(owner->storage,
++        owner->storage_incarnation, &returning->before_snapshot);
++    application_cleanup_worker_return_record(returning,
++                                             &returning->provider_before, status);
++    status = application_cleanup_worker_return_post(child,
++                                                    &returning->provider_before);
++    if (status) {
++        return status;
++    }
++    returning->storage_before.attempted = true;
++    status = qemu_thread_bounded_storage_observe_v1(owner->storage,
++        owner->storage_incarnation, &returning->storage_snapshot);
++    application_cleanup_worker_return_record(returning,
++                                             &returning->storage_before, status);
++    status = application_cleanup_worker_return_post(child,
++                                                    &returning->storage_before);
++    if (status) {
++        return status;
++    }
++    if (!application_cleanup_worker_uncreated(&returning->before_snapshot) ||
++        !returning->storage_snapshot.prepared ||
++        returning->storage_snapshot.entry_bound ||
++        returning->storage_snapshot.creation_attempted ||
++        returning->storage_snapshot.birth_uncertain ||
++        returning->storage_snapshot.return_attempted ||
++        returning->storage_snapshot.custody_returned ||
++        returning->storage_snapshot.backing != (uintptr_t)startup->mapping ||
++        returning->storage_snapshot.backing_bytes != startup->mapping_bytes ||
++        returning->storage_snapshot.incarnation != owner->storage_incarnation) {
++        qatomic_cmpxchg(&returning->first_status, 0, -ENOTSUP);
++        return -ENOTSUP;
++    }
++    returning->retire.attempted = true;
++    status = qemu_thread_bounded_provider_tryretire_v1(owner->storage,
++                                                      owner->storage_incarnation);
++    application_cleanup_worker_return_record(returning, &returning->retire,
++                                             status);
++    status = application_cleanup_worker_return_post(child, &returning->retire);
++    if (status) {
++        return status;
++    }
++    returning->provider_after.attempted = true;
++    status = qemu_thread_bounded_provider_observe_v1(owner->storage,
++        owner->storage_incarnation, &returning->retired_snapshot);
++    application_cleanup_worker_return_record(returning,
++                                             &returning->provider_after, status);
++    if (!status) {
++        arena->custody_return.attempted = true;
++        status = application_cleanup_worker_uncreated_receipt(
++            &returning->retired_snapshot, arena,
++            returning->before_snapshot.provider_incarnation) ? 0 : -ESTALE;
++        arena->custody_return.consumed = !status;
++        application_cleanup_worker_return_record(returning,
++                                                 &arena->custody_return, status);
++    }
++    int observed = application_cleanup_worker_return_post(child,
++                                                    &returning->provider_after);
++
++    if (status || observed) {
++        return status ? status : observed;
++    }
++    status = application_cleanup_worker_return_post(child, &arena->custody_return);
++    if (status) {
++        return status;
++    }
++    startup->custody_return.attempted = true;
++    status = qemu_thread_bounded_provider_storage_return_v1(owner->storage,
++        owner->storage_incarnation, &returning->storage_return_snapshot);
++    startup->custody_return.consumed = !status;
++    application_cleanup_worker_return_record(returning,
++                                             &startup->custody_return, status);
++    status = application_cleanup_worker_return_post(child,
++                                                    &startup->custody_return);
++    if (status) {
++        return status;
++    }
++    if (!application_cleanup_worker_uncreated_receipt(
++            &returning->storage_return_snapshot, arena,
++            returning->retired_snapshot.provider_incarnation)) {
++        qatomic_cmpxchg(&returning->first_status, 0, -ESTALE);
++        return -ESTALE;
++    }
++
++    /* The actual native return has unlinked startup membership after the real
++     * libc backing_returned receipt. The uncreated owner has no entry, worker
++     * or registry user; every native API authenticates membership before
++     * accessing backing. These resource last uses do
++     * not produce worker/kernel/TLS terminal facts or release guarded_stack.
++     * All native APIs reject that unlinked member before reading its backing. */
++    for (size_t index = 0; index < G_N_ELEMENTS(parts); index++) {
++        QemuCrucibleApplicationCleanupStorage *part = parts[index];
++
++        part->last_use.attempted = true;
++        part->last_use.consumed = true;
++        application_cleanup_worker_return_record(returning, &part->last_use, 0);
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(parts); index++) {
++        status = application_cleanup_worker_return_post(child,
++                                                        &parts[index]->last_use);
++        if (status) {
++            return status;
++        }
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(parts); index++) {
++        QemuCrucibleApplicationCleanupStorage *part = parts[index];
++
++        part->unmap.attempted = true;
++        status = munmap(part->mapping, part->mapping_bytes);
++        if (!status) {
++            part->mapping = NULL;
++            part->unmap.consumed = true;
++        }
++        application_cleanup_worker_return_record(returning, &part->unmap,
++                                                 status ? -errno : 0);
++        status = application_cleanup_worker_return_post(child, &part->unmap);
++        if (status) {
++            return status;
++        }
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(parts); index++) {
++        QemuCrucibleApplicationCleanupStorage *part = parts[index];
++
++        part->settlement.attempted = true;
++        status = application_cleanup_worker_return_current(child);
++        application_cleanup_worker_return_record(returning, &part->settlement,
++                                                 status);
++        status = application_cleanup_worker_return_post(child, &part->settlement);
++        if (status) {
++            return status;
++        }
++    }
++    process = getpid();
++    coroutine = qemu_in_coroutine() ? qemu_coroutine_self() : NULL;
++    if (!crucible_metadata_partition_enter(partition)) {
++        qatomic_cmpxchg(&returning->first_status, 0, -EAGAIN);
++        return -EAGAIN;
++    }
++    status = application_cleanup_worker_return_identity_locked(producer, process,
++                                                              coroutine,
++                                                              fixed_extent);
++    if (!status && (!returning->busy || returning->first_status ||
++        !arena->charge.held || !startup->charge.held || arena->mapping ||
++        startup->mapping ||
++        __builtin_add_overflow(arena->charge.bytes, startup->charge.bytes, &debt) ||
++        debt > partition->native_live)) {
++        status = -ESTALE;
++    }
++    for (size_t index = 0; !status && index < G_N_ELEMENTS(parts); index++) {
++        QemuCrucibleApplicationCleanupStorage *part = parts[index];
++
++        if (!application_effect_observed(&part->custody_return) ||
++            part->custody_return.status || !part->custody_return.consumed ||
++            !application_effect_observed(&part->last_use) ||
++            part->last_use.status || !part->last_use.consumed ||
++            !application_effect_observed(&part->unmap) || part->unmap.status ||
++            !part->unmap.consumed ||
++            !application_effect_observed(&part->settlement) ||
++            part->settlement.status || part->debit_return.attempted) {
++            status = -ESTALE;
++        }
++    }
++    if (!status) {
++        /* Both physical returns and all fallible observations precede reuse.
++         * Each refund is recorded independently; no post follows either one. */
++        for (size_t index = 0; index < G_N_ELEMENTS(parts); index++) {
++            QemuCrucibleApplicationCleanupStorage *part = parts[index];
++
++            part->debit_return.attempted = true;
++            status = crucible_metadata_native_retire_locked(partition,
++                                                            &part->charge);
++            part->debit_return.consumed = !part->charge.held;
++            application_cleanup_worker_return_record(returning,
++                                                     &part->debit_return, status);
++            if (status) {
++                break;
++            }
++        }
++        returning->returned = !status;
++        returning->busy = !!status;
++    }
++    if (status < 0) {
++        qatomic_cmpxchg(&returning->first_status, 0, status);
++    }
++    crucible_metadata_partition_leave(partition);
++    return status;
++}
++
++#else
++
++int qemu_crucible_source_application_cleanup_worker_return_uncreated_v1(
++    QemuCrucibleApplicationCleanupProducer *producer)
++{
++    return -ENOTSUP;
++}
++
++#endif
 diff --git a/plugins/crucible-application-cleanup-worker.inc.h b/plugins/crucible-application-cleanup-worker.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..61a475b18c60718cf4525e9466b2a52d19694754
@@ -147229,10 +147765,10 @@ index 0000000000000000000000000000000000000000..61a475b18c60718cf4525e9466b2a52d
 +#endif
 diff --git a/plugins/crucible-application-cleanup.inc.h b/plugins/crucible-application-cleanup.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..dbb16c5458304622c1bd5db9075cafad68bd2091
+index 0000000000000000000000000000000000000000..baeeacab3d99b195beef48c1ee94b12581f3db6c
 --- /dev/null
 +++ b/plugins/crucible-application-cleanup.inc.h
-@@ -0,0 +1,556 @@
+@@ -0,0 +1,573 @@
 +/*
 + * Canonical fixed Cleanup request custody, separate from dynamic issuance.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -147293,21 +147829,38 @@ index 0000000000000000000000000000000000000000..dbb16c5458304622c1bd5db9075cafad
 +static bool application_cleanup_worker_unentered(
 +    const QemuCrucibleApplicationCleanupWorkerOwner *owner)
 +{
-+    if (owner->attempted || owner->busy || owner->prepared ||
++    const QemuCrucibleApplicationCleanupWorkerReturn *returning =
++        &owner->returning;
++
++    if (returning->first_status || returning->attempted || returning->busy ||
++        returning->returned ||
++        !application_cleanup_effect_unentered(&returning->provider_before) ||
++        !application_cleanup_effect_unentered(&returning->storage_before) ||
++        !application_cleanup_effect_unentered(&returning->retire) ||
++        !application_cleanup_effect_unentered(&returning->provider_after) ||
++        owner->attempted || owner->busy || owner->prepared ||
 +        !application_cleanup_effect_unentered(&owner->storage_current) ||
 +        !application_cleanup_effect_unentered(&owner->provider_query) ||
 +        !application_cleanup_effect_unentered(&owner->provider_current)) {
 +        return false;
 +    }
 +#ifdef CONFIG_POSIX
-+    if (owner->storage || owner->storage_incarnation ||
++    if (!application_cleanup_bytes_unentered(&returning->storage_snapshot,
++                                             sizeof(returning->storage_snapshot)) ||
++        owner->storage || owner->storage_incarnation ||
 +        !application_cleanup_bytes_unentered(&owner->storage_snapshot,
 +                                             sizeof(owner->storage_snapshot))) {
 +        return false;
 +    }
 +#endif
 +#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
-+    if (!application_cleanup_bytes_unentered(&owner->config,
++    if (!application_cleanup_bytes_unentered(&returning->before_snapshot,
++                                             sizeof(returning->before_snapshot)) ||
++        !application_cleanup_bytes_unentered(&returning->retired_snapshot,
++                                             sizeof(returning->retired_snapshot)) ||
++        !application_cleanup_bytes_unentered(&returning->storage_return_snapshot,
++                                   sizeof(returning->storage_return_snapshot)) ||
++        !application_cleanup_bytes_unentered(&owner->config,
 +                                             sizeof(owner->config)) ||
 +        !application_cleanup_bytes_unentered(&owner->provider_snapshot,
 +                                             sizeof(owner->provider_snapshot))) {
@@ -175438,10 +175991,10 @@ index 0000000000000000000000000000000000000000..e8f8f837284ac7bb4ebb090d18f78eaf
 +}
 diff --git a/plugins/crucible-deferred-cleanup-request.inc.h b/plugins/crucible-deferred-cleanup-request.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c8834c27af019813d3705d2793eca5f42b6fd48a
+index 0000000000000000000000000000000000000000..93dbe7d4b42f4bb808c85505b55d8cb1cc3e7151
 --- /dev/null
 +++ b/plugins/crucible-deferred-cleanup-request.inc.h
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,204 @@
 +/*
 + * Factual request projection from the actual dormant Cleanup Control owner.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -175449,9 +176002,9 @@ index 0000000000000000000000000000000000000000..c8834c27af019813d3705d2793eca5f4
 +
 +#include "system/crucible-application.h"
 +
-+int qemu_crucible_deferred_cleanup_request_identity_locked_v1(
++static int deferred_cleanup_request_identity_locked(
 +    QemuCrucibleApplicationCleanupProducer *producer,
-+    const QemuCrucibleApplicationCleanupRequestView *view)
++    const QemuCrucibleApplicationCleanupRequestView *view, bool retained)
 +{
 +    QemuCrucibleDeferredCleanupControl *control =
 +        &startup_source.deferred_cleanup_control;
@@ -175461,9 +176014,18 @@ index 0000000000000000000000000000000000000000..c8834c27af019813d3705d2793eca5f4
 +    if (producer != &control->resource_request || !view) {
 +        return -ESTALE;
 +    }
-+    if (!deferred_cleanup_preparation_identity_locked(
++    if (!deferred_cleanup_producer_identity_locked(producer) ||
++        (!retained && !deferred_cleanup_preparation_identity_locked(
 +            control->construction, control->issuer, control->issuer_epoch,
-+            control->epoch) ||
++            control->epoch)) ||
++        control->construction != &startup_source.standing.construction ||
++        control->construction->operation.serial != control->construction_serial ||
++        control->construction->operation.process != control->process ||
++        control->construction->operation.thread.thread !=
++            control->construction_thread.thread ||
++        control->construction->operation.coroutine !=
++            control->construction_coroutine ||
++        control->construction->frame != control->construction_frame ||
 +        !qatomic_load_acquire(&startup_source.custody_retained) ||
 +        !qatomic_load_acquire(&startup_source.metadata_partition.published) ||
 +        !qatomic_load_acquire(&startup_source.metadata_partition.controller_retained) ||
@@ -175511,6 +176073,22 @@ index 0000000000000000000000000000000000000000..c8834c27af019813d3705d2793eca5f4
 +        return -ESTALE;
 +    }
 +    return 0;
++}
++
++int qemu_crucible_deferred_cleanup_request_identity_locked_v1(
++    QemuCrucibleApplicationCleanupProducer *producer,
++    const QemuCrucibleApplicationCleanupRequestView *view)
++{
++    return deferred_cleanup_request_identity_locked(producer, view, false);
++}
++
++int qemu_crucible_deferred_cleanup_request_retained_identity_locked_v1(
++    QemuCrucibleApplicationCleanupProducer *producer,
++    const QemuCrucibleApplicationCleanupRequestView *view)
++{
++    /* Ended construction or a negative permission observation cannot erase
++     * this exact immutable request. No permission Current is called here. */
++    return deferred_cleanup_request_identity_locked(producer, view, true);
 +}
 +
 +QemuCrucibleApplicationCleanupRequestView
@@ -282413,10 +282991,10 @@ index 0000000000000000000000000000000000000000..56af4f0f563adbe761bdbdf83e1c7e62
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..4f9b9a7d85dbccd3c34e699a74d76d71ca8b4028
+index 0000000000000000000000000000000000000000..363db22791a5208e5d655dbdbcf1145b394f7cd8
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8995 @@
+@@ -0,0 +1,8996 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -289326,6 +289904,7 @@ index 0000000000000000000000000000000000000000..4f9b9a7d85dbccd3c34e699a74d76d71
 +#include "crucible-application-cleanup.inc.h"
 +#include "crucible-application-cleanup-stack.inc.h"
 +#include "crucible-application-cleanup-worker.inc.h"
++#include "crucible-application-cleanup-worker-return.inc.h"
 +
 +static int cpu_metadata_account_issue(
 +    QemuCrucibleObservationConstructionBinding *binding)
@@ -309541,7 +310120,7 @@ index 0000000000000000000000000000000000000000..82bfae83900383ac30006bc4ca9201f9
 +    main()
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ccdb1638cab923a550f3951bdac96a5a5e7b4cc9
+index 0000000000000000000000000000000000000000..d9e0cf6717a1fd658110b18008cdcb28ed996a38
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,184 @@
@@ -309613,7 +310192,7 @@ index 0000000000000000000000000000000000000000..ccdb1638cab923a550f3951bdac96a5a
 +    'include/plugins/qemu-plugin.h':
 +        '98dffedb987540b27b5725b202fb65deaec3c9b1bedf0f80c7fcf6fcda499fe4',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '10ae93241b428c4f741de736176929c63949ed941f3d6c877d7ec84857978281',
++        'a3957394477ba0a81a4774dbee94f2bec7c0ebd38f858e10adf8e230f3c4f8df',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +}
@@ -398365,7 +398944,7 @@ index 0000000000000000000000000000000000000000..347b0f145ba0140b229f0e1818873304
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8e91dc9576c1b1d1df4200734428cc7b3dd70231
+index 0000000000000000000000000000000000000000..15bb819d1d0f81b5b377572d88f96598b4c6107e
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -398383,7 +398962,7 @@ index 0000000000000000000000000000000000000000..8e91dc9576c1b1d1df4200734428cc7b
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '10ae93241b428c4f741de736176929c63949ed941f3d6c877d7ec84857978281',
++        'a3957394477ba0a81a4774dbee94f2bec7c0ebd38f858e10adf8e230f3c4f8df',
 +}
 +
 +FUNCTIONS = (
@@ -398471,7 +399050,7 @@ index 0000000000000000000000000000000000000000..8e91dc9576c1b1d1df4200734428cc7b
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..394bc227540469acfedaec8c1df42fc399a016dc
+index 0000000000000000000000000000000000000000..2eb0b23c976444797c8f1e74c3c77eb92681b300
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -398492,7 +399071,7 @@ index 0000000000000000000000000000000000000000..394bc227540469acfedaec8c1df42fc3
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        '08cc4ce3f6bab45f15f0b1f1952943499d578e8b75cdab14596e0928ee737725',
++        '5f771c2f08b55c26e5918527f365a7203e466d580ffe67599c0d7a586019dbc7',
 +    'plugins/crucible-startup-source.h':
 +        '4d82e7f7d5849d906d6e788a99b030a9dd388db1a886cec98632fdb8887b4bf6',
 +    'include/plugins/qemu-plugin.h':
@@ -398502,7 +399081,7 @@ index 0000000000000000000000000000000000000000..394bc227540469acfedaec8c1df42fc3
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '10ae93241b428c4f741de736176929c63949ed941f3d6c877d7ec84857978281',
++        'a3957394477ba0a81a4774dbee94f2bec7c0ebd38f858e10adf8e230f3c4f8df',
 +}
 +
 +FUNCTIONS = (
@@ -398718,7 +399297,7 @@ index 0000000000000000000000000000000000000000..394bc227540469acfedaec8c1df42fc3
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e87f7826189190b724934a3fd5b682dfb88a5109
+index 0000000000000000000000000000000000000000..d98efad33cf513927f4e97eccf4f858a2aeb7b03
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -398742,7 +399321,7 @@ index 0000000000000000000000000000000000000000..e87f7826189190b724934a3fd5b682df
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '10ae93241b428c4f741de736176929c63949ed941f3d6c877d7ec84857978281',
++        'a3957394477ba0a81a4774dbee94f2bec7c0ebd38f858e10adf8e230f3c4f8df',
 +}
 +
 +FUNCTIONS = (
@@ -398836,7 +399415,7 @@ index 0000000000000000000000000000000000000000..e87f7826189190b724934a3fd5b682df
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ba0add4ad5a82faa2e9488155ecb8df638d785fe
+index 0000000000000000000000000000000000000000..1a2967b86656724e512a0ddca3af5ca413cdc786
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,795 @@
@@ -398922,15 +399501,15 @@ index 0000000000000000000000000000000000000000..ba0add4ad5a82faa2e9488155ecb8df6
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '10ae93241b428c4f741de736176929c63949ed941f3d6c877d7ec84857978281',
++        'a3957394477ba0a81a4774dbee94f2bec7c0ebd38f858e10adf8e230f3c4f8df',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '3e1c9303a2db922b6c27827111e58db1bed4b769b1fb654126333766b4790525',
++        '4bba3d4bb8b877ca5323b812842bcdb53452475d698ab76dd63e65f3e62ccf17',
 +    'meson.build':
 +        'd60f3d0a573e006c42c93c08720d825da552ccd45b6a9d276a68839968d59be7',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        '153138370240e25a5a429685f6557dfa76e0309ff6fe3700530215ae61158269',
 +    'tests/unit/meson.build':
-+        '3e75dfc7c9b7334366979d0a0c6c4b35829f0d6897850fe18eb66ce1978a4f4c',
++        'fb41bab1c5ae5b468d57a5de9c01a23fe052b32909669973bebdba1391eb814f',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +    'system/crucible-preexec-publisher-offer.inc.h':
@@ -399637,10 +400216,10 @@ index 0000000000000000000000000000000000000000..ba0add4ad5a82faa2e9488155ecb8df6
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..73518ab5df26ff61eef2785e2c0c679c2bf098f0
+index 0000000000000000000000000000000000000000..4054c2718efacdbfec79bd4a987a20fc52436607
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,2032 @@
+@@ -0,0 +1,2033 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -399650,6 +400229,7 @@ index 0000000000000000000000000000000000000000..73518ab5df26ff61eef2785e2c0c679c
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'plugins/crucible-application-cleanup-worker-return.inc.h': '70e12f5d945997f8f9686cf7cd55a95136ce454fc1c6d70958fc058a71f6d636',
 +    'plugins/crucible-application-cleanup-worker.inc.h': 'b5da23ef92340e6785cb8b9c65391ca2f48401a65477833e24382ad7f3be9605',
 +    'plugins/crucible-application-cleanup-stack.inc.h':
 +        'a24a037f5aeedc356a056684dfa377f5633d3115652e77c957cf1318bdadf19f',
@@ -399774,7 +400354,7 @@ index 0000000000000000000000000000000000000000..73518ab5df26ff61eef2785e2c0c679c
 +    'plugins/crucible-core-quantum-terminal-dispose.inc.h':
 +        'ee4c17cb38cf041155e9671c1d47cbdb49170388beebd3ec80743d67b2257171',
 +    'plugins/crucible-deferred-cleanup-request.inc.h':
-+        '2df56f163cbde51ff553b1493683db271d37da3b259d27f213dccd12e73b8cda',
++        '0f2f897e9019ec0ff88b04c0667528b4fcf0ed5fc533676dfdd6feecf9080d8e',
 +    'include/qemu/crucible-runtime-map.h':
 +        '598cf5191f522fe0349956e7be64c52ec62581a1a50dac3f6664caf386f787d2',
 +    'util/crucible-runtime-map.c':
@@ -399792,9 +400372,9 @@ index 0000000000000000000000000000000000000000..73518ab5df26ff61eef2785e2c0c679c
 +    'plugins/crucible-application-process.inc.h':
 +        '1389c2578abb8c768d03354875434d026a646dc3699cfa7867ce71feaa315a04',
 +    'plugins/crucible-application-cleanup.inc.h':
-+        'c7e4d777f2ec11959912713df8ef7e9c203d144b3920c3456c6365453aafb933',
++        'fed0eff3cddcf72d4e0d2c28a86fb2aee012f3d12d643ba351ee20788fc17cad',
 +    'include/system/crucible-application.h':
-+        '81182da1b0b64c8850892521d198fb3eb26f78ac1f91ff2bb593c03e8ce84be7',
++        '4fa9ce67baf766c39723a408a82e3737fda73a9146de35f31b2b4398948f042a',
 +    'plugins/crucible-application-child.inc.h':
 +        '8935c9731e7472e7e871bd3a4441dc86d93d389d12fbb32ae72c2f58c192e1cb',
 +    'tcg/tcg.c':
@@ -399802,7 +400382,7 @@ index 0000000000000000000000000000000000000000..73518ab5df26ff61eef2785e2c0c679c
 +    'include/tcg/tcg.h':
 +        'f16f28c3930b46397bd59ea487ebc05a3aab89d8d2ca071c31d1238c506342d4',
 +    'plugins/crucible-application-account.h':
-+        'a88a0284d5a57eef6646f6cc1aaf540dbc799ee80d0494e62ee7db77f1c68082',
++        '6d7203f2854c8ccc034f92c989da0e6eadcace81ca7510198262cfb6cef0b86f',
 +    'plugins/crucible-application-account.inc.h':
 +        '9061f3a983ace774c66d4e4331ed2c85c6d31e6f1f79a356dd28b5db01ede856',
 +    'plugins/crucible-deferred-cleanup-completed-current.inc.h':
@@ -400180,7 +400760,7 @@ index 0000000000000000000000000000000000000000..73518ab5df26ff61eef2785e2c0c679c
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        '3e75dfc7c9b7334366979d0a0c6c4b35829f0d6897850fe18eb66ce1978a4f4c',
++        'fb41bab1c5ae5b468d57a5de9c01a23fe052b32909669973bebdba1391eb814f',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -400392,7 +400972,7 @@ index 0000000000000000000000000000000000000000..73518ab5df26ff61eef2785e2c0c679c
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        '08cc4ce3f6bab45f15f0b1f1952943499d578e8b75cdab14596e0928ee737725',
++        '5f771c2f08b55c26e5918527f365a7203e466d580ffe67599c0d7a586019dbc7',
 +    'plugins/crucible-startup-source.h':
 +        '4d82e7f7d5849d906d6e788a99b030a9dd388db1a886cec98632fdb8887b4bf6',
 +    'plugins/crucible-device-workspace.c':
@@ -401772,7 +402352,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0ca102b11dcbb300f41f202d9b4385c7c7cf0f4b 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..2f38d2e39e15a8abdfa207a5fcba819c7cd8a057 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -401847,7 +402427,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0ca102b11dcbb300f41f202d9b4385c7
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1875 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1876 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -402781,6 +403361,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0ca102b11dcbb300f41f202d9b4385c7
 +                        '../../plugins/crucible-application-cleanup.inc.h',
 +                        '../../plugins/crucible-application-cleanup-stack.inc.h',
 +                        '../../plugins/crucible-application-cleanup-worker.inc.h',
++                        '../../plugins/crucible-application-cleanup-worker-return.inc.h',
 +                        '../../plugins/crucible-application-process.inc.h',
 +                        '../../include/system/crucible-outcome-callback.h',
 +                        '../../include/system/crucible-work-termination.h',

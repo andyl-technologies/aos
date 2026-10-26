@@ -71,6 +71,39 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 680 bindings: 661 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
+#### Initialized, uncreated backing return
+
+Signed atomic QEMU commit `ac77c71918` adds a teardown-only retained-request identity
+for the canonical account, exact creator and original payment. It never calls
+permission Current or changes child issuance, the initiating failure or worker
+terminal fields. It retains independent return errors and once-only physical
+outputs in fixed controls paid by the complete compiled floor.
+
+The return operation observes the genuine unarmed native owner, calls its real
+provider retirement and captures the exact uncreated backing-return receipt.
+Actual startup membership unlink precedes resource last use, physical unmap
+and final per-charge refund. A failed observation retains every actual result,
+remaining mapping and debt; partial or unknown provider output cannot authorize
+release. Uninitialized storage has no
+new return route here. The guarded stack and all worker/kernel/TLS terminal
+facts remain separate; this component does not complete native activation or
+the full execution profile.
+
+All six syntax checks pass, and the actual POSIX and component-control objects
+compile in default and bounded-provider configurations. Source objects still
+fail only on the existing unused `quantum_rr_actor_birth` helper under unchanged
+warning options. Source extraction passes for 179 roots and 1,299 functions;
+its selected slices establish extraction/hash coherence. No runtime operation
+or component test was executed. Initial include-path setup failures are kept
+separate from these corrected final checks.
+
+Exact signed patch reconstruction passes at
+`nhvpr32b84f5y3x3ixf5h2ykk62slg3p`, including both negative identity controls.
+The license ledger passes at `67pa6j468lx9vmkxrqymd4dllardg69j`, covering all
+666 created files. Core evaluation passes. Fresh application-target compilation
+is tracked independently for this checkpoint's complete packaged source snapshot.
+These checks do not qualify the complete boundary or runtime.
+
 #### Unarmed Cleanup worker backing
 
 Signed atomic QEMU commit `0703c5dfef` connects the actual bounded storage and
