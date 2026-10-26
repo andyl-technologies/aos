@@ -5,7 +5,11 @@
   testSourceInventory ? ../../tools/bazel/metadata/qemu-gateway-process-test-inventory.json,
 }: let
   root = ../..;
-  host = "//crates/crucible/crucible-control-server:";
+  oracle = pkgs.callPackage ../../pkgs/emulation/_crucible-qemu-bazel-oracle.nix {
+    sourceInventory = hostSourceInventory;
+  };
+  inherit (oracle) hostBuild hostPackage hostWorkspace testTools hostDevelopment hostFormat hostInventory;
+  sourceDirectories = ["tools/bazel" "third_party/rust" "crates"];
   gateway = "//crates/crucible/crucible-qemu-debug-gateway:";
   protocol = "//crates/crucible/crucible-qemu-protocol:";
   hostPackages = {
@@ -30,11 +34,6 @@
     name = "aos-qemu-process-parity-tools";
     filter = path: type: type == "directory" || pkgs.lib.hasSuffix ".py" path;
   };
-  sourceDirectories = ["tools/bazel" "third_party/rust" "crates"];
-  hostTargets = [
-    "${host}qemu_test_oracle_artifact"
-    "${host}qemu_test_oracle_license_closure"
-  ];
   testTargets = [
     "${gateway}unit"
     "${gateway}bin_crucible-debug-gateway"
@@ -42,49 +41,6 @@
     "${gateway}test_license_closure"
     "${gateway}production_license_closure"
   ];
-  hostWorkspace = pkgs.mkAosBazelWorkspace {
-    inherit root;
-    sourceInventory = hostSourceInventory;
-    sourceDirectories = pkgs.lib.optionals (hostSourceInventory == null) sourceDirectories;
-    dependencyProfile = "qemu-test-oracle-host";
-    analysisTargets = hostTargets;
-    repositories =
-      pkgs.aosBazelRepositories
-      // pkgs.aosBazelRustRepositories.qemu-test-oracle-host
-      // {aos_native = pkgs.aosBazelStoreLibraries;};
-  };
-  testTools = pkgs.mkDerivation {
-    pname = "aos-bazel-qemu-process-test-tools";
-    version = "1";
-    src = null;
-    sharedBuildCache = false;
-    buildDeps = [pkgs.jq];
-    outputChecks.out = {};
-    exportReferencesGraph.oracle = [hostPackage];
-    dontStrip = true;
-    dontPatchELF = true;
-    dontNukeRefs = true;
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p "$out"
-          jq -cS '{schema: 1, closure: [.oracle[] | {path, narHash}] | sort_by(.path)}' \
-            "$NIX_ATTRS_JSON_FILE" > "$out/closure.json"
-          # Bazel hashes file contents after resolving symlinks. Bind the
-          # helper's runtime closure even when its executable bytes are equal.
-          printf '#!${pkgs.bash}/bin/bash\n# Runtime closure: ' > "$out/oracle"
-          cat "$out/closure.json" >> "$out/oracle"
-          printf 'exec ${hostPackage}/bin/crucible-qemu-test-oracle "$@"\n' >> "$out/oracle"
-          chmod +x "$out/oracle"
-          cat > "$out/BUILD.bazel" <<'BUILD'
-          exports_files(["oracle", "closure.json"], visibility = ["//visibility:public"])
-          BUILD
-          touch "$out/REPO.bazel"
-        '';
-      }
-    ];
-  };
   testWorkspace = pkgs.mkAosBazelWorkspace {
     inherit root;
     sourceInventory = testSourceInventory;
@@ -96,21 +52,8 @@
       // pkgs.aosBazelRustRepositories.qemu-gpl-tests
       // {aos_qemu_test_tools = testTools;};
   };
-  hostBuild = pkgs.mkAosBazelBuild {
-    pname = "aos-bazel-qemu-test-oracle-host";
-    workspace = hostWorkspace;
-    targets = hostTargets;
-    retainActionGraph = true;
-  };
-  hostPackage = pkgs.mkAosBazelPackage {
-    pname = "crucible-control-server";
-    version = "0.1.0";
-    build = hostBuild;
-    packageLabel = "${host}qemu_test_oracle_artifact";
-    runtimeDeps = [pkgs.sqlite pkgs.gcc-libs];
-  };
 in rec {
-  inherit hostBuild hostPackage hostWorkspace testWorkspace testTools hostPackageOptions;
+  inherit hostBuild hostPackage hostWorkspace testWorkspace testTools hostPackageOptions hostDevelopment hostFormat hostInventory;
   cargo = import ./_bazel-qemu-process-cargo.nix {inherit pkgs;};
   tests = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-qemu-gateway-process-tests";
@@ -123,16 +66,6 @@ in rec {
     workspace = testWorkspace;
     targets = ["${protocol}test_oracle_unit"];
   };
-  hostDevelopment = pkgs.mkAosBazelBuild {
-    pname = "aos-bazel-qemu-test-oracle-development";
-    workspace = hostWorkspace;
-    targets = ["${host}qemu_test_oracle_clippy"];
-  };
-  hostFormat = pkgs.mkAosBazelCheck {
-    pname = "aos-bazel-qemu-test-oracle-format";
-    workspace = hostWorkspace;
-    targets = ["${host}qemu_test_oracle_format"];
-  };
   testDevelopment = pkgs.mkAosBazelBuild {
     pname = "aos-bazel-qemu-gateway-test-development";
     workspace = testWorkspace;
@@ -142,12 +75,6 @@ in rec {
     pname = "aos-bazel-qemu-gateway-test-format";
     workspace = testWorkspace;
     targets = ["${gateway}test_format"];
-  };
-  hostInventory = pkgs.mkAosBazelBuild {
-    pname = "aos-bazel-qemu-test-oracle-host-inventory";
-    workspace = hostWorkspace;
-    inventoryOnly = true;
-    targets = hostTargets ++ ["${host}qemu_test_oracle_clippy" "${host}qemu_test_oracle_format"];
   };
   testInventory = pkgs.mkAosBazelBuild {
     pname = "aos-bazel-qemu-gateway-process-test-inventory";

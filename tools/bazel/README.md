@@ -4180,3 +4180,43 @@ metadata follows the workspace's Apache-2.0 declaration.
 Application Rust behavior is unchanged. Foreign-host execution, browser runtime
 parity, performance acceptance, production default cutover and final Cargo
 removal remain separate migration work.
+
+## Public QEMU plugin package
+
+`crucible-qemu-plugin` exposes a temporary `passthru.withBuildDriver "bazel"`
+selector, reverse selector and Cargo fallback. Cargo remains the default. The
+native Linux Bazel package preserves the ELF shared library, QEMU plugin
+symlink, GPL/MIT license files, admission metadata, runtime dependencies,
+platform declarations and qualification probe.
+
+```sh
+nix-build -A checks.build.bazel.qemu-plugin-production.all --no-out-link
+```
+
+Every Bazel package realization requires the existing plugin unit and
+integration assertions in the release profile. Their Apache engine oracle is
+compiled and packaged independently, then invoked across the existing process
+protocol. No Apache Rust provider enters the GPL plugin's link graph. The
+package-owned constructors also serve the existing debug comparison checks;
+extracting them preserved all 23 recorded build and test derivation identities.
+
+The public production selection requests only the plugin component. Its strict
+inventory contains three roots, 74 configured reports, 263 files and three
+source directories. The original combined plugin/gateway selection remains
+available to suite and corresponding-source checks.
+
+The package check compares installed files and modes, dynamic imports, exported
+QEMU symbols, admission identities and runtime closures with the ordinary
+package. Only checked build-driver metadata fields may differ. It also rejects
+mismatched QEMU packages, shared-memory versions and embedded identities, and
+compares release test inventories and compiled feature units with an independent
+Cargo execution. Compiler argument audits retain their existing explicit
+limits; they do not establish complete compiler/linker semantic equivalence.
+
+`qemu-plugin-production.live-whitebox` exposes both unchanged live QEMU probes.
+The named ABI and license-boundary checks remain available through
+`qemu-plugin-production.abi-conformance` and `.license-boundary`. These are
+separate from installed-package parity. Foreign execution, full production
+flight qualification, performance acceptance, default cutover and Cargo removal
+remain separate migration work. No application Rust or existing fixture is
+changed by this package conversion.

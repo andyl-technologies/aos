@@ -7,12 +7,14 @@
   mkCargoArtifacts,
   mkCargoDummySource,
   aosWorkspaceVendor,
+  buildDriver ? "cargo",
   glib,
   pkg-config,
   qemu-crucible,
   sqlite,
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./crucible-qemu-plugin.nix {buildDriver = selected;};
   src = import ../tools/crucible/_source.nix {inherit lib;};
   cargoDeps = aosWorkspaceVendor;
   cargoWorkspaceMembers = import ../tools/crucible/_workspace.nix {inherit lib;};
@@ -39,8 +41,7 @@
     buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite];
     runtimeDeps = [glib qemu-crucible sqlite];
   };
-in
-  mkCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -217,4 +218,18 @@ in
       homepage = "https://github.com/andyl/andyl-os";
       license = "GPL-2.0-only";
     };
-  }
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+  };
+  cargoPackage = mkCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_crucible-qemu-plugin-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

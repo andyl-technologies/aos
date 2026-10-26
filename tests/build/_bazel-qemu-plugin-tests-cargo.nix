@@ -1,9 +1,17 @@
 ##! Runs GPL plugin tests against an independently linked Apache engine oracle.
-{pkgs}: let
+{
+  pkgs,
+  release ? false,
+}: let
   root = ../..;
+  releaseFlag = pkgs.lib.optionalString release " --release";
+  profileDirectory =
+    if release
+    then "release"
+    else "debug";
 in
   pkgs.mkDerivation {
-    pname = "aos-bazel-qemu-plugin-tests-cargo";
+    pname = "aos-bazel-qemu-plugin-tests-cargo" + pkgs.lib.optionalString release "-release";
     version = "1";
     src = import (root + "/pkgs/tools/crucible/_source.nix") {inherit (pkgs) lib;};
     buildDeps = [pkgs.rust pkgs.python3 pkgs.sed pkgs.pkg-config];
@@ -30,10 +38,10 @@ in
           export RUSTC_WRAPPER="$TMPDIR/rustc-wrapper"
 
           export AOS_CARGO_RUSTC_TRACE="$out/host/compiler-arguments.jsonl"
-          cargo build --frozen --offline --manifest-path crates/Cargo.toml \
+          cargo build${releaseFlag} --frozen --offline --manifest-path crates/Cargo.toml \
             -p crucible-control-server --bin crucible-qemu-test-oracle --features qemu-test-oracle \
             --jobs "$NIX_BUILD_CORES" --message-format=json > "$out/host/cargo-messages.jsonl"
-          cp "$CARGO_TARGET_DIR/debug/crucible-qemu-test-oracle" "$out/host/artifacts/"
+          cp "$CARGO_TARGET_DIR/${profileDirectory}/crucible-qemu-test-oracle" "$out/host/artifacts/"
           export CRUCIBLE_QEMU_TEST_ORACLE="$out/host/artifacts/crucible-qemu-test-oracle"
 
           # Separate outputs retain every compiler invocation in both graphs;
@@ -43,10 +51,10 @@ in
           export CRUCIBLE_QEMU_ATOMIC_PATCH_HASH=${pkgs.qemu-crucible.passthru.atomicPatchHash}
           export CRUCIBLE_SHMEM_HEADER_HASH=${pkgs.qemu-crucible.passthru.shmemHeaderHash}
           export AOS_CARGO_RUSTC_TRACE="$out/gpl/compiler-arguments.jsonl"
-          cargo test --frozen --offline --manifest-path crates/Cargo.toml \
+          cargo test${releaseFlag} --frozen --offline --manifest-path crates/Cargo.toml \
             -p crucible-qemu-plugin --lib --tests \
             --jobs "$NIX_BUILD_CORES" --no-run --message-format=json > "$out/gpl/cargo-messages.jsonl"
-          cargo test --frozen --offline --manifest-path crates/Cargo.toml \
+          cargo test${releaseFlag} --frozen --offline --manifest-path crates/Cargo.toml \
             -p crucible-qemu-plugin --lib --tests \
             --jobs "$NIX_BUILD_CORES" -- --nocapture > "$out/gpl/cargo-tests.log" 2>&1 || {
             tail -n 70 "$out/gpl/cargo-tests.log"

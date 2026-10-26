@@ -9,19 +9,28 @@
   aosBazelRustRepositories,
   aosBazelQemuPluginAbi,
   callPackage,
+  components ? ["plugin" "gateway"],
   sourceInventory ? ../../tools/bazel/metadata/qemu-gpl-production-inventory.json,
 }: let
   plugin = "//crates/crucible/crucible-qemu-plugin:";
   gateway = "//crates/crucible/crucible-qemu-debug-gateway:";
-  productionTargets = [
-    "${plugin}plugin"
-    "${plugin}production_license_closure"
-    "${plugin}compiler_artifact"
-    "${gateway}lib"
-    "${gateway}crucible-debug-gateway"
-    "${gateway}production_license_closure"
-    "${gateway}compiler_artifact"
-  ];
+  validComponents =
+    components
+    != []
+    && builtins.all (component: builtins.elem component ["plugin" "gateway"]) components
+    && builtins.length components == builtins.length (lib.unique components);
+  productionTargets =
+    lib.optionals (builtins.elem "plugin" components) [
+      "${plugin}plugin"
+      "${plugin}production_license_closure"
+      "${plugin}compiler_artifact"
+    ]
+    ++ lib.optionals (builtins.elem "gateway" components) [
+      "${gateway}lib"
+      "${gateway}crucible-debug-gateway"
+      "${gateway}production_license_closure"
+      "${gateway}compiler_artifact"
+    ];
   workspace = mkAosBazelWorkspace {
     root = ../..;
     inherit sourceInventory;
@@ -50,13 +59,16 @@
     ];
     analysisTargets = productionTargets;
   };
-in rec {
-  inherit workspace productionTargets;
   build = mkAosBazelBuild {
     pname = "aos-bazel-qemu-gpl-production";
     inherit workspace;
     targets = productionTargets;
     retainActionGraph = true;
   };
-  installed = callPackage ./_crucible-qemu-bazel-installed.nix {inherit build;};
-}
+in
+  assert validComponents; {
+    inherit workspace productionTargets build;
+    installed =
+      lib.filterAttrs (name: _: builtins.elem name components)
+      (callPackage ./_crucible-qemu-bazel-installed.nix {inherit build;});
+  }
