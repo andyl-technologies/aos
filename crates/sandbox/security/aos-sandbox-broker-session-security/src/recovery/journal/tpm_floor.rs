@@ -33,6 +33,7 @@ mod format;
 mod head;
 pub(super) use head::StorageFloorMainArchiveV3;
 mod provisioning;
+pub(crate) use provisioning::decode_provision as decode_initial_provision_data_v1;
 pub(super) mod runtime;
 
 use format::{FloorCheckpointV1, FloorCutV1, FloorIntentV1};

@@ -408,6 +408,21 @@ Recent committed startup fixes close narrower prerequisites:
   independent approval-key provenance. Full hardening, protected writer/TPM
   ownership and installed production qualification remain open.
 
+- The genuine startup can now lend its captured public provisioning record
+  once, after the same Source prepays an additional 8 KiB codec allowance.
+  Original unit and credential admission are prerequisites; private index auth
+  stays parked in its native owner. Security consumes that opaque loan, retains
+  the existing normal-owner AOSBTD01 decoder's actual result and compares its
+  canonical role/node with the original Source. The compiled decoder layout
+  must fit the prepaid bound. Decode refusal fences that same startup while
+  keeping Source after owed. The resource-policy epoch is never substituted for
+  the provisioning deployment epoch. All 48 focused Broker, Domain and Security
+  tests pass, including refusal before credential admission/payment and negative
+  dispatch through Source after. The separate normal-owner codec regression
+  and exact-source complete Rust target compilation are running. No positive
+  installed initial producer, independent key/endpoint provenance, protected
+  writer, signed-intent durability or physical TPM authority is qualified.
+
 - The isolated manager candidate gives initrd SwitchRoot its own appended
   `system:aos_switch_root` permission. Production grants only `init_t` to itself;
   whole-policy checks reject foreign grants, including disabled and attribute

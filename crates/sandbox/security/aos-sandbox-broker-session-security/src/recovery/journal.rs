@@ -70,6 +70,7 @@ mod storage_inventory_archive;
     reason = "TPM floor attachment and live transport remain unqualified"
 )]
 mod tpm_floor;
+pub(crate) use tpm_floor::decode_initial_provision_data_v1;
 pub(crate) use tpm_floor::storage_receiving::StorageFloorFinancialSourceV2;
 pub(crate) use tpm_floor::BrokerSidecarCustodyV1;
 pub(crate) use tpm_floor::{

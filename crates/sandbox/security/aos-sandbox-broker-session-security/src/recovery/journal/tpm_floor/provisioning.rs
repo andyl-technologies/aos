@@ -373,7 +373,15 @@ fn read_auth(endpoint: FloorEndpointV1) -> Result<Zeroizing<[u8; 32]>, FloorErro
     Ok(auth)
 }
 
-fn decode_provision(
+/// Decodes the single canonical public record without admitting a live owner.
+///
+/// Both normal-owner custody and the Source-paid manual readback use this DATA
+/// operation. It neither reads private auth nor creates provisioning authority.
+///
+/// # Errors
+/// Refuses wrong framing, width, reserved bytes, endpoint, sentinel profile
+/// fields or a salt Name that differs from the profile's SHA-256 commitment.
+pub(crate) fn decode_provision(
     bytes: &[u8],
     endpoint: FloorEndpointV1,
 ) -> Result<(FloorProfileV1, [u8; 34]), FloorErrorV1> {

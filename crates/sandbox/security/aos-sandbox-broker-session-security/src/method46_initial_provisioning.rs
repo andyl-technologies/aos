@@ -18,11 +18,19 @@
 //! intent:  AOSBII01 | version:1u16be | reserved:0u16be |
 //!          request:322 | independent-Ed25519-signature:64               (398)
 //! ```
+//!
+//! The credential decode owner consumes the genuine startup's separately paid
+//! public readback loan. It retains the normal-owner canonical decoder result
+//! and compares its role/node with that same Source. This supplies no stopped
+//! owner, independent key, journal writer, physical TPM or publication authority.
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 
 use crate::tpm_nv_custody::{FloorCheckpointV1, FloorCutV1, FloorEndpointV1, FloorProfileV1};
+
+mod credential_decode;
+pub use credential_decode::Method46InitialProvisionDecodeOriginalV1;
 
 /// Fixes the complete initial provisioning request width.
 pub const METHOD46_INITIAL_REQUEST_BYTES_V1: usize = 322;

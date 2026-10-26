@@ -17,6 +17,11 @@ use super::*;
 
 mod entries;
 mod observation;
+mod provisioning_readback;
+
+pub use provisioning_readback::{
+    METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, Method46InitialProvisionReadbackLoanV1,
+};
 
 use entries::Entries;
 use observation::Observation;
@@ -83,6 +88,7 @@ pub(super) struct InitialCredentialsOriginalV1 {
     entered: bool,
     completed: bool,
     post_entered: bool,
+    decode_loan_issued: bool,
 }
 
 impl InitialCredentialsOriginalV1 {
@@ -100,6 +106,7 @@ impl InitialCredentialsOriginalV1 {
             entered: false,
             completed: false,
             post_entered: false,
+            decode_loan_issued: false,
         }
     }
 

@@ -39,6 +39,7 @@ use sha2::{Digest as _, Sha256};
 use crate::BrokerSessionSecurityError;
 
 mod journal;
+pub(crate) use journal::decode_initial_provision_data_v1;
 pub(crate) use journal::StorageFloorFinancialSourceV2;
 pub(crate) use journal::FixedServiceReceivingExtentErrorV4;
 pub(crate) use journal::StorageHostClientReceivingV1;

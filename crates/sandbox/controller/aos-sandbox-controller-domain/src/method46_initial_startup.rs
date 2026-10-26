@@ -31,6 +31,9 @@ const PATH_BYTES: usize = 1024;
 const PROFILE_SUFFIX: &str = "-aos-method46-initial-startup-profile-1/profile.json";
 
 mod credentials;
+pub use credentials::{
+    METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, Method46InitialProvisionReadbackLoanV1,
+};
 mod images;
 mod policy;
 mod unit;
