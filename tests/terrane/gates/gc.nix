@@ -75,6 +75,7 @@
     "gc::runner::walk::tests::native::gc_common_walk_native_manifest_dictionary_and_legacy_records_keep_declared_edges"
     "gc::runner::walk::tests::native::gc_common_walk_native_repeated_occurrences_cut_erased_audit_sources_only"
     "gc::runner::walk::tests::native::gc_common_walk_native_witness_then_full_keeps_declared_chunks_without_body_reads"
+    "gc::runner::tests::dictionary_reachability::gc_native_marks_codec_dictionary_chain_without_data_body_reads"
   ];
 
   # An exact filter with no matching test succeeds in Cargo. Validate the whole

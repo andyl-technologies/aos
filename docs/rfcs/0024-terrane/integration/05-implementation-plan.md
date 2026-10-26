@@ -118,6 +118,12 @@ passes in 1,471.693 seconds. Independent review matches all 8,294 immutable
 source files and 190 test-executable records across 59 packages. This is
 compilation evidence and does not turn the failed native regression green.
 
+The exact codec dictionary regression is also required by the owning
+`gc-mark-reachability` gate. Its 27 prior selectors retain their order and
+assertions; the gate now requires 28 cases. The independent focused guest's
+failure remains failed. Owning-gate renewal must include this case after the
+dependency fix, rather than inherit an older green gate that omitted it.
+
 Root-scoped discovery now enumerates actual canonical root and graft paths
 through the repository Guard. Each occurrence receives its own current Read
 check, including distinct paths that share one root digest. Nested-only grants
