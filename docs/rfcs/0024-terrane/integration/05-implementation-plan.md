@@ -107,7 +107,11 @@ Native confirmation is still required; no collection success is claimed.
 The focused scoped-index run at `4a3d4343cb` ends in 795.484 seconds before any
 test executes: the 16 GiB AOS builder's OOM killer terminates full SDK test
 compilation. Raw controller and compiler logs are retained; diagnosed terminal
-VM scratch is removed. Focused index checks now share the existing retained
+VM scratch is removed. Required application-target compilation at that revision
+separately passes in 1,526.528 seconds; complete independent review matches all
+8,270 immutable source files and 190 test-executable build records across 59
+packages. These records establish compilation only, without retained executable
+bytes. Focused index checks now share the existing retained
 default-plus-Tokio SDK test image and run their exact selectors in separate
 capability-free AOS ext4 guests. Compilation remains separate from execution;
 the scoped cases retain their 30-second bounds and new held cases use 60 seconds.
