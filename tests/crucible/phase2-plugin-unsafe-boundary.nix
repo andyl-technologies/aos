@@ -310,6 +310,7 @@ in
                 crates/crucible-qemu-plugin/src/network_tx.rs|\
                 crates/crucible-qemu-plugin/src/registration/tests.rs|\
                 crates/crucible-qemu-plugin/src/runtime.rs|\
+                crates/crucible-qemu-plugin/src/runtime/installed_console.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices/tests.rs|\
@@ -378,6 +379,7 @@ in
                 crates/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
                 crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
                 crates/crucible-qemu-plugin/src/network_tx.rs|\
+                crates/crucible-qemu-plugin/src/runtime/installed_console.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
                 crates/crucible-qemu-plugin/src/runtime/tests/support.rs)
                   ;;
@@ -407,6 +409,7 @@ in
                 crates/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
                 crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
                 crates/crucible-qemu-plugin/src/network_tx.rs|\
+                crates/crucible-qemu-plugin/src/runtime/installed_console.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/error.rs|\
