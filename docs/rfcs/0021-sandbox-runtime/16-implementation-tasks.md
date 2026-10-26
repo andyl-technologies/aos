@@ -482,8 +482,10 @@ Recent committed startup fixes close narrower prerequisites:
   independently owed after a primary or property-post refusal; successful
   final cuts cannot heal an incomplete or failed initial cut. All 60 focused
   Broker, Domain and Security tests plus four native cgroup-reader regressions
-  pass. Complete Rust target compilation is running for the runtime changes.
-  A dedicated AOS Nix kernel VM now selects the exact feature-gated kernel
+  pass. Complete Rust targets compile for that frozen runtime snapshot at
+  `/nix/store/0ra4m414311d0rvwzps154s46yld0vh1-aos-test-targets-0.1.0`,
+  without running the targets. It predates the kernel fixture declaration and
+  main-writer/readback additions. A dedicated AOS Nix kernel VM now selects the exact feature-gated kernel
   fixture; it passes at
   `/nix/store/q66di8pqxqjgv925ch0fnv5ndfaxxx9r-aos-vm-test-sandbox-method46-stopped-cgroups-0`.
   It checks absence, emptiness, recursive population, immutable failure and
@@ -546,6 +548,20 @@ Recent committed startup fixes close narrower prerequisites:
   endpoint/key provenance, job exclusion, approved durable intent and physical
   TPM authority remain open. This request remains comparison DATA.
 
+- Initial main capture now admits historical namespaces and legacy capacity
+  ownership through the ordinary protected namespace engine. The read-only
+  comparison shares the exact health, complete canonical-family, deleted-history
+  and ownership guards used by normal claims, and returns no authority guard.
+  The same Source prices both retained capacity scans from the actual prepared
+  prefix before replay consumes that quote; both full semantic-prefix allowances
+  and original capacity models/errors stay paid without disposal credit.
+  Replay and admission must succeed before main-map lending. All 70 focused
+  initial tests and 72 shared Journal regressions pass, including a real
+  protected reopen with deleted foreign history and an empty valid Broker map.
+  Portable retained capacity regressions and full Rust targets are running.
+  Session schema, independent endpoint/key provenance, job exclusion, approved
+  durable intent, physical TPM operations and installed producers remain open.
+
 - The latest installed offline key-preparation candidate passes its service
   property stage, then exits with the stopped-runtime invalid-unit class 95.
   Its Controller is inactive/dead with PID zero and an empty InvocationID.
@@ -561,7 +577,15 @@ Recent committed startup fixes close narrower prerequisites:
   (`/nix/store/nj0561s0wilxk57z0zpvih28fnkvflv7-aos-test-targets-0.1.0`),
   without running the targets. That snapshot predates the new stopped-unit
   and native-cgroup readers. The corrected hardware-free enforcing QEMU
-  preparation test is running. The failed frozen candidate
+  candidate reaches its agent and preparation body, passes the stopped-owner
+  stage, then refuses credential acquisition with class 90. Its audit denies
+  a read of the private tmpfs root directory. The reader used ordinary readable
+  descriptors for ancestors that only need lookup and metadata. An `O_PATH`
+  correction is prepared, with a native kernel regression running; the actual
+  delivered directory retains its readable descriptor, labels, exact-entry,
+  ownership, read-only mount and held/named content checks. No production
+  permission is added. A corrected installed retry remains pending. The failed
+  frozen candidate
   includes pending combined policy/custody changes and older Parent05;
   this finding does not qualify that candidate, physical floor initialization
   or the public lifecycle.

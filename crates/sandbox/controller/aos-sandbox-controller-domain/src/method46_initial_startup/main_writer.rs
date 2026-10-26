@@ -24,7 +24,10 @@ impl Method46InitialStartupOriginalV1 {
     /// Independent final name observation stays owed even if preparation,
     /// funding or replay fails. Existing-only mode forbids creating missing
     /// names, cleaning compaction or repairing a tail. An empty native history
-    /// or sequence-exhausted journal refuses. Session schema, current HEAD,
+    /// or sequence-exhausted journal refuses. The same canonical namespace
+    /// guard also checks deleted foreign history and complete legacy capacity
+    /// ownership after separately pricing both retained scans from this held
+    /// prefix. It creates no namespace authority loan. Session schema, current HEAD,
     /// independent approval, job exclusion and TPM custody remain separate.
     ///
     /// # Errors
@@ -70,7 +73,12 @@ impl Method46InitialStartupOriginalV1 {
         writer.prepare_once(role, profile.controller_uid);
         let replay = writer.quote_replay_once().ok_or(self.closed)?;
         self.fund_additional(Some(replay))?;
-        writer.replay_once().map_err(|_| self.closed)
+        // The original prefix quote is deliberately unavailable after replay.
+        // Price both retained namespace scans while that same bound is lent.
+        let namespace = writer.quote_namespace_once().ok_or(self.closed)?;
+        self.fund_additional(Some(namespace))?;
+        writer.replay_once().map_err(|_| self.closed)?;
+        writer.admit_namespace_once().map_err(|_| self.closed)
     }
 }
 

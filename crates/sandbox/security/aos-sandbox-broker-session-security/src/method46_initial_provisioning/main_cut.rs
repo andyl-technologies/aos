@@ -22,8 +22,9 @@ use crate::tpm_nv_custody::{FloorCutV1, FloorErrorV1, FloorHeadCutOriginalV3};
 /// No map, amount, sequence or digest enters from the caller. The existing
 /// canonical engine hashes every Broker row, including archives. Native
 /// before/after observations remain bound to the original protected opening.
-/// Historical namespace/Session schema and capacity ownership, independent
-/// endpoint/key provenance and physical TPM custody remain separate gates.
+/// The native owner has admitted historical namespaces and legacy capacity
+/// ownership. Session schema, independent endpoint/key provenance and physical
+/// TPM custody remain separate gates.
 #[must_use = "retain the canonical hash result beside its genuine readback loan"]
 pub struct Method46InitialMainCutOriginalV1<'owner> {
     readback: Method46InitialMainReadbackLoanV1<'owner>,
@@ -103,7 +104,8 @@ impl<'owner> Method46InitialMainCutOriginalV1<'owner> {
         }
 
         // Capacity records are excluded by the canonical Broker hash itself.
-        // Their ownership and historical namespaces still need real admission.
+        // Their ownership and historical namespaces were separately admitted
+        // by the same opening; this comparison grants no namespace authority.
         self.namespaces_match = Some(map.all_records_data_v1().all(|(namespace, _, _)| {
             matches!(
                 namespace,

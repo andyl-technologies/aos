@@ -1105,9 +1105,25 @@ impl Journal {
     fn claim_protected_authority_engine_v1(
         &mut self,
         namespace: RecordNamespace,
-        mut captures: Option<&mut [aos_sandbox_protocol::domain_ledger::capacity_family::family::
+        captures: Option<&mut [aos_sandbox_protocol::domain_ledger::capacity_family::family::
             CanonicalCapacityReadCaptureV1; 2]>,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
+        self.require_protected_namespace_engine_v1(namespace, captures)?;
+        Ok(ProtectedJournalAuthority {
+            journal: self,
+            namespace,
+            scope: ProtectedAuthorityScope::SingleNamespace,
+        })
+    }
+
+    // Both normal claims and the initial producer compare this same held map
+    // and committed namespace set. A successful readback creates no guard.
+    fn require_protected_namespace_engine_v1(
+        &self,
+        namespace: RecordNamespace,
+        mut captures: Option<&mut [aos_sandbox_protocol::domain_ledger::capacity_family::family::
+            CanonicalCapacityReadCaptureV1; 2]>,
+    ) -> Result<(), JournalError> {
         self.ensure_protected_authority()?;
         if namespace == RecordNamespace::MountSourceAcquisition
             || namespace == RecordNamespace::NixOfflineProvisioning
@@ -1151,11 +1167,7 @@ impl Journal {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
 
-        Ok(ProtectedJournalAuthority {
-            journal: self,
-            namespace,
-            scope: ProtectedAuthorityScope::SingleNamespace,
-        })
+        Ok(())
     }
 
     /// Claims one closed cross-namespace capacity-reserved transaction protocol.
@@ -4583,6 +4595,54 @@ mod tests {
             JournalLimits::default(),
             uid,
         )
+    }
+
+    #[test]
+    fn method46_initial_namespace_readback_matches_claim_after_committed_deletion() {
+        for namespace in [
+            RecordNamespace::BrokerSessionTraffic,
+            RecordNamespace::DesiredState,
+        ] {
+            let directory = TestDirectory::new("initial-namespace-deleted-history");
+            let (mut journal, _) = protected_open(&directory.0).unwrap();
+            {
+                let mut authority = journal.claim_protected_authority(namespace).unwrap();
+                authority
+                    .commit(&transaction(1, vec![JournalRecord::put(
+                        namespace,
+                        b"key".to_vec(),
+                        b"value".to_vec(),
+                    )]))
+                    .unwrap();
+                authority
+                    .commit(&transaction(2, vec![JournalRecord::delete(
+                        namespace,
+                        b"key".to_vec(),
+                    )]))
+                    .unwrap();
+            }
+            assert!(journal.all_records().next().is_none());
+            drop(journal);
+
+            let (mut journal, _) = protected_open(&directory.0).unwrap();
+            let mut captures = std::array::from_fn(|_| {
+                aos_sandbox_protocol::domain_ledger::capacity_family::family::
+                    CanonicalCapacityReadCaptureV1::new()
+            });
+            let readback = journal.require_protected_namespace_engine_v1(
+                RecordNamespace::BrokerSessionTraffic,
+                Some(&mut captures),
+            );
+            let claim = journal.claim_protected_authority(RecordNamespace::BrokerSessionTraffic);
+
+            if namespace == RecordNamespace::BrokerSessionTraffic {
+                assert!(readback.is_ok());
+                assert!(claim.is_ok());
+            } else {
+                assert!(matches!(readback, Err(JournalError::ForeignAuthorityNamespace)));
+                assert!(matches!(claim, Err(JournalError::ForeignAuthorityNamespace)));
+            }
+        }
     }
 
     #[test]

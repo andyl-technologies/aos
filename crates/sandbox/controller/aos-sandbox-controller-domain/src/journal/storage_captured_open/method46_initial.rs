@@ -10,6 +10,7 @@ use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector}
 
 use super::*;
 
+mod namespace;
 mod readback;
 
 #[derive(Debug, thiserror::Error)]
@@ -42,10 +43,11 @@ pub(crate) struct Method46InitialMainWriterOriginalV1 {
     post_original: super::super::ProtectedJournalCurrentnessOriginalsV1,
     closed: Option<JournalError>,
     readback: readback::MainMapReadbackOriginalV1,
+    namespace: namespace::MainNamespaceOriginalV1,
 }
 
 impl Method46InitialMainWriterOriginalV1 {
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: FixedProtectedCapturedJournalOpenV1::with_recipe(
                 ProtectedCapturedJournalRecipeV1::JoinedMethod46InitialMain(None),
@@ -59,6 +61,7 @@ impl Method46InitialMainWriterOriginalV1 {
             post_original: super::super::ProtectedJournalCurrentnessOriginalsV1::new(),
             closed: None,
             readback: readback::MainMapReadbackOriginalV1::new(),
+            namespace: namespace::MainNamespaceOriginalV1::new(),
         }
     }
 
@@ -229,6 +232,7 @@ impl Method46InitialMainWriterOriginalV1 {
                     .and_then(|result| result.as_ref().err())
                     .map(|error| error as _)
             })
+            .or_else(|| self.namespace.failure())
             .or_else(|| self.readback.failure())
             .or_else(|| self.post_original.failure())
             .or_else(|| {

@@ -50,6 +50,7 @@ impl Method46InitialMainWriterOriginalV1 {
             && self.failure().is_none()
             && matches!(self.nonempty, Some(Ok(())))
             && self.inner.replay_ready()
+            && self.namespace_admitted()
     }
 
     fn observe_readback(&mut self, round: usize) -> Result<(), JournalError> {
@@ -82,6 +83,7 @@ impl Method46InitialMainWriterOriginalV1 {
             || self.failure().is_some()
             || !matches!(self.nonempty, Some(Ok(())))
             || !self.inner.replay_ready()
+            || !self.namespace_admitted()
         {
             self.closed.get_or_insert(JournalError::ProtectedBoundary);
             return Err(JournalError::ProtectedBoundary);
