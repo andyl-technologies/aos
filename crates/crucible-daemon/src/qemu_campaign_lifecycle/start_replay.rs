@@ -385,6 +385,16 @@ pub(crate) fn materialize_start_from_tracked<F, D>(
                 ) {
                     let _ = writeln!(stderr, "{}", record.row());
                 }
+                // Committed host RUNs near the same time show where each
+                // node stopped, how far it was settled, and which inputs
+                // reached it there.
+                for record in crucible::scheduler::host_run_trace::records_near(
+                    admission_center,
+                    REPLAY_ADMISSION_HALF_WINDOW_PS,
+                    REPLAY_ADMISSION_ROWS,
+                ) {
+                    let _ = writeln!(stderr, "{}", record.row());
+                }
             }
 
             let expected = target.schedule.decision_history().get(index);
@@ -613,11 +623,11 @@ fn replay_entry_window<'a>(
         .join(" ")
 }
 
-/// Admissions printed beside a divergence are those within this distance of
-/// the observed decision.
+/// Admission and host-RUN rows printed beside a divergence are those within
+/// this distance of the observed decision.
 const REPLAY_ADMISSION_HALF_WINDOW_PS: u64 = 100_000_000;
 
-/// Most admission rows printed beside one divergence.
+/// Most admission rows, and most host-RUN rows, printed beside one divergence.
 const REPLAY_ADMISSION_ROWS: usize = 48;
 
 /// One replayed log entry, reduced to what a divergence row prints.

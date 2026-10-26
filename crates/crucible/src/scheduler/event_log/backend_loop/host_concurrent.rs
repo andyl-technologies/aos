@@ -730,6 +730,12 @@ where
             let release_at = staged_scheduler
                 .backend_network_output_time(&node, Icount { retired: reached })
                 .map_err(|error| self.poison_continuation(error))?;
+            let trace = crate::scheduler::host_run_trace::HostRunTraceStart::capture(
+                &staged_scheduler,
+                stop_index,
+                &completed.step,
+                &completed.network_outputs,
+            );
             let staged_inputs = run
                 .staged_input_events
                 .iter()
@@ -762,6 +768,7 @@ where
                     },
                 )
                 .map_err(|error| self.poison_continuation(error))?;
+            trace.record(&staged_scheduler, &outcome.resolved_events);
             staged_frontier = outcome.frontier;
             let boundary = BackendBoundaryEvidence {
                 staged_inputs,

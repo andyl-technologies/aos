@@ -110,6 +110,7 @@ mod single_scheduler_drive;
 mod single_scheduler_state;
 mod topology;
 
+pub mod host_run_trace;
 pub mod network_admission_trace;
 
 pub use checkpoint::*;
