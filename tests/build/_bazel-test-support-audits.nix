@@ -3,7 +3,13 @@
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/test-support-audit-inventory.json,
 }: let
-  audits = ["crate_unsafe_fence" "concurrency_abi_oracle_standards" "harness_lint_annotations" "determinism_core_coverage"];
+  audits = [
+    "crate_unsafe_fence"
+    "concurrency_abi_oracle_standards"
+    "harness_lint_annotations"
+    "determinism_core_coverage"
+    "testing_standards"
+  ];
   parityTools = builtins.path {
     path = ../../tools/bazel/tests;
     name = "aos-source-audit-parity-tools";
@@ -21,6 +27,8 @@
       "tools/bazel/testing"
       "tools/bazel/toolchains"
       "pkgs/tools/crucible/_packages.nix"
+      "tests/crucible/BUILD.bazel"
+      "tests/crucible/testing-standards-baseline.txt"
     ];
     dependencyProfile = "engine";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.engine;
@@ -48,6 +56,10 @@ in rec {
     pname = "aos-bazel-test-support-source-audit-cargo-oracle";
     packages = ["crucible-test-support"];
     cargoFlags = pkgs.lib.concatMap (name: ["--test" name]) audits;
+    cargoSource = import ../../pkgs/tools/crucible/_cargo-source.nix {
+      inherit (pkgs) lib;
+      extraPaths = ["tests/crucible/testing-standards-baseline.txt"];
+    };
     captureCompilerArguments = true;
   };
   parity = pkgs.runCommand "aos-bazel-test-support-source-audit-parity" {buildDeps = [pkgs.python3];} ''

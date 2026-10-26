@@ -3,7 +3,10 @@ exports_files([
     "phase7-production-rust-plugin-flight.nix",
 ])
 
-exports_files(["engineering-hygiene-baseline.txt"])
+exports_files([
+    "engineering-hygiene-baseline.txt",
+    "testing-standards-baseline.txt",
+])
 
 filegroup(
     name = "qemu_host_gate_audit",

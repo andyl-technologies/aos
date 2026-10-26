@@ -388,32 +388,38 @@ The [host-fixture receipt](tests/evidence/test-support-host-fixtures.json) retai
 matching compiler arguments, environments, declared inputs, and output digests
 for both source selections.
 
-`checks.build.bazel.test-support-audits.all` runs 13 existing cases across the
-unsafe-fence, concurrency/ABI/oracle standards, harness-lint annotation, and
-determinism coverage audits against declared source ownership. Its precise
-workspace contains no Cargo manifests or locks. The generated catalog retains
-all 78 workspace
-packages; the audit checks all 19 Crucible packages, including their crate-root
+`checks.build.bazel.test-support-audits.all` runs 18 existing cases across the
+unsafe-fence, concurrency/ABI/oracle standards, harness-lint annotation,
+determinism coverage, and per-layer testing-standards audits against declared
+source ownership. Its precise workspace contains no Cargo manifests or locks.
+The generated catalog retains all 78 workspace packages; the audit checks all
+19 Crucible packages, including their crate-root
 fences, safe-wrapper contracts, and unsafe source usage. An independent Cargo
 build executes the same cases using Cargo ownership, then both compilers'
 retained binaries execute them again against the Cargo-free catalog sources.
-Eight negative controls run with both compilers and reject invalid or missing
-ownership, an actual removed fence, and a removed coverage marker. The
-[coverage-audit receipt](tests/evidence/test-support-coverage-audit.json) retains
+Ten negative controls run with both compilers and reject invalid or missing
+ownership, an actual removed fence, a removed coverage marker, a missing
+testing-standards baseline, and an unbaselined flaky-test escape. The
+[testing-standards receipt](tests/evidence/test-support-testing-standards.json) retains
 the precise/conservative compiler input and output comparison: each Bazel build
-executes 69 fresh Linux sandbox actions, including five first-party Rust
-compilations. These four audit targets use a relative compiler manifest path
+executes 71 fresh Linux sandbox actions, including six first-party Rust
+compilations. These five audit targets use a relative compiler manifest path
 because their runtime ownership comes from the catalog; this prevents the
 compiler sandbox sequence number from entering their binaries. The verifier
 rejects embedded private sandbox paths and has rejected an actual older binary.
 The original [unsafe-fence receipt](tests/evidence/test-support-unsafe-fence.json)
 retains the pre-change failure with catalog ownership. The earlier
 [three-target receipt](tests/evidence/test-support-source-audits.json) records
-the sandbox-path regression and its original qualification. The remaining 23
+the sandbox-path regression and its original qualification. The
+[coverage-audit receipt](tests/evidence/test-support-coverage-audit.json) retains
+the earlier coverage-marker qualification. The remaining 22
 repository audit and feature-driver integration targets still need migration.
 The concurrency/ABI/oracle audit inspects source contracts; production ABI
 execution remains a separate gate. The coverage audit checks source markers;
 it does not measure runtime branch coverage.
+The existing testing-standards baseline is an explicit runtime input in both
+build systems. The Cargo oracle selects it through its source filter's existing
+`extraPaths` option; production source filters remain unchanged.
 
 `checks.build.bazel.feature-powerset.all` independently compiles the nine
 engine, QEMU host, and device configurations from the existing feature-powerset

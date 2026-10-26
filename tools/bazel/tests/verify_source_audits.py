@@ -20,7 +20,10 @@ AUDITS = {
     "concurrency_abi_oracle_standards": 2,
     "harness_lint_annotations": 4,
     "determinism_core_coverage": 2,
+    "testing_standards": 5,
 }
+TESTING_STANDARDS_BASELINE = "tests/crucible/testing-standards-baseline.txt"
+RUNTIME_DATA = [TESTING_STANDARDS_BASELINE]
 
 
 def oracle_binary(oracle, target="crate_unsafe_fence"):
@@ -90,6 +93,10 @@ def qualify(options):
     with tempfile.TemporaryDirectory(prefix="aos-source-audit-") as temporary:
         root = Path(temporary)
         shutil.copytree(source, root / "crates")
+        for relative in RUNTIME_DATA:
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(options.workspace / relative, destination)
         (root / "crates").chmod(0o755)
         for directory in (root / "crates").rglob("*"):
             if directory.is_dir():
@@ -105,6 +112,17 @@ def qualify(options):
                 if result.returncode or executed_cases(result.stdout) != expected[name]:
                     raise ValueError("Compiled audit failed against Cargo-free catalog sources: "
                                      + compiler + ": " + name + ": " + result.stdout + result.stderr)
+
+        baseline = root / TESTING_STANDARDS_BASELINE
+        baseline_contents = baseline.read_bytes()
+        baseline.unlink()
+        for selected in (binaries, bazel_binaries):
+            result = run_audit(selected["testing_standards"], selected_catalog,
+                               "gate_target_sources_treat_flaky_as_failing")
+            if result.returncode == 0 or "No such file or directory" not in result.stdout + result.stderr:
+                raise ValueError("testing standards audit accepted an absent declared baseline")
+        baseline.write_bytes(baseline_contents)
+        rejected.append("absent-testing-standards-baseline")
 
         fence_binaries = [selected["crate_unsafe_fence"] for selected in (binaries, bazel_binaries)]
 
@@ -175,6 +193,20 @@ def qualify(options):
                 raise ValueError("catalog-backed audit missed coverage marker drift")
         rejected.append("missing-active-coverage-marker")
 
+        # Add a real unbaselined escape to an existing scanned test file.
+        # The scanner reads this as source data; the injected text is not built.
+        package = next(item for item in catalog["packages"] if item["name"] == "crucible-determinism")
+        source = root / package["directory"] / "tests/contract_a.rs"
+        contents = source.read_text()
+        source.chmod(0o644)
+        source.write_text(contents + "\nfn source_audit_negative_control() { std::thread::sleep(duration); }\n")
+        for selected in (binaries, bazel_binaries):
+            result = run_audit(selected["testing_standards"], selected_catalog,
+                               "gate_target_sources_treat_flaky_as_failing")
+            if result.returncode == 0 or "contains flaky-test escape pattern `std::thread::sleep`" not in result.stdout + result.stderr:
+                raise ValueError("catalog-backed audit missed an unbaselined flaky-test escape")
+        rejected.append("unbaselined-flaky-test-escape")
+
     return {
         "schema_version": 2,
         "test_parity": parity,
@@ -185,6 +217,10 @@ def qualify(options):
         "catalog_package_count": len(catalog["packages"]),
         "audited_package_sources": package_sources,
         "first_party_cargo_files": manifests,
+        "runtime_data_sha256": {
+            relative: hashlib.sha256((options.workspace / relative).read_bytes()).hexdigest()
+            for relative in RUNTIME_DATA
+        },
         "negative_controls_rejected": rejected,
         "negative_control_compilers": ["cargo", "bazel"],
     }

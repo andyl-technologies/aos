@@ -6800,7 +6800,8 @@
         "//crates/crucible/crucible-test-support:concurrency_abi_oracle_standards_binary",
         "//crates/crucible/crucible-test-support:crate_unsafe_fence_binary",
         "//crates/crucible/crucible-test-support:determinism_core_coverage_binary",
-        "//crates/crucible/crucible-test-support:harness_lint_annotations_binary"
+        "//crates/crucible/crucible-test-support:harness_lint_annotations_binary",
+        "//crates/crucible/crucible-test-support:testing_standards_binary"
       ],
       "edition": "",
       "external": false,
@@ -6809,7 +6810,8 @@
         "crates/crucible/crucible-test-support/concurrency_abi_oracle_standards_binary": "//crates/crucible/crucible-test-support:concurrency_abi_oracle_standards_binary",
         "crates/crucible/crucible-test-support/crate_unsafe_fence_binary": "//crates/crucible/crucible-test-support:crate_unsafe_fence_binary",
         "crates/crucible/crucible-test-support/determinism_core_coverage_binary": "//crates/crucible/crucible-test-support:determinism_core_coverage_binary",
-        "crates/crucible/crucible-test-support/harness_lint_annotations_binary": "//crates/crucible/crucible-test-support:harness_lint_annotations_binary"
+        "crates/crucible/crucible-test-support/harness_lint_annotations_binary": "//crates/crucible/crucible-test-support:harness_lint_annotations_binary",
+        "crates/crucible/crucible-test-support/testing_standards_binary": "//crates/crucible/crucible-test-support:testing_standards_binary"
       },
       "kind": "_aos_package",
       "label": "//crates/crucible/crucible-test-support:source_audit_binaries",
@@ -7029,6 +7031,131 @@
       "tags": [],
       "target_cpu": "x86_64",
       "version": ""
+    },
+    {
+      "build_file": "crates/crucible/crucible-test-support/BUILD.bazel",
+      "copts": [],
+      "crate_name": "",
+      "crate_root": "",
+      "defines": [],
+      "dependencies": [
+        "//crates/crucible/crucible-test-support:testing_standards_binary",
+        "//tools/bazel/testing:policy.json",
+        "//tools/bazel/testing:runner.py",
+        "@@+aos_tools_repository+aos_tools//:bash",
+        "@@+aos_tools_repository+aos_tools//:closure.json",
+        "@@+aos_tools_repository+aos_tools//:python",
+        "@@bazel_tools//tools/test:collect_coverage",
+        "@@bazel_tools//tools/test:coverage_support",
+        "@@bazel_tools//tools/test:runtime",
+        "@@bazel_tools//tools/test:test_setup",
+        "@@bazel_tools//tools/test:test_wrapper",
+        "@@bazel_tools//tools/test:test_xml_generator",
+        "@@bazel_tools//tools/test:xml_writer"
+      ],
+      "edition": "",
+      "external": false,
+      "features": [],
+      "generated_inputs": {
+        "crates/crucible/crucible-test-support/testing_standards_binary": "//crates/crucible/crucible-test-support:testing_standards_binary"
+      },
+      "kind": "_libtest_test",
+      "label": "//crates/crucible/crucible-test-support:testing_standards",
+      "rustc_env": {},
+      "rustc_flags": [],
+      "schema_version": 1,
+      "sources": [
+        "tools/bazel/testing/policy.json",
+        "tools/bazel/testing/runner.py"
+      ],
+      "tags": [],
+      "target_cpu": "x86_64",
+      "version": ""
+    },
+    {
+      "build_file": "crates/crucible/crucible-test-support/BUILD.bazel",
+      "copts": [],
+      "crate_name": "",
+      "crate_root": "crates/crucible/crucible-test-support/tests/testing_standards.rs",
+      "defines": [],
+      "dependencies": [
+        "//crates/crucible/crucible-test-support:lib",
+        "//crates/crucible/crucible-test-support:tests/support/testing_standards.rs",
+        "//crates/crucible/crucible-test-support:tests/support/testing_standards/source_inventory.rs",
+        "//crates/crucible/crucible-test-support:tests/support/workspace.rs",
+        "//crates/crucible/crucible-test-support:tests/testing_standards.rs",
+        "//crates:source_catalog",
+        "//tests/crucible:testing-standards-baseline.txt",
+        "//tools/bazel/rules:workspace_lints",
+        "@@+aos_tools_repository+aos_engine_crates__serde-1.0.228//:serde",
+        "@@+aos_tools_repository+aos_engine_crates__serde_json-1.0.150//:serde_json",
+        "@@+aos_tools_repository+aos_engine_crates__toml-0.8.23//:toml",
+        "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
+        "@@bazel_tools//tools/test:collect_coverage",
+        "@@bazel_tools//tools/test:coverage_support",
+        "@@bazel_tools//tools/test:runtime",
+        "@@bazel_tools//tools/test:test_setup",
+        "@@bazel_tools//tools/test:test_wrapper",
+        "@@bazel_tools//tools/test:test_xml_generator",
+        "@@bazel_tools//tools/test:xml_writer",
+        "@@rules_rust+//ffi/rs:empty_allocator_libraries",
+        "@@rules_rust+//rust/private/cc:empty",
+        "@@rules_rust+//rust/settings:always_enable_metadata_output_groups",
+        "@@rules_rust+//rust/settings:collect_cfgs",
+        "@@rules_rust+//rust/settings:error_format",
+        "@@rules_rust+//rust/settings:experimental_per_crate_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_env",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags",
+        "@@rules_rust+//rust/settings:rustc_output_diagnostics",
+        "@@rules_rust+//util/collect_coverage:collect_coverage",
+        "@@rules_rust+//util/process_wrapper:process_wrapper"
+      ],
+      "edition": "2024",
+      "external": false,
+      "features": [],
+      "generated_inputs": {
+        "crates/crucible/crucible-test-support/libcrucible_test_support-2634982536.rlib": "//crates/crucible/crucible-test-support:lib",
+        "crates/source_catalog.json": "//crates:source_catalog"
+      },
+      "kind": "rust_test",
+      "label": "//crates/crucible/crucible-test-support:testing_standards_binary",
+      "rustc_env": {
+        "CARGO_MANIFEST_DIR": "crates/crucible/crucible-test-support",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-test-support",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
+      "rustc_flags": [],
+      "schema_version": 1,
+      "sources": [
+        "crates/crucible/crucible-test-support/tests/support/testing_standards.rs",
+        "crates/crucible/crucible-test-support/tests/support/testing_standards/source_inventory.rs",
+        "crates/crucible/crucible-test-support/tests/support/workspace.rs",
+        "crates/crucible/crucible-test-support/tests/testing_standards.rs",
+        "tests/crucible/testing-standards-baseline.txt"
+      ],
+      "tags": [
+        "aos-libtest-artifact",
+        "aos-license:apache-host",
+        "manual"
+      ],
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/hub/aos-hub-api/BUILD.bazel",
@@ -17002,7 +17129,7 @@
     "crates/crucible/crucible-session/BUILD.bazel": "97b89befc2b51e7c8081d11440ead375d616850db0dbe881ae66e9e1145a1bbd",
     "crates/crucible/crucible-store-s3/BUILD.bazel": "46ae726e99de65aa4f8468c88bebf60bb689c21827f10766c2dff4356328b71a",
     "crates/crucible/crucible-store/BUILD.bazel": "3b55a3b50f81447aba444c9cdc298c3f9b309112adfe8f29a273eb5224f1f394",
-    "crates/crucible/crucible-test-support/BUILD.bazel": "610571459415121913c782ca9344b59a416ee8fc156b63b09ebfaa3e4d93ca2d",
+    "crates/crucible/crucible-test-support/BUILD.bazel": "a1b2585841811396ed50939a15978d525f1ac4033b5e39977da3dbf1ea1e980a",
     "crates/hub/aos-hub-api/BUILD.bazel": "4c50befe92642cc15aa9c4e23100ac1bfee440500a5dbb2a03218f0b859a1dd2",
     "crates/hub/aos-hub-client/BUILD.bazel": "e27eb0fa91e5d1f521e16734db8783f337e402020e600e34c84a3db8ac35952d",
     "crates/hub/aos-hub-console/BUILD.bazel": "2be1adf9bf59017aababf40a07b14c2c44523e7ff850326f3a2b7cb6250aabe9",
@@ -17035,6 +17162,7 @@
     "crates/release/aos-release-format/BUILD.bazel": "a877454a5c6c50d9b535ef0115ddcf0ab681385fdce31b16650141c38f85fb4f",
     "crates/release/aos-release-signer/BUILD.bazel": "8179371b5531aecbc199b55471f337268335f6a3a0c2347456e7c1dcadebdd0b",
     "crates/transfer/aos-transfer/BUILD.bazel": "a74006b907258f3e0aefac40d6ed27a5d4c0a5cd035fa5f7959308243b18ae81",
+    "tests/crucible/BUILD.bazel": "0394ae9d06393c6917b0914f489707786fbb809523acf14f7bcdbbce4603cb97",
     "third_party/rust/BUILD.bazel": "f63c800633704c3e2cbb78738e79a4f51361310ab5f649cd6260e489f38089c1",
     "third_party/rust/accache.bzl": "d77d2b31f800f096d790ca0ceecc415017106bf4f50cd597ac449414ac8fbd9a",
     "third_party/rust/accache/aliases.bzl": "4a13ee63bf0a906b80616a9dc34b12adb73f3709fa1be828461214fff446f18a",
@@ -21116,6 +21244,7 @@
     "crates/transfer/aos-transfer/src/retry.rs",
     "crates/transfer/aos-transfer/src/transfer.rs",
     "crates/transfer/aos-transfer/src/types.rs",
+    "tests/crucible/testing-standards-baseline.txt",
     "tools/bazel/testing/policy.json",
     "tools/bazel/testing/runner.py"
   ],
@@ -21125,6 +21254,7 @@
     "//crates/crucible/crucible-test-support:determinism_core_coverage",
     "//crates/crucible/crucible-test-support:harness_lint_annotations",
     "//crates/crucible/crucible-test-support:source_audit_binaries",
+    "//crates/crucible/crucible-test-support:testing_standards",
     "//crates:source_catalog_package"
   ]
 }
