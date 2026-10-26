@@ -466,8 +466,10 @@ Recent committed startup fixes close narrower prerequisites:
   before manager construction: two 67-call startup samples, four 16-call
   stopped samples, 224 outgoing/240 incoming ceilings and 15 MiB cumulative
   response materialization. All 57 focused initial-producer tests and 15 shared
-  SDK bookend/property regressions pass. Exact-source complete Rust target
-  compilation is running. These are passive unit observations;
+  SDK bookend/property regressions pass. Exact-source complete Rust targets
+  compile at `/nix/store/fb7scdx1ya8qzfjbvwjyzk07cr2y1jwh-aos-test-targets-0.1.0`,
+  without running the targets. That snapshot predates the native cgroup and
+  main-writer additions. These are passive unit observations;
   native empty/absent cgroups, exclusive protected writer custody, job exclusion,
   installed producers and physical TPM operations remain unqualified.
 
@@ -514,6 +516,22 @@ Recent committed startup fixes close narrower prerequisites:
   Session schema/current HEAD, independent public-key and endpoint provenance,
   job exclusion, approved-intent durability, physical TPM operations and
   installed producer qualification remain open.
+
+- The same initial Source now separately pays a bounded main-map readback
+  loan. It exposes only an immutable view of the already held Journal's DATA;
+  neither a Journal nor a descriptor or writer can escape. Original native
+  before/after name observations remain beside that opening, and the after
+  stays owed after a failed before, hash or caller. Security consumes this
+  genuine loan and uses the existing canonical retained complete Broker-map
+  hash, including archives and an empty current map after committed deletes.
+  The actual key ceiling and compiled carriers must fit the prepaid bound.
+  Foreign current namespaces refuse; capacity and historical Session schema
+  admission remain separate. Cut DATA is returned only after its native after
+  succeeds and the same actual Source is still current. All 67 focused initial
+  producer tests and 27 existing canonical floor/hash regressions pass.
+  Exact-source complete Rust target compilation is running. This bridge supplies
+  no independent endpoint/key provenance, schema admission, job exclusion,
+  approval, durable intent, physical TPM permit or installed qualification.
 
 - The latest installed offline key-preparation candidate passes its service
   property stage, then exits with the stopped-runtime invalid-unit class 95.

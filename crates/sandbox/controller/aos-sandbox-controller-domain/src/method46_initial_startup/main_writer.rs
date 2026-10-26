@@ -6,6 +6,12 @@
 
 use super::*;
 
+mod readback;
+pub use readback::{
+    METHOD46_INITIAL_MAIN_CUT_BYTES_V1, Method46InitialMainMapReadbackV1,
+    Method46InitialMainReadbackLoanV1,
+};
+
 impl Method46InitialStartupOriginalV1 {
     /// Acquires and replays the fixed existing nonempty main writer once.
     ///

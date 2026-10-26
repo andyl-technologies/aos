@@ -10,6 +10,8 @@ use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector}
 
 use super::*;
 
+mod readback;
+
 #[derive(Debug, thiserror::Error)]
 enum ReplayDemandError {
     #[error(transparent)]
@@ -39,6 +41,7 @@ pub(crate) struct Method46InitialMainWriterOriginalV1 {
     post: Option<Result<(), JournalError>>,
     post_original: super::super::ProtectedJournalCurrentnessOriginalsV1,
     closed: Option<JournalError>,
+    readback: readback::MainMapReadbackOriginalV1,
 }
 
 impl Method46InitialMainWriterOriginalV1 {
@@ -55,6 +58,7 @@ impl Method46InitialMainWriterOriginalV1 {
             post: None,
             post_original: super::super::ProtectedJournalCurrentnessOriginalsV1::new(),
             closed: None,
+            readback: readback::MainMapReadbackOriginalV1::new(),
         }
     }
 
@@ -179,6 +183,8 @@ impl Method46InitialMainWriterOriginalV1 {
             self.closed.get_or_insert(JournalError::ProtectedBoundary);
             return Err(JournalError::ProtectedBoundary);
         }
+        // A failed map-before/hash cannot suppress its separately paid after.
+        let _readback_after = self.finish_readback_after_owed();
         self.post = Some((|| {
             self.inner.original.check_named_currentness_retaining(
                 self.inner
@@ -223,6 +229,7 @@ impl Method46InitialMainWriterOriginalV1 {
                     .and_then(|result| result.as_ref().err())
                     .map(|error| error as _)
             })
+            .or_else(|| self.readback.failure())
             .or_else(|| self.post_original.failure())
             .or_else(|| {
                 self.post

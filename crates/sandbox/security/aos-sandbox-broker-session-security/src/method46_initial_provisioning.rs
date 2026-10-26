@@ -31,6 +31,8 @@ use crate::tpm_nv_custody::{FloorCheckpointV1, FloorCutV1, FloorEndpointV1, Floo
 
 mod credential_decode;
 pub use credential_decode::Method46InitialProvisionDecodeOriginalV1;
+mod main_cut;
+pub use main_cut::Method46InitialMainCutOriginalV1;
 
 /// Fixes the complete initial provisioning request width.
 pub const METHOD46_INITIAL_REQUEST_BYTES_V1: usize = 322;

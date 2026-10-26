@@ -36,6 +36,10 @@ pub use credentials::{
 };
 mod images;
 mod main_writer;
+pub use main_writer::{
+    METHOD46_INITIAL_MAIN_CUT_BYTES_V1, Method46InitialMainMapReadbackV1,
+    Method46InitialMainReadbackLoanV1,
+};
 mod policy;
 mod stopped_cgroups;
 mod unit;

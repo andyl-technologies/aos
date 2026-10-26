@@ -278,6 +278,15 @@ impl ProtectedWriterOpenOriginalsV1 {
         Ok(report)
     }
 
+    // DATA-only borrow of the same successfully materialized native owner.
+    // Purpose-specific lenders retain their own financial/currentness guards.
+    pub(crate) fn journal_data_v1(&self) -> Option<&Journal> {
+        if self.failure().is_some() || !matches!(self.returned, Some(Ok(_))) {
+            return None;
+        }
+        self.journal.as_ref()
+    }
+
     pub(crate) fn journal_mut(&mut self) -> Option<&mut Journal> {
         if self.failure().is_some() || !matches!(self.returned, Some(Ok(_))) {
             return None;
