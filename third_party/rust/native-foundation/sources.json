@@ -1,6 +1,6 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
+    "third_party/rust/BUILD.bazel": "f63c800633704c3e2cbb78738e79a4f51361310ab5f649cd6260e489f38089c1",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
     "tools/bazel/metadata/optional_dependencies.py": "2007e426ae0ded0be48d7b2c8d8d7492e8d8cb166603c597a4b6208fea51a7a4",
     "tools/bazel/metadata/update_rust.py": "550638605ab7e116e5d2835bc42e2ae31a8a931e81cdbc262570ca2f58d83280",
@@ -164,7 +164,7 @@
     "BUILD.num-traits-0.2.19.bazel": "920235ee4eb9bc6d40100950c83594cafc847dc5bb891a5d45077704ffcf1cf7",
     "BUILD.once_cell-1.21.4.bazel": "fa285ed8abcd7afd6bb3ee0001d2909055a1def87bcd6c6c580d1d79114953bb",
     "BUILD.openssl-probe-0.2.1.bazel": "42de40c302a206e093c218211df3f127cb0846e5ee2f5df3c04cfdb25c4b21b7",
-    "BUILD.openssl-sys-0.9.116.bazel": "d06e5de284ba89017f7371f62174b0bbac70a61f5e65a4f4393cdae015b89813",
+    "BUILD.openssl-sys-0.9.116.bazel": "8d48e7fe4965c7cdd681ab95a2d0274e39b1d51ba77ff1888c3fb44d17a029b4",
     "BUILD.ordered-stream-0.2.0.bazel": "6e3411c213023a1b587062ecb1dce8dca0b97b31e166370ddae64658ca9e17a8",
     "BUILD.outref-0.5.2.bazel": "4fdf7638330a9d6244df6182e76523a06fa822358a7d81cb1610c8d892b7da1d",
     "BUILD.p256-0.14.0.bazel": "e879f0fbcb0ef47861019f5631767a3d165f62430b5f276c4483204f50262d9d",
@@ -349,8 +349,8 @@
     "BUILD.zvariant_utils-3.3.1.bazel": "7f742b438a7390bfcddc48f7dd295f44586ff6600263eeef12b4ca8426e4bd1a",
     "Cargo.lock": "d68e803dff03698bad917f66eaee12c365b6e18a15544f5042b404ed904db91a",
     "aliases.bzl": "a3d30f5d51b127174ecc86d7d89423b4b4edd3cd1807cf98e6531b54d30b21ec",
-    "cargo-bazel.json": "87a19758e16df3dacfd73a8ba88ed9afe0c1bb20b3596b16a96362fcc45399ae",
-    "generator-config.json": "be6d9de04e0452fe35203a3656c090257b9fd52d7b37a610513dba7e264aa6b9",
+    "cargo-bazel.json": "ceab2e8780a86865dee41a33dae047b6771d67c03969a010f31ab11bbeae9612",
+    "generator-config.json": "9410b3459fd9c8d52e3979ba938004437e112fe8f725099b1b04e63ebb865ade",
     "repositories.MODULE.bazel": "30f6be8c01f302bc690a704005ae1eee4dfb6f1e43c496c73119af277c6def24"
   },
   "schema_version": 1,
@@ -3855,8 +3855,8 @@
         "build_script_data_glob": null,
         "build_script_deps": null,
         "build_script_env": {
+          "OPENSSL_DYNAMIC": "1",
           "OPENSSL_NO_VENDOR": "1",
-          "OPENSSL_STATIC": "0",
           "PKG_CONFIG": "$(execpath @aos_native//:openssl/pkg-config)",
           "PKG_CONFIG_ALLOW_CROSS": "1"
         },
@@ -3968,7 +3968,7 @@
       "Zlib OR Apache-2.0 OR MIT"
     ],
     "contracts": {
-      "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
+      "third_party/rust/BUILD.bazel": "f63c800633704c3e2cbb78738e79a4f51361310ab5f649cd6260e489f38089c1",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
     },
@@ -4340,12 +4340,8 @@
     "schema_version": 1
   },
   "tool_identity": {
-    "cargo": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+    "cargo": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/cargo",
     "closure": [
-      {
-        "narHash": "sha256:1vx4iinmcss0mp8k67p979k0fkax1lqdy6vwccb3mx30i6awqqhq",
-        "path": "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3"
-      },
       {
         "narHash": "sha256:0460jf7kr08j5c2s82yapqpdp17p5hk8vnb028p690n5yrd2inrb",
         "path": "/nix/store/071yhimnxva604hfim2d7m51k593jpks-bash-5.3p15"
@@ -4353,6 +4349,10 @@
       {
         "narHash": "sha256:12j6m23lfw5ci28aglhnc9zq448nampd126x1cy8nbz71jy0vwwx",
         "path": "/nix/store/0hsvhnbcc7rdm4ysk3wsfz7jlcawgxgz-linux-headers-6.12"
+      },
+      {
+        "narHash": "sha256:0rmkhgqvxbrwz7pbzq0h28ldx59hzzl52q2fa6hsxm7w8jsjkx0c",
+        "path": "/nix/store/4k2ypgq4zwwnfri04z4v0xx4jllnfvzc-workerd-cargo-bazel-0.18.0"
       },
       {
         "narHash": "sha256:0y5gycdr52a2xc8gzxf37bika6m7kyzw3az0lqdbmz4mma49drj5",
@@ -4379,12 +4379,24 @@
         "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
       },
       {
+        "narHash": "sha256:1d1bz1sdqzk3m3ibiznj1k325nqb1h78070g8bnrld98iyxcyi2p",
+        "path": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1"
+      },
+      {
         "narHash": "sha256:1jda1pw4105zkl8s5gb6zy0p08q5x029vgh2fps31f2pfq143mab",
         "path": "/nix/store/9d5sm56jg29gcfs4xia4ynymmahw6dks-xz-5.8.3"
       },
       {
+        "narHash": "sha256:1dv41crg5vnqa3l3n6pbgdmgqaz60p8icfjffdmizf1a4dd4fhkf",
+        "path": "/nix/store/bkypbbb7a2s3wsxgn0hc581yzyq7lpkx-python3-3.14.3"
+      },
+      {
         "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
         "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+      },
+      {
+        "narHash": "sha256:0abwynbibh6skbl6xsjlwisgpnara4a0f924nkdmg8yhi0g4w26z",
+        "path": "/nix/store/fkzbhzp93hw42w5dgfdrbsdv7a3cy13p-llvm-22.1.0"
       },
       {
         "narHash": "sha256:0dq59r0f8vdhmqzy2zars0xq12y1sa179xfbfvl9crk1px6a94f6",
@@ -4393,18 +4405,6 @@
       {
         "narHash": "sha256:0cdxvsdc0xmrw5bd28glv64963yz5y99ngzqbk6ihd4dw7nh05c1",
         "path": "/nix/store/h3y381vk7dz7alj6crzc224pwpm4lvwy-glibc-2.39-dev"
-      },
-      {
-        "narHash": "sha256:0qzmhwc0pd2r6bqs2nllagxysqb2v2qf1d291c6p7p3n1jrfx9ms",
-        "path": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1"
-      },
-      {
-        "narHash": "sha256:0rmkhgqvxbrwz7pbzq0h28ldx59hzzl52q2fa6hsxm7w8jsjkx0c",
-        "path": "/nix/store/j2gvqhqbkprzaklvqg0j82h59whgsryz-workerd-cargo-bazel-0.18.0"
-      },
-      {
-        "narHash": "sha256:02fsh2ljh0rlmz41mx6aqkkvd5i239nchb1xhsmkcailkdyrlrx7",
-        "path": "/nix/store/j7nidr85ia4bc427qhlrzsr7v4rm8akz-llvm-22.1.0"
       },
       {
         "narHash": "sha256:03hygpkakzvjgqd8xi0w2r2wk69wp71j955fr4shx02fs4n3nb6p",
@@ -4443,17 +4443,17 @@
         "path": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4"
       },
       {
-        "narHash": "sha256:1m8wd7jb8r8bcjyz8hqx115aygrz31w0i82gn4jwsdlpyhm91klb",
-        "path": "/nix/store/w6cwf3ns1j97c475chajmwk9v94xjzca-openssl-4.0.2"
+        "narHash": "sha256:1lvwqvhwq3hq31hvcdngq3w2q2brd8gsrbvx4nq955560qnap0p5",
+        "path": "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3"
       },
       {
         "narHash": "sha256:1vv30xb54bslyj4zrhir583a9m4ysqsmgyx4vfvpibqjaz3cndvi",
         "path": "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6"
       }
     ],
-    "generator": "/nix/store/j2gvqhqbkprzaklvqg0j82h59whgsryz-workerd-cargo-bazel-0.18.0/bin/cargo-bazel",
-    "path": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin:/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin",
-    "rustc": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+    "generator": "/nix/store/4k2ypgq4zwwnfri04z4v0xx4jllnfvzc-workerd-cargo-bazel-0.18.0/bin/cargo-bazel",
+    "path": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin:/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin",
+    "rustc": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc",
     "schema_version": 1
   }
 }

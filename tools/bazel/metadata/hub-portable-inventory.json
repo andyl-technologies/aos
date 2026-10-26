@@ -9228,7 +9228,7 @@
     "crates/hub/aos-hub-service/assets.bzl": "81df5f02d6374ddd173b22f8b24399e6e901b69a3105cd7d22232fe6d7ae4412",
     "crates/hub/aos-hub-ui/BUILD.bazel": "49ce231753e5d4660bff80a7b6f61a54cdfc9cb86450b0c0b970b9fcdda5ce5d",
     "docs/rfcs/0012-hub-surface-topology/BUILD.bazel": "ba92d39e481a1fca3430f4da23e97633ccaae1a681f98a72cb4831495e4544cd",
-    "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
+    "third_party/rust/BUILD.bazel": "f63c800633704c3e2cbb78738e79a4f51361310ab5f649cd6260e489f38089c1",
     "third_party/rust/accache.bzl": "d77d2b31f800f096d790ca0ceecc415017106bf4f50cd597ac449414ac8fbd9a",
     "third_party/rust/accache/aliases.bzl": "4a13ee63bf0a906b80616a9dc34b12adb73f3709fa1be828461214fff446f18a",
     "third_party/rust/accache/repositories.MODULE.bazel": "39d73101f84a14d2ba1e7856a3a565c3e643e4dc3c105e22eeb8d5bf27c7e402",

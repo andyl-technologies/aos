@@ -1608,7 +1608,7 @@
     "crates/crucible/crucible-qemu-protocol/BUILD.bazel": "b4ac42380f8f97cf7797667e4bc0f55250dbba5e18c68f5466182d489d5800d4",
     "crates/crucible/crucible-qemu-shmem/BUILD.bazel": "15bc5c10c980b44fe3cf72c041c9858a786c95853c2b15f75bb8e60c9b6380ee",
     "crates/crucible/crucible-test-support/BUILD.bazel": "a639ba532583338f84c2e9d5d9113a195861ea8c63ef8d87adb696fe749756f9",
-    "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
+    "third_party/rust/BUILD.bazel": "f63c800633704c3e2cbb78738e79a4f51361310ab5f649cd6260e489f38089c1",
     "third_party/rust/accache/repositories.MODULE.bazel": "39d73101f84a14d2ba1e7856a3a565c3e643e4dc3c105e22eeb8d5bf27c7e402",
     "third_party/rust/activation-core-tests/repositories.MODULE.bazel": "d26e8a480f05a15e4ec05161918d90d506daa8ca63f0c1754f0ac720e2b96495",
     "third_party/rust/activation-core/repositories.MODULE.bazel": "a5fc4bbb1e4c3345c4320cd9c3f1cb94b58bdabc05ad2446aaabbf4d62287362",

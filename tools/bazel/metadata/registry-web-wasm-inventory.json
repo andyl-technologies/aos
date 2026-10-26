@@ -26222,7 +26222,7 @@
     "crates/core/aos-core/BUILD.bazel": "a49b29a61592b961c92007a1fa773a08b486c461b30ffa698d42c79f946d6bd4",
     "crates/registry/aos-registry-format/BUILD.bazel": "06a57c32cc0ec6432b321014d96aa4efa89bd4f964f2099138eebcf022eb7381",
     "crates/registry/aos-registry-web/BUILD.bazel": "0d9455e52230fb62096a4127610a78fbe7ac099548263c1acc1a8d6f618cf805",
-    "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
+    "third_party/rust/BUILD.bazel": "f63c800633704c3e2cbb78738e79a4f51361310ab5f649cd6260e489f38089c1",
     "third_party/rust/accache.bzl": "d77d2b31f800f096d790ca0ceecc415017106bf4f50cd597ac449414ac8fbd9a",
     "third_party/rust/accache/aliases.bzl": "4a13ee63bf0a906b80616a9dc34b12adb73f3709fa1be828461214fff446f18a",
     "third_party/rust/accache/repositories.MODULE.bazel": "39d73101f84a14d2ba1e7856a3a565c3e643e4dc3c105e22eeb8d5bf27c7e402",

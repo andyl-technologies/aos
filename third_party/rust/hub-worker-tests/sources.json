@@ -1,6 +1,6 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
+    "third_party/rust/BUILD.bazel": "f63c800633704c3e2cbb78738e79a4f51361310ab5f649cd6260e489f38089c1",
     "third_party/rust/hub-worker.bzl": "9ae8b30bfa2b120d81b8eaed94370d20436d1ed73ed011751ad2660814968d27",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
     "tools/bazel/metadata/optional_dependencies.py": "2007e426ae0ded0be48d7b2c8d8d7492e8d8cb166603c597a4b6208fea51a7a4",
@@ -232,7 +232,7 @@
     "BUILD.opaque-debug-0.3.1.bazel": "ea0212e215e328772f07b539e7069fdca69535b78196db48f102912d7a30e761",
     "BUILD.openssl-probe-0.1.6.bazel": "95af89bb8031cb6e438814155fe583ce9223d6fd0226231f8891cfbf2ba955be",
     "BUILD.openssl-probe-0.2.1.bazel": "d98106bd91dc2d62339e4b1a0bfa401277c4e1abc6ea6dc008ab0240a45fc384",
-    "BUILD.openssl-sys-0.9.116.bazel": "4b5040bc01adabd378e002e445562b5b14055bb103a18a377b03fa0187640ee4",
+    "BUILD.openssl-sys-0.9.116.bazel": "6b08ae5621a754bd6bf9698a2cca2972811fe7c56dd2bc50795f0c9547b9b4e2",
     "BUILD.outref-0.5.2.bazel": "0261fecd4c489c68d55814ed1e9f2468a8843abce94a4a68cd246e73a8f0a94d",
     "BUILD.p256-0.13.2.bazel": "7c3d47b660009e14efc958d36183759ed5c2917d00a79a291d17617bebed99a6",
     "BUILD.p256-0.14.0.bazel": "6c7aab8bc22ccd731786e52f1e4be3ed4ec668165dcb5914aec66d02ccd732d1",
@@ -461,8 +461,8 @@
     "BUILD.zstd-sys-2.0.16+zstd.1.5.7.bazel": "4d389836661b2b7f99ce44181ed0fd1f1b8a0f268c1dfe4a167c0b5b8626443b",
     "Cargo.lock": "a832ad862328b558099de641d189374cfd6322e18ef490aae7484cceb20fefbe",
     "aliases.bzl": "6c947e0a0bd33cedfc97079df350097ccc33878d5cbf72af774fe17bd71eb577",
-    "cargo-bazel.json": "6243c624d31ef6326f09f6c91c9fa9f599422cfc8e900e704f123c851a941816",
-    "generator-config.json": "c3afcf88354bbc600298f246dd9692b75c625998b10a37d7e1d66b791c3c4846",
+    "cargo-bazel.json": "2d8a6bd436f12241b4621c9e6f9c0f7ba09822ffe194cf43d32f483faa646b50",
+    "generator-config.json": "d4833622d0f918bd609e402d32b52f25d97c626e6d05bb6812b2a65ce8a9f943",
     "repositories.MODULE.bazel": "8deeb352d1fe0206eec92cffebb4693bacf75090e7f84512c33ebac8c9e36e06"
   },
   "schema_version": 1,
@@ -5128,8 +5128,8 @@
         "build_script_data_glob": null,
         "build_script_deps": null,
         "build_script_env": {
+          "OPENSSL_DYNAMIC": "1",
           "OPENSSL_NO_VENDOR": "1",
-          "OPENSSL_STATIC": "0",
           "PKG_CONFIG": "$(execpath @aos_native//:openssl/pkg-config)",
           "PKG_CONFIG_ALLOW_CROSS": "1"
         },
@@ -5241,7 +5241,7 @@
       "Zlib OR Apache-2.0 OR MIT"
     ],
     "contracts": {
-      "third_party/rust/BUILD.bazel": "8876f7483d3e260ed117dad0a34118957292787ba4aeae83ee5ca26ad384ef7f",
+      "third_party/rust/BUILD.bazel": "f63c800633704c3e2cbb78738e79a4f51361310ab5f649cd6260e489f38089c1",
       "third_party/rust/hub-worker.bzl": "9ae8b30bfa2b120d81b8eaed94370d20436d1ed73ed011751ad2660814968d27",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"

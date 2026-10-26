@@ -1,0 +1,655 @@
+{
+  "baseline_commit": "3089afc264",
+  "canonical_specifications": "/nix/store/pnjc00n7prsyqrrwld87vzj319qz0y54-aos-bazel-shared-openssl-specifications-1",
+  "configured_inventory_contracts_refreshed": [
+    "tools/bazel/metadata/accache-inventory.json",
+    "tools/bazel/metadata/activation-core-inventory.json",
+    "tools/bazel/metadata/activation-crucible-inventory.json",
+    "tools/bazel/metadata/activation-storage-inventory.json",
+    "tools/bazel/metadata/activation-systemd-inventory.json",
+    "tools/bazel/metadata/aos-cli-inventory.json",
+    "tools/bazel/metadata/boot-pilot-inventory.json",
+    "tools/bazel/metadata/boot-preparation-inventory.json",
+    "tools/bazel/metadata/build-services-inventory.json",
+    "tools/bazel/metadata/cli-support-inventory.json",
+    "tools/bazel/metadata/contracts-inventory.json",
+    "tools/bazel/metadata/control-inventory.json",
+    "tools/bazel/metadata/crucible-cli-inventory.json",
+    "tools/bazel/metadata/daemon-inventory.json",
+    "tools/bazel/metadata/deployment-inventory.json",
+    "tools/bazel/metadata/device-inventory.json",
+    "tools/bazel/metadata/engine-inventory.json",
+    "tools/bazel/metadata/feature-powerset-inventory.json",
+    "tools/bazel/metadata/fixture-inventory.json",
+    "tools/bazel/metadata/formats-inventory.json",
+    "tools/bazel/metadata/guest-inventory.json",
+    "tools/bazel/metadata/hub-client-inventory.json",
+    "tools/bazel/metadata/hub-console-inventory.json",
+    "tools/bazel/metadata/hub-console-wasm-inventory.json",
+    "tools/bazel/metadata/hub-db-inventory.json",
+    "tools/bazel/metadata/hub-model-inventory.json",
+    "tools/bazel/metadata/hub-native-inventory.json",
+    "tools/bazel/metadata/hub-portable-inventory.json",
+    "tools/bazel/metadata/hub-service-inventory.json",
+    "tools/bazel/metadata/hub-worker-inventory.json",
+    "tools/bazel/metadata/hub-worker-wasm-inventory.json",
+    "tools/bazel/metadata/native-foundation-inventory.json",
+    "tools/bazel/metadata/package-manager-inventory.json",
+    "tools/bazel/metadata/protocol-inventory.json",
+    "tools/bazel/metadata/qemu-gateway-process-test-inventory.json",
+    "tools/bazel/metadata/qemu-gpl-production-inventory.json",
+    "tools/bazel/metadata/qemu-host-inventory.json",
+    "tools/bazel/metadata/qemu-plugin-process-test-inventory.json",
+    "tools/bazel/metadata/qemu-test-oracle-host-inventory.json",
+    "tools/bazel/metadata/quota-inventory.json",
+    "tools/bazel/metadata/registry-native-inventory.json",
+    "tools/bazel/metadata/registry-web-inventory.json",
+    "tools/bazel/metadata/registry-web-wasm-inventory.json",
+    "tools/bazel/metadata/release-coordination-inventory.json",
+    "tools/bazel/metadata/release-preparation-inventory.json",
+    "tools/bazel/metadata/session-inventory.json",
+    "tools/bazel/metadata/shared-inventory.json",
+    "tools/bazel/metadata/store-inventory.json",
+    "tools/bazel/metadata/store-s3-inventory.json",
+    "tools/bazel/metadata/test-support-inventory.json"
+  ],
+  "configured_inventory_declarations_unchanged": true,
+  "correction": "Use OPENSSL_DYNAMIC=1 without OPENSSL_STATIC in Bazel native-library annotations. Ordinary Cargo builders retain their explicit OpenSSL directories and unchanged identities.",
+  "explicit_updater": "/nix/store/8rcfxyki60dpgna3wqlba2r039n5j3cy-aos-bazel-rust-updater-1",
+  "limitations": [
+    "The regression probe exercises the actual pkg-config crate with the source-built compiler and imported native-library metadata; it does not compile all 19 downstream application profiles.",
+    "The opt-in production CLI package, complete installed-output parity, supported platforms, and performance remain separate qualification work."
+  ],
+  "ordinary_cli_derivation": "/nix/store/plwjjagrchqzy0wmfkqmqwaa4jm011la-aos-0.1.0.drv",
+  "prepared_repositories": {
+    "changed_openssl_sources": [
+      {
+        "after": "/nix/store/7mcn1vxsyac381f7bnvymg5kmlsyf1fx-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/csnd2xkmmvchnddddjc43gyq7sfj20w2-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/8ac1k7ysijzyd9ngwp255cqiw0db5cpx-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "aos-cli-fleet-tests",
+        "repository": "aos_aos_cli_fleet_tests_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/h7j89k4fnbbzlnbfnzvwa3fz11q3vab8-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/nggv2jxz6p64is348vxv67c2pd7n3xzl-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/vxkgs9s5jc2n6vbssjvbr3gcjfk1p1n3-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "aos-cli-production",
+        "repository": "aos_aos_cli_production_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/0sh3fhdhxc0rykbxxi6cfxpnzjcnqhl9-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/9d5l7inxkznclgf06bmb8jhm5qb4pm1c-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/99x9kf6zrii6sflkkkk8lflqardiq07a-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "aos-cli-tests",
+        "repository": "aos_aos_cli_tests_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/hzbpd8nmgianrd8z1gx6lzp1kbbnfi3w-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/jsjffxk6bm9sdymiyhp6hk7gjxjbm48w-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/f9yb8va4wr57lh08ihn66d1xwbq92bab-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "boot-preparation",
+        "repository": "aos_boot_preparation_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/giak244wadkvdssd4zp4nsdpm12qy9l8-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/73fqjh1n4mhdqa4xr1dcbja6qwlw1p10-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/3xzrci94xl6p0hx9w8pzaq7dll96xish-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "boot-preparation-minimal",
+        "repository": "aos_boot_preparation_minimal_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/47gc5z6w82bd25vgpvbncrrd17iv90i5-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/q3gbb80g3cslq00fv9dyzbbfpmp33w8i-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/9d2811bjpqcdqzhb6cnsl511f3zyckdh-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "hub-native-postgres",
+        "repository": "aos_hub_native_postgres_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/b812im814q4sxvqpd8h3q6jnwck5cm1h-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/jn9mss8x1ak8wfwazyiwnw3a27xd9y1x-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/wb7k2771ywrcgrn0m8p09pfq715y3liy-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "hub-native-tests",
+        "repository": "aos_hub_native_tests_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/mqn8kd55jp9vn11681x2i5rsangssn1p-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/89y8zvbdpkjvfwgrwcj74ygc965q621g-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/b7f3ma3r4xqw8rxn4br579a678vjf3cj-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "hub-service-all-features-tests",
+        "repository": "aos_hub_service_all_features_tests_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/71jn0br73hy3ipci0lwz2wmfwy7c5bm6-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/fg9axhvdmygk88j7nslgsag73xs4rfiw-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/vk5x7wj9av7zzmc46cch0wb8d7g77j38-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "hub-service-tests",
+        "repository": "aos_hub_service_tests_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/6id8hvv7c08h3k5gsj6kl8inqxqvx07x-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/hpd6z67yadhf4bgwi29669kjqcrlf60c-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/nrd62vdsljkj9qlf88cj8a67xpnnf4j7-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "hub-worker-all-features-tests",
+        "repository": "aos_hub_worker_all_features_tests_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/zjwy7kwm5f9llnd757j3irpcm6p43wph-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/72wimkrsb0icpd4p9ix0nnjk1wsr1gf7-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/8vh6hl4bl2k3zlkr4n6f5na10zs89bfk-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "hub-worker-tests",
+        "repository": "aos_hub_worker_tests_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/0zxv7rrsvrzsbgca1wja6dfr09amkn6p-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/7wj5w0d7h8c8rjxr6czgg3kv0fvaml9s-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/qqsi6wv055nixysyyhkwh9d8mfrj1cxm-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "native-bindings",
+        "repository": "aos_native_bindings_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/syah64q0bnqk81qp5rw1r8ywhv7v12p9-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/pid3r44zfxalwxqb3dna5hxksy9q2d10-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/frgjjajcr3aa8xgwpl639ipix0sm5s05-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "native-foundation",
+        "repository": "aos_native_foundation_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/kxlyk6cb4l33njwnzzxy0yiavjx930ss-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/xa9sq721cn8xii1k86hyy4k1s6haqlr3-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/yan0ikph1w8sc654rjb3cvfx5jygq7gg-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "native-foundation-tests",
+        "repository": "aos_native_foundation_tests_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/12hcn0j6h637bv4719l1cv8ak66l0kkv-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/1xyvah9mc9800xmmdjzsq8f8a3f99k4i-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/kxn4zy7akdz2hj9wv2n8b7xfcn0cd79p-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "package-manager",
+        "repository": "aos_package_manager_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/sbvrl137qwd7iii2j4qpn5r11n89kd1f-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/b2432maqifih18p4n52daydfpa09d9m6-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/9wx7bm3fl6smkpvyh2pwpkbcyxbn5yxs-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "package-manager-tests",
+        "repository": "aos_package_manager_tests_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/24jn8vhg12gxx83jsg009mg117j20ckf-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/v8fkvlgqjaad6rrmhy9lds9xw59x70qz-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/5yj6fvbww7n59c5m3l03sfzdk96m3401-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "registry-native",
+        "repository": "aos_registry_native_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/x386cpimcj78vc3nhd2ypgp7216iqm8s-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/g253gykdxrrbssy0sij4ff6y0ahsvshg-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/pk4nh99pj8kinxzqv3zv0z77qznz6wsm-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "registry-native-tests",
+        "repository": "aos_registry_native_tests_crates__openssl-sys-0.9.116"
+      },
+      {
+        "after": "/nix/store/071rsvf3gam4cp3z5df3xqs7d0m4bija-aos-rust-source-openssl-sys-0.9.116",
+        "before": "/nix/store/7g3cwzf607jkg2c9bi08c706ha0jamgx-aos-rust-source-openssl-sys-0.9.116",
+        "derivation": "/nix/store/q3nw5zlilan3l35zpjbqalprid6043k2-aos-rust-source-openssl-sys-0.9.116.drv",
+        "family": "release-coordination",
+        "repository": "aos_release_coordination_crates__openssl-sys-0.9.116"
+      }
+    ],
+    "other_repositories_unchanged": 15746,
+    "profiles": 65,
+    "repositories": 15765
+  },
+  "probe": {
+    "output": "/nix/store/mb92vqmk233flz4sc4s122p644idi67n-aos-bazel-shared-openssl-linkage",
+    "report": {
+      "dependency_profiles": 65,
+      "native_libraries": "/nix/store/71pgqxd51hzb03v52q0b99py8f9h9nm1-aos-bazel-native-libraries-1",
+      "pkg_config_source": "/nix/store/hbz5xncybr4f2l16zn7qmn88bjch5rns-aos-rust-source-pkg-config-0.3.33",
+      "probes": {
+        "historical-zero": {
+          "link_libraries": [
+            "static=ssl",
+            "static=crypto",
+            "z",
+            "dl"
+          ],
+          "policy": {
+            "OPENSSL_STATIC": "0"
+          },
+          "stderr": "",
+          "stdout": "cargo:rerun-if-env-changed=OPENSSL_NO_PKG_CONFIG\ncargo:rerun-if-env-changed=PKG_CONFIG_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG\ncargo:rerun-if-env-changed=PKG_CONFIG\ncargo:rerun-if-env-changed=OPENSSL_STATIC\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_PATH\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_LIBDIR\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_SYSROOT_DIR\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR\ncargo:rerun-if-env-changed=SYSROOT\ncargo:rerun-if-env-changed=OPENSSL_STATIC\ncargo:rustc-link-search=native=/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib\ncargo:rustc-link-lib=static=ssl\ncargo:rustc-link-lib=static=crypto\ncargo:rustc-link-lib=z\ncargo:rustc-link-lib=dl\ncargo:rerun-if-env-changed=PKG_CONFIG_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG\ncargo:rerun-if-env-changed=PKG_CONFIG\ncargo:rerun-if-env-changed=OPENSSL_STATIC\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_PATH\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_LIBDIR\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_SYSROOT_DIR\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR\n"
+        },
+        "shared": {
+          "link_libraries": [
+            "ssl",
+            "crypto"
+          ],
+          "policy": {
+            "OPENSSL_DYNAMIC": "1"
+          },
+          "stderr": "",
+          "stdout": "cargo:rerun-if-env-changed=OPENSSL_NO_PKG_CONFIG\ncargo:rerun-if-env-changed=PKG_CONFIG_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG\ncargo:rerun-if-env-changed=PKG_CONFIG\ncargo:rerun-if-env-changed=OPENSSL_STATIC\ncargo:rerun-if-env-changed=OPENSSL_DYNAMIC\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_PATH\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_LIBDIR\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_SYSROOT_DIR\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR\ncargo:rerun-if-env-changed=SYSROOT\ncargo:rerun-if-env-changed=OPENSSL_STATIC\ncargo:rerun-if-env-changed=OPENSSL_DYNAMIC\ncargo:rustc-link-search=native=/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib\ncargo:rustc-link-lib=ssl\ncargo:rustc-link-lib=crypto\ncargo:rerun-if-env-changed=PKG_CONFIG_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG\ncargo:rerun-if-env-changed=PKG_CONFIG\ncargo:rerun-if-env-changed=OPENSSL_STATIC\ncargo:rerun-if-env-changed=OPENSSL_DYNAMIC\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_PATH\ncargo:rerun-if-env-changed=PKG_CONFIG_PATH\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_LIBDIR\ncargo:rerun-if-env-changed=PKG_CONFIG_LIBDIR\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64-unknown-linux-gnu\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR_x86_64_unknown_linux_gnu\ncargo:rerun-if-env-changed=HOST_PKG_CONFIG_SYSROOT_DIR\ncargo:rerun-if-env-changed=PKG_CONFIG_SYSROOT_DIR\n"
+        }
+      },
+      "schema_version": 1,
+      "shared_profiles": [
+        "aos-cli-fleet-tests",
+        "aos-cli-production",
+        "aos-cli-tests",
+        "boot-preparation",
+        "boot-preparation-minimal",
+        "hub-native-postgres",
+        "hub-native-tests",
+        "hub-service-all-features-tests",
+        "hub-service-tests",
+        "hub-worker-all-features-tests",
+        "hub-worker-tests",
+        "native-bindings",
+        "native-foundation",
+        "native-foundation-tests",
+        "package-manager",
+        "package-manager-tests",
+        "registry-native",
+        "registry-native-tests",
+        "release-coordination"
+      ]
+    }
+  },
+  "problem": "OPENSSL_STATIC=0 requests archive linking in pkg-config because presence selects static linkage; this differs from AOS production shared imports.",
+  "profiles": [
+    {
+      "cargo_lock_sha256": "d1c6a65cebd4d274ba40275dfdc827ac54e574087419c7a2aa467d2c00e3ec72",
+      "family": "accache",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "51fa01cf1e6e038fb7526fb78be5221cec893be1b9f2f3ab80cd10e6c61448d3",
+      "family": "activation-core",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "9446fd1372af599b398dd99f6c7626e153925a6959a315b512dc1110e0b69af0",
+      "family": "activation-core-tests",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "991a3e24d44a97a5a615bee0416ad2af9753f925b2af3ca869e44b4b6dac7746",
+      "family": "activation-crucible",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "0836651e0b7ae8104987908b06426f282171ddd7d4f0a3a8e9842ba6210c4af9",
+      "family": "activation-crucible-tests",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "5728d9bc5c000255d1b0a5ff05c75d67e03bde0bd8edb2d6f26a6c126e4fa420",
+      "family": "activation-storage",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "abdd43d656ba1b1b3daa26c0203a05541ee2c6c1b55baf1bf81e1264f8d876e8",
+      "family": "activation-systemd",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "97790c1c1ef3ae930667b8af81a32dfd6fb7463aab07cb962d7cbe676cee4dfd",
+      "family": "aos-cli-fleet-tests",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "fcdda8ad8842a7c23a35f21008067e1e73623ea771b10a0da436fb31ca78c1c8",
+      "family": "aos-cli-production",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "97790c1c1ef3ae930667b8af81a32dfd6fb7463aab07cb962d7cbe676cee4dfd",
+      "family": "aos-cli-tests",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "d61379abd7d6a8892919203c9d4674bd737fe71e8fc5dec5c4dc2cc96a198369",
+      "family": "boot-preparation",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "f7f64d9d1a686145de263ddf72dc5b879efbf4fe438e9b4cd2115df5215c4785",
+      "family": "boot-preparation-minimal",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "5eda990d6f6cd8c983ec489b5551690fc4ac945dedf280423a5c10732c61f30c",
+      "family": "build-services",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "96439ce65977d3d4903684df7c0714e7c5d727484e28148e9f2d5a66a044f703",
+      "family": "cli-support",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "c71d43da0284748d865b01bad15a8879f27238c0187999d539f779a8f672414e",
+      "family": "control",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "cce92e711782ac4e1ead6fae1e85bd5c6e54608b393efdbcd5407b7477ebf375",
+      "family": "core",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "b44f4aff555a04698eece6c3acb2f9f7149c038340aed90e199f789b47d82537",
+      "family": "crucible-cli",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "86f0bf94c3c9e61c4b928dac174d90ee0b3adc0f6008c69c0753e696e635c7fc",
+      "family": "daemon",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "6a16e63f2deab75d09c2bc45dd6c6bd232559f64e8db5a22d83e821b632d0689",
+      "family": "deployment",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "ddb552aa33441ff24cad4f6bf968e33173655bdc7736388b35259e9d6c7a883e",
+      "family": "device",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "d35f180d83df9af4361f3b113f03781e44d6bbadc911af011e60574bda9f3f4a",
+      "family": "engine",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "23f73ba3bab2ceb31958e5d20dc3c7eb897f36c4c30c88292f7c4030f44ff066",
+      "family": "formats",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "ccb1f735db2360dcd993efdf6bfb98d43f8c221076ffca284c907ed91f9dce7c",
+      "family": "guest",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "f7c7a8a456bc0b7977482d5df7e61111d2982d6fee5ad0e33d04a00f57bddb5e",
+      "family": "hub-client",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "f3781782681ea3245511df7e2895110112968652255720f854207b398500fe25",
+      "family": "hub-console",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "5855f3395361fafaa38bc6ca2052d366c05e971f35c5fcb108f49d2ae79504dc",
+      "family": "hub-console-wasm",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "64f5584b10f76b2eea89a2a7ddc9c080eb5f2792653bd4a68a8af47ec7c545e8",
+      "family": "hub-db",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "45aa3589460e6640b3d86683058f45dfa372e1f527631a2407406c6cee66fd0c",
+      "family": "hub-db-all-features",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "1fb97f88fde4818438f78928ba0e16bbc8ff5e04248b2cd73ca36254e15f06d2",
+      "family": "hub-db-all-features-tests",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "b7b5fd1a73fa8cc4e1cc12c76ef721d82095ec1738fc225ef98519e7014b21dd",
+      "family": "hub-db-tests",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "aef83e29b8ebb8f5eadd3ff897baf801ab1b6a0a75d90b3986a0cc617bf2aeb9",
+      "family": "hub-model",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "e6e7276ccb4df8867a29ce005ab20cd62850463f4efcf58a8f7534625b115418",
+      "family": "hub-model-tests",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "308ed6521da422c51fe44c1e626b73453c5828788b2ce5c36d2eaba36619ff7e",
+      "family": "hub-native-postgres",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "5dd9bed949349558297348e164fc3c7a6f3fd978050fdf2affd2908613cf8a46",
+      "family": "hub-native-tests",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "4b98ff2b7d286fe7ab35445dd40a68a0de4135c7ec0b76ee90fc5021e5e3c97a",
+      "family": "hub-portable",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "f39e6396646b21ee632890c922546188beefabe3c436b85ae1a57895b9c38c1d",
+      "family": "hub-service",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "ac75622898d7509f062ee5a8eebd564c83accbe21a28aeabe89e17ffe5f01960",
+      "family": "hub-service-all-features",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "0b4349ede590fba4175a6f1d49aba9e3a3299db1cf1306c4177b7132fa0fb655",
+      "family": "hub-service-all-features-tests",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "88012adcf849db97e96c33c9356b7b11198dc61f52c65df6d0ffe53fb0a55e21",
+      "family": "hub-service-tests",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "a832ad862328b558099de641d189374cfd6322e18ef490aae7484cceb20fefbe",
+      "family": "hub-worker-all-features-tests",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "a832ad862328b558099de641d189374cfd6322e18ef490aae7484cceb20fefbe",
+      "family": "hub-worker-tests",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "765b8a612477649b5b0ccf25985b6187eb392d908e0fba8fa5b4d22b972770aa",
+      "family": "hub-worker-wasm",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "765b8a612477649b5b0ccf25985b6187eb392d908e0fba8fa5b4d22b972770aa",
+      "family": "hub-worker-wasm-all-features",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "765b8a612477649b5b0ccf25985b6187eb392d908e0fba8fa5b4d22b972770aa",
+      "family": "hub-worker-wasm-do-e2e",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "2c3c101f4a0d5ce015186de2574a6dca80c10613fc732b9dda241bef53fec873",
+      "family": "native-bindings",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "d68e803dff03698bad917f66eaee12c365b6e18a15544f5042b404ed904db91a",
+      "family": "native-foundation",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "57fe16a1c2b1dd08c55c34cbb72c83890c477052c6e964f86cbee1b470748ac8",
+      "family": "native-foundation-minimal",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "bdc02937d3edf09894779bccc9822c2c04b86fd74830a17292f84b5772cd3de9",
+      "family": "native-foundation-tests",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "064333ebcab86ac4044a44beb4c000d7f60b006302c984b6fdec6ff042401d6b",
+      "family": "package-manager",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "9257166ed96c6b315cec025621254643b8acb3db24dcd1cd7dc22db1a948a0e1",
+      "family": "package-manager-tests",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "0ee22838f25780ea12ab031a91c057fc7269896b89ddff9514518ec34aedd84f",
+      "family": "qemu-gpl-plugin-tests",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "0ee22838f25780ea12ab031a91c057fc7269896b89ddff9514518ec34aedd84f",
+      "family": "qemu-gpl-production",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "bd4562dc8b01b504084888f9cae8e497c075c1dd4e301e3642925310e8edd7c9",
+      "family": "qemu-gpl-tests",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "d35f180d83df9af4361f3b113f03781e44d6bbadc911af011e60574bda9f3f4a",
+      "family": "qemu-host",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "60f9fc50c70c6b2eaeecf9d4a8eaf7685ec73eecba01ffc780afa0069f0ce1da",
+      "family": "qemu-test-oracle-host",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "1fc90f99bcf9493f278b05f0b9a713f295ccabd7263a5adc6be2434c60a0daf2",
+      "family": "quota",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "064333ebcab86ac4044a44beb4c000d7f60b006302c984b6fdec6ff042401d6b",
+      "family": "registry-native",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "064333ebcab86ac4044a44beb4c000d7f60b006302c984b6fdec6ff042401d6b",
+      "family": "registry-native-tests",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "cdafdafa4c31518a563598c60755fe349d40bb690280a3965a0c9a4e205ede7e",
+      "family": "registry-web",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "cdafdafa4c31518a563598c60755fe349d40bb690280a3965a0c9a4e205ede7e",
+      "family": "registry-web-wasm",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "f1a7f854e7597ea17f0b121ff4a9741cce207c05ecbe16de632e4820bab53eef",
+      "family": "release-coordination",
+      "openssl_policy_changed": true,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "d6b9299dfb5b498fa232e54f85421ca97419dd421b0d209f32f325800d65142e",
+      "family": "release-preparation",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "e17fa05ac8416c546290d30bc6c42e844eb6bbb07a220d00dca927587199a91d",
+      "family": "session",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "ce948e966ffbec6aa42a3adfd725582a5216f9acea172c2043fe0472e503380c",
+      "family": "store",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    },
+    {
+      "cargo_lock_sha256": "0e9bb0aed2b3e626c7875c0139c752de7019971ec3baa5ed20908db11ddcfcb6",
+      "family": "store-s3",
+      "openssl_policy_changed": false,
+      "registry_sources_unchanged": true
+    }
+  ],
+  "refresh": "Each changed profile was regenerated with the source-built updater and its existing seed Cargo.lock. Profiles with unchanged policy received only the new canonical declaration contract.",
+  "schema_version": 1
+}

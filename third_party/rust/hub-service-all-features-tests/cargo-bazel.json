@@ -1,5 +1,5 @@
 {
-  "checksum": "b876086c1ffa955bb40a898bf78a89e80e3a6cbcaad531df7b1f9495eb3393be",
+  "checksum": "25be26136a7193c3a7e337adfa3fa51508620c221cb03e14308c176a7ba2e378",
   "crates": {
     "adler2 2.0.1": {
       "name": "adler2",
@@ -15213,8 +15213,8 @@
         },
         "build_script_env": {
           "common": {
+            "OPENSSL_DYNAMIC": "1",
             "OPENSSL_NO_VENDOR": "1",
-            "OPENSSL_STATIC": "0",
             "PKG_CONFIG": "$(execpath @aos_native//:openssl/pkg-config)",
             "PKG_CONFIG_ALLOW_CROSS": "1"
           },

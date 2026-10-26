@@ -77,8 +77,8 @@ rust_library(
 cargo_build_script(
     name = "_bs",
     build_script_env = {
+        "OPENSSL_DYNAMIC": "1",
         "OPENSSL_NO_VENDOR": "1",
-        "OPENSSL_STATIC": "0",
         "PKG_CONFIG": "$(execpath @aos_native//:openssl/pkg-config)",
         "PKG_CONFIG_ALLOW_CROSS": "1",
     },

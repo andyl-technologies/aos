@@ -416,6 +416,16 @@ retained provenance, seven rejected policy mutations, and probe cleanup for
 native, libc, no-std, and unsupported-compiler cases. The retained execution
 evidence covers x86_64 Linux; other platforms still need qualification.
 
+`checks.build.bazel.openssl-linkage.all` compiles the pinned `pkg-config`
+crate and reproduces its presence-based static switch: `OPENSSL_STATIC=0`
+still requests archives. Bazel's native OpenSSL annotations instead set
+`OPENSSL_DYNAMIC=1`, matching the imported AOS shared libraries. The
+[linkage receipt](tests/evidence/shared-openssl-linkage.json) retains both
+probe results, the 19 regenerated profiles, and unchanged source/archive and
+lock identities across all 65 profiles. Only the 19 prepared OpenSSL
+repositories change identity; the other 15,746 remain unchanged. Downstream
+installed-package parity is qualified separately.
+
 `checks.crucible.phase1.crateFeaturePowerset` now requires the nine compiled
 cases and `checks.build.bazel.crucible-feature-policy.all`. The latter queries
 all Rust declarations in the 12 core packages, checks owned source coverage and

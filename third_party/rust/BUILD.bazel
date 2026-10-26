@@ -769,8 +769,10 @@ NATIVE_FOUNDATION_ANNOTATIONS = dict({"zstd-sys": STORE_ANNOTATIONS["zstd-sys"]}
         build_script_data = ["@aos_native//:openssl_files", "@aos_native//:crypto_files"],
         build_script_tools = ["@aos_native//:openssl/pkg-config", "@aos_native//:openssl_pkg_config_tools"],
         build_script_env = {
+            # pkg-config tests presence, so OPENSSL_STATIC="0" still embeds
+            # the archive. Keep the imported AOS shared-library contract.
+            "OPENSSL_DYNAMIC": "1",
             "OPENSSL_NO_VENDOR": "1",
-            "OPENSSL_STATIC": "0",
             "PKG_CONFIG": "$(execpath @aos_native//:openssl/pkg-config)",
             "PKG_CONFIG_ALLOW_CROSS": "1",
         },
