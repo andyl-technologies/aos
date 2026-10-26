@@ -27,7 +27,7 @@ use entries::Entries;
 use observation::Observation;
 
 pub(super) const REQUIRED_CREDENTIALS: usize = 7;
-pub(super) const NAMES: [&str; 9] = [
+pub(super) const NAMES: [&str; 10] = [
     "broker-method46-tpm-provision-v1",
     "broker-method46-tpm-index-auth-v1",
     "method46-initial-approval-public-key-v1",
@@ -37,6 +37,7 @@ pub(super) const NAMES: [&str; 9] = [
     "method46-normal-network-manifest-v1",
     "method46-normal-mount-fuse-manifest-v1",
     "method46-normal-nix-manifest-v1",
+    "method46-normal-controller-nix-floor-issuer-v1",
 ];
 const MANIFEST_BYTES: usize =
     aos_sandbox_broker_session_protocol::manifest::BROKER_SESSION_MANIFEST_BYTES;
@@ -50,6 +51,7 @@ const LENGTHS: [usize; NAMES.len()] = [
     MANIFEST_BYTES,
     MANIFEST_BYTES,
     MANIFEST_BYTES,
+    48,
 ];
 
 struct Credential {

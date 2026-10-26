@@ -35,6 +35,51 @@ pub struct OnlineFloorInitializationErrorV2;
 
 use OnlineFloorInitializationErrorV2 as Error;
 
+/// Retains the existing raw public issuer ID and Ed25519 key as DATA.
+///
+/// The 48-byte credential contains a nonzero 16-byte key ID followed by the
+/// 32-byte public key. Decoding authenticates no delivery, role or currentness.
+/// This type contains no signing seed or floor authorization secret.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OnlineFloorIssuerDataV2 {
+    bytes: [u8; 48],
+}
+
+impl OnlineFloorIssuerDataV2 {
+    /// Decodes the bounded public credential and rejects unusable signing pins.
+    ///
+    /// # Errors
+    /// Refuses another width, a zero key ID, an invalid Ed25519 public key or a
+    /// weak key that cannot pass the floor codec's strict signature verification.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let bytes: [u8; 48] = bytes.try_into().map_err(|_| Error)?;
+        if bytes[..16] == [0; 16] || bytes[16..] == [0; 32] {
+            return Err(Error);
+        }
+        let mut public = [0; 32];
+        public.copy_from_slice(&bytes[16..]);
+        let verifier = VerifyingKey::from_bytes(&public).map_err(|_| Error)?;
+        if verifier.is_weak() {
+            return Err(Error);
+        }
+        Ok(Self { bytes })
+    }
+
+    /// Returns the complete canonical public credential as comparison DATA.
+    #[must_use]
+    pub const fn encode(&self) -> [u8; 48] {
+        self.bytes
+    }
+
+    /// Copies the public signing pin without its independently assigned key ID.
+    #[must_use]
+    pub fn public_key(&self) -> [u8; 32] {
+        let mut public = [0; 32];
+        public.copy_from_slice(&self.bytes[16..]);
+        public
+    }
+}
+
 /// Retains a canonical signed seed without owning its issuer or a live floor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OnlineFloorSeedDataV2 {
@@ -194,14 +239,11 @@ fn verify(
     message: &[u8],
     signature: &[u8; 64],
 ) -> Result<(), Error> {
-    if issuer[..16] == [0; 16]
-        || issuer[16..] == [0; 32]
-        || profile.encode()[272..304] != Sha256::digest(issuer)[..]
-    {
+    let issuer = OnlineFloorIssuerDataV2::decode(issuer)?;
+    if profile.encode()[272..304] != Sha256::digest(issuer.encode())[..] {
         return Err(Error);
     }
-    let public = issuer[16..].try_into().map_err(|_| Error)?;
-    let verifier = VerifyingKey::from_bytes(&public).map_err(|_| Error)?;
+    let verifier = VerifyingKey::from_bytes(&issuer.public_key()).map_err(|_| Error)?;
     verifier
         .verify_strict(message, &Signature::from_bytes(signature))
         .map_err(|_| Error)
@@ -312,6 +354,32 @@ mod tests {
         let initialization =
             OnlineFloorInitializationDataV2::from_signature(seed, &issuer, signature).unwrap();
         (signing, issuer, initialization)
+    }
+
+    #[test]
+    fn raw_issuer_codec_checks_width_id_and_strict_public_key() {
+        let (_, issuer, _) = fixture(OnlineFloorRoleV2::Controller);
+        let decoded = OnlineFloorIssuerDataV2::decode(&issuer).unwrap();
+        assert_eq!(decoded.encode(), issuer);
+        assert_eq!(decoded.public_key().as_slice(), &issuer[16..]);
+
+        for bytes in [issuer[..47].to_vec(), [issuer.as_slice(), &[0]].concat()] {
+            assert!(OnlineFloorIssuerDataV2::decode(&bytes).is_err());
+        }
+        let mut invalid = issuer;
+        invalid[..16].fill(0);
+        assert!(OnlineFloorIssuerDataV2::decode(&invalid).is_err());
+
+        // The identity point is valid point encoding but a weak signing key.
+        for public in [[0; 32], {
+            let mut identity = [0; 32];
+            identity[0] = 1;
+            identity
+        }] {
+            invalid = issuer;
+            invalid[16..].copy_from_slice(&public);
+            assert!(OnlineFloorIssuerDataV2::decode(&invalid).is_err());
+        }
     }
 
     #[test]

@@ -83,6 +83,11 @@ fn selected_sources(
         }
         selected[index] = source;
     }
+    // The ONLINE issuer is a separate authority key, required exactly when
+    // this actual Controller is configured with the Nix endpoint.
+    if selected[8].is_empty() != selected[9].is_empty() {
+        return Err(Method46InitialStartupClosedV1);
+    }
     Ok(selected)
 }
 
@@ -167,6 +172,7 @@ pub(super) fn require_other_normal_manifest_sources(
         "network-manifest",
         "mount-fuse-manifest",
         "nix-broker-session-manifest-v1",
+        "nix-online-floor-issuer-v1",
     ]
     .into_iter()
     .zip(&sources[4..])
@@ -399,6 +405,7 @@ mod tests {
             "network-manifest",
             "mount-fuse-manifest",
             "nix-broker-session-manifest-v1",
+            "nix-online-floor-issuer-v1",
         ]
         .into_iter()
         .enumerate()
@@ -431,7 +438,7 @@ mod tests {
             rows.reverse();
         }
 
-        for index in 0..5 {
+        for index in 0..6 {
             let mut missing = other_normal_rows();
             missing.remove(index);
             let mut duplicate = other_normal_rows();
@@ -492,12 +499,28 @@ mod tests {
     }
 
     #[test]
+    fn configured_nix_requires_its_controller_floor_issuer_source() {
+        for missing in [8, 9] {
+            let text = fragment();
+            let mismatched = text
+                .lines()
+                .filter(|line| !line.starts_with(&format!("LoadCredential={}:", NAMES[missing])))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            assert!(selected_credential_roster(mismatched.as_bytes()).is_err());
+            assert!(require_delivery(&properties(), mismatched.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
     fn optional_delivery_requires_exact_initial_and_controller_presence() {
         for mount_fuse in [false, true] {
             for nix in [false, true] {
                 let mut selected = [true; NAMES.len()];
                 selected[7] = mount_fuse;
                 selected[8] = nix;
+                selected[9] = nix;
                 let fragment = NAMES
                     .iter()
                     .enumerate()

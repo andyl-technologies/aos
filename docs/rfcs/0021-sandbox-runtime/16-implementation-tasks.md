@@ -31,6 +31,25 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The initial producer now captures the normal Controller's separate ONLINE Nix
+  floor issuer public credential when Nix is configured. Its admitted unit must
+  select the issuer and endpoint manifest together, and both actual Controller
+  delivery samples must match their exact external sources. The original exact
+  credential roster and independently owed posts include this ten-file maximum;
+  the same Source prepays 54 descriptor carriers without increasing any bank
+  capacity. An absent or ended Source cannot supply a missing-issuer exemption.
+  Security retains the canonical raw48 public decode and excludes its Ed25519
+  signing pin from initial approval even if the same pin has another issuer ID.
+  The signed ONLINE seed/genesis codec shares that public decoder, including
+  rejection of zero IDs and invalid or weak signing keys. All 1,104 Protocol
+  library tests, 80 focused initializer tests, 419 ordinary Security tests and
+  428 online-Nix Security tests pass; each Security suite retains two existing
+  ignored cases. The expanded decoders fit the existing prepaid 32 KiB allowance
+  checked against compiled layouts. Complete application unit/integration
+  target compilation is running for the final seven Rust inputs.
+  The Nix owner's ONLINE issuer, offline Nix approval keys, Root public-key
+  delivery, remaining provenance and installed effects remain unqualified.
+
 - Configured Mount FUSE and Nix public endpoint manifests now follow the same
   initial approval-key exclusion as mandatory endpoints, including all four
   canonical pins and revoked or superseded keys. The original admitted initial
@@ -76,9 +95,12 @@ Recent committed startup fixes close narrower prerequisites:
   or auth accessor is added. All 77 focused initializer tests, 415 ordinary
   Security tests and 424 online-Nix Security tests pass, with two existing ignored
   cases in each Security configuration. Complete unit/integration target
-  compilation is running for the final seven Rust inputs. Independent Nix floor-authority and Root key separation, complete endpoint
-  provenance, durable approved
-  intent, physical TPM effects and installed qualification remain open.
+  compilation passes for the final seven Rust inputs
+  (`/nix/store/1k9jshi6ig8a2xxhqm9drr5ixhx96d7v-aos-test-targets-0.1.0`),
+  before the optional endpoint and Controller Nix issuer additions. Independent
+  Nix floor-authority and Root key separation, complete endpoint provenance,
+  durable approved intent, physical TPM effects and installed qualification
+  remain open.
 
 - PID1 now excludes competing normal Controller/Storage starts and the other
   manual initializer while an initial job is queued or its service remains

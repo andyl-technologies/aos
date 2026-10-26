@@ -150,6 +150,29 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
             BrokerSessionProtocolV1::Nix => 8,
             _ => return Err(self.startup.closed),
         };
+        self.optional_public_bytes(slot)
+    }
+
+    /// Borrows the normal Controller's configured ONLINE floor issuer pin.
+    ///
+    /// The raw public key ID and Ed25519 pin are 48 bytes. Presence is tied to
+    /// the Nix endpoint in this Source's admitted unit and the actual normal
+    /// Controller credential delivery. `None` requires their compared absence.
+    /// This loan grants neither issuer nor floor authority; all posts stay owed.
+    ///
+    /// # Errors
+    /// Refuses an ended or missing Source, incomplete custody, an entered post
+    /// or a missing configured issuer readback.
+    pub fn controller_nix_floor_issuer_bytes_v1(
+        &self,
+    ) -> Result<Option<Ref<'_, [u8]>>, Method46InitialStartupClosedV1> {
+        self.optional_public_bytes(9)
+    }
+
+    fn optional_public_bytes(
+        &self,
+        slot: usize,
+    ) -> Result<Option<Ref<'_, [u8]>>, Method46InitialStartupClosedV1> {
         self.require_current()?;
         let credentials = self
             .startup
@@ -325,6 +348,7 @@ mod tests {
         assert!(loan.provision_bytes_v1().is_err());
         assert!(loan.approval_public_key_bytes_v1().is_err());
         assert!(loan.normal_storage_manifest_bytes_v1().is_err());
+        assert!(loan.controller_nix_floor_issuer_bytes_v1().is_err());
         for protocol in [
             aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::MountFuse,
             aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Nix,

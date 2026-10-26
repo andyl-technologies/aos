@@ -35,9 +35,10 @@ impl Entries {
             return false;
         }
         self.entered = true;
-        if !selected[..REQUIRED_CREDENTIALS]
-            .iter()
-            .all(|selected| *selected)
+        if selected[8] != selected[9]
+            || !selected[..REQUIRED_CREDENTIALS]
+                .iter()
+                .all(|selected| *selected)
         {
             return false;
         }
@@ -156,6 +157,7 @@ mod tests {
                 let mut selected = [true; NAMES.len()];
                 selected[7] = mount_fuse;
                 selected[8] = nix;
+                selected[9] = nix;
                 let directory = tempfile::tempdir().unwrap();
                 for (index, name) in NAMES.iter().enumerate() {
                     if selected[index] {

@@ -20,6 +20,9 @@ use aos_sandbox_controller_domain::method46_initial_startup::{
     Method46InitialStartupClosedV1,
 };
 
+mod controller_nix_floor;
+use controller_nix_floor::ControllerNixFloorIssuerOriginal;
+
 mod approval;
 use approval::ApprovalVerificationOriginal;
 mod normal_manifest;
@@ -55,6 +58,8 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     normal: NormalManifestOriginal,
     other_normal_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; PROTOCOLS.len()],
     other_normal: [OtherNormalManifestOriginal; PROTOCOLS.len()],
+    controller_nix_floor_read: Option<Result<(), Method46InitialStartupClosedV1>>,
+    controller_nix_floor: ControllerNixFloorIssuerOriginal,
     approval: RefCell<ApprovalVerificationOriginal>,
 }
 
@@ -98,6 +103,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             normal: NormalManifestOriginal::new(),
             other_normal_reads: std::array::from_fn(|_| None),
             other_normal: std::array::from_fn(|_| OtherNormalManifestOriginal::new()),
+            controller_nix_floor_read: None,
+            controller_nix_floor: ControllerNixFloorIssuerOriginal::new(),
             approval: RefCell::new(ApprovalVerificationOriginal::new()),
         };
         original.decode();
@@ -209,6 +216,19 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
                 return;
             }
         }
+
+        let bytes = match self.readback.controller_nix_floor_issuer_bytes_v1() {
+            Ok(bytes) => {
+                self.controller_nix_floor_read = Some(Ok(()));
+                bytes
+            }
+            Err(error) => {
+                self.controller_nix_floor_read = Some(Err(error));
+                return;
+            }
+        };
+        self.controller_nix_floor
+            .observe_once(bytes.as_deref(), approval);
     }
 
     fn admitted(&self) -> bool {
@@ -220,6 +240,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             && matches!(self.approval_pin, Some(Ok(_)))
             && matches!(self.normal_read, Some(Ok(())))
             && self.normal.admitted()
+            && matches!(self.controller_nix_floor_read, Some(Ok(())))
+            && self.controller_nix_floor.admitted()
             && self
                 .other_normal_reads
                 .iter()
