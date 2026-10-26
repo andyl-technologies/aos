@@ -672,8 +672,11 @@ Recent committed startup fixes close narrower prerequisites:
   reentry; the same Source prepays the expanded decode and native PID1 schedule.
   All 91 focused initial tests pass, including eleven new directory, delivery,
   retained-native-sample and manifest regressions. Complete application unit
-  and integration target compilation is pending for this source. These are
-  public readback/configuration comparisons; full normal-unit image provenance,
+  and integration targets compile for this source
+  (`/nix/store/7kdkl30ll6hz626qw8b29kzdbsqbnia9-aos-test-targets-0.1.0`),
+  without executing them and before the later original-exchange and normal-unit
+  fragment changes. These are public readback/configuration comparisons;
+  full normal-unit image provenance,
   Nix/Root key separation, exclusion of new jobs, Session schema, approved
   durable intent, physical TPM custody and installed qualification remain open.
   No publication or Extend authority is issued, and public admission stays shut.
