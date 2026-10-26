@@ -12,6 +12,7 @@ use aos_sandbox_controller_domain::method46_initial_startup::{
 use super::*;
 
 mod helper_birth;
+mod helper_nv;
 
 pub(super) struct InitialIntentPublicationOriginal<'owner> {
     entered: bool,
@@ -31,6 +32,7 @@ pub(super) struct InitialIntentPublicationOriginal<'owner> {
     helper_entered: bool,
     helper: Option<Method46InitialTpmHelperBirthLoanV1<'owner>>,
     helper_result: Option<Result<(), Method46InitialDataErrorV1>>,
+    nv: helper_nv::InitialNvInitializationOriginalV1,
 }
 
 const _: () = assert!(METHOD46_INITIAL_INTENT_BYTES_V1 == METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1);
@@ -53,6 +55,7 @@ impl<'owner> InitialIntentPublicationOriginal<'owner> {
             helper_entered: false,
             helper: None,
             helper_result: None,
+            nv: helper_nv::InitialNvInitializationOriginalV1::new(),
         }
     }
 

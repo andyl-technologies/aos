@@ -839,7 +839,8 @@ mod tests {
         provision.verify_captured_initial_intent_once_v1(&main)?;
         provision.publish_approved_initial_intent_once_v1(&main)?;
         provision.prepare_approved_initial_tpm_locks_once_v1(&main)?;
-        provision.prepare_approved_initial_tpm_helper_once_v1(&main)
+        provision.prepare_approved_initial_tpm_helper_once_v1(&main)?;
+        provision.reconcile_approved_initial_nv_once_v1(&main)
     }
 
     #[test]

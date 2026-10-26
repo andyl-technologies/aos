@@ -97,6 +97,14 @@ impl<'owner> Method46InitialTpmLockLoanV1<'owner> {
                 locks.borrowed_descriptors_v1()?;
             }
             let body = self.startup.body.as_ref().ok_or(self.startup.closed)?;
+            {
+                let mut writer = body
+                    .main_writer
+                    .try_borrow_mut()
+                    .map_err(|_| self.startup.closed)?;
+                let demand = writer.quote_initial_nv_main_once();
+                self.startup.fund_additional(demand)?;
+            }
             let mut helper = body
                 .tpm_helper_image
                 .try_borrow_mut()

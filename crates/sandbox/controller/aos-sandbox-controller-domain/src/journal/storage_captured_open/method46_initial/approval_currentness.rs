@@ -192,8 +192,7 @@ impl ApprovalCurrentnessOriginalV1 {
         self.closed.as_ref().map(|error| error as _)
     }
 
-    #[cfg(test)]
-    fn failure(&self) -> Option<&(dyn Error + 'static)> {
+    pub(super) fn failure(&self) -> Option<&(dyn Error + 'static)> {
         self.before_failure()
             .or_else(|| self.after_failure())
             .or_else(|| self.order_failure())
@@ -397,6 +396,139 @@ mod tests {
         assert_eq!(
             original.failure().unwrap() as *const dyn Error as *const (),
             first
+        );
+    }
+
+    #[test]
+    fn method46_initial_nv_main_four_exchanges_keep_every_actual_interval() {
+        use super::super::nv_currentness::InitialNvMainCurrentnessOriginalV1;
+
+        let (_directory, journal, replayed_file) = native_writer();
+        let mut original = InitialNvMainCurrentnessOriginalV1::new();
+        assert!(original.quote_once(&journal, replayed_file).is_some());
+
+        for index in 0..4 {
+            original.begin_once(&journal).unwrap();
+            original.finish_after_owed(&journal).unwrap();
+            let interval = &original.intervals[index];
+            assert!(
+                interval
+                    .witnesses
+                    .iter()
+                    .all(|witness| witness.completed_witness().is_some())
+            );
+            assert!(
+                interval
+                    .results
+                    .iter()
+                    .all(|result| matches!(result, Some(Ok(()))))
+            );
+        }
+        assert!(original.failure().is_none());
+
+        assert!(original.begin_once(&journal).is_err());
+        assert!(original.finish_after_owed(&journal).is_err());
+        assert!(original.intervals.iter().all(|interval| {
+            interval
+                .results
+                .iter()
+                .all(|result| matches!(result, Some(Ok(()))))
+        }));
+    }
+
+    #[test]
+    fn method46_initial_nv_main_reobserves_replayed_file_after_a_wait() {
+        use super::super::nv_currentness::InitialNvMainCurrentnessOriginalV1;
+
+        // Only native journal mechanics are exercised; no Source, approval,
+        // helper or TPM authority is constructed by this fixture.
+        let (directory, journal, replayed_file) = native_writer();
+        let mut original = InitialNvMainCurrentnessOriginalV1::new();
+        assert!(original.quote_once(&journal, replayed_file).is_some());
+        original.begin_once(&journal).unwrap();
+        original.finish_after_owed(&journal).unwrap();
+
+        OpenOptions::new()
+            .append(true)
+            .open(directory.path().join("journal"))
+            .unwrap()
+            .write_all(b"changed while waiting for the next request")
+            .unwrap();
+
+        assert!(original.begin_once(&journal).is_err());
+        assert!(matches!(
+            original.intervals[1].results[0],
+            Some(Err(JournalError::StaleAuthoritySnapshot))
+        ));
+        assert!(original.finish_after_owed(&journal).is_err());
+        assert!(original.intervals[1].results[1].is_some());
+        assert!(
+            original.intervals[1].witnesses[1]
+                .completed_witness()
+                .is_some()
+        );
+        assert!(original.begin_once(&journal).is_err());
+    }
+
+    #[test]
+    fn method46_initial_nv_main_failed_before_still_keeps_restored_native_after() {
+        use super::super::nv_currentness::InitialNvMainCurrentnessOriginalV1;
+
+        let (directory, journal, replayed_file) = native_writer();
+        let mut original = InitialNvMainCurrentnessOriginalV1::new();
+        assert!(original.quote_once(&journal, replayed_file).is_some());
+        let path = directory.path().join("journal");
+        let saved = directory.path().join("saved-journal");
+        std::fs::rename(&path, &saved).unwrap();
+        assert!(original.begin_once(&journal).is_err());
+        let first = original.failure().unwrap() as *const dyn Error as *const ();
+
+        std::fs::rename(saved, path).unwrap();
+        assert!(original.finish_after_owed(&journal).is_err());
+        assert!(original.intervals[0].results[1].is_some());
+        assert!(
+            original.intervals[0].witnesses[1]
+                .completed_witness()
+                .is_some()
+        );
+        assert_eq!(
+            original.failure().unwrap() as *const dyn Error as *const (),
+            first
+        );
+        assert!(original.begin_once(&journal).is_err());
+    }
+
+    #[test]
+    fn method46_initial_nv_main_mutation_during_exchange_fences_next_entry() {
+        use super::super::nv_currentness::InitialNvMainCurrentnessOriginalV1;
+
+        let (directory, journal, replayed_file) = native_writer();
+        let mut original = InitialNvMainCurrentnessOriginalV1::new();
+        assert!(original.quote_once(&journal, replayed_file).is_some());
+        original.begin_once(&journal).unwrap();
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .open(directory.path().join("journal"))
+            .unwrap();
+        file.write_all(b"changed while the TPM request was outstanding")
+            .unwrap();
+        file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+            .unwrap();
+
+        assert!(original.finish_after_owed(&journal).is_err());
+        let first = original.failure().unwrap() as *const dyn Error as *const ();
+        assert!(original.begin_once(&journal).is_err());
+        assert!(original.finish_after_owed(&journal).is_err());
+        assert_eq!(
+            original.failure().unwrap() as *const dyn Error as *const (),
+            first
+        );
+        assert!(
+            original.intervals[0]
+                .witnesses
+                .iter()
+                .all(|witness| witness.completed_witness().is_some())
         );
     }
 }

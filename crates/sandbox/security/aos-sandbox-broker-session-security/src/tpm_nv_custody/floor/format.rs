@@ -99,6 +99,10 @@ impl FloorProfileV1 {
     pub(crate) fn nv_name(self) -> [u8; 34] {
         written_nv_name(self.endpoint().nv_index())
     }
+
+    pub(crate) fn defined_nv_name(self) -> [u8; 34] {
+        nv_public_name(self.endpoint().nv_index(), NV_ATTRIBUTES_DEFINED)
+    }
 }
 
 impl From<Method46ProvisionDataErrorV1> for FloorErrorV1 {
@@ -1253,10 +1257,16 @@ impl FloorIntentDataV1 {
 
 /// Computes written-public Name DATA for an already selected private role.
 fn written_nv_name(nv_index: u32) -> [u8; 34] {
+    nv_public_name(nv_index, NV_ATTRIBUTES_WRITTEN)
+}
+
+// Both fixed initial states use the same public-area encoding. Ordinary floor
+// callers retain the Written-only wrapper and their existing validation.
+fn nv_public_name(nv_index: u32, attributes: u32) -> [u8; 34] {
     let mut public = [0; 14];
     public[0..4].copy_from_slice(&nv_index.to_be_bytes());
     public[4..6].copy_from_slice(&0x000b_u16.to_be_bytes());
-    public[6..10].copy_from_slice(&NV_ATTRIBUTES_WRITTEN.to_be_bytes());
+    public[6..10].copy_from_slice(&attributes.to_be_bytes());
     // Empty authPolicy occupies two zero bytes at 10..12.
     public[12..14].copy_from_slice(&32_u16.to_be_bytes());
 

@@ -96,17 +96,70 @@ impl Method46InitialTpmHelperDrivingLoanV1<'_> {
     }
 
     fn drive_prepared_exchange(&mut self) -> Result<(), Method46InitialStartupClosedV1> {
-        // Each wait's independent Source post precedes the next native effect.
-        // A failed action still owes that same Source observation.
         let action = self.native.wait_nv_send_once_v1();
         observe_after(self.startup, action)?;
-        let action = self.native.send_nv_once_v1();
-        observe_after(self.startup, action)?;
 
-        let action = self.native.wait_nv_receive_once_v1();
-        observe_after(self.startup, action)?;
-        let action = self.native.receive_nv_once_v1();
-        observe_after(self.startup, action)
+        // Readiness may have waited. Compare actual main names/metadata against
+        // the original replayed file immediately before the request effect.
+        let before = self.begin_nv_main();
+        let action = (|| {
+            before?;
+            let action = self.native.send_nv_once_v1();
+            observe_after(self.startup, action)?;
+
+            let action = self.native.wait_nv_receive_once_v1();
+            observe_after(self.startup, action)?;
+            let action = self.native.receive_nv_once_v1();
+            observe_after(self.startup, action)
+        })();
+        let after = self.finish_nv_main_after_owed();
+        if action.is_err() || after.is_err() {
+            Err(self.startup.fail(First::TpmHelperBirth))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn begin_nv_main(&self) -> Result<(), Method46InitialStartupClosedV1> {
+        require_current(self.startup)?;
+        let result = (|| {
+            self.startup
+                .body
+                .as_ref()
+                .ok_or(self.startup.closed)?
+                .main_writer
+                .try_borrow_mut()
+                .map_err(|_| self.startup.closed)?
+                .begin_initial_nv_main_once()
+                .map_err(|_| self.startup.closed)
+        })();
+        let after = require_current(self.startup);
+        if result.is_err() || after.is_err() {
+            Err(self.startup.fail(First::MainWriter))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn finish_nv_main_after_owed(&self) -> Result<(), Method46InitialStartupClosedV1> {
+        // No successful-currentness prerequisite can erase the native post.
+        let result = (|| {
+            self.startup
+                .body
+                .as_ref()
+                .ok_or(self.startup.closed)?
+                .main_writer
+                .try_borrow_mut()
+                .map_err(|_| self.startup.closed)?
+                .finish_initial_nv_main_after_owed()
+                .map_err(|_| self.startup.closed)
+        })();
+        let after = require_current(self.startup);
+        if result.is_err() || after.is_err() {
+            Err(self.startup.fail(First::MainWriter))
+        } else {
+            Ok(())
+        }
     }
 
     fn drive_prepared_nv_data(

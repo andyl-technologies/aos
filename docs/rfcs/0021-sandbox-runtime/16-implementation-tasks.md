@@ -31,6 +31,32 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Security now retains the approved initial NV workflow under one genuine
+  Source/helper driving loan: measured birth, actual writer-lock handoff,
+  private AUTH, initial Read, optional sole Extend, final target Read and orderly
+  close/reaping. Exact Defined/Written public areas and Names use the existing
+  single Name recipe; matching Written recovery skips Extend and conflicting
+  values refuse. No caller supplies approval, observed NV, auth or a channel.
+  Source prepays four native main-writer intervals before helper setup and
+  samples actual names/metadata against the original replayed file after send
+  readiness, immediately before each request. Every entered interval retains
+  its independently owed after even when the before, transport or Source fails.
+  The existing decode-carrier funding assertion still passes. Non-test online
+  Security compilation, 430 Broker, 129 focused Source, 431 ordinary Security
+  and 440 online-Nix Security tests pass; one Broker and two cases in each
+  Security suite remain ignored. Four native currentness regressions cover
+  finite interval exhaustion, mutation between requests, failed-before/restored
+  after and mutation during exchange. Three DATA-only Security regressions check
+  independent fixed-index Name vectors, malformed fields and no-second-Extend
+  recovery decisions; they supply no positive Source/TPM authority fixture.
+  Full application target compilation is running on the audited 76-source
+  snapshot; both deleted modules are absent and its 833-derivation closure
+  excludes production policy. This workflow success is not checkpoint authority:
+  canonical framed checkpoint publication, its independent durability/currentness
+  frontier, positive installed Source/helper behavior, both installed journal
+  hooks and enforcing lifecycle/recovery qualification remain open. Admission
+  stays closed.
+
 - The original Source-held helper now retains parent-side close and finish
   custody on the same authenticated carrier. A fourth prepaid exchange slot
   admits the distinct close ACK only after the original final Read, with the
