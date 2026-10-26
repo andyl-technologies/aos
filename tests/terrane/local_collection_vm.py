@@ -266,8 +266,8 @@ def main():
         print("PASS four exact scoped index routing cases preserve bounds, read reachability "
               "and complete reply validation", flush=True)
     elif suite == "held-indexed-presence":
-        print("PASS two exact held index cases preserve native exclusion and refuse replaced "
-              "coordination without pack body reads", flush=True)
+        print(f"PASS {len(cases)} exact index cases preserve native exclusion, guarded file "
+              "reachability and whole policy references without chunk body reads", flush=True)
     else:
         print("PASS actual local-v1 intent discovery survives exact full-D deletion and durable Done",
               flush=True)
