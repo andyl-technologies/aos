@@ -158,6 +158,7 @@ pub async fn deliver_one(
             Ok(false)
         }
         Err(err) => {
+            let err = err.without_url();
             tracing::warn!(
                 webhook_id = delivery.webhook_id,
                 error = %err,
