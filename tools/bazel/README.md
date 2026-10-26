@@ -2384,6 +2384,38 @@ Kernel attachment and effects, foreign-host execution, numeric performance
 acceptance, production default cutover and repository-wide Cargo removal remain
 separate RFC gates. These userspace checks do not establish live BPF behavior.
 
+## Kubernetes provider package
+
+`pkgs.aos-kubernetes-provider.passthru.withBuildDriver "bazel"` selects the
+installed Kubernetes handler. Cargo remains the default and rollback builder.
+The Bazel branch does not evaluate the Cargo constructor, artifacts, dummy
+source or vendor tree. It preserves the production platform and qualification
+contracts, installed files, dynamic imports, resolved libraries and complete
+runtime closure.
+
+`checks.build.bazel.kubernetes-provider-production.all`, also exposed through
+`tools/bazel/tests/kubernetes-provider-production.nix`, compares all six
+first-party production compiler profiles. Debug tests retain their original
+size optimization, debug assertions and overflow checks, while execution
+procedural macros retain their own unoptimized profile. Features match five
+first-party packages and 37 production or 42 test dependency identities using
+the existing preparation-provider SDKs.
+
+The check executes ten library tests, the empty command libtest and doctest
+suite, and 12 CLI rejection and byte-boundary cases. A separate 18-case fixture
+copies each installed handler into the K3s role's `bin`-to-`libexec` layout. It
+rejects missing and regular-file siblings, admits the sibling symlink, checks
+the cleared child environment, and compares read-only namespace queries and
+timeout clamping. This fixture supplies a protocol response; it runs no cluster.
+All 115 production actions and 140 debug-test actions execute freshly in Linux
+sandboxes. Precise and conservative source selections agree on six roots and
+143 configured reports and produce the same package binary bytes. The retained
+receipt is `tests/evidence/kubernetes-provider-production-package.json`.
+
+Live K3s/API-server effects, complete role-package qualification, foreign-host
+execution, numeric performance acceptance, production default cutover and
+repository-wide Cargo removal remain separate RFC gates.
+
 ## Storage/campaign compilation measurements
 
 `tests/evidence/store-performance-v3.json` identifies a frozen compilation trial

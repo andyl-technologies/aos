@@ -1,6 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
@@ -88,6 +89,17 @@ aos_license_check(
         ":aos-kubernetes-provider",
     ],
     license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_package(
+    name = "package",
+    package_name = "aos-kubernetes-provider",
+    version = RUST_PACKAGE.version,
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {":aos-kubernetes-provider": "bin/aos-kubernetes-provider"},
+    executables = ["bin/aos-kubernetes-provider"],
+    visibility = ["//visibility:public"],
 )
 
 aos_source_package(
