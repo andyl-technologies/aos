@@ -3,11 +3,13 @@
   lib,
   mkAosCargoPackage,
   aosWorkspaceVendor,
+  callPackage,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
   cargoDeps = aosWorkspaceVendor;
-in
-  mkAosCargoPackage {
+  withBuildDriver = selected: callPackage ./aos-filesystem-provider.nix {buildDriver = selected;};
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -37,6 +39,11 @@ in
     cargoTestFlags = "-p aos-activation-filesystem";
     doCheck = true;
 
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+
     module = ./_aos-filesystem-provider;
 
     meta = {
@@ -45,4 +52,14 @@ in
       license = "Apache-2.0";
       mainProgram = "aos-filesystem-provider";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-filesystem-provider-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

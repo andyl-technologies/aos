@@ -181,6 +181,7 @@ in
     storage-provisioning-provider-production = import ./_bazel-storage-provisioning-provider-production.nix {inherit pkgs;};
     kernel-tunable-provider-production = import ./_bazel-kernel-tunable-provider-production.nix {inherit pkgs;};
     network-ruleset-provider-production = import ./_bazel-network-ruleset-provider-production.nix {inherit pkgs;};
+    filesystem-provider-production = import ./_bazel-filesystem-provider-production.nix {inherit pkgs;};
     static-storage-providers-production = import ./_bazel-static-storage-providers-production.nix {inherit pkgs;};
     preparation-provider-production = import ./_bazel-preparation-provider-production.nix {inherit pkgs;};
     release-coordination = import ./_bazel-release-coordination.nix {inherit pkgs;};
@@ -592,6 +593,7 @@ in
             storage-provisioning-provider-production.all
             kernel-tunable-provider-production.all
             network-ruleset-provider-production.all
+            filesystem-provider-production.all
             static-storage-providers-production.all
             preparation-provider-production.all
             release-coordination.all

@@ -3122,6 +3122,33 @@ Precise and conservative inventories agree on six roots, 143 configured reports
 and 44 source files. Live firewall mutations, foreign hosts, numeric performance
 acceptance and default cutover remain separate gates.
 
+`pkgs.aos-filesystem-provider.passthru.withBuildDriver "bazel"` selects the
+filesystem handler with its original module, qualification probe and Cargo
+rollback. Production uses the existing activation-core SDK; release tests reuse
+configuration-image-tests. The latter's independent Base64 root is unused.
+The compiled dependency and feature closures must match Cargo exactly.
+
+`checks.build.bazel.filesystem-provider-production.all`, also exposed through
+`tools/bazel/tests/filesystem-provider-production.nix`, requires 25 matching
+library cases, both release-profile test binaries, four execution-platform
+procedural macros and the empty command-test and doctest targets. It checks
+actual production compiler settings, the installed dynamic loader and resolved
+libraries, and the exact runtime closure. Nine installed rejection comparisons
+include documents exactly at the 32 MiB limit and one byte over it.
+
+Both installed commands also execute seven matching scenarios in separate
+source-built Firecracker VMs requiring KVM: rejecting unclaimed paths, repairing
+metadata drift, preserving symlink targets, rematerializing and releasing a
+claimed directory, retaining mutable-file contents and inode, restoring copied
+contents, and releasing an immutable tree link without deleting its source.
+The qualification retains their serial logs and compares their case reports.
+Production and release tests execute 115 and 140 fresh Linux sandbox actions.
+Precise and conservative inventories agree on six roots, 143 configured reports
+and 48 source files. The retained receipt is
+`tests/evidence/filesystem-provider-production-package.json`. Full system
+activation, privileged-executable and crash-injection checks, foreign hosts,
+numeric performance acceptance and default cutover remain separate gates.
+
 The broader [native evaluation gate](tests/evidence/static-storage-core-evaluation.json)
 passes for the static storage checkpoint. Reinstantiation after the OpenZFS and
 provisioning selector changes yields the identical completed root derivation;
