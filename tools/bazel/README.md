@@ -388,19 +388,28 @@ The [host-fixture receipt](tests/evidence/test-support-host-fixtures.json) retai
 matching compiler arguments, environments, declared inputs, and output digests
 for both source selections.
 
-`checks.build.bazel.test-support-audits.all` runs the five existing unsafe-fence
-audit cases against declared source ownership. Its precise workspace contains
+`checks.build.bazel.test-support-audits.all` runs 11 existing cases across the
+unsafe-fence, concurrency/ABI/oracle standards, and harness-lint annotation
+audits against declared source ownership. Its precise workspace contains
 no Cargo manifests or locks. The generated catalog retains all 78 workspace
 packages; the audit checks all 19 Crucible packages, including their crate-root
 fences, safe-wrapper contracts, and unsafe source usage. An independent Cargo
-build executes the same cases using Cargo ownership, then its retained binary
-executes them again against the Cargo-free catalog sources. Seven negative
-controls reject invalid or missing ownership and an actual removed fence.
-The [unsafe-fence receipt](tests/evidence/test-support-unsafe-fence.json) retains
-the pre-change failure with catalog ownership and the precise/conservative
-compiler input and output comparison. Each Bazel build executes 63 fresh Linux
-sandbox actions, including two first-party Rust compilations. The remaining 26
+build executes the same cases using Cargo ownership, then both compilers'
+retained binaries execute them again against the Cargo-free catalog sources.
+Seven negative controls run with both compilers and reject invalid or missing
+ownership and an actual removed fence. The
+[source-audit receipt](tests/evidence/test-support-source-audits.json) retains
+the precise/conservative compiler input and output comparison: each Bazel build
+executes 67 fresh Linux sandbox actions, including four first-party Rust
+compilations. These three audit targets use a relative compiler manifest path
+because their runtime ownership comes from the catalog; this prevents the
+compiler sandbox sequence number from entering their binaries. The verifier
+rejects embedded private sandbox paths and has rejected an actual older binary.
+The original [unsafe-fence receipt](tests/evidence/test-support-unsafe-fence.json)
+retains the pre-change failure with catalog ownership. The remaining 24
 repository audit and feature-driver integration targets still need migration.
+The concurrency/ABI/oracle audit inspects source contracts; production ABI
+execution remains a separate gate.
 
 `checks.build.bazel.feature-powerset.all` independently compiles the nine
 engine, QEMU host, and device configurations from the existing feature-powerset

@@ -3,7 +3,7 @@
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/test-support-audit-inventory.json,
 }: let
-  label = "//crates/crucible/crucible-test-support:crate_unsafe_fence";
+  audits = ["crate_unsafe_fence" "concurrency_abi_oracle_standards" "harness_lint_annotations"];
   parityTools = builtins.path {
     path = ../../tools/bazel/tests;
     name = "aos-source-audit-parity-tools";
@@ -24,7 +24,7 @@
     ];
     dependencyProfile = "engine";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.engine;
-    analysisTargets = [label "//crates:source_catalog_package"];
+    analysisTargets = map (name: "//crates/crucible/crucible-test-support:${name}") audits ++ ["//crates:source_catalog_package" "//crates/crucible/crucible-test-support:source_audit_binaries"];
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   };
@@ -47,7 +47,7 @@ in rec {
     inherit pkgs;
     pname = "aos-bazel-test-support-source-audit-cargo-oracle";
     packages = ["crucible-test-support"];
-    cargoFlags = ["--test" "crate_unsafe_fence"];
+    cargoFlags = pkgs.lib.concatMap (name: ["--test" name]) audits;
     captureCompilerArguments = true;
   };
   parity = pkgs.runCommand "aos-bazel-test-support-source-audit-parity" {buildDeps = [pkgs.python3];} ''

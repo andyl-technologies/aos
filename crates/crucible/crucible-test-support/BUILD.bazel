@@ -1,4 +1,5 @@
 load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
@@ -67,6 +68,11 @@ rust_doc_test(
     crate = ":lib",
 )
 
+# Runtime ownership comes from the declared catalog. Keep the unused Cargo
+# fallback relative: rules_rust's absolute default embeds a sandbox sequence
+# number in env!("CARGO_MANIFEST_DIR"), making audit binaries depend on scheduling.
+SOURCE_AUDIT_COMPILER_ENV = {"CARGO_MANIFEST_DIR": "crates/crucible/crucible-test-support"}
+
 aos_rust_test(
     name = "crate_unsafe_fence",
     package = RUST_PACKAGE,
@@ -78,6 +84,7 @@ aos_rust_test(
         "tests/support/workspace.rs",
     ],
     env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+    rustc_env = SOURCE_AUDIT_COMPILER_ENV,
     data = ["//crates:source_catalog"],
     deps = [
         ":lib",
@@ -85,6 +92,66 @@ aos_rust_test(
         "//third_party/rust:core_serde_json",
         "//third_party/rust:core_toml",
     ],
+)
+
+aos_rust_test(
+    name = "concurrency_abi_oracle_standards",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/concurrency_abi_oracle_standards.rs",
+    srcs = [
+        "tests/concurrency_abi_oracle_standards.rs",
+        "tests/support/concurrency_abi_oracle_standards.rs",
+        "tests/support/workspace.rs",
+    ],
+    env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+    rustc_env = SOURCE_AUDIT_COMPILER_ENV,
+    data = ["//crates:source_catalog"],
+    deps = [
+        ":lib",
+        "//third_party/rust:core_serde",
+        "//third_party/rust:core_serde_json",
+        "//third_party/rust:core_toml",
+    ],
+)
+
+aos_rust_test(
+    name = "harness_lint_annotations",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/harness_lint_annotations.rs",
+    srcs = [
+        "tests/harness_lint_annotations.rs",
+        "tests/support/harness_lint/allow.rs",
+        "tests/support/harness_lint/common.rs",
+        "tests/support/harness_lint/error_logging.rs",
+        "tests/support/harness_lint/guidance.rs",
+        "tests/support/harness_lint/lex.rs",
+        "tests/support/harness_lint/scan.rs",
+        "tests/support/source_sections.rs",
+        "tests/support/workspace.rs",
+    ],
+    env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+    rustc_env = SOURCE_AUDIT_COMPILER_ENV,
+    data = ["//crates:source_catalog"],
+    deps = [
+        ":lib",
+        "//third_party/rust:core_serde",
+        "//third_party/rust:core_serde_json",
+        "//third_party/rust:core_toml",
+    ],
+)
+
+aos_package(
+    name = "source_audit_binaries",
+    package = RUST_PACKAGE,
+    testonly = True,
+    artifacts = {
+        ":crate_unsafe_fence_binary": "bin/crate_unsafe_fence",
+        ":concurrency_abi_oracle_standards_binary": "bin/concurrency_abi_oracle_standards",
+        ":harness_lint_annotations_binary": "bin/harness_lint_annotations",
+    },
+    executables = ["bin/crate_unsafe_fence", "bin/concurrency_abi_oracle_standards", "bin/harness_lint_annotations"],
 )
 
 aos_source_package(

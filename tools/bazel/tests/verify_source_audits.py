@@ -1,4 +1,4 @@
-"""Qualifies unsafe-fence audits against declared, Cargo-free source ownership."""
+"""Qualifies source audits against declared, Cargo-free package ownership."""
 
 import argparse
 import copy
@@ -14,21 +14,21 @@ import tempfile
 from verify_pilot import cases, verify
 
 
-LABEL = "//crates/crucible/crucible-test-support:crate_unsafe_fence"
 ROOT_CASE = "crucible_crate_roots_carry_declared_unsafe_fence"
+AUDITS = {"crate_unsafe_fence": 5, "concurrency_abi_oracle_standards": 2, "harness_lint_annotations": 4}
 
 
-def oracle_binary(oracle):
+def oracle_binary(oracle, target="crate_unsafe_fence"):
     """Requires one retained executable for the selected integration target."""
     binaries = []
     for line in (oracle / "cargo-messages.jsonl").read_text().splitlines():
         message = json.loads(line)
         if (message.get("reason") == "compiler-artifact"
-                and message.get("target", {}).get("name") == "crate_unsafe_fence"
+                and message.get("target", {}).get("name") == target
                 and message.get("profile", {}).get("test") and message.get("executable")):
             binaries.append(Path(message["executable"]))
     if len(binaries) != 1 or not binaries[0].is_file():
-        raise ValueError("unsafe-fence Cargo oracle has no unique retained executable")
+        raise ValueError("source audit Cargo oracle has no unique retained executable: " + target)
     return binaries[0]
 
 
@@ -48,14 +48,25 @@ def run_audit(binary, catalog, exact=None):
 
 
 def qualify(options):
-    binary = oracle_binary(options.oracle)
-    expected = cases(binary)
-    if len(expected) != 5 or cases(binary, ignored=True):
-        raise ValueError("unsafe-fence audit case coverage changed")
+    binaries = {name: oracle_binary(options.oracle, name) for name in AUDITS}
+    package_index = json.loads((options.build / "packages/index.json").read_text())
+    package = options.build / "packages" / package_index[
+        "//crates/crucible/crucible-test-support:source_audit_binaries"] / "files/bin"
+    bazel_binaries = {name: package / name for name in AUDITS}
+    expected = {name: cases(binary) for name, binary in binaries.items()}
+    for name, binary in binaries.items():
+        if len(expected[name]) != AUDITS[name] or cases(binary, ignored=True):
+            raise ValueError("source audit case coverage changed: " + name)
+        if cases(bazel_binaries[name]) != expected[name]:
+            raise ValueError("exported Bazel audit binary case coverage changed: " + name)
+        if b"/build/bazel/sandbox/" in bazel_binaries[name].read_bytes():
+            raise ValueError("source audit embeds a private compiler sandbox directory: " + name)
     cargo_executed = executed_cases((options.oracle / "cargo-tests.log").read_text())
-    if cargo_executed != expected:
+    if cargo_executed != sorted(case for selected in expected.values() for case in selected):
         raise ValueError("Cargo source-ownership oracle did not execute every audit case")
-    parity = verify(options.build / "evidence/tests", {LABEL: binary})
+    parity = verify(options.build / "evidence/tests", {
+        "//crates/crucible/crucible-test-support:" + name: binary for name, binary in binaries.items()
+    })
 
     source = options.workspace / "crates"
     manifests = sorted(str(path.relative_to(options.workspace)) for path in source.rglob("Cargo.*")
@@ -83,16 +94,21 @@ def qualify(options):
                 manifest.unlink()
         selected_catalog = root / "crates/source_catalog.json"
         selected_catalog.write_text(json.dumps(catalog))
-        result = run_audit(binary, selected_catalog)
-        if result.returncode or executed_cases(result.stdout) != expected:
-            raise ValueError("Cargo-compiled audit failed against Cargo-free catalog sources: "
-                             + result.stdout + result.stderr)
+        for compiler, selected in {"cargo": binaries, "bazel": bazel_binaries}.items():
+            for name, binary in selected.items():
+                result = run_audit(binary, selected_catalog)
+                if result.returncode or executed_cases(result.stdout) != expected[name]:
+                    raise ValueError("Compiled audit failed against Cargo-free catalog sources: "
+                                     + compiler + ": " + name + ": " + result.stdout + result.stderr)
+
+        fence_binaries = [selected["crate_unsafe_fence"] for selected in (binaries, bazel_binaries)]
 
         def reject(name, contents, diagnostic):
             selected_catalog.write_text(json.dumps(contents))
-            result = run_audit(binary, selected_catalog, ROOT_CASE)
-            if result.returncode == 0 or diagnostic not in result.stdout + result.stderr:
-                raise ValueError("source audit accepted invalid ownership: " + name)
+            for binary in fence_binaries:
+                result = run_audit(binary, selected_catalog, ROOT_CASE)
+                if result.returncode == 0 or diagnostic not in result.stdout + result.stderr:
+                    raise ValueError("source audit accepted invalid ownership: " + name)
             rejected.append(name)
 
         reject("unsupported-schema", dict(catalog, schema_version=2), "invalid workspace source catalog")
@@ -106,10 +122,11 @@ def qualify(options):
 
         selected_catalog.write_text(json.dumps(catalog))
         selected_catalog.unlink()
-        result = run_audit(binary, selected_catalog, ROOT_CASE)
-        if (result.returncode == 0
-                or "declared workspace source catalog is absent" not in result.stdout + result.stderr):
-            raise ValueError("source audit silently fell back from an absent declared catalog")
+        for binary in fence_binaries:
+            result = run_audit(binary, selected_catalog, ROOT_CASE)
+            if (result.returncode == 0
+                    or "declared workspace source catalog is absent" not in result.stdout + result.stderr):
+                raise ValueError("source audit silently fell back from an absent declared catalog")
         rejected.append("absent-declared-catalog")
 
         missing = copy.deepcopy(catalog)
@@ -126,21 +143,24 @@ def qualify(options):
             raise ValueError("unsafe-fence negative control cannot identify the active fence")
         crate_root.chmod(0o644)
         crate_root.write_text(contents.replace(fence, "// removed fence for qualification", 1))
-        result = run_audit(binary, selected_catalog, ROOT_CASE)
-        if result.returncode == 0 or "missing required crate-root fence" not in result.stdout + result.stderr:
-            raise ValueError("catalog-backed audit missed source fence drift")
+        for binary in fence_binaries:
+            result = run_audit(binary, selected_catalog, ROOT_CASE)
+            if result.returncode == 0 or "missing required crate-root fence" not in result.stdout + result.stderr:
+                raise ValueError("catalog-backed audit missed source fence drift")
         rejected.append("missing-active-unsafe-fence")
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "test_parity": parity,
         "cargo_ownership_executed_cases": cargo_executed,
         "cargo_compiled_catalog_ownership_executed_cases": expected,
+        "bazel_compiled_catalog_ownership_executed_cases": expected,
         "catalog_sha256": hashlib.sha256(options.catalog.read_bytes()).hexdigest(),
         "catalog_package_count": len(catalog["packages"]),
         "audited_package_sources": package_sources,
         "first_party_cargo_files": manifests,
         "negative_controls_rejected": rejected,
+        "negative_control_compilers": ["cargo", "bazel"],
     }
 
 
