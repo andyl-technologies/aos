@@ -60,6 +60,28 @@ impl Method46InitialMainMapReadbackV1<'_> {
 }
 
 impl Method46InitialMainReadbackLoanV1<'_> {
+    /// Requires both genuine loans to belong to the same current startup.
+    ///
+    /// This compares the actual continuously borrowed owner, rather than node,
+    /// epoch or other copied identity fields. It supplies no schema or effect
+    /// authority and never transfers either loan's native custody.
+    ///
+    /// # Errors
+    /// Refuses a foreign or ended original and fences both reached startups.
+    pub fn require_same_provisioning_original_v1(
+        &self,
+        provision: &Method46InitialProvisionReadbackLoanV1<'_>,
+    ) -> Result<(), Method46InitialStartupClosedV1> {
+        let result = provision
+            .require_same_startup_v1(self.startup)
+            .and_then(|()| self.origin_data_v1().map(|_| ()));
+        if result.is_err() {
+            self.refuse_readback_v1();
+            provision.refuse_decode_v1();
+        }
+        result
+    }
+
     /// Copies comparison identity from this same current Source original.
     ///
     /// # Errors

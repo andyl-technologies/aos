@@ -13,7 +13,10 @@ use aos_sandbox_controller_domain::method46_initial_startup::{
     Method46InitialStartupClosedV1,
 };
 
-use super::{Method46InitialDataErrorV1, Method46InitialPurposeV1};
+use super::{
+    METHOD46_INITIAL_REQUEST_BYTES_V1, Method46InitialDataErrorV1,
+    Method46InitialMainCutOriginalV1, Method46InitialPurposeV1, Method46InitialRequestDataV1,
+};
 use crate::tpm_nv_custody::{FloorEndpointV1, FloorErrorV1, FloorProfileV1};
 
 /// Retains the canonical decode of an original initial-job public credential.
@@ -36,6 +39,8 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
 // A future larger carrier must increase that real invoice before compilation.
 const _: () = assert!(
     2 * std::mem::size_of::<Method46InitialProvisionDecodeOriginalV1<'static>>()
+        + 2 * std::mem::size_of::<Method46InitialRequestDataV1>()
+        + METHOD46_INITIAL_REQUEST_BYTES_V1
         <= METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1
 );
 
@@ -98,6 +103,47 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             && self.node_matches == Some(true)
     }
 
+    /// Derives initial request DATA from this credential and the same main owner.
+    ///
+    /// Both genuine loans must continuously borrow the exact same startup.
+    /// The provisioning profile and salt come from the retained canonical
+    /// decoder, and the cut comes from the original canonical hash and native
+    /// after. No profile, sequence, digest or amount enters from the caller.
+    ///
+    /// This supplies the exact preimage for independent approval, without
+    /// establishing endpoint/key independence, Session schema, job exclusion,
+    /// durable intent or physical TPM authority. Its finite return carriers
+    /// were paid with this original's decode allowance before construction.
+    ///
+    /// # Errors
+    /// Refuses an ended, failed or foreign original, a failed canonical decode
+    /// or cut, or a noncanonical initial request. Equal copied origin fields
+    /// cannot join different startups.
+    pub fn request_for_main_original_data_v1(
+        &self,
+        main: &Method46InitialMainCutOriginalV1<'_>,
+    ) -> Result<Method46InitialRequestDataV1, Method46InitialDataErrorV1> {
+        if !self.admitted() {
+            return Err(Method46InitialDataErrorV1::Encoding);
+        }
+        let cut = main.cut_for_provision_original_data_v1(&self.readback)?;
+        let Some(Ok((profile, salt_name))) = self.decoded.as_ref() else {
+            return Err(Method46InitialDataErrorV1::Encoding);
+        };
+        let profile_bytes = profile.encode();
+        Method46InitialRequestDataV1::new(
+            self.purpose_data_v1()?,
+            profile.node(),
+            profile_bytes[32..48]
+                .try_into()
+                .map_err(|_| Method46InitialDataErrorV1::Encoding)?,
+            profile.stable_endpoint(),
+            *salt_name,
+            cut.sequence(),
+            cut.head(),
+        )
+    }
+
     /// Returns the compared fixed purpose as DATA while the Source is current.
     ///
     /// This does not issue approval, writer, initial-Extend or checkpoint rights.
@@ -120,5 +166,46 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             }
             FloorEndpointV1::StorageBroker => Method46InitialPurposeV1::StorageBroker,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::mem::ManuallyDrop;
+
+    use aos_sandbox_controller_domain::method46_initial_startup::Method46InitialStartupOriginalV1;
+
+    use super::*;
+
+    // This compiles the public simultaneous-borrow contract. A real installed
+    // caller first completes the mutable startup admission on this same owner.
+    fn request_from_originals(
+        startup: &Method46InitialStartupOriginalV1,
+    ) -> Result<Method46InitialRequestDataV1, Method46InitialDataErrorV1> {
+        let provision = startup
+            .lend_provisioning_readback_once_v1()
+            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+        let decoded = Method46InitialProvisionDecodeOriginalV1::decode_captured_v1(provision);
+        startup
+            .capture_initial_main_writer_once_v1()
+            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+        let main_loan = startup
+            .lend_initial_main_readback_once_v1()
+            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+        let main = Method46InitialMainCutOriginalV1::hash_captured_v1(main_loan);
+        decoded.request_for_main_original_data_v1(&main)
+    }
+
+    #[test]
+    fn method46_initial_request_cannot_be_derived_from_an_inert_startup() {
+        for role in [
+            Method46InitialServiceRoleV1::ControllerStorageClient,
+            Method46InitialServiceRoleV1::StorageBroker,
+        ] {
+            let startup = ManuallyDrop::new(Method46InitialStartupOriginalV1::new(role));
+
+            assert!(request_from_originals(&startup).is_err());
+            assert!(startup.finish_source_after_owed_once_v1(Ok(())).is_err());
+        }
     }
 }

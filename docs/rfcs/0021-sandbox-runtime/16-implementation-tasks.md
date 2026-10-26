@@ -533,6 +533,19 @@ Recent committed startup fixes close narrower prerequisites:
   no independent endpoint/key provenance, schema admission, job exclusion,
   approval, durable intent, physical TPM permit or installed qualification.
 
+- The captured provisioning decode and main cut can now coexist under shared
+  loans from the same continuously borrowed startup. Their join compares the
+  actual owner identity; equal copied node/epoch claims cannot substitute.
+  A mismatch fences both originals. The canonical initial request preimage is
+  derived from the retained decoded profile/salt and the same main cut after
+  its native post, with no supplied profile, sequence or digest. Its return
+  carriers fit the Source's prepaid decode bound. All 68 focused initial tests
+  pass, including the simultaneous public borrowing contract and inert startup
+  refusal for both purposes. Complete Rust target compilation is running.
+  Genuine installed positive admission, Session schema, independent public
+  endpoint/key provenance, job exclusion, approved durable intent and physical
+  TPM authority remain open. This request remains comparison DATA.
+
 - The latest installed offline key-preparation candidate passes its service
   property stage, then exits with the stopped-runtime invalid-unit class 95.
   Its Controller is inactive/dead with PID zero and an empty InvocationID.

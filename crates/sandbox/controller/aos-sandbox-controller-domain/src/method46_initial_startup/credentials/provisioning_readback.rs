@@ -38,6 +38,17 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
             .map_err(|_| self.startup.closed)
     }
 
+    pub(in crate::method46_initial_startup) fn require_same_startup_v1(
+        &self,
+        startup: &Method46InitialStartupOriginalV1,
+    ) -> Result<(), Method46InitialStartupClosedV1> {
+        // Equal copied identity fields cannot substitute for the original payer.
+        if !std::ptr::eq(self.startup, startup) {
+            return Err(self.startup.closed);
+        }
+        self.require_current()
+    }
+
     /// Borrows the actual public bytes while their original custody is current.
     ///
     /// This performs no IO or copying. Holding this borrow through a credential
@@ -94,13 +105,14 @@ impl Method46InitialStartupOriginalV1 {
     /// the Security result carrier exists. No supplied bytes, amount, purpose
     /// or descriptor can manufacture the returned loan. Private auth stays in
     /// the credential owner; independent key and protected writer admission
-    /// remain separate obligations.
+    /// remain separate obligations. The shared startup borrow allows this
+    /// original to coexist with its same-owner main-map readback loan.
     ///
     /// # Errors
     /// Refuses missing unit/credential admission, repeated issuance, busy native
     /// custody, an ended Source or exhausted genuine receiving allocation.
     pub fn lend_provisioning_readback_once_v1(
-        &mut self,
+        &self,
     ) -> Result<Method46InitialProvisionReadbackLoanV1<'_>, Method46InitialStartupClosedV1> {
         let ready = self.body.as_ref().is_some_and(|body| {
             body.unit.initial_admitted()
@@ -114,7 +126,8 @@ impl Method46InitialStartupOriginalV1 {
             return Err(self.fail(First::Order));
         }
         self.source
-            .get_mut()
+            .try_borrow()
+            .map_err(|_| self.closed)?
             .require_current_v1()
             .map_err(|_| self.closed)?;
         self.fund_additional(Some(ResourceVector::ZERO.with(

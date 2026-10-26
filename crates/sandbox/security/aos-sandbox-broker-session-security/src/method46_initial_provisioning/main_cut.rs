@@ -9,7 +9,7 @@ use aos_sandbox_controller_domain::{
     RecordNamespace,
     method46_initial_startup::{
         METHOD46_INITIAL_MAIN_CUT_BYTES_V1, Method46InitialMainReadbackLoanV1,
-        Method46InitialStartupClosedV1,
+        Method46InitialProvisionReadbackLoanV1, Method46InitialStartupClosedV1,
     },
 };
 use aos_sandbox_model::{ResourceDimension, ResourceVector};
@@ -124,6 +124,16 @@ impl<'owner> Method46InitialMainCutOriginalV1<'owner> {
             && matches!(self.read, Some(Ok(())))
             && self.namespaces_match == Some(true)
             && matches!(self.cut, Some(Ok(_)))
+    }
+
+    pub(super) fn cut_for_provision_original_data_v1(
+        &self,
+        provision: &Method46InitialProvisionReadbackLoanV1<'_>,
+    ) -> Result<FloorCutV1, Method46InitialDataErrorV1> {
+        self.readback
+            .require_same_provisioning_original_v1(provision)
+            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+        self.cut_data_v1()
     }
 
     /// Copies the compared cut as DATA while its actual Source remains current.
