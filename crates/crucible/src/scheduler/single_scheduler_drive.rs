@@ -2083,6 +2083,13 @@ impl SingleScheduler {
         let settled_endpoint = NodeCounter {
             ticks: plan.target_counter,
         };
+        // A stop strictly inside an earlier attested gap is a retirement the
+        // backend proved could not happen there (SCHED-12).
+        self.reject_inside_settled_gap(
+            plan.index,
+            super::settled_attestation::SettledGapEvidence::Retirement,
+            reached,
+        )?;
         self.reject_native_event_inside_settled_gap(plan, reached, settled_endpoint)?;
         let node = &mut self.nodes[plan.index];
         node.counter = reached;

@@ -730,6 +730,17 @@ where
             let release_at = staged_scheduler
                 .backend_network_output_time(&node, Icount { retired: reached })
                 .map_err(|error| self.poison_continuation(error))?;
+            // Every frame must lie outside the gap the node already attested
+            // empty; the RUN's own stop is checked when the commit moves it.
+            for output in &completed.network_outputs {
+                staged_scheduler
+                    .reject_output_inside_settled_gap(
+                        &output.source,
+                        output.sequence,
+                        output.emit_icount,
+                    )
+                    .map_err(|error| self.poison_continuation(error))?;
+            }
             let trace = crate::scheduler::host_run_trace::HostRunTraceStart::capture(
                 &staged_scheduler,
                 stop_index,

@@ -340,3 +340,78 @@ fn settled_gap_refuses_a_skipped_native_deadline() {
         "{error}"
     );
 }
+
+/// Commits `a`'s next RUN from a clock parked at 0 and settled through 20,
+/// reporting a stop at `reached`.
+fn commit_after_settled_gap(reached: u64) -> Result<SingleScheduler, SchedulerError> {
+    let mut scheduler = bounded_pair(None);
+    place(&mut scheduler, "a", 0, 20, true);
+    place(&mut scheduler, "b", 100, 100, false);
+    refresh_frontier(&mut scheduler);
+    let (mut next, run) = prepared_single_run(&scheduler);
+    assert_eq!(run.plan.node.node.name, "a");
+    assert_eq!(run.plan.before, NodeCounter { ticks: 0 });
+    let ceiling = run.plan.ceiling.max_advance_icount;
+    assert!(ceiling > 25, "the RUN may cross the settled point: {ceiling}");
+
+    next.commit_prepared_host_run(
+        run,
+        HostRunReport {
+            reached,
+            settled_through: reached,
+            idle_parked: false,
+        },
+        &[],
+        Vec::new(),
+        Vec::new(),
+    )
+    .map(|_| next)
+}
+
+#[test]
+fn a_retirement_inside_an_attested_settled_gap_fails_closed() {
+    // The park attested that nothing retires in (0, 20]. A later RUN that
+    // retires at 12 broke that attestation; the scheduler names it there.
+    let error = match commit_after_settled_gap(12) {
+        Ok(_) => panic!("a retirement inside the settled gap must refuse"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains(
+            "CRUCIBLE-SETTLED-GAP-VIOLATION-V1 node=a counter=0 settled=20 evidence=retirement sequence=none at=12"
+        ),
+        "{error}"
+    );
+
+    // A time-only stop at the clock, a stop at the settled point itself and a
+    // retirement past it are all consistent with the attestation.
+    for reached in [0, 20, 25] {
+        let next = commit_after_settled_gap(reached)
+            .unwrap_or_else(|error| panic!("stop at {reached} keeps the attestation: {error}"));
+        assert_eq!(next.nodes[0].settled.ticks, reached.max(20));
+    }
+}
+
+#[test]
+fn an_output_inside_an_attested_settled_gap_fails_closed() {
+    let mut scheduler = bounded_pair(None);
+    place(&mut scheduler, "a", 0, 20, true);
+    let node = NodeId {
+        name: String::from("a"),
+    };
+
+    let error = scheduler
+        .reject_output_inside_settled_gap(&node, 7, Icount { retired: 15 })
+        .expect_err("an emission inside the settled gap must refuse");
+    assert!(
+        error.to_string().contains(
+            "CRUCIBLE-SETTLED-GAP-VIOLATION-V1 node=a counter=0 settled=20 evidence=emit sequence=7 at=15"
+        ),
+        "{error}"
+    );
+    for emit in [0, 20, 25] {
+        scheduler
+            .reject_output_inside_settled_gap(&node, 7, Icount { retired: emit })
+            .unwrap_or_else(|error| panic!("emission at {emit} keeps the attestation: {error}"));
+    }
+}

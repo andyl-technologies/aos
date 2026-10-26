@@ -106,6 +106,7 @@ mod liveness;
 mod run_admission;
 mod runtime_state;
 mod scenario;
+mod settled_attestation;
 mod single_scheduler_drive;
 mod single_scheduler_state;
 mod topology;
