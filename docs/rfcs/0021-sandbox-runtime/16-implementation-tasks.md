@@ -634,7 +634,13 @@ Recent committed startup fixes close narrower prerequisites:
   verification API. Source currentness brackets the exchange, and listener
   posts and Source after remain independently owed. All 92 focused provisioning
   tests and three native clock/order/carrier regressions pass. The strict QEMU
-  transport fixture and complete application target compilation are pending.
+  fixture passes all five actual socket cases on the selected installed Host
+  kernel, including early queued-data refusal, kernel rejection of descriptor
+  transfer, malformed response widths and an expired unaccepted connection
+  (`/nix/store/pz3mchi444yzcnw77fdm7s2jr4xcfgxd-aos-fleet-test-sandbox-initial-approval-exchange-0`).
+  This non-enforcing component test exercises transport DATA without the
+  genuine Source/Security join or installed provisioning. Complete application
+  target compilation remains pending for the combined exchange source.
   This supplies signed comparison DATA, without full normal-image/kernel/device
   admission, Nix/Root key separation, Session schema, job exclusion, durable
   intent, authenticated TPM effects or installed producer qualification. Public
