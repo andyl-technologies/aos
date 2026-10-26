@@ -69,6 +69,14 @@ capacity rows. Production byte admission consumes this same census. Tests compar
 it with the independent original component accounting for the producer and both
 reactive members, including spare capacity, exact credit and one-byte-short refusal.
 
+The enclosing Source Rc and independent producer/reactive Box also retain actual
+capacity rows, and holder byte admission consumes those same facts. The path
+owner reports its original Unix byte-vector capacity. Five controls cover exact
+and short credit, repeated Rc views, foreign ownership, a bound path's spare
+capacity after unlink, and non-UTF-8 path backing as DATA. Receiver-group storage
+and nested dynamic fields remain independent components. Census controls are
+included in the Source's original precredit observation demand.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its seven
@@ -78,14 +86,15 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 106 focused Transport controls and thirteen Engine
-census/installation controls. Complete Transport suites pass 2,317 tests each with
-twenty ignored. Complete Engine suites pass 2,089 tests each with thirty-four
-ignored, using current source-built installed packet fixtures. Five-package
-all-feature/all-target checks, twelve-file scoped formatting, all six architecture
+Both codec configurations pass 106 focused Transport controls and eighteen Engine
+census/installation/holder controls. Complete Transport suites pass 2,317 tests each
+with twenty ignored; all 643 selected SDK/dependency source inputs remain unchanged.
+Complete Engine suites pass 2,094 tests each with thirty-four ignored, using matching
+source-built installed packet fixtures. Five-package
+all-feature/all-target checks, six-file scoped formatting, all six architecture
 gates and the RFC requirement-map gate pass. Required application test-target
 compilation passes with 185 artifacts across 58 packages and 76 integration targets;
-all 789 selected frozen Rust/Cargo inputs match current and captured source. User-owned
+all 793 selected frozen Rust/Cargo inputs match current and captured source. User-owned
 changes are preserved. These are component results; the requirement map records
 planning coverage, and no latest-source strict lint or native lifecycle result
 is claimed.

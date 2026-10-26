@@ -36,6 +36,11 @@ impl PacketCompleteSemanticSource {
         self.original_complete_installation_capacity_with_error::<RuntimeError>(bank)
     }
 
+    /// Shares the actual installation walk with both retained-storage error paths.
+    ///
+    /// # Errors
+    /// Refuses foreign creation, an unsupported world, invalid geometry or
+    /// unavailable physical rows while preserving earlier initialized records.
     pub(in crate::node_adapters::cnp::semantic) fn original_complete_installation_capacity_with_error<
         E: StorageError,
     >(

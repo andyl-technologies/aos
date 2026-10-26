@@ -7,6 +7,9 @@ use std::{
     rc::Rc,
 };
 
+#[path = "retained_holders/metadata.rs"]
+mod metadata;
+
 impl PacketCompleteSemanticSource {
     /// Counts actual original Rc/Source/underlying holder and own path storage.
     ///
@@ -37,12 +40,8 @@ impl PacketCompleteSemanticSource {
         self: &Rc<Self>,
         maximum: usize,
     ) -> Result<usize, E> {
-        self.storage_origin_with_error::<E>()?;
-        let nested = self.original_complete_nested_holder_storage_data_with_error::<E>(maximum)?;
-        let root_header =
-            NodeRuntime::capture_protocol_shared_header_storage(1, align_of::<Self>(), maximum)
-                .map_err(E::unknown)?;
-        retained_values::sum_with_error::<E, _>([size_of::<Self>(), root_header, nested], maximum)
+        let facts = self.original_complete_holder_capacity_with_error::<E>(None)?;
+        Self::complete_retained_metadata_storage_with_error::<E>(&facts, maximum)
     }
 
     pub(super) fn original_complete_nested_holder_storage_data(

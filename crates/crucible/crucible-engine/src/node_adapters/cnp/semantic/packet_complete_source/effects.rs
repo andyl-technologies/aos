@@ -564,6 +564,22 @@ impl OriginalCompleteEffectReceiver {
     pub(super) fn retained_path_storage_data(&self) -> usize {
         self.path.capacity()
     }
+
+    /// Describes the actual Unix path byte backing, including its spare capacity.
+    pub(super) fn retained_path_capacity_record_data(
+        &self,
+    ) -> crucible_node_transport::retained_metadata::records::MetadataCapacityRecord {
+        use crucible_node_transport::retained_metadata::records::{
+            MetadataCapacityRecord, MetadataRecordKind,
+        };
+
+        MetadataCapacityRecord {
+            kind: MetadataRecordKind::Vector,
+            extent: self.path.capacity(),
+            element_bytes: std::mem::size_of::<u8>(),
+            alignment: std::mem::align_of::<u8>(),
+        }
+    }
 }
 
 impl PacketCompleteEffectReceiverGroup {
@@ -633,6 +649,46 @@ impl PacketCompleteEffectReceiverGroup {
             .max(ORIGINAL_GROUP_PEEK_REFUSAL.len())
             .max(ORIGINAL_READER_GROUP_REFUSAL.len());
         OriginalInitialLifecycleDiagnostics::borrowed_refusal_requested_storage_data(cause_bytes)
+    }
+}
+
+#[cfg(test)]
+mod retained_path_capacity_controls {
+    use super::*;
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+    #[test]
+    fn actual_non_utf8_owner_keeps_spare_path_bytes_without_text_conversion() {
+        let [(a, peer_a), (b, peer_b), (c, peer_c)] = [
+            UnixDatagram::pair().unwrap(),
+            UnixDatagram::pair().unwrap(),
+            UnixDatagram::pair().unwrap(),
+        ];
+        let (group, _reader) =
+            PacketCompleteEffectReceiverGroup::from_original_receivers([a, b, c]);
+        let mut bytes = Vec::with_capacity(233);
+        bytes.extend_from_slice(&[b'r', 0xff]);
+        let path = std::path::PathBuf::from(OsString::from_vec(bytes));
+        let capacity = path.capacity();
+        assert!(path.to_str().is_none());
+        assert!(capacity > path.as_os_str().len());
+
+        // This private owner is a capacity fixture, without a Source binding or
+        // a claim that its path names one of these descriptors.
+        let owner = OriginalCompleteEffectReceiver {
+            group,
+            member: 0,
+            path,
+        };
+        let record = owner.retained_path_capacity_record_data();
+
+        assert_eq!(record.extent, capacity);
+        assert_eq!(record.extent, owner.retained_path_storage_data());
+        assert_eq!(
+            serde_json::to_string(&[record]).unwrap(),
+            format!("[[\"vector\",{capacity},1,1]]")
+        );
+        drop((peer_a, peer_b, peer_c));
     }
 }
 
