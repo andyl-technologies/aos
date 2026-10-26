@@ -7,8 +7,8 @@
 use super::{Preflight, ProcessRole, invalid, preflight_role};
 use crate::{
     host_cache::{
-        IndexRepairPolicy, NativeCacheOwnerConfig, NativeContentStore, NativePreparedObject,
-        NativeReady, SurfaceIndexPolicy,
+        IndexRepairPolicy, NativeCacheOwnerConfig, NativeCacheStartupStage, NativeContentStore,
+        NativePreparedObject, NativeReady, SurfaceIndexPolicy,
     },
     host_quota::HostQuotaClient,
     publisher_local::client::ClientConfig,
@@ -233,7 +233,22 @@ impl NativeCachePlan {
         self,
         confinement: Arc<Installed>,
     ) -> io::Result<BTreeMap<String, NativeConfiguredCache>> {
+        self.open_with_stage(confinement, &mut NativeCacheStartupStage::Confinement)
+            .await
+    }
+
+    /// Retains a closed phase observation while preserving the original I/O error.
+    ///
+    /// # Errors
+    /// Returns the same validation, custody and recovery failures as the public opener.
+    pub(crate) async fn open_with_stage(
+        self,
+        confinement: Arc<Installed>,
+        stage: &mut NativeCacheStartupStage,
+    ) -> io::Result<BTreeMap<String, NativeConfiguredCache>> {
+        *stage = NativeCacheStartupStage::Confinement;
         confinement.check_current()?;
+        *stage = NativeCacheStartupStage::QuotaConnect;
         let mut helper = HostQuotaClient::connect(&self.host.quota_path, 0, self.host.quota_epoch)?;
         let mut prepared = Vec::with_capacity(self.host.domains.len());
         let mut projects = BTreeSet::new();
@@ -241,6 +256,7 @@ impl NativeCachePlan {
         let mut ledger_sum = None;
         let mut settings = self.domains;
         for domain in self.host.domains {
+            *stage = NativeCacheStartupStage::QuotaPartition;
             let settings = settings
                 .remove(&domain.native.domain)
                 .ok_or_else(|| invalid("checked native domain resources disappeared"))?;
@@ -265,6 +281,7 @@ impl NativeCachePlan {
 
             // These authenticated scalars are expected configuration, never a
             // substitute for the native opener's fresh retained-root checks.
+            *stage = NativeCacheStartupStage::NativeBinding;
             let config = NativeCacheOwnerConfig {
                 location: HostDomainLocation::new(
                     domain.native.layout_root,
@@ -307,23 +324,27 @@ impl NativeCachePlan {
             config.validate()?;
             prepared.push((domain.native.domain, config, settings));
         }
+        *stage = NativeCacheStartupStage::QuotaPartition;
         if partition_sum > ledger_sum.unwrap_or(0) {
             return Err(invalid(
                 "native cache owners exceed authenticated partition",
             ));
         }
         drop(helper);
+        *stage = NativeCacheStartupStage::Confinement;
         confinement.check_current()?;
 
         let mut stores = BTreeMap::new();
         for (domain, config, settings) in prepared {
-            let ready = NativeReady::open(
+            let ready = NativeReady::open_with_stage(
                 config,
                 settings.portable,
                 settings.portable_limits,
                 Arc::clone(&confinement),
+                stage,
             )
             .await?;
+            *stage = NativeCacheStartupStage::ContentStore;
             let store = NativeContentStore::new(ready, settings.consumer_lease_duration)
                 .map_err(io::Error::other)?;
             stores.insert(

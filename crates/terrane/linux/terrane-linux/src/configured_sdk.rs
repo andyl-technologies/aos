@@ -51,7 +51,7 @@ use terrane_sdk::{
 
 use crate::{
     configured::NativeCachePlan,
-    host_cache::NativeReadPolicy,
+    host_cache::{NativeCacheStartupStage, NativeReadPolicy},
     quota_confinement::{self, Installed},
 };
 
@@ -286,10 +286,11 @@ async fn start_exposures(
         let prepared = PreparedExposures::prepare(&repository, config.exposures(), &resolver)
             .await
             .map_err(|error| Error::repository(FailureKind::Preparation, error))?;
+        let mut stage = NativeCacheStartupStage::Confinement;
         let mut caches = plan
-            .open(Arc::clone(installed))
+            .open_with_stage(Arc::clone(installed), &mut stage)
             .await
-            .map_err(|error| Error::io(FailureKind::NativeCacheOpen, error))?;
+            .map_err(|error| Error::native_cache(stage, error))?;
         let cache = caches
             .remove(domain)
             .ok_or_else(|| Error::refused(FailureKind::NativeCacheOpen))?;

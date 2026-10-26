@@ -2,6 +2,8 @@
 
 use std::{fmt, io};
 
+use crate::host_cache::NativeCacheStartupStage;
+
 use terrane_sdk::{
     config::local_repository::LocalOpenError, repository::Error as RepositoryError, role::RoleError,
 };
@@ -87,6 +89,13 @@ impl Error {
         }
     }
 
+    pub(super) fn native_cache(stage: NativeCacheStartupStage, error: io::Error) -> Self {
+        Self {
+            kind: FailureKind::NativeCacheOpen,
+            cause: Some(Cause::NativeCache { stage, error }),
+        }
+    }
+
     pub(super) fn local(cause: LocalOpenError) -> Self {
         Self {
             kind: FailureKind::RepositoryOpen,
@@ -134,11 +143,14 @@ impl Error {
 
 impl fmt::Debug for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ConfiguredSdkError")
+        let mut debug = formatter.debug_struct("ConfiguredSdkError");
+        debug
             .field("kind", &self.kind)
-            .field("io_kind", &self.io_kind())
-            .finish_non_exhaustive()
+            .field("io_kind", &self.io_kind());
+        if let Some(Cause::NativeCache { stage, .. }) = &self.cause {
+            debug.field("native_cache_stage", stage);
+        }
+        debug.finish_non_exhaustive()
     }
 }
 
@@ -203,6 +215,10 @@ impl std::error::Error for Error {
 
 enum Cause {
     Io(io::Error),
+    NativeCache {
+        stage: NativeCacheStartupStage,
+        error: io::Error,
+    },
     Role(RoleError),
     Local(LocalOpenError),
     Repository(RepositoryError),
@@ -212,6 +228,7 @@ impl Cause {
     fn io_kind(&self) -> Option<io::ErrorKind> {
         match self {
             Self::Io(error)
+            | Self::NativeCache { error, .. }
             | Self::Local(LocalOpenError::Repository(RepositoryError::Io(error)))
             | Self::Repository(RepositoryError::Io(error)) => Some(error.kind()),
             Self::Role(error) => {

@@ -4,7 +4,7 @@ use super::NativeCacheOwnerConfig;
 #[cfg(feature = "surface-fuse")]
 use crate::host_quota::{NativeProject, ProjectInode, ProjectInodeBinding};
 use crate::{
-    host_cache::{NativeHostLayout, NativeSealCapability},
+    host_cache::{NativeCacheStartupStage, NativeHostLayout, NativeSealCapability},
     host_quota::{HostQuotaClient, QuotaObservation, ROOT_LABELS, VerifiedQuotaObservation},
     publisher_local::client::Client,
     quota_confinement::Installed,
@@ -64,8 +64,27 @@ impl NativeCachePreparation {
         config: NativeCacheOwnerConfig,
         confinement: Arc<Installed>,
     ) -> io::Result<Self> {
+        Self::inspect_with_stage(
+            config,
+            confinement,
+            &mut NativeCacheStartupStage::Configuration,
+        )
+    }
+
+    /// Observes preparation without exposing private source text or changing errors.
+    ///
+    /// # Errors
+    /// Returns the same validation, custody and recovery failures as the public opener.
+    pub(crate) fn inspect_with_stage(
+        config: NativeCacheOwnerConfig,
+        confinement: Arc<Installed>,
+        stage: &mut NativeCacheStartupStage,
+    ) -> io::Result<Self> {
+        *stage = NativeCacheStartupStage::Configuration;
         config.validate()?;
+        *stage = NativeCacheStartupStage::Confinement;
         confinement.check_current()?;
+        *stage = NativeCacheStartupStage::ProcessIdentity;
         if rustix::process::geteuid().as_raw() != config.content_uid {
             return Err(invalid(
                 "cache process does not have the configured content UID",
@@ -80,13 +99,17 @@ impl NativeCachePreparation {
                 ));
             }
         }
+        *stage = NativeCacheStartupStage::NativeLayout;
         let layout = Arc::new(NativeHostLayout::inspect_with_administrative_root(
             config.location.clone(),
             config.administrative_root.as_deref(),
         )?);
+        *stage = NativeCacheStartupStage::ContentCustody;
         check_content_custody(&config, &layout)?;
+        *stage = NativeCacheStartupStage::QuotaConnect;
         let mut quota_client =
             HostQuotaClient::connect(&config.quota_socket, 0, config.quota_epoch)?;
+        *stage = NativeCacheStartupStage::QuotaObservation;
         let observation = quota_client.query(&config.quota_owner, config.location.domain())?;
         check_observation(&config, &layout, &observation)?;
 
@@ -98,15 +121,20 @@ impl NativeCachePreparation {
             chunk_profile_name: config.publisher.chunk_profile_name.clone(),
             wait_budget_ms: config.publisher.wait_budget_ms,
         };
+        *stage = NativeCacheStartupStage::PublisherConnect;
         let publisher = Client::connect(publisher_config, Arc::clone(&layout))
             .map_err(|source| publisher_failure("connect", source))?;
+        *stage = NativeCacheStartupStage::PublisherDrain;
         publisher
             .drain()
             .map_err(|source| publisher_failure("drain", source))?;
+        *stage = NativeCacheStartupStage::PublisherSealProbe;
         let probe = publisher
             .probe()
             .map_err(|source| publisher_failure("seal probe", source))?;
+        *stage = NativeCacheStartupStage::SealVerification;
         let seal = NativeSealCapability::from_probe(probe)?;
+        *stage = NativeCacheStartupStage::FinalCustody;
         confinement.check_current()?;
         layout.recheck()?;
         Ok(Self {

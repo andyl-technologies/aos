@@ -358,6 +358,10 @@ fn failure_display_debug_and_entire_source_chain_redact_private_data() {
             RepositoryError::Io(io::Error::other(SECRET)),
         ),
         Error::io(FailureKind::NativeCacheService, io::Error::other(SECRET)),
+        Error::native_cache(
+            crate::host_cache::NativeCacheStartupStage::Recovery,
+            io::Error::other(SECRET),
+        ),
     ] {
         assert_eq!(error.io_kind(), Some(io::ErrorKind::Other));
         assert!(error.requires_process_exit());
@@ -368,6 +372,13 @@ fn failure_display_debug_and_entire_source_chain_redact_private_data() {
             source = cause.source();
         }
     }
+
+    let error = Error::native_cache(
+        crate::host_cache::NativeCacheStartupStage::PublisherResume,
+        io::Error::from_raw_os_error(13),
+    );
+    assert_eq!(error.io_kind(), Some(io::ErrorKind::PermissionDenied));
+    assert!(format!("{error:?}").contains("native_cache_stage: PublisherResume"));
 }
 
 struct Temporary(PathBuf);

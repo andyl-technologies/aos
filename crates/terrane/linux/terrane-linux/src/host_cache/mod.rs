@@ -24,6 +24,8 @@ mod seal;
 #[cfg(feature = "tokio")]
 mod shared_residences;
 mod source;
+#[cfg(feature = "tokio")]
+mod startup;
 
 #[cfg(feature = "tokio")]
 pub use content::{
@@ -81,6 +83,8 @@ pub use seal::NativeSealCapability;
 #[cfg(feature = "tokio")]
 pub use shared_residences::NativeSharedResidences;
 pub use source::NativeChunkSource;
+#[cfg(feature = "tokio")]
+pub(crate) use startup::NativeCacheStartupStage;
 
 use std::{
     collections::BTreeMap,

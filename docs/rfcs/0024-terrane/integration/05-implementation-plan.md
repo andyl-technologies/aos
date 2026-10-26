@@ -190,6 +190,15 @@ This is diagnostic evidence only; managed restart remains unaccepted and its
 failing native startup stage still requires diagnosis. No production recovery
 behavior is changed.
 
+Native startup now records a closed internal stage for the configured SDK's
+redacted `Debug` diagnostic. Configuration, confinement, quota, native custody,
+publisher barriers, recovery and Resume remain separate observations; no stage
+contains a path, domain, credential or underlying error text. Public native
+openers retain their original I/O errors and the operation ordering is unchanged.
+The existing complete-source-chain redaction case covers the new cause and its
+I/O category. Native execution and mandatory application-target qualification
+of this diagnostic extension remain pending; no recovery fix is claimed.
+
 The actual service-manager fixture now declares the public issuer file and
 independent startup Read required by the configured SDK launcher. Its guest
 comparison also requires those rendered token settings to match the genuine

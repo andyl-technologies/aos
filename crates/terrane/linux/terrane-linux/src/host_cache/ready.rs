@@ -6,8 +6,8 @@
 //! from the owner's authority over native content and accounting.
 
 use super::{
-    NativeCacheOwnerConfig, NativeCachePreparation, NativeHostLayout, NativeHostMetadataReader,
-    NativeMetadataOwner,
+    NativeCacheOwnerConfig, NativeCachePreparation, NativeCacheStartupStage, NativeHostLayout,
+    NativeHostMetadataReader, NativeMetadataOwner,
 };
 use crate::quota_confinement::Installed;
 use std::{io, sync::Arc};
@@ -74,6 +74,28 @@ impl NativeReady {
         limits: PortableReadLimits,
         confinement: Arc<Installed>,
     ) -> io::Result<Self> {
+        Self::open_with_stage(
+            config,
+            portable_config,
+            limits,
+            confinement,
+            &mut NativeCacheStartupStage::Configuration,
+        )
+        .await
+    }
+
+    /// Observes startup without wrapping or replacing the original native error.
+    ///
+    /// # Errors
+    /// Returns the same validation, custody and recovery failures as the public opener.
+    pub(crate) async fn open_with_stage(
+        config: NativeCacheOwnerConfig,
+        portable_config: FileBucketConfig,
+        limits: PortableReadLimits,
+        confinement: Arc<Installed>,
+        stage: &mut NativeCacheStartupStage,
+    ) -> io::Result<Self> {
+        *stage = NativeCacheStartupStage::Configuration;
         config.validate()?;
         if portable_config.root != config.location.root()
             || &portable_config.chunk_profile != config.location.chunk_profile()
@@ -84,22 +106,29 @@ impl NativeReady {
                 "portable and native owner bindings differ",
             ));
         }
+        *stage = NativeCacheStartupStage::Confinement;
         confinement.check_current()?;
+        *stage = NativeCacheStartupStage::PortableBeforeRecovery;
         let before = validate(&portable_config, limits).await?;
         let reads = config.reads;
         let max_requests = config.inventory_entries;
         let consumer_release_grace = config.policy.release_grace;
         #[cfg(feature = "surface-fuse")]
         let retain_surface_exposures = config.surface_index.is_some();
-        let mut preparation = NativeCachePreparation::inspect(config, confinement)?;
+        let mut preparation =
+            NativeCachePreparation::inspect_with_stage(config, confinement, stage)?;
+        *stage = NativeCacheStartupStage::PortableCatalog;
         preparation.bind_portable_catalog(&before)?;
         let layout = Arc::clone(preparation.layout());
         layout.recheck()?;
+        *stage = NativeCacheStartupStage::MetadataReader;
         let metadata = NativeHostMetadataReader::open(Arc::clone(&layout), reads)
             .await
             .map_err(io::Error::other)?;
 
+        *stage = NativeCacheStartupStage::OwnerStart;
         let owner = NativeMetadataOwner::start(preparation)?;
+        *stage = NativeCacheStartupStage::Recovery;
         #[cfg(feature = "surface-fuse")]
         let completed = if retain_surface_exposures {
             owner.recover_retaining_surface_exposures().await?
@@ -108,13 +137,17 @@ impl NativeReady {
         };
         #[cfg(not(feature = "surface-fuse"))]
         let completed = owner.recover().await?;
+        *stage = NativeCacheStartupStage::PublisherResume;
         owner
             .resume_recovered(completed)
             .await
             .map_err(io::Error::other)?;
 
+        *stage = NativeCacheStartupStage::PortableAfterRecovery;
         let portable = validate(&portable_config, limits).await?;
+        *stage = NativeCacheStartupStage::FinalCustody;
         layout.recheck()?;
+        *stage = NativeCacheStartupStage::PortableCheckpoint;
         if before.checkpoint() != portable.checkpoint() {
             return Err(io::Error::other(
                 "portable checkpoint changed during native recovery",
