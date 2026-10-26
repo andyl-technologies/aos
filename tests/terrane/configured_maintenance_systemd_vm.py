@@ -189,7 +189,8 @@ def actor(image, arguments):
     identity = json.loads((image / "share/identity.json").read_text())
     executable = image / "libexec/cli"
     artifact = identity["artifacts"]["cli"]
-    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    with executable.open("rb") as binary:
+        digest = hashlib.file_digest(binary, "sha256").hexdigest()
     require(digest == artifact["binary_sha256"], "managed CLI differs from retained Cargo bytes")
     print("TERRANE_MANAGED_ACTOR_IDENTITY " + json.dumps({
         "role": role, "pid": os.getpid(), "uid": uid, "gid": uid,

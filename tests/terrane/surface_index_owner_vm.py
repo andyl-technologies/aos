@@ -91,8 +91,11 @@ def verify_surface(image, source):
                 "debug_assertions": True, "overflow_checks": True, "test": False},
             "surface example target, features or profile mismatch")
     executable = image / "libexec/surface-index-owner-fixture"
-    require(executable.read_bytes().startswith(b"\x7fELF")
-            and hashlib.sha256(executable.read_bytes()).hexdigest() == identity["executable_sha256"],
+    with executable.open("rb") as binary:
+        header = binary.read(4)
+        binary.seek(0)
+        digest = hashlib.file_digest(binary, "sha256").hexdigest()
+    require(header == b"\x7fELF" and digest == identity["executable_sha256"],
             "surface installed ELF differs from actual Cargo bytes")
     for relative, digest in identity["input_sha256"].items():
         path = source / relative if relative.startswith("tests/") else source / "crates" / relative

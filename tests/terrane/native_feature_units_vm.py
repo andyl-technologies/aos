@@ -20,7 +20,8 @@ def execute(context):
                                                           *contract["UNIT_TESTS"])),
                     "native feature inventory omits or duplicates a case")
     executable = context.IMAGE / "bin/terrane-fs-unit"
-    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    with executable.open("rb") as binary:
+        digest = hashlib.file_digest(binary, "sha256").hexdigest()
     temporary_root = context.MOUNT / "creator-unit-tests"
     temporary_root.mkdir(mode=0o700)
     # Same real identity/capability witness as the ordinary cases, with only
@@ -65,7 +66,9 @@ def execute(context):
                       "elf_sha256": digest}
             print("ROOT_FS_UNIT_RESULT " + json.dumps(record, sort_keys=True), flush=True)
             shutil.rmtree(temporary)
-        context.require(hashlib.sha256(executable.read_bytes()).hexdigest() == digest,
+        with executable.open("rb") as binary:
+            current_digest = hashlib.file_digest(binary, "sha256").hexdigest()
+        context.require(current_digest == digest,
                         "native creator unit executable changed")
         print(f"PASS all{len(unit['full_inventory'])} native feature library cases on ext4",
               flush=True)

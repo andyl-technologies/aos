@@ -1297,8 +1297,11 @@ def verify_image():
                 and sorted(artifact["features"]) == features
                 and record["installed_path"] == "bin/" + name, "Cargo target/profile/features changed: " + name)
         executable = IMAGE / record["installed_path"]
-        digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-        require(executable.read_bytes().startswith(b"\x7fELF")
+        with executable.open("rb") as binary:
+            header = binary.read(4)
+            binary.seek(0)
+            digest = hashlib.file_digest(binary, "sha256").hexdigest()
+        require(header == b"\x7fELF"
                 and digest == record["cargo_elf_sha256"] == record["installed_elf_sha256"],
                 "final installed ELF differs from actual Cargo output: " + name)
     for name, expected_hash in identity["input_sha256"].items():
