@@ -77,6 +77,8 @@ pub use view_selection::ViewSelection;
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) use view_selection::native_fixture as recorded_native_fixture;
 mod recorded_properties;
+#[cfg(feature = "std")]
+mod root_paths;
 mod scope;
 mod snapshot;
 mod staged;
@@ -541,70 +543,15 @@ impl<S: Store, C: Clock> Guard<S, C> {
         RefName::parse(reference).map_err(|_| denied(reference, verb))?;
         let now = self.now(reference, verb)?;
         let verified = auth::verify(token, &self.keys, now).map_err(|_| denied(reference, verb))?;
-        let record = self.store.ref_get(reference).await?;
-        if record
-            .as_ref()
-            .is_some_and(|value| value.home != self.config.home)
-        {
-            return Err(denied(reference, verb));
-        }
-
-        let evidence = match &record {
-            Some(record) => {
-                // The configured native factory closes the original current
-                // inputs before returning history. Its refusals propagate; only
-                // absence before dispatch preserves the generic history path.
+        let (record, evidence) = self
+            .current_authorization_evidence(
+                reference,
                 #[cfg(all(feature = "std", feature = "tokio", unix))]
-                let current = {
-                    #[cfg(all(test, feature = "std", feature = "tokio"))]
-                    let mut dispatch = crate::diagnostic_clock::span(
-                        crate::diagnostic_clock::Group::OrdinaryDispatch,
-                    );
-                    let result = self
-                        .current_history_native(reference, token, verb, record, observation)
-                        .await;
-                    #[cfg(all(test, feature = "std", feature = "tokio"))]
-                    dispatch.finish_result(&result);
-                    result?
-                };
-                #[cfg(all(feature = "std", feature = "tokio", unix))]
-                let current = match current {
-                    Some(tree) => Some(tree),
-                    None => {
-                        #[cfg(all(test, feature = "std", feature = "tokio"))]
-                        let mut dispatch = crate::diagnostic_clock::span(
-                            crate::diagnostic_clock::Group::HeldDispatch,
-                        );
-                        let result = self
-                            .held_history_native(reference, token, verb, record, observation)
-                            .await;
-                        #[cfg(all(test, feature = "std", feature = "tokio"))]
-                        dispatch.finish_result(&result);
-                        result?
-                    }
-                };
-                #[cfg(not(all(feature = "std", feature = "tokio", unix)))]
-                let current = None;
-
-                let tree = match current {
-                    Some(tree) => tree,
-                    None => {
-                        #[cfg(all(test, feature = "std", feature = "tokio"))]
-                        let mut dispatch = crate::diagnostic_clock::span(
-                            crate::diagnostic_clock::Group::FallbackDispatch,
-                        );
-                        let result = self
-                            .verified_tree_observed(record.commit, observation)
-                            .await;
-                        #[cfg(all(test, feature = "std", feature = "tokio"))]
-                        dispatch.finish_result(&result);
-                        result?
-                    }
-                };
-                Some(tree.evidence)
-            }
-            None => None,
-        };
+                token,
+                verb,
+                observation,
+            )
+            .await?;
         let requested_paths = if paths.is_empty() {
             vec![b"/".to_vec()]
         } else {
@@ -693,6 +640,85 @@ impl<S: Store, C: Clock> Guard<S, C> {
         #[cfg(all(test, feature = "std", feature = "tokio"))]
         diagnostic.complete();
         Ok((authorized, evidence))
+    }
+
+    /// Loads candidate current metadata without granting access to any root.
+    ///
+    /// Callers verify token identity before I/O and independently authorize each
+    /// actual root before disclosing anything. The same native Original/current
+    /// and held-history paths serve ordinary authorization and root discovery.
+    async fn current_authorization_evidence(
+        &self,
+        reference: &str,
+        #[cfg(all(feature = "std", feature = "tokio", unix))] token: &[u8],
+        verb: Verb,
+        observation: HistoryObservation<'_>,
+    ) -> Result<(Option<RefRecord>, Option<TreeEvidence>), StoreFailure> {
+        let record = self.store.ref_get(reference).await?;
+        if record
+            .as_ref()
+            .is_some_and(|value| value.home != self.config.home)
+        {
+            return Err(denied(reference, verb));
+        }
+
+        let evidence = match &record {
+            Some(record) => {
+                // The configured native factory closes the original current
+                // inputs before returning history. Its refusals propagate; only
+                // absence before dispatch preserves the generic history path.
+                #[cfg(all(feature = "std", feature = "tokio", unix))]
+                let current = {
+                    #[cfg(all(test, feature = "std", feature = "tokio"))]
+                    let mut dispatch = crate::diagnostic_clock::span(
+                        crate::diagnostic_clock::Group::OrdinaryDispatch,
+                    );
+                    let result = self
+                        .current_history_native(reference, token, verb, record, observation)
+                        .await;
+                    #[cfg(all(test, feature = "std", feature = "tokio"))]
+                    dispatch.finish_result(&result);
+                    result?
+                };
+                #[cfg(all(feature = "std", feature = "tokio", unix))]
+                let current = match current {
+                    Some(tree) => Some(tree),
+                    None => {
+                        #[cfg(all(test, feature = "std", feature = "tokio"))]
+                        let mut dispatch = crate::diagnostic_clock::span(
+                            crate::diagnostic_clock::Group::HeldDispatch,
+                        );
+                        let result = self
+                            .held_history_native(reference, token, verb, record, observation)
+                            .await;
+                        #[cfg(all(test, feature = "std", feature = "tokio"))]
+                        dispatch.finish_result(&result);
+                        result?
+                    }
+                };
+                #[cfg(not(all(feature = "std", feature = "tokio", unix)))]
+                let current = None;
+
+                let tree = match current {
+                    Some(tree) => tree,
+                    None => {
+                        #[cfg(all(test, feature = "std", feature = "tokio"))]
+                        let mut dispatch = crate::diagnostic_clock::span(
+                            crate::diagnostic_clock::Group::FallbackDispatch,
+                        );
+                        let result = self
+                            .verified_tree_observed(record.commit, observation)
+                            .await;
+                        #[cfg(all(test, feature = "std", feature = "tokio"))]
+                        dispatch.finish_result(&result);
+                        result?
+                    }
+                };
+                Some(tree.evidence)
+            }
+            None => None,
+        };
+        Ok((record, evidence))
     }
 
     /// Refreshes token authority for the actual previously checked request without I/O.

@@ -91,6 +91,26 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+Root-scoped discovery now enumerates actual canonical root and graft paths
+through the repository Guard. Each occurrence receives its own current Read
+check, including distinct paths that share one root digest. Nested-only grants
+can discover their matching root without a whole-view grant; ordinary directory
+paths do not become authorization roots. Identity checks cover absent refs,
+and a closing authorization pass and complete-reference comparison discard
+results after a policy change. Discovery grants no subsequent content authority.
+Two new native cases extend the existing six-case committed-index guest without
+changing its 60-second case or 240-second guest bounds. Native qualification and
+mandatory application-target compilation of this candidate remain pending.
+Full Content.Has and Negotiate remain unimplemented; acceptance stays 28/64.
+
+A separate restart diagnostic preserves the original successful managed startup
+and shutdown proof, then attempts a fresh publisher and Serve start while the
+original fixture filesystem remains mounted. Publisher restart succeeds; Serve
+fails with `NativeCacheOpen` before SDK presentation. This is a failing diagnostic,
+not restart acceptance or evidence that an existing SDK checkout caused the
+failure. The native recovery error requires further diagnosis. The contract that
+SDK checkout creates a new private directory remains unchanged.
+
 The actual service-manager fixture now declares the public issuer file and
 independent startup Read required by the configured SDK launcher. Its guest
 comparison also requires those rendered token settings to match the genuine
@@ -130,7 +150,7 @@ immutable source files, 5,512 bound inputs and the retained test executable.
 All six exact cases execute in one UID-840 ext4 AOS guest with empty capabilities
 and no-new-privileges, retaining the original 60-second case and 240-second guest
 bounds. The later descriptive-summary correction changes no selectors or limits;
-no Rust source has changed since that frozen qualification. Required application
+that qualification predates the root-discovery candidate above. Required application
 compilation at the same source passes in 1,492.699 seconds. Separate review
 matches all 8,291 immutable source files and 190 test-executable records across
 59 packages; compilation claims no execution or retained executable bytes.

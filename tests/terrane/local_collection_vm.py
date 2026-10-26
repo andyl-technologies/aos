@@ -116,6 +116,12 @@ HELD_INDEX_CASES += [
         "guarded_manifest_presence_verifies_metadata_without_chunk_reads",
     ]
 ]
+HELD_INDEX_CASES += [
+    "bucket::held_indexed_presence_tests::root_scopes::" + name for name in [
+        "guarded_root_discovery_preserves_nested_only_and_same_digest_scopes",
+        "guarded_root_discovery_checks_identity_even_for_absent_refs",
+    ]
+]
 
 
 def verify_image(source, image, variant="surface-sdk"):

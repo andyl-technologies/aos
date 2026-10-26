@@ -2,7 +2,8 @@
 //!
 //! These cases publish their setup through the native fixture. The original
 //! cases establish held index mechanics; `guarded_file` additionally exercises
-//! actual file-scoped repository authorization. No service backend is claimed.
+//! actual file-scoped repository authorization. `root_scopes` checks readable
+//! graft discovery without whole-view permission. No service backend is claimed.
 
 #![allow(
     clippy::unwrap_used,
@@ -30,6 +31,7 @@ use crate::{
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 mod guarded_file;
+mod root_scopes;
 
 async fn stored_chunk() -> (Fixture, Bucket, Identity) {
     let fixture = Fixture::new().await;
