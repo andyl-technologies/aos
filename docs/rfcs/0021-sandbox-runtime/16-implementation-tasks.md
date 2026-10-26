@@ -74,17 +74,15 @@ Recent committed startup fixes close narrower prerequisites:
   allocate no new custody, descriptor or authority. The hermetic systemd package
   and all twelve fixed-profile regressions pass
   (`/nix/store/5w4h4yamvb0i92y0rhg1cvn3y5lwb0cs-systemd-261.2`). The focused
-  AOS Nix QEMU test is running with explicit loaded/inactive preconditions and
-  active fixture ordering references that retain the stopped owners. The first
-  fixture refused its initial start before establishing an exclusion interval;
-  standalone inactive owner definitions could be garbage-collected. The production
-  guard remains unchanged. The next run established the queued Controller job
-  with zero MainPID and observed PID1 reject a competing Controller start; its
-  assertion missed the diagnostic because the driver returns stdout separately
-  from stderr. The current test captures both streams and retains that assertion.
-  It queues each manual job before producer birth,
-  checks conflicting starts and process migration, and checks migration after
-  cancellation. Its closure contains no production policy. It supplies no
+  AOS Nix QEMU test passes
+  (`/nix/store/rhw11xzk3isi0dk7223n99vax9mjmdwy-aos-fleet-test-sandbox-initial-job-exclusion-0`).
+  Active fixture ordering references retain both loaded, inactive normal owners.
+  For each manual initializer, its real queued job with zero MainPID rejects
+  competing normal and other-manual starts. Root's actual AttachProcessesToUnit
+  request refuses and leaves the victim's cgroup unchanged. After cancellation,
+  the identical request succeeds and the process can be moved back. The
+  production guard is unchanged. This non-enforcing component check has no
+  production policy in its closure. It supplies no
   installed producer, Source admission, durable intent or TPM qualification.
 
 - The complete read-only Session schema recipe runs through a borrowed context
