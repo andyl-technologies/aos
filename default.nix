@@ -1043,7 +1043,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     );
 
   crucibleChecksBase = import ./tests/crucible {
-    inherit pkgs lib mkSystem testing;
+    inherit pkgs lib mkSystem mkFixtureSystem testing;
   };
 
   # T-PKG-15: the shared Crucible VM/fleet check substrate. It assembles the

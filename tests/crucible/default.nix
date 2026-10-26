@@ -2,6 +2,7 @@
   pkgs,
   lib,
   mkSystem,
+  mkFixtureSystem,
   testing,
 }: let
   redGate = import ./red-gate-placeholder.nix {inherit pkgs;};
@@ -3250,8 +3251,11 @@ in rec {
         modeGateAdapters = campaignModeGateAdapters;
         inherit campaignGateMatrixContract;
       };
+      # The contract layers inline service values over the server system, so
+      # it evaluates through the fixture constructor that admits them.
       campaignServiceModuleContract = import ./phase9-campaign-service-module-contract.nix {
-        inherit pkgs mkSystem;
+        inherit pkgs;
+        mkSystem = mkFixtureSystem;
       };
       campaignMidpointDebug = import ./phase9-campaign-midpoint-debug.nix {
         inherit pkgs lib;
