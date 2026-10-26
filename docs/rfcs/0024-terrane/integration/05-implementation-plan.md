@@ -120,6 +120,18 @@ the completion status assertions and every other original control. Pure
 verification accepts the complete two-run observation and rejects eight invalid
 records. This corrects the timing oracle; native qualification remains required.
 
+The guest-only verifier diagnostic then passes in 191.319 seconds using the
+unchanged `244489fd6e` service image and committed `874c01676f` supervisor.
+Independent review matches all 8,263 immutable image-source files, five retained
+Cargo executables, fifteen enrollment controls, both domains' actual Serve and
+publisher mount policies, four same-boot PID 1 GC timing records and the two
+fresh confined GC identities. Original owner exclusion, foreign-peer refusal,
+listener-name retirement and durable snapshots through acknowledged shutdown
+pass. Full raw logs are preserved and terminal scratch removed. This diagnostic
+qualifies the corrected oracle against that older service image; qualification
+of the complete committed source, restart recovery and draining physical
+exposure release remain required.
+
 The empty-reference copied collection fixture at `80cf0444bf` fails its focused
 qualification in 1,523.633 seconds. The first actual selector fails during
 positive fixture checkpoint encoding with `PublicationError::Contradiction`,

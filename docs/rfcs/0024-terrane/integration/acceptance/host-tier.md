@@ -7,11 +7,12 @@ unaccepted.** Optional smart reassembly, discard and volatile storage are outsid
 this task.
 
 The source inspection uses `0677eb432c`, including the publisher directory-open
-correction. The four owning gates passed at `a7e05fa6cd`: independent review
-checked all 8,258 immutable source files, ten retained Cargo executables,
-twenty-one original ordered selectors and seventeen actual guests. That result
-predates the directory-open correction. Qualification of the correction is
-running; the earlier result does not establish its native behavior.
+correction. Its six host/publisher owning gates pass in 4,511.141 seconds.
+Independent host review checks all 8,259 immutable source files, ten actual
+executables, twenty-one original ordered selectors and seventeen actual guests.
+Independent publisher review checks eight guests and eleven actual executables.
+These results qualify the recorded correction; they predate the later allocation
+mount, setgid inheritance and publication service mount corrections.
 
 ## Clause coverage
 
@@ -19,7 +20,7 @@ running; the earlier result does not establish its native behavior.
 | --- | --- | --- |
 | HOST-1 | [NativeHostLayout][layout] retains the original root, provisioning exclusion and seven directory descriptors; requires one device and an allowed local filesystem; rejects symlink ancestry and replaced roots. | Filesystem identification alone is insufficient. The publisher must successfully enable and measure an actual seal. |
 | HOST-2, HOST-14 | [Encoded sources][source], [admission custody][admission] and [verification][verification] bind encoded bytes, chunk identity, length, boundary and dictionaries before exposure or admission. | The native admission guest must establish actual temporary writes, synchronization and canonical insertion. |
-| HOST-3 to HOST-5, OBJ-5 | [Native publication][publisher] closes writers, verifies the independent content claim, enables and measures verity, publishes without replacement and durably records its binding. [Adoption][adoption] independently verifies the existing original inode and binding. | Renewed native evidence is required for the directory-open correction. Full publisher deployment is also owned by T-HOST-2. |
+| HOST-3 to HOST-5, OBJ-5 | [Native publication][publisher] closes writers, verifies the independent content claim, enables and measures verity, publishes without replacement and durably records its binding. [Adoption][adoption] independently verifies the existing original inode and binding. | The renewed native guests qualify the directory-open correction at the recorded source. Later service mount behavior and full publisher deployment remain separately owned by T-HOST-2. |
 | HOST-11 to HOST-13 | [Reassembly][reassembly] verifies the same ordered stream that reaches the output, including manifest identity, chunk boundaries and whole-file hashes. [Residence recovery][residences] verifies ranges and metadata independently. | Reassembly and eviction guests must prove source retention and dependent extraction. A plan object grants neither funding nor publication authority. |
 | HOST-15 | [Read failure custody][corruption] latches denial across original aliases. The [physical worker][quarantine] retains the failed inode for publisher quarantine; [read-through][read-through] can fetch independently verified lower bytes. | Failed or uncertain quarantine retains custody and requires recovery. This evidence does not establish a scrub scheduler or complete structured security logging. |
 | HOST-16 to HOST-21 | [Cache policy][policy] reserves before admission, implements bounded probation/main FIFOs, second chance, pins and grace. [Retirement][retirement] retains charges until physical completion. [Lower reads][driver] remain usable when admission fails. | Policy holds are distinct from measured allocation. Whole-pack retirement and exact accounting require the physical guests. |
@@ -39,12 +40,20 @@ physical prerequisites remain mandatory. Shared compilation images and aggregate
 results do not replace individual guest transcripts, retained Cargo artifact
 identity or complete immutable source comparison.
 
-The renewed six-gate dispatch, including the two T-HOST-2 gates, has been
-compared with the previously reviewed dependency closures. All 86 missing
-derivations retain the same execution contracts after normalizing only Nix store
-hash prefixes; twenty are KVM checks. This is a dispatch audit, not a passing
-runtime result. The separate base/all-feature cache qualification also remains
-pending at the inspected source.
+The six-gate dispatch audit accounts for all 86 missing derivations, including
+twenty KVM checks, without changing their execution contracts. The completed
+runtime reviews above additionally bind each original guest transcript, source
+image and retained Cargo artifact.
+
+Separate base/all-feature native cache renewal at `31aa0ae05f` passes in
+3,235.284 seconds. Each profile matches 8,263 immutable source files, four
+retained Cargo executables and three original guests. Base/all-features execute
+130/258 ordinary cases and five creator cases per profile. All five allocation
+mount controls and the original recovery, finite-consumer expiry, physical
+eviction and measured charge-release witnesses pass. The expired handle remains
+retained through physical release. This component evidence qualifies the setgid
+correction; it does not establish later service mount deployment or complete
+role behavior.
 
 Acceptance requires reviewing those actual results and reconciling the deployment
 and conditional-surface limits above. No requirement or task is accepted solely
