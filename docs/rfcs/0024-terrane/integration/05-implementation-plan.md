@@ -317,6 +317,14 @@ the host. Evaluation verifies unchanged normalized gate phases and all 24
 dependency names; both attributes select the original component roles under
 the regenerated source attestations. The complete owning gate remains required.
 
+The owning `publisher-sole-writer` verifier now requires all seventeen native
+socket cases, including the five added explicit-retirement controls. Its stale
+twelve-case inventory would reject the strengthened fixture before accepting
+its guest evidence. Exact source-inventory comparison and Python syntax pass;
+the existing per-case ext4, identity, unique execution and clean guest shutdown
+requirements remain enforced. This verifier correction grants no runtime or
+task acceptance; owning-gate renewal remains required.
+
 The full feature matrix at the earlier frozen `e6f214f3ce` checkpoint passes in
 19,245.158 seconds in the isolated 32 GiB AOS builder. Independent review matches
 the immutable source and both native profile compiler records, all 21 passing
