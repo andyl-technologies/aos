@@ -129,6 +129,10 @@ fn dispatch() -> FixtureResult<&'static str> {
             run(root, owner)?;
             Ok("PASS: actual confined SDK snapshots completed and stopped")
         }
+        "diagnose-service" => {
+            diagnose_service(root, owner)?;
+            Ok("PASS: diagnostic configured service completed shutdown")
+        }
         "deny-late" => {
             deny_late(root, owner)?;
             Ok("PASS: late exposure denial started no endpoint and used no authority fallback")
@@ -357,6 +361,26 @@ issuer_public_keys = ["file:{root}/issuer-public.toml"]
 host_token = "file:{root}/startup.cap"
 "#
     )
+}
+
+/// Reports only the configured error's deliberately redacted phase and I/O kind.
+///
+/// This startup diagnostic sends no service-manager readiness notification.
+fn diagnose_service(configuration: &Path, owner: u32) -> FixtureResult<()> {
+    if rustix::process::geteuid().as_raw() != owner {
+        return Err("diagnostic requires the explicitly supplied Unix identity".into());
+    }
+
+    let config = Config::parse(&fs::read_to_string(configuration)?)?;
+    match configured_sdk::run_service(&config, Role::Serve, |_| Ok(())) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            // Error's Debug contract exposes closed diagnostic categories only.
+            // Never format the parser, a raw I/O cause or another error type here.
+            eprintln!("CONFIGURED_SDK_STARTUP_FAILURE {error:?}");
+            Err(error.into())
+        }
+    }
 }
 
 fn run(root: &Path, owner: u32) -> FixtureResult<()> {
