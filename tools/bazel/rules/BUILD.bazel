@@ -540,3 +540,9 @@ config_setting(
     flag_values = {":dependency_profile": "systemd-provider"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "nix_store_provider_dependencies",
+    flag_values = {":dependency_profile": "nix-store-provider"},
+    visibility = ["//visibility:public"],
+)

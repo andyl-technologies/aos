@@ -144,6 +144,7 @@ in
     bpf-native = import ./_bazel-bpf-native.nix {inherit pkgs;};
     bpf-provider-production = import ./_bazel-bpf-provider-production.nix {inherit pkgs;};
     kubernetes-provider-production = import ./_bazel-kubernetes-provider-production.nix {inherit pkgs;};
+    nix-store-provider-production = import ./_bazel-nix-store-provider-production.nix {inherit pkgs;};
     pilot = import ./_bazel-pilot.nix {inherit pkgs;};
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
@@ -555,6 +556,7 @@ in
             bpf-native.check
             bpf-provider-production.all
             kubernetes-provider-production.all
+            nix-store-provider-production.all
             native-xz-source
             static-runtime.all
             precision-parity

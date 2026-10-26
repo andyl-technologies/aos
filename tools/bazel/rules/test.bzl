@@ -78,17 +78,37 @@ _libtest_test = rule(
     },
 )
 
-def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_empty = False, allow_ignored_only = False, runfile_env = {}, setup = None, license_domain = None, tags = [], timeout = "long", size = "medium", args = [], **kwargs):
-    """Preserves Rust compilation/runfiles while replacing only test scheduling."""
-    if kwargs.get("env_inherit", []):
-        fail("declare test environment through env; ambient inheritance is not supported")
+def _runfile_env_names(runfile_env, environment):
     runfile_env_names = sorted(runfile_env)
     for variable in runfile_env_names:
         allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_0123456789"
         if not variable or variable[0] in "0123456789" or any([character not in allowed for character in variable.elems()]):
             fail("invalid runfile environment variable: " + variable)
-        if variable in kwargs.get("env", {}):
+        if variable in environment:
             fail("test environment variable has multiple declarations: " + variable)
+    return runfile_env_names
+
+def aos_libtest(name, binary, package_name, runfile_env = {}, **kwargs):
+    """Runs a declared subset of an existing libtest binary without recompiling it."""
+    if not package_name:
+        fail("Rust test requires a package identity")
+    if kwargs.get("env_inherit", []):
+        fail("declare test environment through env; ambient inheritance is not supported")
+    names = _runfile_env_names(runfile_env, kwargs.get("env", {}))
+    _libtest_test(
+        name = name,
+        binary = binary,
+        package_name = package_name,
+        runfile_env_names = names,
+        runfile_env_files = [runfile_env[name] for name in names],
+        **kwargs
+    )
+
+def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_empty = False, allow_ignored_only = False, runfile_env = {}, setup = None, license_domain = None, tags = [], timeout = "long", size = "medium", args = [], **kwargs):
+    """Preserves Rust compilation/runfiles while replacing only test scheduling."""
+    if kwargs.get("env_inherit", []):
+        fail("declare test environment through env; ambient inheritance is not supported")
+    runfile_env_names = _runfile_env_names(runfile_env, kwargs.get("env", {}))
     if package != None:
         if package_name != None and package_name != package.name:
             fail("Rust test conflicts with package name: " + package.name)

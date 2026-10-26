@@ -102,6 +102,12 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    nix-store-provider = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "nix-store-provider";
+    };
+
     systemd-provider = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;

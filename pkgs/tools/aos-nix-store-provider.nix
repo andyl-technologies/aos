@@ -12,8 +12,11 @@
   patchelf,
   service-management,
   aos-filesystem-provider,
+  callPackage,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-nix-store-provider.nix {buildDriver = selected;};
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -56,8 +59,7 @@
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
   };
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -95,6 +97,11 @@ in
 
     preBuild = staticBuildSetup;
 
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+
     postInstall = ''
       mkdir -p "$out/libexec"
       ln -s ${nix}/bin/nix-store "$out/libexec/nix-store"
@@ -113,4 +120,14 @@ in
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-nix-store-provider-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

@@ -1,0 +1,1838 @@
+{
+  "current_rust_compilation_coverage": {
+    "compiled_test_targets": 185,
+    "derivation": "/nix/store/mzlzpk6v5i4ai55rbqxlgd4ii0bxs36g-aos-test-targets-0.1.0.drv",
+    "limits": [
+      "Unchanged Rust source bytes; new Nix and Bazel declarations are outside that frozen Cargo compilation gate."
+    ],
+    "matching_current_rust_source_files": 3773,
+    "output": "/nix/store/nvggbvrmb3k1s5jx7vx4ls5ylpn49q1p-aos-test-targets-0.1.0",
+    "receipt": "tools/bazel/tests/evidence/configuration-provider-full-rust-compilation.json",
+    "source": "/nix/store/1zkn1pdhblkwvnhr8zhh8pw9hdbl71yr-aos-workspace-src"
+  },
+  "dependency_profile_preservation": {
+    "new_profiles": {
+      "nix-store-provider": 70
+    },
+    "new_specification_build": "/nix/store/p6b6qm6kfmsf28m9x1myl5vxkz14v2vr-aos-bazel-nix-store-provider-profile-specifications-1",
+    "source_inventory_refresh": [
+      "tools/bazel/metadata/accache-inventory.json",
+      "tools/bazel/metadata/activation-core-inventory.json",
+      "tools/bazel/metadata/activation-crucible-inventory.json",
+      "tools/bazel/metadata/activation-storage-inventory.json",
+      "tools/bazel/metadata/activation-systemd-inventory.json",
+      "tools/bazel/metadata/aos-cli-inventory.json",
+      "tools/bazel/metadata/boot-pilot-inventory.json",
+      "tools/bazel/metadata/boot-preparation-inventory.json",
+      "tools/bazel/metadata/boot-preparation-provider-inventory.json",
+      "tools/bazel/metadata/boot-transaction-storage-provider-inventory.json",
+      "tools/bazel/metadata/bpf-native-inventory.json",
+      "tools/bazel/metadata/bpf-provider-inventory.json",
+      "tools/bazel/metadata/build-services-inventory.json",
+      "tools/bazel/metadata/cli-support-inventory.json",
+      "tools/bazel/metadata/configuration-image-inventory.json",
+      "tools/bazel/metadata/configuration-provider-inventory.json",
+      "tools/bazel/metadata/contracts-inventory.json",
+      "tools/bazel/metadata/control-inventory.json",
+      "tools/bazel/metadata/crucible-cli-inventory.json",
+      "tools/bazel/metadata/daemon-inventory.json",
+      "tools/bazel/metadata/deployment-inventory.json",
+      "tools/bazel/metadata/device-inventory.json",
+      "tools/bazel/metadata/engine-inventory.json",
+      "tools/bazel/metadata/feature-powerset-inventory.json",
+      "tools/bazel/metadata/filesystem-provider-inventory.json",
+      "tools/bazel/metadata/fixture-inventory.json",
+      "tools/bazel/metadata/formats-inventory.json",
+      "tools/bazel/metadata/guest-inventory.json",
+      "tools/bazel/metadata/hub-client-inventory.json",
+      "tools/bazel/metadata/hub-console-inventory.json",
+      "tools/bazel/metadata/hub-console-wasm-inventory.json",
+      "tools/bazel/metadata/hub-db-inventory.json",
+      "tools/bazel/metadata/hub-model-inventory.json",
+      "tools/bazel/metadata/hub-native-inventory.json",
+      "tools/bazel/metadata/hub-portable-inventory.json",
+      "tools/bazel/metadata/hub-service-inventory.json",
+      "tools/bazel/metadata/hub-worker-inventory.json",
+      "tools/bazel/metadata/hub-worker-wasm-inventory.json",
+      "tools/bazel/metadata/initrd-preparation-inventory.json",
+      "tools/bazel/metadata/kernel-tunable-provider-inventory.json",
+      "tools/bazel/metadata/kubernetes-provider-inventory.json",
+      "tools/bazel/metadata/metadata-provider-inventory.json",
+      "tools/bazel/metadata/native-foundation-inventory.json",
+      "tools/bazel/metadata/network-ruleset-provider-inventory.json",
+      "tools/bazel/metadata/package-manager-inventory.json",
+      "tools/bazel/metadata/protocol-inventory.json",
+      "tools/bazel/metadata/qemu-gateway-process-test-inventory.json",
+      "tools/bazel/metadata/qemu-gpl-production-inventory.json",
+      "tools/bazel/metadata/qemu-host-inventory.json",
+      "tools/bazel/metadata/qemu-plugin-process-test-inventory.json",
+      "tools/bazel/metadata/qemu-test-oracle-host-inventory.json",
+      "tools/bazel/metadata/quota-inventory.json",
+      "tools/bazel/metadata/registry-native-inventory.json",
+      "tools/bazel/metadata/registry-web-inventory.json",
+      "tools/bazel/metadata/registry-web-wasm-inventory.json",
+      "tools/bazel/metadata/release-coordination-inventory.json",
+      "tools/bazel/metadata/release-preparation-inventory.json",
+      "tools/bazel/metadata/session-inventory.json",
+      "tools/bazel/metadata/shared-inventory.json",
+      "tools/bazel/metadata/static-storage-providers-inventory.json",
+      "tools/bazel/metadata/storage-provisioning-provider-inventory.json",
+      "tools/bazel/metadata/store-inventory.json",
+      "tools/bazel/metadata/store-s3-inventory.json",
+      "tools/bazel/metadata/systemd-provider-inventory.json",
+      "tools/bazel/metadata/test-support-audit-inventory.json",
+      "tools/bazel/metadata/test-support-inventory.json",
+      "tools/bazel/metadata/zfs-provider-inventory.json"
+    ],
+    "unchanged_existing_generated_files": 16694,
+    "unchanged_existing_profile_definitions": 74,
+    "unchanged_implementation_selections": true
+  },
+  "driver_selection": {
+    "bazel": "/nix/store/81pnmljdl4i0blyqh0i3r6brhyb9ll85-aos-nix-store-provider-0.1.0.drv",
+    "cargo": "/nix/store/lnqimr6xy8zpphi41mvfkqbq33ch7m0z-aos-nix-store-provider-0.1.0.drv",
+    "cargo_constructor_artifacts_dummy_source_and_vendor_not_evaluated": true,
+    "fallback": "/nix/store/lnqimr6xy8zpphi41mvfkqbq33ch7m0z-aos-nix-store-provider-0.1.0.drv",
+    "invalid_driver_rejected": true,
+    "platform_runtime_and_qualification_contracts_preserved": true
+  },
+  "enrolled_build_check_derivation_matches_qualification": true,
+  "entry_point": "checks.build.bazel.nix-store-provider-production.all",
+  "implementation_parent": "ef3b34d6273ed9acac42b735b4c8fcb04af76249",
+  "input_sha256": {
+    "MODULE.bazel": "03dcc76805600d597dbd01bcc728262d12da7988f9f82e2a70978847146f01cd",
+    "crates/activation/aos-activation-nix-store/BUILD.bazel": "4aa589a56bb86246d145b293c49494761fac37452180cd7759167d53906af939",
+    "pkgs/build-support/_bazel/default.nix": "4d21159e983a9a37d54aadae6e11922ae8a5234f0615ab55c8da361cda04c75a",
+    "pkgs/tools/_aos-nix-store-provider-bazel-build.nix": "6871c60487930bda2456f4956f2275b73d2b4f6d8c9312f7917859d590698c47",
+    "pkgs/tools/_aos-nix-store-provider-bazel.nix": "0903d62abb5f509453365ac54eff18559b702aba04da4d87261c835ae0ad3edf",
+    "pkgs/tools/aos-nix-store-provider.nix": "b11d02f94c8ec4349256c8129889f69f3bf4165e9270108e026261c4da3bd797",
+    "tests/build/_bazel-nix-store-provider-production.nix": "2f26aeb817d04e177a21ae8812b66e22aea14f4fd4deab1992da0d9a428fc9d0",
+    "tests/build/bazel.nix": "0c80b7c360736bfaf4030297bdf923d90be5a0db85a787391147e675ede0826d",
+    "third_party/bazel/modules.json": "381e54efe5f479da3233916905cfdcbe844724e2b231ca783f2730d8dbf72a39",
+    "third_party/rust/BUILD.bazel": "d7d560e46fd62726ef9bb9ff35b6e00399b160b9676cf7e0ae0ce59ac99a86c8",
+    "third_party/rust/nix-store-provider/sources.json": "d9a211e56724658e02647635c19b37de269443155946e350d8308f3e90426696",
+    "tools/bazel/metadata/nix-store-provider-inventory.json": "ad8050ea7104feb5df4be8cfd926dca58050ab97094aa3749351f256087e58b3",
+    "tools/bazel/rules/BUILD.bazel": "2d101b5f223babdd91ba3ac62f576ad8cd5cad6246c40662eda6139f08d40524",
+    "tools/bazel/rules/profiles.bzl": "49f265bb7896fa4a7987f93b142db7109133691f3a5b97805dfaa6d645fe3111",
+    "tools/bazel/rules/test.bzl": "22eb5a33a7c0f0c3a8aafd3809f42651ffe0814c1f897c542789b35240305407",
+    "tools/bazel/tests/nix-store-provider-production.nix": "a81b41891e9a1f7c9c56de86313e88358edfe41f61cc80b879301dcc603d5b6d",
+    "tools/bazel/tests/test_protocol_parity.py": "3b3cdf06b362f962a56a5836e322e7cb601c8048edbee2b6dda52f76fd54f3ae",
+    "tools/bazel/tests/verify_nix_store_provider.py": "5886e618d247e7e9c4ad90730c5ae23b73dbf7ff0160db0cdc7424b23c5a8091",
+    "tools/bazel/tests/verify_protocol.py": "bb78d26900934185ac11c0b9b4f18d3b8bfad362c3497e7d73c1c80ee9208e2d"
+  },
+  "installed_package_report": {
+    "cli_cases": [
+      {
+        "arguments": [],
+        "status": 1,
+        "stderr_sha256": "6fa87f16fd27f88e947e5822697e0f829c2059a307fad43ac4bcb3a273ca5366",
+        "stdin_bytes": 0,
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "arguments": [
+          "--help"
+        ],
+        "status": 1,
+        "stderr_sha256": "385f19d27d05aefb736152621142a0398e802866e03bb52729210472a180a4b2",
+        "stdin_bytes": 0,
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "arguments": [
+          "invalid"
+        ],
+        "status": 1,
+        "stderr_sha256": "385f19d27d05aefb736152621142a0398e802866e03bb52729210472a180a4b2",
+        "stdin_bytes": 0,
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "arguments": [
+          "observe",
+          "extra"
+        ],
+        "status": 1,
+        "stderr_sha256": "6fa87f16fd27f88e947e5822697e0f829c2059a307fad43ac4bcb3a273ca5366",
+        "stdin_bytes": 0,
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "arguments": [
+          "apply"
+        ],
+        "status": 1,
+        "stderr_sha256": "e52abb3a215d36bf5bac6a5b8ef1a725849243feb5c1673d2c41d16270efd943",
+        "stdin_bytes": 0,
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "arguments": [
+          "apply"
+        ],
+        "status": 1,
+        "stderr_sha256": "b9d7aa5781eea891ca587220fa8e6d970d1c1fd83caf59106dee4a4110a0bfad",
+        "stdin_bytes": 2,
+        "stdin_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "arguments": [
+          "remove"
+        ],
+        "status": 1,
+        "stderr_sha256": "e52abb3a215d36bf5bac6a5b8ef1a725849243feb5c1673d2c41d16270efd943",
+        "stdin_bytes": 0,
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "arguments": [
+          "remove"
+        ],
+        "status": 1,
+        "stderr_sha256": "b9d7aa5781eea891ca587220fa8e6d970d1c1fd83caf59106dee4a4110a0bfad",
+        "stdin_bytes": 2,
+        "stdin_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "e52abb3a215d36bf5bac6a5b8ef1a725849243feb5c1673d2c41d16270efd943",
+        "stdin_bytes": 0,
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "b9d7aa5781eea891ca587220fa8e6d970d1c1fd83caf59106dee4a4110a0bfad",
+        "stdin_bytes": 2,
+        "stdin_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "b9d7aa5781eea891ca587220fa8e6d970d1c1fd83caf59106dee4a4110a0bfad",
+        "stdin_bytes": 33554432,
+        "stdin_sha256": "0474915f1d2334ec7a84e4b872586c5ad840d3915626a07186800c4846a9c14c"
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "663a938d83d5074dbf27e288189107007e0da67758048ada4a8b993d99b65c53",
+        "stdin_bytes": 33554433,
+        "stdin_sha256": "b367c8cf8c1abc4227ff699d4ea1a21bafe050050ca10846abb76987a4182eef"
+      }
+    ],
+    "doctest_parity": {
+      "//crates/activation/aos-activation-nix-store:doc_static": {}
+    },
+    "features": {
+      "production": {
+        "features": {
+          "aho-corasick@1.1.4": [
+            [
+              "perf-literal",
+              "std"
+            ]
+          ],
+          "anyhow@1.0.103": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.0": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "dyn-clone@1.0.20": [
+            []
+          ],
+          "fastrand@2.4.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "getrandom@0.4.2": [
+            []
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "libc@0.2.186": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "if_ether",
+              "ioctl",
+              "net",
+              "netlink",
+              "no_std",
+              "xdp"
+            ]
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "once_cell@1.21.4": [
+            [
+              "alloc",
+              "race",
+              "std"
+            ]
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "ref-cast-impl@1.0.27": [
+            []
+          ],
+          "ref-cast@1.0.27": [
+            []
+          ],
+          "regex-automata@0.4.14": [
+            [
+              "alloc",
+              "dfa-onepass",
+              "hybrid",
+              "meta",
+              "nfa-backtrack",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "perf-inline",
+              "perf-literal",
+              "perf-literal-multisubstring",
+              "perf-literal-substring",
+              "std",
+              "syntax",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment",
+              "unicode-word-boundary"
+            ]
+          ],
+          "regex-syntax@0.8.11": [
+            [
+              "default",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "regex@1.12.4": [
+            [
+              "default",
+              "perf",
+              "perf-backtrack",
+              "perf-cache",
+              "perf-dfa",
+              "perf-inline",
+              "perf-literal",
+              "perf-onepass",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "rustix@1.1.4": [
+            [
+              "alloc",
+              "default",
+              "event",
+              "fs",
+              "net",
+              "std"
+            ]
+          ],
+          "schemars@1.2.2": [
+            [
+              "default",
+              "derive",
+              "schemars_derive",
+              "std"
+            ]
+          ],
+          "schemars_derive@1.2.2": [
+            []
+          ],
+          "serde@1.0.228": [
+            [
+              "alloc",
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "alloc",
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_derive_internals@0.30.0": [
+            []
+          ],
+          "serde_json@1.0.150": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "syn@3.0.5": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "tempfile@3.27.0": [
+            [
+              "default",
+              "getrandom"
+            ]
+          ],
+          "thiserror-impl@2.0.18": [
+            []
+          ],
+          "thiserror@2.0.18": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "zmij@1.0.21": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "aos-activation": [
+            []
+          ],
+          "aos-activation-nix-store": [
+            []
+          ],
+          "aos-artifact-evidence": [
+            []
+          ],
+          "aos-core": [
+            []
+          ],
+          "aos-module-format": [
+            []
+          ]
+        }
+      },
+      "release_tests": {
+        "features": {
+          "aho-corasick@1.1.4": [
+            [
+              "perf-literal",
+              "std"
+            ]
+          ],
+          "anyhow@1.0.103": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.0": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "dyn-clone@1.0.20": [
+            []
+          ],
+          "fastrand@2.4.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "getrandom@0.4.2": [
+            []
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "libc@0.2.186": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "if_ether",
+              "ioctl",
+              "net",
+              "netlink",
+              "no_std",
+              "xdp"
+            ]
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "once_cell@1.21.4": [
+            [
+              "alloc",
+              "race",
+              "std"
+            ]
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "ref-cast-impl@1.0.27": [
+            []
+          ],
+          "ref-cast@1.0.27": [
+            []
+          ],
+          "regex-automata@0.4.14": [
+            [
+              "alloc",
+              "dfa-onepass",
+              "hybrid",
+              "meta",
+              "nfa-backtrack",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "perf-inline",
+              "perf-literal",
+              "perf-literal-multisubstring",
+              "perf-literal-substring",
+              "std",
+              "syntax",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment",
+              "unicode-word-boundary"
+            ]
+          ],
+          "regex-syntax@0.8.11": [
+            [
+              "default",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "regex@1.12.4": [
+            [
+              "default",
+              "perf",
+              "perf-backtrack",
+              "perf-cache",
+              "perf-dfa",
+              "perf-inline",
+              "perf-literal",
+              "perf-onepass",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "rustix@1.1.4": [
+            [
+              "alloc",
+              "default",
+              "event",
+              "fs",
+              "net",
+              "std"
+            ]
+          ],
+          "schemars@1.2.2": [
+            [
+              "default",
+              "derive",
+              "schemars_derive",
+              "std"
+            ]
+          ],
+          "schemars_derive@1.2.2": [
+            []
+          ],
+          "serde@1.0.228": [
+            [
+              "alloc",
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "alloc",
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_derive_internals@0.30.0": [
+            []
+          ],
+          "serde_json@1.0.150": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "syn@3.0.5": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "tempfile@3.27.0": [
+            [
+              "default",
+              "getrandom"
+            ]
+          ],
+          "thiserror-impl@2.0.18": [
+            []
+          ],
+          "thiserror@2.0.18": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "zmij@1.0.21": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "aos-activation": [
+            []
+          ],
+          "aos-activation-nix-store": [
+            []
+          ],
+          "aos-artifact-evidence": [
+            []
+          ],
+          "aos-core": [
+            []
+          ],
+          "aos-module-format": [
+            []
+          ]
+        }
+      }
+    },
+    "fresh_linux_sandbox_actions": {
+      "production": 131,
+      "release_tests": 141
+    },
+    "installed": {
+      "bazel": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-nix-store-provider": {
+          "contract": {
+            "class": "ELF64",
+            "interpreter": [],
+            "machine": "Advanced Micro Devices X86-64",
+            "needed": [],
+            "resolved_libraries": [],
+            "rpath_directories": [],
+            "type": "EXEC"
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/libexec": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/libexec/nix-store": {
+          "kind": "symlink",
+          "target": "/nix/store/qh11nfhpmb1p2wrkssc19j142c26w3qb-nix-2.24.12/bin/nix-store"
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      },
+      "ordinary": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-nix-store-provider": {
+          "contract": {
+            "class": "ELF64",
+            "interpreter": [],
+            "machine": "Advanced Micro Devices X86-64",
+            "needed": [],
+            "resolved_libraries": [],
+            "rpath_directories": [],
+            "type": "EXEC"
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/libexec": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/libexec/nix-store": {
+          "kind": "symlink",
+          "target": "/nix/store/qh11nfhpmb1p2wrkssc19j142c26w3qb-nix-2.24.12/bin/nix-store"
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      }
+    },
+    "live_system_activation_qualified": false,
+    "packages": {
+      "bazel": {
+        "out": "/nix/store/12bpwlh82037w175sc63bg5fcc2s7xa3-aos-nix-store-provider-0.1.0"
+      },
+      "ordinary": {
+        "out": "/nix/store/07zhpw4x9499c0kp06a1xryhac42apqb-aos-nix-store-provider-0.1.0"
+      }
+    },
+    "production_default_cutover": false,
+    "production_profiles": {
+      "aos_activation": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-226328188",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "relocation-model": "static",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        }
+      },
+      "aos_activation_nix_store": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-75290541",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "relocation-model": "static",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        }
+      },
+      "aos_artifact_evidence": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-386196004",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "relocation-model": "static",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        }
+      },
+      "aos_core": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2583899516",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "relocation-model": "static",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        }
+      },
+      "aos_module_format": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-1113882660",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "relocation-model": "static",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        }
+      },
+      "aos_nix_store_provider": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "relocation-model": "static",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        }
+      }
+    },
+    "real_nix_test": {
+      "bazel_stdout": "\nrunning 1 test\ntest artifact::tests::source_built_nix_store_alias_adds_and_verifies_exact_content ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.10s\n\n",
+      "cargo_stderr": "",
+      "cargo_stdout": "\nrunning 1 test\ntest artifact::tests::source_built_nix_store_alias_adds_and_verifies_exact_content ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.10s\n\n",
+      "case": "artifact::tests::source_built_nix_store_alias_adds_and_verifies_exact_content",
+      "declared_action_inputs": {
+        "bin/nix-store": {
+          "digest": {
+            "hash": "6357eff80b3e19d3f3fb4d6e26ba023edeb27aabc7c423ee2fd2fb8c38b599a7",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "3900888"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-nix-store/static_real_nix.runfiles/+aos_tools_repository+aos_nix_test_tools/bin/nix-store",
+          "symlinkTargetPath": ""
+        },
+        "closure.json": {
+          "digest": {
+            "hash": "a0c8707132bcc546ccf1dcd59c46aec42a8f04d011383b0df077defb3da4a742",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "4427"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-nix-store/static_real_nix.runfiles/+aos_tools_repository+aos_nix_test_tools/closure.json",
+          "symlinkTargetPath": ""
+        }
+      },
+      "nix_store": "/nix/store/qh11nfhpmb1p2wrkssc19j142c26w3qb-nix-2.24.12/bin/nix-store",
+      "scope": "Exact bytes, fixed-output path, validity, references and NAR dump in a private local?root store."
+    },
+    "runtime_closures": {
+      "changes": {
+        "out": {
+          "added": [],
+          "removed": []
+        }
+      },
+      "closures": {
+        "bazel": {
+          "out": [
+            "/nix/store/071yhimnxva604hfim2d7m51k593jpks-bash-5.3p15",
+            "/nix/store/09dipck6fr9k9r3r9wb7nkha9lgrx314-expat-2.8.4",
+            "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0",
+            "/nix/store/5cd32i1g3xgr4z5bf040gl6rkanyax16-brotli-1.2.0",
+            "/nix/store/5m9w9gbdaxrkyvkn5wbbhc52mhn6k82g-bzip2-1.0.8",
+            "/nix/store/753ava2263yjcd0k8wii5gfijlk6w6lh-editline-2.1.0",
+            "/nix/store/7i0bjwawygncw5z27n7h6l67zdy6mk5n-boost-1.92.0",
+            "/nix/store/7sb534l6c2jqdh1r1zvzkhbgplrrrgmm-curl-8.22.0",
+            "/nix/store/7x29kikzxc63nz609gjy54d4z3jras5d-nghttp2-1.70.0",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "/nix/store/84jcdf4radcv196v68rligvgknb7lny9-gc-8.2.12",
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1",
+            "/nix/store/9d5sm56jg29gcfs4xia4ynymmahw6dks-xz-5.8.3",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2",
+            "/nix/store/d507nfs5krac6vhv38ay18jlgrmab8ac-libsodium-1.0.22",
+            "/nix/store/f0s6vf3wih2q3v74rxyiffsg19a4196j-publicsuffix-list-0-unstable-2026-05-13",
+            "/nix/store/f7i2glii19wbxjccwhc33abfvrhpkdys-libunistring-1.4.2",
+            "/nix/store/fh9cfzikw1k2qxwyd0j8b6dvyha8990h-libarchive-3.8.9",
+            "/nix/store/fyfijn09vd0rwssk61ldh65arnrp908d-libgit2-1.9.7",
+            "/nix/store/gmplkr86bygh8dnm8jsv8ma25fldng0g-libseccomp-2.6.1",
+            "/nix/store/gz5m241r9fbchgp2716xwzf25k79qcgj-libpsl-0.23.3",
+            "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7",
+            "/nix/store/k6f7bja36bsis6wkpng8538bjp79z5rx-nlohmann-json-3.12.0",
+            "/nix/store/kasdgb8a1vfsby5nw94r81adm6zp1qzx-libidn2-2.3.8",
+            "/nix/store/lds2gsaa4b5xj00sh9s2gjd84mwxpfci-lowdown-3.1.1",
+            "/nix/store/m8snl4z29anz8jrjcvn4ngxi04av17nb-ca-certificates-2026-05-14",
+            "/nix/store/qh11nfhpmb1p2wrkssc19j142c26w3qb-nix-2.24.12",
+            "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3",
+            "/nix/store/vmzsynrrjd87qcbx9v4g7v14nm2clbwc-toml11-4.4.0",
+            "@output:out@"
+          ]
+        },
+        "ordinary": {
+          "out": [
+            "/nix/store/071yhimnxva604hfim2d7m51k593jpks-bash-5.3p15",
+            "/nix/store/09dipck6fr9k9r3r9wb7nkha9lgrx314-expat-2.8.4",
+            "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0",
+            "/nix/store/5cd32i1g3xgr4z5bf040gl6rkanyax16-brotli-1.2.0",
+            "/nix/store/5m9w9gbdaxrkyvkn5wbbhc52mhn6k82g-bzip2-1.0.8",
+            "/nix/store/753ava2263yjcd0k8wii5gfijlk6w6lh-editline-2.1.0",
+            "/nix/store/7i0bjwawygncw5z27n7h6l67zdy6mk5n-boost-1.92.0",
+            "/nix/store/7sb534l6c2jqdh1r1zvzkhbgplrrrgmm-curl-8.22.0",
+            "/nix/store/7x29kikzxc63nz609gjy54d4z3jras5d-nghttp2-1.70.0",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "/nix/store/84jcdf4radcv196v68rligvgknb7lny9-gc-8.2.12",
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1",
+            "/nix/store/9d5sm56jg29gcfs4xia4ynymmahw6dks-xz-5.8.3",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2",
+            "/nix/store/d507nfs5krac6vhv38ay18jlgrmab8ac-libsodium-1.0.22",
+            "/nix/store/f0s6vf3wih2q3v74rxyiffsg19a4196j-publicsuffix-list-0-unstable-2026-05-13",
+            "/nix/store/f7i2glii19wbxjccwhc33abfvrhpkdys-libunistring-1.4.2",
+            "/nix/store/fh9cfzikw1k2qxwyd0j8b6dvyha8990h-libarchive-3.8.9",
+            "/nix/store/fyfijn09vd0rwssk61ldh65arnrp908d-libgit2-1.9.7",
+            "/nix/store/gmplkr86bygh8dnm8jsv8ma25fldng0g-libseccomp-2.6.1",
+            "/nix/store/gz5m241r9fbchgp2716xwzf25k79qcgj-libpsl-0.23.3",
+            "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7",
+            "/nix/store/k6f7bja36bsis6wkpng8538bjp79z5rx-nlohmann-json-3.12.0",
+            "/nix/store/kasdgb8a1vfsby5nw94r81adm6zp1qzx-libidn2-2.3.8",
+            "/nix/store/lds2gsaa4b5xj00sh9s2gjd84mwxpfci-lowdown-3.1.1",
+            "/nix/store/m8snl4z29anz8jrjcvn4ngxi04av17nb-ca-certificates-2026-05-14",
+            "/nix/store/qh11nfhpmb1p2wrkssc19j142c26w3qb-nix-2.24.12",
+            "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3",
+            "/nix/store/vmzsynrrjd87qcbx9v4g7v14nm2clbwc-toml11-4.4.0",
+            "@output:out@"
+          ]
+        }
+      }
+    },
+    "schema_version": 1,
+    "test_parity": {
+      "schema_version": 1,
+      "targets": {
+        "//crates/activation/aos-activation-nix-store:static_bin": {
+          "executed": [],
+          "ignored": []
+        },
+        "//crates/activation/aos-activation-nix-store:static_unit": {
+          "executed": [
+            "artifact::tests::bundled_executable_preserves_nix_store_multicall_alias",
+            "artifact::tests::content_input_rejects_symlinks",
+            "artifact::tests::media_types_admit_exact_positive_version_parameters",
+            "artifact::tests::media_types_are_closed_canonical_tokens",
+            "artifact::tests::recovery_detects_changed_content_digest",
+            "artifact::tests::resource_root_retains_and_reobserves_exact_artifact_identity",
+            "handler::tests::apply_loads_the_exact_registration_before_reporting_ready",
+            "handler::tests::argument_batches_bound_process_argv",
+            "handler::tests::registration_parser_rejects_truncation_and_duplicate_paths",
+            "handler::tests::registration_parser_retains_exact_database_records"
+          ],
+          "ignored": [
+            "artifact::tests::source_built_nix_store_alias_adds_and_verifies_exact_content"
+          ]
+        }
+      }
+    }
+  },
+  "original_recipe_identity_at_matched_source_snapshot": "/nix/store/lnqimr6xy8zpphi41mvfkqbq33ch7m0z-aos-nix-store-provider-0.1.0.drv",
+  "platform": "x86_64-linux",
+  "policy_cases": 446,
+  "precise_and_conservative_package_artifacts": {
+    "artifact_sha256": {
+      "bin/aos-nix-store-provider": "fbfd8ffe8d3c40f5a8a8043cf88f6a0e741f12bb80d557b862320b752e12291c"
+    },
+    "byte_identical": true
+  },
+  "qualification": "/nix/store/q4q69l12c7r2anrwrvxbsjz9bw1vlv2k-aos-bazel-nix-store-provider-production-package-checks",
+  "qualification_derivation": "/nix/store/1snj80vx6swk6aqhai1xs4rsp8lnavdc-aos-bazel-nix-store-provider-production-package-checks.drv",
+  "qualification_helper_sources": {
+    "matching_current_python_files": 127,
+    "path": "/nix/store/bfcsxnyfvpyjwzv6cff11j4a5pqph1rg-aos-bazel-nix-store-provider-production-verifiers",
+    "sha256": {
+      "bpf_object.py": "5472158e30a14a58c4337c3a53869155e48268921bbce958e216341b9d952f8e",
+      "cache_recovery.py": "a13506b250e1e16c86a5ce4a0de670c09d67d6e2e20351f92db3be002e1d96f6",
+      "compiler_wrapper.py": "202a3d74d0b86a2ed8e679f2fdf9b6b9d3b186098473805ffcd8d519336c9180",
+      "configuration_provider_vm.py": "235e3122ffa627e723ff2b8ebd175ff411aa488e19d8f686f6abe0e41a484be1",
+      "editor_cargo.py": "122c43f0cf9d3e16f22f5fc1e1bbf1177e7029edbd7ec725f97173263e463ac3",
+      "family_libtest.py": "2aa8ef4a594dd5e22a5b866de743416aeea444fbcdd4c1524bf77a458e7c1944",
+      "filesystem_provider_vm.py": "5cbd1547535a7000b7554978abb1937e430defec4558cb1172f6c1e5c5199f12",
+      "inspect_compiler_execution.py": "4aa8d27e519562d4922a09d13b63b5ff801fea65400b8cefdf9038109303c912",
+      "installed_package.py": "620c18dccfad0337fa7449e95423fe1f7ae5010d4a47f0475e7e0632f3340e31",
+      "measure_feature_cases.py": "43095958fdfc0e1bad8077f6819cbe457d39e62c59c29dbd007041f51d94a3e5",
+      "metadata_provider_effects.py": "8a60e408814536ed74957ab796a7c2ff93857c8f8ad9c0b552290a9b4f9dafad",
+      "mutate_fixture.py": "1ccaddaba9d0eed112efacedfacab78968928b50af7817eed86903b39395bcb2",
+      "normalize_editor_diagnostics.py": "168e4608b4d4026fd72787285190bd156d05a8f9b8f004a593b4207f3d575bbf",
+      "reconstruct_compiler_inputs.py": "b8b79f7684053c4e7db9bdd4c56d21ead889d1a09a5d53247c9dec95e17e3aea",
+      "retain_compiler_inputs.py": "407995e6a7b1c26742f4c18d0dec16b8bcb043a00bb27704c796c758ae57a766",
+      "run_family_vm.py": "0842da3c35b1541f06603e904c6cce3b17adcb144733474f3c7c8ccaec0f9040",
+      "run_systemd_parser.py": "6e5d48bf02d356fb8d18403943dad807debb3071434c5f87422a1b2d43c45fb3",
+      "select_cargo_editor.py": "7811cc9dc952b033c55305caf9f433df0e50fdef723ddde8c7c668de2b73aee9",
+      "select_cargo_workspace.py": "dc7219062151787c1f33af26de64859056fecdd0fd2be645aa02c5b4551d3b30",
+      "systemd_provider_effects.py": "748bd291274240dd202354f3c5767a8a19e5aa31f043805d714b2a5c9bbc94fc",
+      "test_abi_owners.py": "3d74c5ebcc34008800b84aeeaca6f9fd3772157c469157364e92e9184f74ad87",
+      "test_analyzer_identity.py": "c0f7086c53cb2b98c71ee0880ce85e9625ac9de173dbe6d224ee8616281f7aad",
+      "test_architecture_export.py": "3c4e39588ded7569f29588b43fc15880021be1571cbf22e9a8e811584ed0b73f",
+      "test_architecture_parity.py": "68f09e463e93bbaeaf9ad0cc8aae7ce0be80697c394b5de0c1a458db9ffce1a2",
+      "test_bpf_object.py": "2ed2f8b46f145bf6d641e2654ba4f9e44e2f4a43e0f5aa74a3bfc9c6ecb878ca",
+      "test_browser_assets.py": "cf638ed29158e0335e9d403d2a88153ea83fcb83f91deb8ff6d02e564551c0ba",
+      "test_cargo_editor.py": "cb0e75497ce63defc547a37bfb5861c6a9ce3901b18e116a19cd01a0a42e2d17",
+      "test_cargo_rustc_trace.py": "cc3ec29df62d804e651702220fb59355f691bddd06ff05e9d0355db85ad58448",
+      "test_cli_package.py": "138f4d3e96d0b4b37a94f6acbc51fd5f9378dd5543827ffc8e85b92b5bbe62fa",
+      "test_cli_parity.py": "0bec5bb66698b507f7f1024434e6a31b11ab15d8c98e88b6903f5db856ff0fc9",
+      "test_compiler_execution.py": "4c1523c6863db469aac3186b16fe6e93ce47b36b241cbea311e52176676093c5",
+      "test_compiler_input_reconstruction.py": "3e411716ff327a9fa137ce042a14d0e90b07b5d2a1e98a8c128b359ad9e6f6b8",
+      "test_compiler_input_retention.py": "a6b4608dee45fa303f6d396399f0a8ae17800250af6bf3de346c038632a7324b",
+      "test_compiler_options.py": "54dd8df3779e97ab3b9cadc18766eeffd69cf2b59acc51b68c469bc271ba2c2b",
+      "test_compiler_wrapper.py": "7072a49817f3d582a857c0d2a3f33e0425a6453109f5eed2e6b731386a5eee2d",
+      "test_crucible_feature_policy.py": "9dd8e153b678795898b2cd63c405cf93f94e89e41f2e12cf2bb7d219e6f63fd7",
+      "test_declaration_query.py": "9f9fee08d945dbbb549dd21a60596da718bd3c2d3124303ca0702676d1aac1db",
+      "test_editor_cargo.py": "b71df9b76a5e5303a005cf3f3e2aa0ebb6948606cbe41cfca6a5a07f25cd7124",
+      "test_editor_cfg.py": "61251687f6171263a08c1c4ed32417ff1aab637b59cd0e8ee4ea5e330166b43e",
+      "test_editor_diagnostic_context.py": "16c4f5a6fbb90e7d1e345ab9957108a0b828d81a4f8c30e8fb4e829516fd5c0c",
+      "test_editor_workspace.py": "174f1b60cc41c5947f7e80ca6ed11c1ae5d2ab6f8e69b8b283da80086f960159",
+      "test_execution_events.py": "5d361c6d2c216d25745ea13df8793c46657f06419e63ca91fe0c36e994eea3b5",
+      "test_external_profile_qualification.py": "7f7ae508ab47a1659c29db2cb539c9dc1979a242c26c59607476872a71c8dfaa",
+      "test_family_cross_cases.py": "771ea0d6a00630633e4947a60095ce82364728474ea82c977fed4474db007ddd",
+      "test_family_editor.py": "4cbaf1ad3ecda8f3ff69aaf33970b48c4d55f373d2df3f1c246a1e57a282b6c4",
+      "test_feature_powerset.py": "a5ef27dd38a5fb889a0a4fd155844d588d47faaa6d1612da6e853bcf28e405ff",
+      "test_format_rust.py": "58f15e856bc8f4c7b712cd5a5f7f8301c4ec9d587d9fdb3ca81c0ca69b5d8db1",
+      "test_guest.py": "aeced8ec312e84e281f8d7a39e0301eeaba2e23ed6304d6819bc643ec5391200",
+      "test_guest_build_info.py": "56bca9707e4bfd406381c4509f459f859cdc8491ef1009a868c4a4397a736e40",
+      "test_inventory.py": "20b0eba6cdbbcb169bf08b8c85eb4d7ba60682901248c59a463139e65cbadfc3",
+      "test_launcher.py": "f18be21cd381c3a917f35d86c632cfc4c1c8b5fcc6b98d1e41a290f91edeb07f",
+      "test_native_cli_repeatability.py": "f12553447762fc5ef2487ceb1e16954e8c4563bbe1624cf53465977b7728a232",
+      "test_native_compiler_units.py": "45da1a44c372fa35dd9a401e7d8dcf256c4d4fa7dabd6007a95be55f00818cb2",
+      "test_native_profile_defaults.py": "ac387eea30bff8cc876fc0b7e7ca928cb9f86c885fa7799774bd05cd27c8bce2",
+      "test_optional_dependencies.py": "a1ed71eb39b402e808f4672a38f1aa6130a8e0ef42de4e22ec913e69173c4932",
+      "test_package_metadata.py": "18a81b74585c502e315ad0c13f0ad87752af6419a5ce32b81dd2f16518f14c08",
+      "test_packages.py": "2eacf238e85357b4831790bdc840450d1ca5dfc26d6380133ee00784f78c709e",
+      "test_protocol_parity.py": "3b3cdf06b362f962a56a5836e322e7cb601c8048edbee2b6dda52f76fd54f3ae",
+      "test_registry_browser.py": "483095d51888c317eca7ac5fe896090c76c9a15ecfd80c6bf08f446ca450fda5",
+      "test_release_packages.py": "10d4aa72f0efe31b97542062f9fb3682517336e5863acf5ffa2016c24feb577c",
+      "test_repository_test_sources.py": "1d878514440561a6950a34aee640545e93e4c66bf7b9e45da3d66a6a4435ee0c",
+      "test_runner.py": "93593de9095734f007c534a35971fbf48b055452a74e0cedca0b2d6f7f77f179",
+      "test_rust_project.py": "3e2e1c1d0a6e13d9d531cb9cbf65013b34146d3cf439e476d62a35cb48904167",
+      "test_rust_update.py": "75963ab2a011e279f71501cdbba100d0969716e28d9905eddabcccce6acd1859",
+      "test_rust_update_optional.py": "1f3a277879605bb83caffd18c88bf6e5955f2b423e15719e2b6913aff9f4c1dc",
+      "test_source_catalog.py": "d4155b7fafb63bef2cae27aeca9d7157fc1a5d46e7f812cbb07e186231e19c83",
+      "test_static_runtime.py": "fc7b271a3e1b87735ceffc8b50fcf6d3222ae8f40e0a6a5e1cfa90f7cf686153",
+      "test_sysroot_cargo.py": "623fc7d571fb1368f87216250602032e06a16186dfaab9c665f86d24790b3dc5",
+      "test_worker.py": "b794252b27ef638a6d8533d0fc8d6eef00f69166bff8a70864c5a9adca6b84db",
+      "test_worktree_cache.py": "8b5b6486e6dcbc59891f4df516de7288038c9c1d74dd98b07218239b7bf60f35",
+      "trace_cargo_rustc.py": "9e61f12ad19101aa4c6aa5dc6640db6380d2632926e66b4ffc92df40c14f34a6",
+      "train_pgo.py": "10d0343d5831993024cc6ba5893cf9beb72b45d26acc941ae61c2bfab44c8847",
+      "verify_abi_owners.py": "e1338f80a0dc24c7caa97eaa51fe8e7256a80ac5fe8d62afc9ac784f2299af36",
+      "verify_ability_package.py": "77cb805e613b0c68baaf91262f1c412f4fcc35a433270b1b29319580991cb7ba",
+      "verify_activation_crucible.py": "c95443f8b8ecc22eff9b84094f126e07c6a713a5e0369bf126f12d149fd1fab0",
+      "verify_architecture.py": "a3447d3e6ea98d584d4105cc0982c5843853db8c5081162161dca510611c5e1c",
+      "verify_bpf_native.py": "73c9c6a6b372830ace9a072b3e15a9cc7f65597d9df2f038341fcb60f25861aa",
+      "verify_bpf_provider.py": "cf590a847791e65803e4529d654f4aceb4b3b793537d1e104a2b87251250d1fc",
+      "verify_cache.py": "48679f851e2b8f7789104114cbd52c62798f908b3313d636531546da7f7bed02",
+      "verify_cli.py": "fa6a9e6837c87150adf34f4371b9026ea7c65db64b97c7d91499013661e95306",
+      "verify_cli_package.py": "6a4e3be6dc746b320b094b9ee28947463d30a985c828fb3f849de7118d6f53a1",
+      "verify_compiler_option_semantics.py": "47556161f33f316ec59306d6084e6ba732f97506b7b63e0d1165fcd327494ab1",
+      "verify_compiler_options.py": "32facacd49f04aacc8cb557febbb76a56e25ec9534037576aaf49c1962d0ce1c",
+      "verify_compiler_wrapper.py": "80f0d4b70d63072a879bff2e50c2dfa9e5d960a7cd8dcdae4a9b79d3f477ba7c",
+      "verify_concurrent.py": "b2f19422f897c6cff509601f3af725f9d25a5b78c1ab484be556bc7c503e5f4e",
+      "verify_configuration_package.py": "49e8ce87a56661e4eff03d777c8085e1897d1ae3d1ff9ed6e89f98ea54b4307d",
+      "verify_configuration_provider.py": "8afbb4f19740dab5c691ae92d6f5951f4ed4a4c9907fe6d23f2fb09870a3731f",
+      "verify_cross_linux.py": "4e68c910de0485f38cdf6070532b70055f86cd1a312d39b49b623b74667e9c85",
+      "verify_crucible_feature_policy.py": "35abd0b2641b170ec57f9a80410c9b6de10d155f08a4c3aa235325f9c3a4047d",
+      "verify_family_cross.py": "2333d2bd82b04e1c7effa4911629e7c72d6504aa2f7bf6bec43dc5fbd6f81694",
+      "verify_family_editor.py": "b35d9da595d5d837e46933c7f87ee4c0f48c65239787e4d7846e88a4fab6d3cf",
+      "verify_feature_powerset.py": "37a4be274c028a704eb4e776d35d8f75b2c09913b0d49aba4897b42b66736855",
+      "verify_filesystem_provider.py": "44984e061dddb0d2295c75e7168cc1b93b0bad6383e97e640e23943b94453ff2",
+      "verify_guest.py": "b9a95c381fc242d4f1f140831681449c8b21c3e629aa0fe5926331b5d2ea0f26",
+      "verify_initrd_package.py": "14bf792f713b1db88aae1c7f0be0dfb09f287b260f1bf9105b329c4b4d016690",
+      "verify_invalidation.py": "8808c1d9dcad5678a4271b573a58653490d09447bbf2789451bf221910e0afcf",
+      "verify_kernel_tunable_provider.py": "a7d10ff0b10fcecb9ea44f8074000936ae0fd8b416e816950ba26edeea77cf74",
+      "verify_kubernetes_provider.py": "4158ab97e2d4f4f08fa0f0655dc438e9dfa0d4cf26ea97af0554209407e49a4d",
+      "verify_metadata_provider.py": "d515317904674e52343537f5baab452dc30bfdfa0a7c56a6baf6bc681b5df100",
+      "verify_metadata_rejections.py": "b5a7e27782cc1ac634a392ec1a67f243ecb22a27408339717ec022024ee7c71e",
+      "verify_native_cli_repeatability.py": "16aaaf593ea14e18c8233aafb5273b2b30a0dc3e7441108be69aca2a9e5a8dae",
+      "verify_native_libraries.py": "560d208273148ee135007ecfc10ca4fe4987506278ea2f1e3575c734b1bf00ff",
+      "verify_network_ruleset_provider.py": "04c58dab37a49cf6b4fcf07d6897fd2d99cf8c749da7066c2f5e0b2cebe9fc95",
+      "verify_nix_store_provider.py": "5886e618d247e7e9c4ad90730c5ae23b73dbf7ff0160db0cdc7424b23c5a8091",
+      "verify_package_metadata.py": "4d37602c85a76bb6d442c6720dcd7f24a5b7dd953c692396bbf23efaf91c1072",
+      "verify_pilot.py": "19d94d835b764d92881c5797d7d8e9251b9b6965a1c7aeb41030db6a7e207e50",
+      "verify_preparation_provider.py": "26374baa116d804b115f354a626f8f2c813d4a135a79b3e7e858ec378916854f",
+      "verify_protocol.py": "bb78d26900934185ac11c0b9b4f18d3b8bfad362c3497e7d73c1c80ee9208e2d",
+      "verify_qemu_gpl.py": "27db0f89998cea3ab6a1afa92ec370456487188a3f9c77d99dd651c743c18e43",
+      "verify_qemu_installed.py": "d5e2abf15c67a9958262501d0c703da37a940772a77d6f3a79ce331c381e7be1",
+      "verify_registry_browser.py": "2c72b6290dc7d196d9e77dd23080c2a7cbc2414f80d4e4fc57b56d5cfed925c0",
+      "verify_registry_staging.py": "6dbf4cffb4950bd4d86e3e9dae95358a1de7661053d03ade399c679aa345a7f4",
+      "verify_rust_source_patches.py": "b2a15ff751e84c49c1251e4368b0d8c73a546207454db05a181a2a4c34cf4f63",
+      "verify_rustdoc_runner.py": "a33b7d8014fa507dab70f54b04008378fb0020558a1226f49b5f3905a9d74b50",
+      "verify_source_audits.py": "b1d3653e56dac963773f7fea110ebfb8aa085f78def0774e1c75e5c231690468",
+      "verify_source_catalog.py": "b6dfc77802c0d10dfdff65291c2f4370f5d087e24ee706d39a301d69dbd4f5b4",
+      "verify_static_runtime.py": "52ac949b73b4ac915c2aef1e0fbf10ba031584a8ec0aa09e8e8240dc94b75a2b",
+      "verify_static_storage_providers.py": "b5297c260f0af8cd0ae909d26194effd14af817ddc8dfc37a9dbf6a53fa0cf5f",
+      "verify_storage_provisioning_provider.py": "a28ae6d24bfae8a881a02e86f2bcdd26c5b8b1b1aa498cd020df9d50b50862eb",
+      "verify_store_native.py": "89e5155f54611fab421af626eeccb6938967224b94b383889eec9a8a9e027b5d",
+      "verify_systemd_provider.py": "a832bd1801ec576080bb93fe4f31521c90834e4d4bb945c00bac4649abf03334",
+      "verify_target_invalidation.py": "5a0248d21cec0fecce1ee80facceef04098dfab3845c7f62b80f20f9cf41321b",
+      "verify_transaction_storage_provider.py": "4b9d8625e2b48b0a7e2174d5c3e20b58dba66e9357b68dae40a6b126574b53dd",
+      "verify_wasm.py": "8836009a0fafb76a459dca10948461a30093110beb2f9a78e68e948af58f8f59",
+      "verify_worker.py": "2c81fe219540cc45ac1b57a00859385fc2a40fdae5084fc28bee3d428edbdb53",
+      "verify_worktree_cache.py": "794f46936718e37077acabc66c3a25eca0f47f59530fa40e44694dd0e30d3a86",
+      "verify_zfs_provider.py": "0c3a5acbd5a0865a8a6d9f091e2b203448db63927b1ae90296ebe6762ee563e9"
+    }
+  },
+  "qualified_builds": {
+    "production": {
+      "derivation": "/nix/store/mh32lq8jigw1pgrdv5zw5b18i7k9k1r8-aos-bazel-nix-store-provider-production-1.drv",
+      "evidence_sha256": {
+        "actions.json": "d0a0ff31e0ac0e4ec39ed34581a49e9a44273afdfe050a7424df69b051bad397",
+        "compiler-inputs.json": "d1365a2f96f52a7d9602b6d3b1c99b3c001975d05690654d957dea6665154927",
+        "execution.json": "8df155798e5e0ea0a8f9237900910834450624cb621f6fa247f38ce00dc08ead"
+      },
+      "first_party_rust_compilations": 6,
+      "fresh_linux_sandbox_actions": 131,
+      "output": "/nix/store/dh8b011p50kazs675nw5k8gzbdfw2gl9-aos-bazel-nix-store-provider-production-1"
+    },
+    "release_tests": {
+      "derivation": "/nix/store/gr34h5zvr2yhj0iyj3sqpqkl9rc32dk1-aos-bazel-nix-store-provider-release-tests-1.drv",
+      "evidence_sha256": {
+        "actions.json": "47e4aba95e667c92ecc648f83c741eb5647f9fa245d2767e76cbefa6fade362b",
+        "compiler-inputs.json": "f7107c1ef70aef1484615a31c230faa34be2bbff93bfbda258077907d0b1cd10",
+        "execution.json": "443ecba0c72fcecf027bc137c0027bb0c71bfd9b7d5eaf4543ea09577aca573f"
+      },
+      "first_party_rust_compilations": 8,
+      "fresh_linux_sandbox_actions": 141,
+      "output": "/nix/store/m6q3l35vg657z3camnvi0v251wx10nsx-aos-bazel-nix-store-provider-release-tests-1"
+    }
+  },
+  "qualified_reports_sha256": {
+    "driver-selection.json": "a0938ab6481db28131dcc51366587648a418537b8c26c982a13518f4bf7bcbb8",
+    "execution-profiles.json": "c838d976ee8af70809e94c94307153b1f4bb738e6644fd42b8f95134a83f98f2",
+    "report.json": "5c1d1c6541bdb4d67c0837cfca632b77de3edb3edb37e29a19857131dcb63bcf"
+  },
+  "regression_checks": {
+    "evaluation": {
+      "derivation": "/nix/store/mf8dzdbw4872yi1c169ga9677k04zsad-aos-native-evaluation-checks-0.drv",
+      "output": "/nix/store/zcwihdx4ldd1c70hml5nxgxvipyhhprg-aos-native-evaluation-checks-0"
+    },
+    "policy": {
+      "derivation": "/nix/store/wyi1yhs6piz0r30c4sann8rvml1l3ijd-aos-bazel-policy-checks.drv",
+      "output": "/nix/store/q3gnlls04b5f584a3hj6r0safdkap9v3-aos-bazel-policy-checks"
+    }
+  },
+  "release_test_profiles": {
+    "actions": {
+      "//crates/activation/aos-activation-nix-store:static_bin_binary": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-557885127",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "relocation-model": "static",
+          "strip": "none"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "//crates/activation/aos-activation-nix-store:static_unit_binary": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2441732054",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "relocation-model": "static",
+          "strip": "none"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_nix_store_provider_crates__ref-cast-impl-1.0.27//:ref_cast_impl": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-797951557",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_nix_store_provider_crates__schemars_derive-1.2.2//:schemars_derive": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-351127519",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_nix_store_provider_crates__serde_derive-1.0.228//:serde_derive": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-3613441286",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_nix_store_provider_crates__thiserror-impl-2.0.18//:thiserror_impl": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-3940194006",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      }
+    },
+    "build": "/nix/store/m6q3l35vg657z3camnvi0v251wx10nsx-aos-bazel-nix-store-provider-release-tests-1",
+    "cargo": "/nix/store/20hw4z94lgaxdnxs43rp8g59igacgpnm-aos-bazel-nix-store-provider-release-cargo-oracle-1",
+    "cargo_actions": {
+      "aos_activation_nix_store": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "aos_activation_nix_store",
+          "--edition=2024",
+          "activation/aos-activation-nix-store/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--emit=dep-info,link",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "embed-bitcode=no",
+          "--test",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=62bf951212a54b57",
+          "-C",
+          "extra-filename=-b3877a2e1fd4675f",
+          "--out-dir",
+          "/build/target/x86_64-unknown-linux-gnu/release/deps",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/x86_64-unknown-linux-gnu/release/deps",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "anyhow=/build/target/x86_64-unknown-linux-gnu/release/deps/libanyhow-4d13e2828bba4632.rlib",
+          "--extern",
+          "aos_activation=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_activation-bf9f1fae53572d97.rlib",
+          "--extern",
+          "aos_artifact_evidence=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_artifact_evidence-a6c1e8631260c5cc.rlib",
+          "--extern",
+          "aos_core=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_core-7bb4a38340ed90e8.rlib",
+          "--extern",
+          "aos_module_format=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_module_format-ac2ad40ceb3466e3.rlib",
+          "--extern",
+          "libc=/build/target/x86_64-unknown-linux-gnu/release/deps/liblibc-39c8a7abe34e390e.rlib",
+          "--extern",
+          "serde=/build/target/x86_64-unknown-linux-gnu/release/deps/libserde-03810152b1ce6825.rlib",
+          "--extern",
+          "serde_json=/build/target/x86_64-unknown-linux-gnu/release/deps/libserde_json-96d5a4acafa0610c.rlib",
+          "--extern",
+          "tempfile=/build/target/x86_64-unknown-linux-gnu/release/deps/libtempfile-842a820a0f19493d.rlib",
+          "-C",
+          "target-feature=+crt-static",
+          "-C",
+          "relocation-model=static",
+          "-L",
+          "/nix/store/vid9pc17cwcv06aai6yrlyq5ii60qp65-aos-bazel-static-libraries-1/static/lib"
+        ],
+        "compiler_options": {
+          "embed-bitcode": "no",
+          "extra-filename": "-b3877a2e1fd4675f",
+          "opt-level": "3",
+          "relocation-model": "static",
+          "strip": "debuginfo"
+        }
+      },
+      "aos_nix_store_provider": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "aos_nix_store_provider",
+          "--edition=2024",
+          "activation/aos-activation-nix-store/src/main.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--emit=dep-info,link",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "embed-bitcode=no",
+          "--test",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=9a4fe2ba8e489cf8",
+          "-C",
+          "extra-filename=-38c51dc75b88767e",
+          "--out-dir",
+          "/build/target/x86_64-unknown-linux-gnu/release/deps",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/x86_64-unknown-linux-gnu/release/deps",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "anyhow=/build/target/x86_64-unknown-linux-gnu/release/deps/libanyhow-4d13e2828bba4632.rlib",
+          "--extern",
+          "aos_activation=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_activation-bf9f1fae53572d97.rlib",
+          "--extern",
+          "aos_activation_nix_store=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_activation_nix_store-ea7a654a1b2ab1a1.rlib",
+          "--extern",
+          "aos_artifact_evidence=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_artifact_evidence-a6c1e8631260c5cc.rlib",
+          "--extern",
+          "aos_core=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_core-7bb4a38340ed90e8.rlib",
+          "--extern",
+          "aos_module_format=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_module_format-ac2ad40ceb3466e3.rlib",
+          "--extern",
+          "libc=/build/target/x86_64-unknown-linux-gnu/release/deps/liblibc-39c8a7abe34e390e.rlib",
+          "--extern",
+          "serde=/build/target/x86_64-unknown-linux-gnu/release/deps/libserde-03810152b1ce6825.rlib",
+          "--extern",
+          "serde_json=/build/target/x86_64-unknown-linux-gnu/release/deps/libserde_json-96d5a4acafa0610c.rlib",
+          "--extern",
+          "tempfile=/build/target/x86_64-unknown-linux-gnu/release/deps/libtempfile-842a820a0f19493d.rlib",
+          "-C",
+          "target-feature=+crt-static",
+          "-C",
+          "relocation-model=static",
+          "-L",
+          "/nix/store/vid9pc17cwcv06aai6yrlyq5ii60qp65-aos-bazel-static-libraries-1/static/lib"
+        ],
+        "compiler_options": {
+          "embed-bitcode": "no",
+          "extra-filename": "-38c51dc75b88767e",
+          "opt-level": "3",
+          "relocation-model": "static",
+          "strip": "debuginfo"
+        }
+      },
+      "ref_cast_impl": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "ref_cast_impl",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/ref-cast-impl-1.0.27/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "-C",
+          "debug-assertions=off",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=a717141de6ecd3f1",
+          "-C",
+          "extra-filename=-a48c94bb80e87f4c",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "proc_macro2=/build/target/release/deps/libproc_macro2-abb2be69adaa0af9.rlib",
+          "--extern",
+          "quote=/build/target/release/deps/libquote-2b50be8d5619ef9c.rlib",
+          "--extern",
+          "syn=/build/target/release/deps/libsyn-52b1d658133d2ea5.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "debug-assertions": "off",
+          "embed-bitcode": "no",
+          "extra-filename": "-a48c94bb80e87f4c",
+          "strip": "debuginfo"
+        }
+      },
+      "schemars_derive": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "schemars_derive",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/schemars_derive-1.2.2/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "-C",
+          "debug-assertions=off",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=48fd3cd60347085a",
+          "-C",
+          "extra-filename=-4a7b269045a6e8c2",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "proc_macro2=/build/target/release/deps/libproc_macro2-abb2be69adaa0af9.rlib",
+          "--extern",
+          "quote=/build/target/release/deps/libquote-2b50be8d5619ef9c.rlib",
+          "--extern",
+          "serde_derive_internals=/build/target/release/deps/libserde_derive_internals-a9aae53084cf0d9f.rlib",
+          "--extern",
+          "syn=/build/target/release/deps/libsyn-52b1d658133d2ea5.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "debug-assertions": "off",
+          "embed-bitcode": "no",
+          "extra-filename": "-4a7b269045a6e8c2",
+          "strip": "debuginfo"
+        }
+      },
+      "serde_derive": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "serde_derive",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/serde_derive-1.0.228/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "-C",
+          "debug-assertions=off",
+          "--cfg",
+          "feature=\"default\"",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values(\"default\", \"deserialize_in_place\"))",
+          "-C",
+          "metadata=7251362fc480c1e6",
+          "-C",
+          "extra-filename=-18561e4675320f61",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "proc_macro2=/build/target/release/deps/libproc_macro2-abb2be69adaa0af9.rlib",
+          "--extern",
+          "quote=/build/target/release/deps/libquote-2b50be8d5619ef9c.rlib",
+          "--extern",
+          "syn=/build/target/release/deps/libsyn-fb82b5dc8d8ab19a.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "debug-assertions": "off",
+          "embed-bitcode": "no",
+          "extra-filename": "-18561e4675320f61",
+          "strip": "debuginfo"
+        }
+      },
+      "thiserror_impl": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "thiserror_impl",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/thiserror-impl-2.0.18/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "-C",
+          "debug-assertions=off",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=99654fda423801a1",
+          "-C",
+          "extra-filename=-80b90e813577f698",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "proc_macro2=/build/target/release/deps/libproc_macro2-abb2be69adaa0af9.rlib",
+          "--extern",
+          "quote=/build/target/release/deps/libquote-2b50be8d5619ef9c.rlib",
+          "--extern",
+          "syn=/build/target/release/deps/libsyn-fb82b5dc8d8ab19a.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "debug-assertions": "off",
+          "embed-bitcode": "no",
+          "extra-filename": "-80b90e813577f698",
+          "strip": "debuginfo"
+        }
+      }
+    },
+    "cargo_trace_sha256": "057f2e0a2af51a1608910e4d86902d02b36bb70205fe24f19a728a3f348b5c34",
+    "evidence_sha256": {
+      "actions.json": "47e4aba95e667c92ecc648f83c741eb5647f9fa245d2767e76cbefa6fade362b",
+      "compiler-inputs.json": "f7107c1ef70aef1484615a31c230faa34be2bbff93bfbda258077907d0b1cd10",
+      "execution.json": "443ecba0c72fcecf027bc137c0027bb0c71bfd9b7d5eaf4543ea09577aca573f"
+    },
+    "limits": [
+      "Checks selected target and macro profiles, not complete compiler/default, native ABI, linker, editor, production, or performance equivalence."
+    ],
+    "schema_version": 1,
+    "status": "PASS"
+  },
+  "remaining_gates": [
+    "live image/system activation effects",
+    "foreign-host execution",
+    "numeric performance acceptance",
+    "production default cutover",
+    "repository-wide Cargo removal",
+    "remaining RFC-0028 conversions and qualification"
+  ],
+  "schema_version": 1,
+  "source_inventory": {
+    "contracts": 198,
+    "precise_and_conservative_analysis_exactly_match": true,
+    "reports": 90,
+    "roots": 7,
+    "sha256": "ad8050ea7104feb5df4be8cfd926dca58050ab97094aa3749351f256087e58b3",
+    "source_directories": 5,
+    "source_files": 48,
+    "unchanged_existing_implementation_selections": 67
+  },
+  "status": "PASS_NATIVE_LINUX_INSTALLED_PACKAGE_AND_ISOLATED_SOURCE_BUILT_NIX"
+}

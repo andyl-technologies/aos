@@ -13,6 +13,7 @@ load(":configuration-files/aliases.bzl", CONFIGURATION_FILES_CRATES = "CRATES")
 load(":configuration-files-tests/aliases.bzl", CONFIGURATION_FILES_TESTS_CRATES = "CRATES")
 load(":preparation-provider/aliases.bzl", PREPARATION_PROVIDER_CRATES = "CRATES")
 load(":preparation-provider-tests/aliases.bzl", PREPARATION_PROVIDER_TESTS_CRATES = "CRATES")
+load(":nix-store-provider/aliases.bzl", NIX_STORE_PROVIDER_CRATES = "CRATES")
 load(":boot-preparation.bzl", "BOOT_PREPARATION_FEATURE_VARIANTS", "BOOT_PREPARATION_MINIMAL_FEATURE_VARIANTS", "BOOT_PREPARATION_MINIMAL_PACKAGES", "BOOT_PREPARATION_PACKAGES")
 load(":boot-preparation/aliases.bzl", BOOT_PREPARATION_CRATES = "CRATES")
 load(":boot-preparation-minimal/aliases.bzl", BOOT_PREPARATION_MINIMAL_CRATES = "CRATES")
@@ -139,6 +140,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
             "//tools/bazel/rules:configuration_files_tests_dependencies": CONFIGURATION_FILES_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:preparation_provider_dependencies": PREPARATION_PROVIDER_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:preparation_provider_tests_dependencies": PREPARATION_PROVIDER_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:nix_store_provider_dependencies": NIX_STORE_PROVIDER_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:boot_preparation_dependencies": BOOT_PREPARATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:boot_preparation_minimal_dependencies": BOOT_PREPARATION_MINIMAL_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:release_coordination_dependencies": RELEASE_COORDINATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -213,6 +215,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         + CONFIGURATION_FILES_TESTS_CRATES.items()
         + PREPARATION_PROVIDER_CRATES.items()
         + PREPARATION_PROVIDER_TESTS_CRATES.items()
+        + NIX_STORE_PROVIDER_CRATES.items()
         + BOOT_PREPARATION_CRATES.items()
         + BOOT_PREPARATION_MINIMAL_CRATES.items()
         + RELEASE_COORDINATION_CRATES.items()
@@ -468,6 +471,13 @@ PREPARATION_PROVIDER_PACKAGES = dict(
 PREPARATION_PROVIDER_TESTS_PACKAGES = dict(
     PREPARATION_PROVIDER_PACKAGES,
     tempfile = STORE_PACKAGES["tempfile"],
+)
+
+# The standalone Nix store handler needs libc and production tempfile, but
+# does not enable the storage family's rustix process feature.
+NIX_STORE_PROVIDER_PACKAGES = dict(
+    PREPARATION_PROVIDER_TESTS_PACKAGES,
+    libc = CORE_PACKAGES["libc"],
 )
 
 ACTIVATION_CORE_TESTS_PACKAGES = dict(
@@ -1105,6 +1115,16 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "nix-store-provider": {
+        # Keep the native derive parser; the lock also resolves foreign-only
+        # tempfile dependencies that enable Syn's full parser on other hosts.
+        "syn": json.encode({
+            "version": "2.0.118",
+            "resolved_features": ["clone-impls", "default", "derive", "full", "parsing", "printing", "proc-macro"],
+            "features": ["clone-impls", "default", "derive", "parsing", "printing", "proc-macro"],
+        }),
+    },
+
     "systemd-provider": SYSTEMD_PROVIDER_FEATURE_VARIANTS,
     "configuration-files-tests": CONFIGURATION_FILES_TESTS_FEATURE_VARIANTS,
     "kernel-tunable-tests": KERNEL_TUNABLE_TESTS_FEATURE_VARIANTS,
@@ -1999,6 +2019,7 @@ APPROVED_LICENSES = [
         ("configuration-files-tests", CONFIGURATION_FILES_TESTS_PACKAGES, {}, "apache-host"),
         ("preparation-provider", PREPARATION_PROVIDER_PACKAGES, {}, "apache-host"),
         ("preparation-provider-tests", PREPARATION_PROVIDER_TESTS_PACKAGES, {}, "apache-host"),
+        ("nix-store-provider", NIX_STORE_PROVIDER_PACKAGES, {}, "apache-host"),
         ("boot-preparation", BOOT_PREPARATION_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("boot-preparation-minimal", BOOT_PREPARATION_MINIMAL_PACKAGES, {name: annotation for name, annotation in NATIVE_FOUNDATION_ANNOTATIONS.items() if name != "zstd-sys"}, "apache-host"),
         ("package-manager", PACKAGE_MANAGER_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
@@ -2111,6 +2132,7 @@ APPROVED_LICENSES = [
         "configuration-files-tests",
         "preparation-provider",
         "preparation-provider-tests",
+        "nix-store-provider",
         "boot-preparation",
         "boot-preparation-minimal",
         "release-coordination",

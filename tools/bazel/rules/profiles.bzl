@@ -31,6 +31,7 @@ def _dependency_profile_impl(ctx):
         "configuration-image-tests",
         "preparation-provider",
         "preparation-provider-tests",
+        "nix-store-provider",
         "systemd-provider",
         "configuration-files",
         "configuration-files-tests",

@@ -2416,6 +2416,41 @@ Live K3s/API-server effects, complete role-package qualification, foreign-host
 execution, numeric performance acceptance, production default cutover and
 repository-wide Cargo removal remain separate RFC gates.
 
+## Nix store provider package
+
+`pkgs.aos-nix-store-provider.passthru.withBuildDriver "bazel"` selects the
+static Nix store handler with its immutable `libexec/nix-store` companion
+symlink. Cargo remains the default and rollback builder. The Bazel branch
+avoids evaluating the Cargo constructor, artifacts, dummy source and vendor
+tree, and preserves module dependencies, platform and qualification contracts,
+installed files and the complete runtime closure.
+
+`checks.build.bazel.nix-store-provider-production.all`, also exposed through
+`tools/bazel/tests/nix-store-provider-production.nix`, compares six production
+compiler profiles, release test and procedural macro profiles, five first-party
+package feature selections and 42 dependency identities. Its dedicated pinned
+SDK retains the native derive parser and avoids enabling the broader storage
+family's `rustix` process feature. All 74 previous profiles retain their
+dependency selections and generated files.
+
+The check compares ten ordinary library cases, the ignored-case inventory,
+empty command and doctest suites, and 12 CLI rejection and byte-boundary cases.
+An additional `static_real_nix` target runs the previously ignored case from
+the same compiled library test binary. It uses source-built Nix to add exact
+content to a private `local?root` store, verify its fixed-output path, validity,
+references, NAR dump and stored bytes. The source-built Nix executable and its
+runtime closure identity are declared test inputs. The same case also runs
+explicitly in the retained Cargo test binary.
+
+All 131 production and 141 release-test actions execute freshly in Linux
+sandboxes. Precise and conservative source selections agree on seven roots and
+90 configured reports and produce identical package binary bytes. Evidence is
+retained in `tests/evidence/nix-store-provider-production-package.json`.
+
+Live image/system activation, foreign-host execution, numeric performance
+acceptance, production default cutover and repository-wide Cargo removal
+remain separate RFC gates.
+
 ## Storage/campaign compilation measurements
 
 `tests/evidence/store-performance-v3.json` identifies a frozen compilation trial
