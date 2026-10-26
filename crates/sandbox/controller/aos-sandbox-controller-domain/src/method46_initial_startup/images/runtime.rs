@@ -16,7 +16,7 @@ const POLICY_PINS: usize = 3;
 const MAXIMUM_RUNTIME_PINS: usize = 512;
 
 pub(in crate::method46_initial_startup) struct InitialRuntimeOriginalV1 {
-    files: Vec<ImageOriginalV1>,
+    pub(super) files: Vec<ImageOriginalV1>,
     reservation: Option<Result<(), std::collections::TryReserveError>>,
     inventory_result: Option<Result<(), Method46InitialStartupClosedV1>>,
     maps: [RefCell<RuntimeMapsOriginalV1>; 2],
@@ -60,7 +60,7 @@ impl InitialRuntimeOriginalV1 {
 
     pub(in crate::method46_initial_startup) fn finish_posts(
         &self,
-        profile: Option<&Method46InitialProfileDataV2>,
+        profile: Option<&Method46InitialProfileDataV3>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         let mut refused = false;
         for image in &self.files {
@@ -83,7 +83,7 @@ impl InitialRuntimeOriginalV1 {
     fn observe_maps(
         &self,
         index: usize,
-        profile: &Method46InitialProfileDataV2,
+        profile: &Method46InitialProfileDataV3,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         let mut original = self
             .maps
@@ -156,7 +156,7 @@ fn slot_demand(count: usize) -> Option<ResourceVector> {
     Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(bytes).ok()?))
 }
 
-fn pin(profile: &Method46InitialProfileDataV2, index: usize) -> Option<&ImagePinV1> {
+pub(super) fn pin(profile: &Method46InitialProfileDataV3, index: usize) -> Option<&ImagePinV1> {
     if index < profile.runtime_files.len() {
         return profile.runtime_files.get(index);
     }
@@ -290,85 +290,7 @@ impl Method46InitialStartupOriginalV1 {
             runtime.files.push(ImageOriginalV1::new());
         }
         for index in 0..count {
-            self.measure_runtime_file(index)?;
-        }
-        Ok(())
-    }
-
-    fn measure_runtime_file(&mut self, index: usize) -> Result<(), Method46InitialStartupClosedV1> {
-        self.source
-            .get_mut()
-            .require_current_v1()
-            .map_err(|_| self.closed)?;
-        self.fund_additional(Some(
-            ResourceVector::ZERO
-                .with(D::MemoryBytes, 2 * 4097 + 128)
-                .with(D::OpenFiles, 1)
-                .with(D::MetadataEntries, 4),
-        ))?;
-
-        let body = self.body.as_mut().ok_or(self.closed)?;
-        let profile = body
-            .profile_decoded
-            .as_ref()
-            .and_then(|value| value.as_ref().ok())
-            .ok_or(self.closed)?;
-        let selected = pin(profile, index).ok_or(self.closed)?;
-        let image = body.runtime.files.get_mut(index).ok_or(self.closed)?;
-        image.preflight_entered = true;
-        image.open = Some(match File::open(&selected.path) {
-            Ok(file) => {
-                image.file = Some(file);
-                Ok(())
-            }
-            Err(error) => Err(error),
-        });
-        let file = image.file.as_ref().ok_or(self.closed)?;
-        image.metadata = Some(file.metadata());
-        let metadata = image
-            .metadata
-            .as_ref()
-            .and_then(|value| value.as_ref().ok())
-            .ok_or(self.closed)?;
-        let maximum = metadata.len();
-        image.maximum = Some(maximum);
-        if maximum == 0 || maximum > MAXIMUM_IMAGE_BYTES {
-            return Err(self.closed);
-        }
-
-        let body = self.body.as_ref().ok_or(self.closed)?;
-        let profile = body
-            .profile_decoded
-            .as_ref()
-            .and_then(|value| value.as_ref().ok())
-            .ok_or(self.closed)?;
-        self.fund_additional(acquisition_demand(
-            pin(profile, index).ok_or(self.closed)?,
-            maximum,
-        ))?;
-
-        let body = self.body.as_mut().ok_or(self.closed)?;
-        let profile = body
-            .profile_decoded
-            .as_ref()
-            .and_then(|value| value.as_ref().ok())
-            .ok_or(self.closed)?;
-        let selected = pin(profile, index).ok_or(self.closed)?;
-        let executable =
-            selected.path == profile.executable.path || selected.path == profile.loader.path;
-        let path = PathBuf::from(&selected.path);
-        let expected = selected.sha256;
-        let image = body.runtime.files.get_mut(index).ok_or(self.closed)?;
-        let file = image.file.take().ok_or(self.closed)?;
-        image.measurement = Some(image.acquisition.measure_original_once(
-            path,
-            file,
-            Some(expected),
-            maximum,
-            executable,
-        ));
-        if !matches!(image.measurement, Some(Ok(()))) {
-            return Err(self.closed);
+            self.measure_inventory_file(InventoryV1::Initial, index)?;
         }
         Ok(())
     }
@@ -380,12 +302,12 @@ mod tests {
 
     use super::*;
 
-    fn untrusted_profile_data() -> Method46InitialProfileDataV2 {
+    fn untrusted_profile_data() -> Method46InitialProfileDataV3 {
         let image = ImagePinV1 {
             path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-untrusted/bin/image".to_owned(),
             sha256: [1; 32],
         };
-        Method46InitialProfileDataV2 {
+        Method46InitialProfileDataV3 {
             format: String::new(),
             unit: String::new(),
             owner_context: String::new(),
@@ -399,6 +321,10 @@ mod tests {
             effective_matrix: image.clone(),
             unit_sha256: [1; 32],
             normal_unit_fragment: image.clone(),
+            normal_image: aos_sandbox_broker::profile_data::method46_initial::normal_image::Method46NormalImageDataV1 {
+                executable: image.clone(), loader: image.clone(), runtime_files: vec![image.clone()],
+                closure_roots: Vec::new(), argv: Vec::new(),
+            },
             controller_uid: 1,
             controller_gid: 1,
             approval_public_key: [1; 32],

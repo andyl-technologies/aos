@@ -3,9 +3,9 @@
 //! The image-built JSON has one strict grammar:
 //!
 //! ```text
-//! AOS_METHOD46_INITIAL_STARTUP_2: fixed unit/subject + executable/PID1/loader
+//! AOS_METHOD46_INITIAL_STARTUP_3: fixed unit/subject + executable/PID1/loader
 //! pins + sorted runtime pins/closure roots + canonical/source/effective policy
-//! pins + normalized unit SHA256 + normal-owner unit pin + Controller UID/GID
+//! pins + normalized unit SHA256 + normal-owner unit/image pins + Controller UID/GID
 //! + approval public key
 //! ```
 //!
@@ -24,16 +24,18 @@ use crate::receiving::Method46InitialServiceRoleV1;
 use super::runtime_deployment::deserialize_bounded_profile_sequence_v1;
 use super::schema::{ImagePinV1, MAXIMUM_PROFILE_BYTES, MAXIMUM_RUNTIME_FILES, require_store_path};
 
+pub mod normal_image;
+
 /// Refuses malformed or foreign initial-producer profile comparison DATA.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("initial METHOD46 image-profile DATA differs")]
-pub struct Method46InitialProfileDataErrorV2;
+pub struct Method46InitialProfileDataErrorV3;
 
 /// Describes the selected manual producer image without admitting an invocation.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Method46InitialProfileDataV2 {
-    /// Names the exact AOS_METHOD46_INITIAL_STARTUP_2 grammar.
+pub struct Method46InitialProfileDataV3 {
+    /// Names the exact AOS_METHOD46_INITIAL_STARTUP_3 grammar.
     pub format: String,
     /// Names the fixed Controller or Storage initial-floor unit.
     pub unit: String,
@@ -64,6 +66,8 @@ pub struct Method46InitialProfileDataV2 {
     /// This pin commits unit bytes. Native PID1 configuration, selected images,
     /// credential provenance and interval currentness require separate checks.
     pub normal_unit_fragment: ImagePinV1,
+    /// Pins the selected stopped owner's configured command and runtime files.
+    pub normal_image: normal_image::Method46NormalImageDataV1,
     /// Names the configured Controller journal owner, never the root producer.
     pub controller_uid: u32,
     /// Names the configured Controller group for later native comparisons.
@@ -75,7 +79,7 @@ pub struct Method46InitialProfileDataV2 {
     pub approval_public_key: [u8; 32],
 }
 
-impl Method46InitialProfileDataV2 {
+impl Method46InitialProfileDataV3 {
     /// Compares bounded canonical shape with the caller's actual source role.
     ///
     /// The role itself is DATA; only the authenticating startup owner can join
@@ -86,10 +90,10 @@ impl Method46InitialProfileDataV2 {
     /// Rejects a foreign format/unit/subject/executable, sentinel identity or
     /// digest, weak key, malformed policy path, noncanonical bounded inventory,
     /// missing executable/loader pin or runtime outside the declared roots.
-    pub fn require_shape_data_v2(
+    pub fn require_shape_data_v3(
         &self,
         role: Method46InitialServiceRoleV1,
-    ) -> Result<(), Method46InitialProfileDataErrorV2> {
+    ) -> Result<(), Method46InitialProfileDataErrorV3> {
         let (unit, context, executable, normal_unit) = match role {
             Method46InitialServiceRoleV1::ControllerStorageClient => (
                 "aos-sandbox-controller-floor-initialize.service",
@@ -104,7 +108,7 @@ impl Method46InitialProfileDataV2 {
                 "/aos-storaged.service",
             ),
         };
-        if self.format != "AOS_METHOD46_INITIAL_STARTUP_2"
+        if self.format != "AOS_METHOD46_INITIAL_STARTUP_3"
             || self.unit != unit
             || self.owner_context != context
             || !self.executable.path.ends_with(executable)
@@ -124,18 +128,19 @@ impl Method46InitialProfileDataV2 {
                 .any(|pair| pair[0].path >= pair[1].path)
             || self.closure_roots.windows(2).any(|pair| pair[0] >= pair[1])
         {
-            return Err(Method46InitialProfileDataErrorV2);
+            return Err(Method46InitialProfileDataErrorV3);
         }
         let approval = VerifyingKey::from_bytes(&self.approval_public_key)
-            .map_err(|_| Method46InitialProfileDataErrorV2)?;
+            .map_err(|_| Method46InitialProfileDataErrorV3)?;
         if approval.is_weak() {
-            return Err(Method46InitialProfileDataErrorV2);
+            return Err(Method46InitialProfileDataErrorV3);
         }
+        self.normal_image.require_shape_data_v1(role)?;
 
         for root in &self.closure_roots {
-            require_store_path(root).map_err(|_| Method46InitialProfileDataErrorV2)?;
+            require_store_path(root).map_err(|_| Method46InitialProfileDataErrorV3)?;
             if Path::new(root).components().count() != 4 {
-                return Err(Method46InitialProfileDataErrorV2);
+                return Err(Method46InitialProfileDataErrorV3);
             }
         }
         for pin in self.runtime_files.iter().chain([
@@ -147,9 +152,9 @@ impl Method46InitialProfileDataV2 {
             &self.effective_matrix,
             &self.normal_unit_fragment,
         ]) {
-            require_store_path(&pin.path).map_err(|_| Method46InitialProfileDataErrorV2)?;
+            require_store_path(&pin.path).map_err(|_| Method46InitialProfileDataErrorV3)?;
             if pin.sha256 == [0; 32] {
-                return Err(Method46InitialProfileDataErrorV2);
+                return Err(Method46InitialProfileDataErrorV3);
             }
         }
         for member in &self.runtime_files {
@@ -158,7 +163,7 @@ impl Method46InitialProfileDataV2 {
                     .strip_prefix(root)
                     .is_ok_and(|suffix| suffix.components().count() > 0)
             }) {
-                return Err(Method46InitialProfileDataErrorV2);
+                return Err(Method46InitialProfileDataErrorV3);
             }
         }
         for required in [&self.executable, &self.loader] {
@@ -167,7 +172,7 @@ impl Method46InitialProfileDataV2 {
                 .iter()
                 .any(|member| member.path == required.path && member.sha256 == required.sha256)
             {
-                return Err(Method46InitialProfileDataErrorV2);
+                return Err(Method46InitialProfileDataErrorV3);
             }
         }
         if !self
@@ -177,15 +182,15 @@ impl Method46InitialProfileDataV2 {
             || !self
                 .source_policy
                 .path
-                .ends_with("-aos-method46-initial-startup-profile-2/source-policy.33")
+                .ends_with("-aos-method46-initial-startup-profile-3/source-policy.33")
             || !self
                 .effective_matrix
                 .path
-                .ends_with("-aos-method46-initial-startup-profile-2/effective-policy.tsv")
+                .ends_with("-aos-method46-initial-startup-profile-3/effective-policy.tsv")
             || Path::new(&self.source_policy.path).parent()
                 != Path::new(&self.effective_matrix.path).parent()
         {
-            return Err(Method46InitialProfileDataErrorV2);
+            return Err(Method46InitialProfileDataErrorV3);
         }
         Ok(())
     }
@@ -198,14 +203,18 @@ impl Method46InitialProfileDataV2 {
 /// compiled models and vector carriers, four encoded string extents and bounded
 /// key-comparison scratch cover this strict schema's decoding and shape checks.
 #[must_use]
-pub fn method46_initial_profile_representation_bytes_v2(encoded_bytes: usize) -> Option<usize> {
+pub fn method46_initial_profile_representation_bytes_v3(encoded_bytes: usize) -> Option<usize> {
     if encoded_bytes == 0 || encoded_bytes > MAXIMUM_PROFILE_BYTES {
         return None;
     }
+    // Both inventories, both root lists and the bounded argv can coexist in
+    // each decoded model. Encoded extents below separately cover string bytes.
     let carriers = MAXIMUM_RUNTIME_FILES.checked_mul(
-        std::mem::size_of::<ImagePinV1>().checked_add(std::mem::size_of::<String>())?,
+        std::mem::size_of::<ImagePinV1>()
+            .checked_mul(2)?
+            .checked_add(std::mem::size_of::<String>().checked_mul(3)?)?,
     )?;
-    std::mem::size_of::<Method46InitialProfileDataV2>()
+    std::mem::size_of::<Method46InitialProfileDataV3>()
         .checked_mul(2)?
         .checked_add(carriers.checked_mul(2)?)?
         .checked_add(encoded_bytes.checked_mul(4)?)?
@@ -231,11 +240,11 @@ mod tests {
         };
         let package = "/nix/store/00000000000000000000000000000000-aos-sandbox-services-0.1.0";
         let profile =
-            "/nix/store/11111111111111111111111111111111-aos-method46-initial-startup-profile-2";
+            "/nix/store/11111111111111111111111111111111-aos-method46-initial-startup-profile-3";
         let executable = json!({"path": format!("{package}/bin/{stem}"), "sha256": ([1_u8; 32])});
         let loader = json!({"path": format!("{package}/lib/ld.so"), "sha256": ([2_u8; 32])});
         json!({
-            "format": "AOS_METHOD46_INITIAL_STARTUP_2",
+            "format": "AOS_METHOD46_INITIAL_STARTUP_3",
             "unit": format!("{stem}.service"),
             "owner_context": format!("system_u:system_r:{subject}"),
             "executable": executable,
@@ -254,13 +263,14 @@ mod tests {
                 }),
                 "sha256": ([9_u8; 32]),
             },
+            "normal_image": normal_image::test_fixture(role),
             "controller_uid": 913,
             "controller_gid": 913,
             "approval_public_key": ed25519_dalek::SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes(),
         })
     }
 
-    fn decode(value: Value) -> Method46InitialProfileDataV2 {
+    fn decode(value: Value) -> Method46InitialProfileDataV3 {
         serde_json::from_value(value).unwrap()
     }
 
@@ -273,22 +283,22 @@ mod tests {
 
         assert!(
             controller
-                .require_shape_data_v2(Method46InitialServiceRoleV1::ControllerStorageClient)
+                .require_shape_data_v3(Method46InitialServiceRoleV1::ControllerStorageClient)
                 .is_ok()
         );
         assert!(
             storage
-                .require_shape_data_v2(Method46InitialServiceRoleV1::StorageBroker)
+                .require_shape_data_v3(Method46InitialServiceRoleV1::StorageBroker)
                 .is_ok()
         );
         assert!(
             controller
-                .require_shape_data_v2(Method46InitialServiceRoleV1::StorageBroker)
+                .require_shape_data_v3(Method46InitialServiceRoleV1::StorageBroker)
                 .is_err()
         );
         assert!(
             storage
-                .require_shape_data_v2(Method46InitialServiceRoleV1::ControllerStorageClient)
+                .require_shape_data_v3(Method46InitialServiceRoleV1::ControllerStorageClient)
                 .is_err()
         );
     }
@@ -304,7 +314,7 @@ mod tests {
         let mut repeated_member = decode(fixture(role));
         repeated_member.runtime_files[1].path = repeated_member.runtime_files[0].path.clone();
         let mut foreign_policy = decode(fixture(role));
-        foreign_policy.effective_matrix.path = "/nix/store/55555555555555555555555555555555-aos-method46-initial-startup-profile-2/effective-policy.tsv".into();
+        foreign_policy.effective_matrix.path = "/nix/store/55555555555555555555555555555555-aos-method46-initial-startup-profile-3/effective-policy.tsv".into();
 
         for changed in [
             wrong_loader,
@@ -312,7 +322,7 @@ mod tests {
             repeated_member,
             foreign_policy,
         ] {
-            assert!(changed.require_shape_data_v2(role).is_err());
+            assert!(changed.require_shape_data_v3(role).is_err());
         }
     }
 
@@ -324,8 +334,8 @@ mod tests {
         let mut root_owner = decode(fixture(role));
         root_owner.controller_uid = 0;
 
-        assert!(weak_key.require_shape_data_v2(role).is_err());
-        assert!(root_owner.require_shape_data_v2(role).is_err());
+        assert!(weak_key.require_shape_data_v3(role).is_err());
+        assert!(root_owner.require_shape_data_v3(role).is_err());
     }
 
     #[test]
@@ -337,7 +347,7 @@ mod tests {
         ] {
             let mut value = fixture(role);
             value["normal_unit_fragment"]["path"] = json!(path);
-            assert!(decode(value).require_shape_data_v2(role).is_err());
+            assert!(decode(value).require_shape_data_v3(role).is_err());
         }
 
         let mut missing = fixture(role);
@@ -345,15 +355,20 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("normal_unit_fragment");
-        assert!(serde_json::from_value::<Method46InitialProfileDataV2>(missing).is_err());
+        assert!(serde_json::from_value::<Method46InitialProfileDataV3>(missing).is_err());
 
-        let mut old = fixture(role);
-        old["format"] = json!("AOS_METHOD46_INITIAL_STARTUP_1");
-        assert!(decode(old).require_shape_data_v2(role).is_err());
+        for format in [
+            "AOS_METHOD46_INITIAL_STARTUP_1",
+            "AOS_METHOD46_INITIAL_STARTUP_2",
+        ] {
+            let mut old = fixture(role);
+            old["format"] = json!(format);
+            assert!(decode(old).require_shape_data_v3(role).is_err());
+        }
 
         let mut zero = fixture(role);
         zero["normal_unit_fragment"]["sha256"] = json!(([0_u8; 32]));
-        assert!(decode(zero).require_shape_data_v2(role).is_err());
+        assert!(decode(zero).require_shape_data_v3(role).is_err());
     }
 
     #[test]
@@ -361,11 +376,11 @@ mod tests {
         let role = Method46InitialServiceRoleV1::StorageBroker;
         let mut unknown = fixture(role);
         unknown["owner_auth"] = json!("forbidden");
-        assert!(serde_json::from_value::<Method46InitialProfileDataV2>(unknown).is_err());
+        assert!(serde_json::from_value::<Method46InitialProfileDataV3>(unknown).is_err());
 
         let encoded = serde_json::to_string(&fixture(role)).unwrap();
-        let duplicate = encoded.replacen('{', "{\"format\":\"AOS_METHOD46_INITIAL_STARTUP_2\",", 1);
-        assert!(serde_json::from_str::<Method46InitialProfileDataV2>(&duplicate).is_err());
+        let duplicate = encoded.replacen('{', "{\"format\":\"AOS_METHOD46_INITIAL_STARTUP_3\",", 1);
+        assert!(serde_json::from_str::<Method46InitialProfileDataV3>(&duplicate).is_err());
 
         let mut excessive = fixture(role);
         let mut roots = vec![
@@ -374,7 +389,7 @@ mod tests {
         ];
         roots.push(json!(17));
         excessive["closure_roots"] = json!(roots);
-        let error = serde_json::from_value::<Method46InitialProfileDataV2>(excessive)
+        let error = serde_json::from_value::<Method46InitialProfileDataV3>(excessive)
             .err()
             .unwrap();
         assert!(error.to_string().contains("exceeds512"));

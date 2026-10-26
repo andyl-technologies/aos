@@ -115,7 +115,7 @@ impl InitialCredentialsOriginalV1 {
         }
     }
 
-    fn capture(&mut self, profile: &Method46InitialProfileDataV2) -> bool {
+    fn capture(&mut self, profile: &Method46InitialProfileDataV3) -> bool {
         if self.entered || !self.paid {
             return false;
         }
@@ -185,7 +185,7 @@ impl InitialCredentialsOriginalV1 {
         true
     }
 
-    pub(super) fn finish_post(&mut self, profile: Option<&Method46InitialProfileDataV2>) -> bool {
+    pub(super) fn finish_post(&mut self, profile: Option<&Method46InitialProfileDataV3>) -> bool {
         if !self.paid {
             return true;
         }
@@ -222,7 +222,7 @@ impl InitialCredentialsOriginalV1 {
         held && named
     }
 
-    fn finish_named(&mut self, profile: &Method46InitialProfileDataV2) -> bool {
+    fn finish_named(&mut self, profile: &Method46InitialProfileDataV3) -> bool {
         let (Some(Ok(root)), Some(path)) = (&self.root, &self.path) else {
             return false;
         };
@@ -264,7 +264,7 @@ fn same_bytes(left: &Option<Zeroizing<Vec<u8>>>, right: &Option<Zeroizing<Vec<u8
     matches!((left, right), (Some(left), Some(right)) if **left == **right)
 }
 
-fn credential_label(profile: &Method46InitialProfileDataV2) -> &'static [u8] {
+fn credential_label(profile: &Method46InitialProfileDataV3) -> &'static [u8] {
     match profile.unit.as_str() {
         "aos-sandbox-controller-floor-initialize.service" => {
             b"system_u:object_r:aos_method46_controller_initial_credential_t"

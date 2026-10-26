@@ -16,8 +16,8 @@ use aos_sandbox_broker::immutable_image::{
     ImmutableFileRevalidationOriginalV1, ImmutableImageErrorV1,
 };
 use aos_sandbox_broker::profile_data::method46_initial::{
-    Method46InitialProfileDataErrorV2, Method46InitialProfileDataV2,
-    method46_initial_profile_representation_bytes_v2,
+    Method46InitialProfileDataErrorV3, Method46InitialProfileDataV3,
+    method46_initial_profile_representation_bytes_v3,
 };
 use aos_sandbox_broker::receiving::{
     Method46InitialOriginComparisonDataV1, Method46InitialReceivingClosedV1,
@@ -27,7 +27,7 @@ use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector}
 
 const PROFILE_BYTES: usize = 1024 * 1024;
 const PATH_BYTES: usize = 1024;
-const PROFILE_SUFFIX: &str = "-aos-method46-initial-startup-profile-2/profile.json";
+const PROFILE_SUFFIX: &str = "-aos-method46-initial-startup-profile-3/profile.json";
 
 mod credentials;
 pub use credentials::{
@@ -94,6 +94,7 @@ struct StartupRolesOriginalV1 {
     listener: RefCell<approval_listener::InitialApprovalListenerOriginalV1>,
     images: images::InitialImagesOriginalV1,
     runtime: images::InitialRuntimeOriginalV1,
+    normal_runtime: images::InitialNormalRuntimeOriginalV1,
     policy: policy::InitialPolicyOriginalV1,
     unit: unit::InitialUnitOriginalV1,
     stopped_cgroups: stopped_cgroups::InitialStoppedCgroupsOriginalV1,
@@ -106,8 +107,8 @@ struct StartupRolesOriginalV1 {
     profile_measure: Option<Result<(), ImmutableFileAcquisitionRefusalV1>>,
     profile_read: Option<Result<(), ImmutableImageErrorV1>>,
     profile_decode_attempted: bool,
-    profile_decoded: Option<Result<Method46InitialProfileDataV2, serde_json::Error>>,
-    profile_shape: Option<Result<(), Method46InitialProfileDataErrorV2>>,
+    profile_decoded: Option<Result<Method46InitialProfileDataV3, serde_json::Error>>,
+    profile_shape: Option<Result<(), Method46InitialProfileDataErrorV3>>,
     profile_post: RefCell<ProfilePostOriginalV1>,
 }
 
@@ -122,6 +123,7 @@ impl StartupRolesOriginalV1 {
             listener: RefCell::new(approval_listener::InitialApprovalListenerOriginalV1::new()),
             images: images::InitialImagesOriginalV1::new(),
             runtime: images::InitialRuntimeOriginalV1::new(),
+            normal_runtime: images::InitialNormalRuntimeOriginalV1::new(),
             policy: policy::InitialPolicyOriginalV1::new(),
             unit: unit::InitialUnitOriginalV1::new(),
             stopped_cgroups: stopped_cgroups::InitialStoppedCgroupsOriginalV1::new(),
@@ -396,7 +398,7 @@ impl Method46InitialStartupOriginalV1 {
             return Err(self.fail(First::Order));
         }
         body.profile_decode_attempted = true;
-        let demand = method46_initial_profile_representation_bytes_v2(body.profile.bytes().len())
+        let demand = method46_initial_profile_representation_bytes_v3(body.profile.bytes().len())
             .and_then(|bytes| {
                 Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(bytes).ok()?))
             });
@@ -408,15 +410,15 @@ impl Method46InitialStartupOriginalV1 {
         let Some(Ok(profile)) = body.profile_decoded.as_ref() else {
             return Err(self.fail(First::Profile));
         };
-        body.profile_shape = Some(profile.require_shape_data_v2(role).and_then(|()| {
+        body.profile_shape = Some(profile.require_shape_data_v3(role).and_then(|()| {
             let original = body
                 .profile
                 .completed_measurement()
-                .ok_or(Method46InitialProfileDataErrorV2)?;
+                .ok_or(Method46InitialProfileDataErrorV3)?;
             if std::path::Path::new(&profile.source_policy.path).parent()
                 != original.path().parent()
             {
-                return Err(Method46InitialProfileDataErrorV2);
+                return Err(Method46InitialProfileDataErrorV3);
             }
             Ok(())
         }));
@@ -490,6 +492,9 @@ impl Method46InitialStartupOriginalV1 {
                 .as_ref()
                 .and_then(|value| value.as_ref().ok());
             if body.runtime.finish_posts(profile).is_err() {
+                self.fail(First::Runtime);
+            }
+            if body.normal_runtime.finish_posts().is_err() {
                 self.fail(First::Runtime);
             }
             if body.policy.finish_post(profile).is_err() {

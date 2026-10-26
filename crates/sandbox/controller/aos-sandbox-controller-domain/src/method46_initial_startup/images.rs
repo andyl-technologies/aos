@@ -15,7 +15,9 @@ use super::*;
 
 const MAXIMUM_IMAGE_BYTES: u64 = 256 * 1024 * 1024;
 
+mod normal_runtime;
 mod runtime;
+pub(super) use normal_runtime::InitialNormalRuntimeOriginalV1;
 pub(super) use runtime::InitialRuntimeOriginalV1;
 
 pub(super) struct InitialImagesOriginalV1 {
@@ -348,6 +350,122 @@ impl Method46InitialStartupOriginalV1 {
             Some(expected),
             maximum,
             true,
+        ));
+        if !matches!(image.measurement, Some(Ok(()))) {
+            return Err(self.closed);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum InventoryV1 {
+    Initial,
+    Normal,
+}
+
+fn inventory_pin(
+    profile: &Method46InitialProfileDataV3,
+    inventory: InventoryV1,
+    index: usize,
+) -> Option<&ImagePinV1> {
+    match inventory {
+        InventoryV1::Initial => runtime::pin(profile, index),
+        InventoryV1::Normal => profile.normal_image.runtime_files.get(index),
+    }
+}
+
+impl Method46InitialStartupOriginalV1 {
+    fn measure_inventory_file(
+        &mut self,
+        inventory: InventoryV1,
+        index: usize,
+    ) -> Result<(), Method46InitialStartupClosedV1> {
+        self.source
+            .get_mut()
+            .require_current_v1()
+            .map_err(|_| self.closed)?;
+        self.fund_additional(Some(
+            ResourceVector::ZERO
+                .with(D::MemoryBytes, 2 * 4097 + 128)
+                .with(D::OpenFiles, 1)
+                .with(D::MetadataEntries, 4),
+        ))?;
+
+        let body = self.body.as_mut().ok_or(self.closed)?;
+        let profile = body
+            .profile_decoded
+            .as_ref()
+            .and_then(|value| value.as_ref().ok())
+            .ok_or(self.closed)?;
+        let selected = inventory_pin(profile, inventory, index).ok_or(self.closed)?;
+        let image = match inventory {
+            InventoryV1::Initial => body.runtime.files.get_mut(index),
+            InventoryV1::Normal => body.normal_runtime.files.get_mut(index),
+        }
+        .ok_or(self.closed)?;
+        image.preflight_entered = true;
+        image.open = Some(match File::open(&selected.path) {
+            Ok(file) => {
+                image.file = Some(file);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        });
+        let file = image.file.as_ref().ok_or(self.closed)?;
+        image.metadata = Some(file.metadata());
+        let metadata = image
+            .metadata
+            .as_ref()
+            .and_then(|value| value.as_ref().ok())
+            .ok_or(self.closed)?;
+        let maximum = metadata.len();
+        image.maximum = Some(maximum);
+        if maximum == 0 || maximum > MAXIMUM_IMAGE_BYTES {
+            return Err(self.closed);
+        }
+
+        let body = self.body.as_ref().ok_or(self.closed)?;
+        let profile = body
+            .profile_decoded
+            .as_ref()
+            .and_then(|value| value.as_ref().ok())
+            .ok_or(self.closed)?;
+        self.fund_additional(acquisition_demand(
+            inventory_pin(profile, inventory, index).ok_or(self.closed)?,
+            maximum,
+        ))?;
+
+        let body = self.body.as_mut().ok_or(self.closed)?;
+        let profile = body
+            .profile_decoded
+            .as_ref()
+            .and_then(|value| value.as_ref().ok())
+            .ok_or(self.closed)?;
+        let selected = inventory_pin(profile, inventory, index).ok_or(self.closed)?;
+        let executable = match inventory {
+            InventoryV1::Initial => {
+                selected.path == profile.executable.path || selected.path == profile.loader.path
+            }
+            InventoryV1::Normal => {
+                selected.path == profile.normal_image.executable.path
+                    || selected.path == profile.normal_image.loader.path
+            }
+        };
+        let path = PathBuf::from(&selected.path);
+        let expected = selected.sha256;
+        let image = match inventory {
+            InventoryV1::Initial => body.runtime.files.get_mut(index),
+            InventoryV1::Normal => body.normal_runtime.files.get_mut(index),
+        }
+        .ok_or(self.closed)?;
+        let file = image.file.take().ok_or(self.closed)?;
+        image.measurement = Some(image.acquisition.measure_original_once(
+            path,
+            file,
+            Some(expected),
+            maximum,
+            executable,
         ));
         if !matches!(image.measurement, Some(Ok(()))) {
             return Err(self.closed);

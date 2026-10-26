@@ -14,6 +14,7 @@ use super::*;
 
 mod confinement;
 mod delivery;
+mod normal_command;
 mod normal_fragment;
 mod service;
 mod stopped;
@@ -102,7 +103,7 @@ impl InitialUnitOriginalV1 {
         &self,
         index: usize,
         origin: Option<&Method46InitialOriginComparisonDataV1>,
-        profile: Option<&Method46InitialProfileDataV2>,
+        profile: Option<&Method46InitialProfileDataV3>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         let mut observation = self
             .properties
@@ -179,7 +180,7 @@ impl InitialUnitOriginalV1 {
     fn measure_fragment(
         &mut self,
         origin: &Method46InitialOriginComparisonDataV1,
-        profile: &Method46InitialProfileDataV2,
+        profile: &Method46InitialProfileDataV3,
         profile_path: &std::path::Path,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         let observation = self.properties[0]
@@ -274,7 +275,7 @@ impl InitialUnitOriginalV1 {
     pub(super) fn finish_post(
         &self,
         origin: Option<&Method46InitialOriginComparisonDataV1>,
-        profile: Option<&Method46InitialProfileDataV2>,
+        profile: Option<&Method46InitialProfileDataV3>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         if !self.paid {
             return Ok(());
@@ -370,10 +371,10 @@ fn normalize_fragment(
 }
 
 fn manager_schedule() -> Option<ReadonlyPropertyReceiveScheduleV2> {
-    // Two 67-call startup samples and four 25-call stopped-owner samples,
+    // Two 67-call startup samples and four 27-call stopped-owner samples,
     // plus Hello and bounded signal/header carryover.
     // These are native-enforced ceilings, never an account or semantic claim.
-    ReadonlyPropertyReceiveScheduleV2::new(260, 276, 64 * 1024, 4096, 276 * 64 * 1024).ok()
+    ReadonlyPropertyReceiveScheduleV2::new(268, 284, 64 * 1024, 4096, 284 * 64 * 1024).ok()
 }
 
 fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVector> {
@@ -398,7 +399,7 @@ fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVe
         .with(D::MetadataEntries, 4 * PATH_BYTES as u64)
         .with(
             D::OutputBytes,
-            read.checked_add((276 * 64 * 1024 + 260 * 4096 + 4096) as u64)?,
+            read.checked_add((284 * 64 * 1024 + 268 * 4096 + 4096) as u64)?,
         )
         .checked_add(ImmutableFileAcquisitionOriginalV1::receiving_demand_v1(
             PATH_BYTES,

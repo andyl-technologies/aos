@@ -34,6 +34,8 @@ const SERVICE: &[&str] = &[
     "SetCredentialEncrypted",
     "ImportCredential",
     "ImportCredentialEx",
+    "ExecStart",
+    "SELinuxContext",
 ];
 const UNIT: &[&str] = &["LoadState", "FragmentPath", "DropInPaths", "Transient"];
 
@@ -65,7 +67,7 @@ impl InitialStoppedOwnersOriginalV1 {
         manager: Option<&aos_systemd_client::SystemdClient>,
         role: Option<Method46InitialServiceRoleV1>,
         fragment: &[u8],
-        profile: Option<&Method46InitialProfileDataV2>,
+        profile: Option<&Method46InitialProfileDataV3>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         let selected = role.map(|role| match role {
             Method46InitialServiceRoleV1::ControllerStorageClient => 0,
@@ -134,7 +136,7 @@ impl InitialStoppedOwnersOriginalV1 {
                         }
                     }
                     let matched = values
-                        .and_then(|values| values.get(1..))
+                        .and_then(|values| values.get(1..7))
                         .zip(role)
                         .is_some_and(|(values, role)| {
                             delivery::require_normal_manifest_source(role, values, fragment).is_ok()
@@ -143,6 +145,13 @@ impl InitialStoppedOwnersOriginalV1 {
                     if !matched {
                         return Err(Method46InitialStartupClosedV1);
                     }
+                    normal_command::require_command(
+                        values
+                            .and_then(|values| values.get(7..))
+                            .ok_or(Method46InitialStartupClosedV1)?,
+                        role.ok_or(Method46InitialStartupClosedV1)?,
+                        &profile.ok_or(Method46InitialStartupClosedV1)?.normal_image,
+                    )?;
                 }
                 if round == 1 {
                     let before = self.samples[0][index]
@@ -246,7 +255,7 @@ impl InitialUnitOriginalV1 {
     pub(super) fn finish_stopped_post(
         &self,
         role: Option<Method46InitialServiceRoleV1>,
-        profile: Option<&Method46InitialProfileDataV2>,
+        profile: Option<&Method46InitialProfileDataV3>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         if !self.stopped.entered.get() {
             return Ok(());

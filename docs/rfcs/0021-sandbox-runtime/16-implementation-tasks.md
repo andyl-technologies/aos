@@ -699,6 +699,28 @@ Recent committed startup fixes close narrower prerequisites:
   schema, job exclusion, durable intent, physical TPM custody and installed
   producer qualification remain incomplete. Public admission remains closed.
 
+- Initial startup profile V3 additionally commits the selected normal
+  executable, loader, bounded exact argv and a sorted immutable runtime
+  inventory/closure. It rejects older profiles, missing or aliased image pins,
+  foreign roots, malformed/oversized arguments and unknown nested fields. Both
+  genuine stopped-owner PID1 samples compare the configured singleton command,
+  arguments and fixed MAC subject against this same profile. Historical
+  ExecStart PID metadata is accepted as history; the native stopped-phase reader
+  independently requires MainPID zero. The same Source prepays the extra finite
+  property schedule, retained runtime slots, opens and metadata, then prices
+  bounded digest work from each original file's actual length. Initial and normal
+  inventory acquisition share the existing per-file measurement engine. All
+  reached file posts stay independently owed on refusal; a busy normal-file post
+  cannot suppress another file or Source after. Provisioning readback lending now
+  requires these actual normal-runtime measurements too. All 105 focused initial
+  tests pass, including eight new schema, command, allocation-order and owed-post
+  regressions. Complete application target compilation is running for the twelve
+  functional Rust inputs; two later Rustdoc clarifications change no code.
+  This proves configured-file comparisons, without qualifying a future loaded
+  process, complete native unit configuration, job exclusion, Nix/Root key
+  separation, Session schema, durable intent, physical TPM effects or installed
+  producers. Those requirements and public admission remain closed.
+
 - Initial main capture now admits historical namespaces and legacy capacity
   ownership through the ordinary protected namespace engine. The read-only
   comparison shares the exact health, complete canonical-family, deleted-history

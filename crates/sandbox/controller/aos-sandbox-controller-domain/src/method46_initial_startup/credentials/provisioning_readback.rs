@@ -179,9 +179,11 @@ impl Method46InitialStartupOriginalV1 {
     /// the credential owner; independent key and protected writer admission
     /// remain separate obligations. The shared startup borrow allows this
     /// original to coexist with its same-owner main-map readback loan.
+    /// The selected stopped owner's command and immutable runtime inventory
+    /// must have passed their original native comparisons first.
     ///
     /// # Errors
-    /// Refuses missing unit/credential or stopped-owner admission, repeated
+    /// Refuses missing unit/credential, stopped-owner or normal-image admission, repeated
     /// issuance, busy native custody, an ended Source or exhausted genuine
     /// receiving allocation.
     pub fn lend_provisioning_readback_once_v1(
@@ -190,6 +192,7 @@ impl Method46InitialStartupOriginalV1 {
         let ready = self.body.as_ref().is_some_and(|body| {
             body.unit.initial_admitted()
                 && body.unit.stopped_units_before_completed()
+                && body.normal_runtime.completed()
                 && body.credentials.try_borrow().is_ok_and(|credentials| {
                     credentials.completed
                         && !credentials.post_entered
