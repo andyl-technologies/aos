@@ -139,8 +139,8 @@ AOS guest, 8,293 immutable source files and the retained Cargo executable.
 Required application-target compilation at the same checkpoint passes in
 1,496.132 seconds. Independent review matches all 8,293 immutable source files
 and 190 test-executable records across 59 packages; compilation does not imply
-execution. Full Content.Has and Negotiate remain unimplemented; acceptance
-stays 28/64.
+execution. Full Content.Has and Negotiate remain unimplemented. These scoped
+results accepted no additional task.
 
 A separate restart diagnostic preserves the original successful managed startup
 and shutdown proof, then attempts a fresh publisher and Serve start while the
@@ -172,8 +172,23 @@ diagnostic does not explain the earlier CLI `NativeCacheOpen` failure.
 The proof image now requests native surface-index support for the SDK example,
 and both artifact selection and retained-image verification require that exact
 feature profile. Unit, GC and CLI feature requests remain unchanged. A separate
-identity field records the example's requested features. Renewed compilation
-and guest diagnosis remain pending; no production recovery behavior is changed.
+identity field records the example's requested features. At `548b91fe5a`,
+the renewed isolated AOS prerequisite controller passes in 1,296.410 seconds;
+all 96 missing-input dispatches and seven preserved controller records are
+reviewed. Image review binds 8,294 immutable source files, 5,515 configured-image
+and 5,521 enrollment-image inputs, and five actual retained executables.
+
+The corrected confined diagnostic passes its observation assertions in 176.725
+seconds: fifteen enrollment controls and the original managed startup/shutdown
+proof pass before the fresh restart reproduces `NativeCacheOpen` with I/O
+category `Other`. UID 840, empty capabilities, no-new-privileges and original
+namespace checks remain enforced. Both completed snapshots retain identical
+bytes and inode metadata, and configuration is unchanged. Independent review
+checks the actual driver completion, source-bound executable and original
+manager proof. Raw runtime records are preserved and owned scratch is removed.
+This is diagnostic evidence only; managed restart remains unaccepted and its
+failing native startup stage still requires diagnosis. No production recovery
+behavior is changed.
 
 The actual service-manager fixture now declares the public issuer file and
 independent startup Read required by the configured SDK launcher. Its guest
@@ -197,7 +212,7 @@ records are preserved and its owned scratch directory is removed. The remaining
 dispatch contains only two metadata copies and the unchanged KVM driver. These
 results renew managed public-reader startup and the recorded maintenance
 lifecycle; they do not prove restart recovery, physical release from zero
-draining counts or full role acceptance. Accepted tasks remain 28/64.
+draining counts or full role acceptance. That result accepted no additional task.
 
 File-scoped committed-index membership now has a repository entry point on
 `PreparedFileRead`. It retains authenticated file selection, permits only the
@@ -219,7 +234,7 @@ compilation at the same source passes in 1,492.699 seconds. Separate review
 matches all 8,291 immutable source files and 190 test-executable records across
 59 packages; compilation claims no execution or retained executable bytes.
 This is a prerequisite for the production Content service, not acceptance of
-Content.Has, Negotiate or T-PROTO1. Accepted tasks remain 28/64.
+Content.Has, Negotiate or T-PROTO1. Those results accepted no additional task.
 
 Actual configured CLI qualification at `221134c592` passes in 208.985 seconds.
 Independent review matches all 8,289 immutable source files, 5,510 bound inputs
