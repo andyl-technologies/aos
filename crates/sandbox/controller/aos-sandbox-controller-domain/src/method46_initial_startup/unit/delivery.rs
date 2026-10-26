@@ -78,14 +78,22 @@ fn selected_sources(
             }
             continue;
         };
-        if selected[..index].contains(&source) {
+        // ONLINE Controller and owner may deliberately share one public issuer.
+        // No other alias is valid, especially approval or private index auth.
+        if selected[..index]
+            .iter()
+            .enumerate()
+            .any(|(previous, value)| *value == source && (previous, index) != (9, 15))
+        {
             return Err(Method46InitialStartupClosedV1);
         }
         selected[index] = source;
     }
     // The ONLINE issuer is a separate authority key, required exactly when
     // this actual Controller is configured with the Nix endpoint.
-    if selected[8].is_empty() != selected[9].is_empty() {
+    if selected[8].is_empty() != selected[9].is_empty()
+        || selected[8].is_empty() != selected[15].is_empty()
+    {
         return Err(Method46InitialStartupClosedV1);
     }
     Ok(selected)
@@ -198,6 +206,21 @@ pub(super) fn require_normal_root_public_sources(
         )?;
     }
     Ok(())
+}
+
+pub(super) fn nix_owner_selected(fragment: &[u8]) -> Result<bool, Method46InitialStartupClosedV1> {
+    Ok(!selected_sources(fragment)?[15].is_empty())
+}
+
+pub(super) fn require_normal_nix_owner_source(
+    values: &[OwnedValue],
+    fragment: &[u8],
+) -> Result<(), Method46InitialStartupClosedV1> {
+    let expected = selected_sources(fragment)?[15];
+    if expected.is_empty() {
+        return Err(Method46InitialStartupClosedV1);
+    }
+    require_named_source(values, "nix-online-floor-issuer-v1", expected)
 }
 
 fn require_named_source(
@@ -626,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn every_fixed_initial_credential_source_must_remain_distinct() {
+    fn only_the_two_online_public_issuer_sources_may_alias() {
         let fragment = fragment();
         for source in 0..NAMES.len() {
             for destination in 0..NAMES.len() {
@@ -638,14 +661,18 @@ mod tests {
                     &format!("@system/external-{destination}\n"),
                 );
 
-                assert!(selected_sources(aliased.as_bytes()).is_err());
+                assert_eq!(
+                    selected_sources(aliased.as_bytes()).is_ok(),
+                    matches!((source, destination), (9, 15) | (15, 9)),
+                    "source {source} destination {destination}",
+                );
             }
         }
     }
 
     #[test]
     fn configured_nix_requires_its_controller_floor_issuer_source() {
-        for missing in [8, 9] {
+        for missing in [8, 9, 15] {
             let text = fragment();
             let mismatched = text
                 .lines()
@@ -659,6 +686,81 @@ mod tests {
     }
 
     #[test]
+    fn nix_owner_delivery_requires_the_actual_selected_source() {
+        let fragment = fragment();
+        let expected = (
+            "nix-online-floor-issuer-v1".to_owned(),
+            "/run/credentials/@system/external-15".to_owned(),
+        );
+        assert!(nix_owner_selected(fragment.as_bytes()).unwrap());
+        assert!(
+            require_normal_nix_owner_source(
+                &normal_properties(vec![expected.clone()]),
+                fragment.as_bytes(),
+            )
+            .is_ok()
+        );
+
+        // The same public ONLINE issuer may be delivered to both owners.
+        let shared = fragment.replace("@system/external-15\n", "@system/external-9\n");
+        assert!(
+            require_normal_nix_owner_source(
+                &normal_properties(vec![(
+                    expected.0.clone(),
+                    "/run/credentials/@system/external-9".to_owned()
+                )]),
+                shared.as_bytes(),
+            )
+            .is_ok()
+        );
+
+        for rows in [
+            vec![],
+            vec![expected.clone(), expected.clone()],
+            vec![(
+                expected.0.clone(),
+                "/run/credentials/@system/foreign".to_owned(),
+            )],
+            vec![("foreign-issuer".to_owned(), expected.1.clone())],
+        ] {
+            assert!(
+                require_normal_nix_owner_source(&normal_properties(rows), fragment.as_bytes())
+                    .is_err()
+            );
+        }
+        for (index, changed) in [
+            (1, value(vec![(expected.0.clone(), expected.1.clone())])),
+            (2, value(vec![(expected.0.clone(), vec![1_u8])])),
+            (3, value(vec![(expected.0.clone(), vec![1_u8])])),
+            (4, value(vec!["*".to_owned()])),
+            (5, value(vec![("*".to_owned(), "*".to_owned())])),
+        ] {
+            let mut values = normal_properties(vec![expected.clone()]);
+            values[index] = changed;
+            assert!(require_normal_nix_owner_source(&values, fragment.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn disabled_controller_nix_endpoint_omits_both_online_issuers() {
+        let fragment = fragment()
+            .lines()
+            .filter(|line| {
+                ![8, 9, 15]
+                    .into_iter()
+                    .any(|index| line.starts_with(&format!("LoadCredential={}:", NAMES[index])))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!nix_owner_selected(fragment.as_bytes()).unwrap());
+        assert!(
+            require_normal_nix_owner_source(&normal_properties(vec![]), fragment.as_bytes())
+                .is_err()
+        );
+    }
+
+    #[test]
     fn optional_delivery_requires_exact_initial_and_controller_presence() {
         for mount_fuse in [false, true] {
             for nix in [false, true] {
@@ -666,6 +768,7 @@ mod tests {
                 selected[7] = mount_fuse;
                 selected[8] = nix;
                 selected[9] = nix;
+                selected[15] = nix;
                 let fragment = NAMES
                     .iter()
                     .enumerate()

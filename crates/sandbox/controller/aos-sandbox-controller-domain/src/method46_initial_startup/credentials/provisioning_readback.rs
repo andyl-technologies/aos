@@ -185,6 +185,23 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
         self.optional_public_bytes(9)
     }
 
+    /// Borrows the normal Nix owner's configured ONLINE floor issuer pin.
+    ///
+    /// The actual Nix owner's PID1 delivery must match this Source's captured
+    /// raw48 public credential. Presence is coupled to the Controller's Nix
+    /// endpoint; `None` requires its compared disabled configuration. This does
+    /// not assert that an unrelated Nix unit is absent or authorize a floor.
+    /// Both native configuration samples and credential posts remain owed.
+    ///
+    /// # Errors
+    /// Refuses a missing/ended Source, incomplete original custody, an entered
+    /// post or a missing configured issuer readback. No credential is reopened.
+    pub fn owner_nix_floor_issuer_bytes_v1(
+        &self,
+    ) -> Result<Option<Ref<'_, [u8]>>, Method46InitialStartupClosedV1> {
+        self.optional_public_bytes(15)
+    }
+
     /// Borrows one original public signer credential delivered to normal Root.
     ///
     /// Only the five members in [`METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1`]
@@ -387,6 +404,7 @@ mod tests {
         assert!(loan.approval_public_key_bytes_v1().is_err());
         assert!(loan.normal_storage_manifest_bytes_v1().is_err());
         assert!(loan.controller_nix_floor_issuer_bytes_v1().is_err());
+        assert!(loan.owner_nix_floor_issuer_bytes_v1().is_err());
         for member in aos_sandbox_policy::signed_inputs::RootStartupCredentialMemberV1::ALL {
             assert!(loan.normal_root_public_key_bytes_v1(member).is_err());
         }

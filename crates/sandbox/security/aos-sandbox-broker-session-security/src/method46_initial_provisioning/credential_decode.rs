@@ -23,8 +23,8 @@ use aos_sandbox_controller_domain::method46_initial_startup::{
 mod root_public;
 use root_public::RootPublicKeyOriginal;
 
-mod controller_nix_floor;
-use controller_nix_floor::ControllerNixFloorIssuerOriginal;
+mod online_floor_issuer;
+use online_floor_issuer::OnlineFloorIssuerOriginal;
 
 mod approval;
 use approval::ApprovalVerificationOriginal;
@@ -62,7 +62,9 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     other_normal_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; PROTOCOLS.len()],
     other_normal: [OtherNormalManifestOriginal; PROTOCOLS.len()],
     controller_nix_floor_read: Option<Result<(), Method46InitialStartupClosedV1>>,
-    controller_nix_floor: ControllerNixFloorIssuerOriginal,
+    controller_nix_floor: OnlineFloorIssuerOriginal,
+    owner_nix_floor_read: Option<Result<(), Method46InitialStartupClosedV1>>,
+    owner_nix_floor: OnlineFloorIssuerOriginal,
     root_public_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; 5],
     root_public: [RootPublicKeyOriginal; 5],
     approval: RefCell<ApprovalVerificationOriginal>,
@@ -110,7 +112,9 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             other_normal_reads: std::array::from_fn(|_| None),
             other_normal: std::array::from_fn(|_| OtherNormalManifestOriginal::new()),
             controller_nix_floor_read: None,
-            controller_nix_floor: ControllerNixFloorIssuerOriginal::new(),
+            controller_nix_floor: OnlineFloorIssuerOriginal::new(),
+            owner_nix_floor_read: None,
+            owner_nix_floor: OnlineFloorIssuerOriginal::new(),
             root_public_reads: std::array::from_fn(|_| None),
             root_public: std::array::from_fn(|_| RootPublicKeyOriginal::new()),
             approval: RefCell::new(ApprovalVerificationOriginal::new()),
@@ -242,6 +246,23 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             return;
         }
 
+        let bytes = match self.readback.owner_nix_floor_issuer_bytes_v1() {
+            Ok(bytes) => {
+                self.owner_nix_floor_read = Some(Ok(()));
+                bytes
+            }
+            Err(error) => {
+                self.owner_nix_floor_read = Some(Err(error));
+                return;
+            }
+        };
+        self.owner_nix_floor
+            .observe_once(bytes.as_deref(), approval);
+        drop(bytes);
+        if !self.owner_nix_floor.admitted() {
+            return;
+        }
+
         for (index, member) in METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1
             .into_iter()
             .enumerate()
@@ -274,6 +295,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             && self.normal.admitted()
             && matches!(self.controller_nix_floor_read, Some(Ok(())))
             && self.controller_nix_floor.admitted()
+            && matches!(self.owner_nix_floor_read, Some(Ok(())))
+            && self.owner_nix_floor.admitted()
             && self
                 .root_public_reads
                 .iter()

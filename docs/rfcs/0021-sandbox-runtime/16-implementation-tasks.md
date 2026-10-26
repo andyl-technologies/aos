@@ -31,6 +31,28 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The configured Nix owner's ONLINE floor issuer now follows the Controller
+  issuer's initial approval-key exclusion. Its public credential, Nix endpoint
+  manifest and Controller issuer must be selected together in the actual
+  initial unit. Both independently retained PID1 configuration samples must
+  match the owner's exact external delivery, complete native tuple and immutable
+  fragment path. Root and Nix share the configuration-reading engine; an earlier
+  owner refusal cannot suppress either selected public owner's final sample.
+  A disabled Controller Nix endpoint omits the issuer check through the compared
+  roster; it does not assert that an unrelated Nix unit is absent. The same
+  Source prepays the sixteen-file maximum, 84 descriptor carriers and both new
+  native samples before construction. Resource-bank capacities and the compiled
+  32 KiB decode allowance remain unchanged. Controller and owner may share an
+  ONLINE public issuer, as the existing Nix configuration permits; every other
+  source alias remains forbidden. Each original canonical issuer decode must
+  independently exclude the initial approval key, even when the other issuer
+  is distinct. All 86 focused initializer, 423 ordinary Security and 432 online-Nix
+  Security tests pass, with two existing ignored cases in each Security suite.
+  Complete application unit/integration target compilation is running for the
+  nine final Rust inputs. Offline Nix approval,
+  other configured Nix/Root trust families, complete endpoint provenance,
+  installed initial-floor effects and public lifecycle qualification remain open.
+
 - Normal Root's five startup public signer credentials now participate in initial
   approval-key exclusion: Deployment and Project are required; Cache, Controller
   and Source pins may be absent only when their actual Root and initial-unit
