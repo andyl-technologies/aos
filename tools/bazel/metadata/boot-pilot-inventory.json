@@ -1529,7 +1529,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "133e0db32529119b75ed34b9677527e3572cd704a6d62bd0e0da395244fe3512",
+    "MODULE.bazel": "b632adde21fbba1ef8e314847029b44f027d2ca1741837cf384661d67427c050",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/boot/aos-boot-identity/BUILD.bazel": "f64d12114e57f2a1899fe986757f2e06b5a3f85783186deb70e26fdbe3fdb384",
     "crates/boot/aos-recovery/BUILD.bazel": "edc4c446540ccf01f80545b93b1496d3e4dae5c8154fbedb70646c1a207221e9",

@@ -406,6 +406,112 @@ aos_license_check(
     license_domain = RUST_PACKAGE.license_domain,
 )
 
+rust_binary(
+    name = "static_zfs_pool",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_zfs_pool_provider",
+    crate_root = "src/bin/zfs_pool.rs",
+    srcs = ["src/bin/zfs_pool.rs"],
+    deps = [":lib_static_storage"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "static_zfs_pool_bin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":static_zfs_pool",
+    allow_empty = True,
+    tags = ["manual"],
+)
+
+rust_binary(
+    name = "static_zfs_dataset",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_zfs_dataset_provider",
+    crate_root = "src/bin/zfs_dataset.rs",
+    srcs = ["src/bin/zfs_dataset.rs"],
+    deps = [":lib_static_storage"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "static_zfs_dataset_bin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":static_zfs_dataset",
+    allow_empty = True,
+    tags = ["manual"],
+)
+
+rust_binary(
+    name = "static_zfs_memory_policy",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_zfs_memory_policy",
+    crate_root = "src/bin/zfs_memory_policy.rs",
+    srcs = ["src/bin/zfs_memory_policy.rs"],
+    rustc_env_files = ["@aos_zfs_runtime//:version.env"],
+    deps = [":lib_static_storage"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "static_zfs_memory_policy_bin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":static_zfs_memory_policy",
+    allow_empty = True,
+    tags = ["manual"],
+)
+
+rust_binary(
+    name = "static_zfs_maintenance",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_zfs_maintenance",
+    crate_root = "src/bin/zfs_maintenance.rs",
+    srcs = ["src/bin/zfs_maintenance.rs"],
+    deps = [":lib_static_storage"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "static_zfs_maintenance_bin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":static_zfs_maintenance",
+    allow_empty = True,
+    tags = ["manual"],
+)
+
+aos_license_check(
+    name = "static_zfs_production_license_closure",
+    roots = [":static_zfs_pool", ":static_zfs_dataset", ":static_zfs_memory_policy", ":static_zfs_maintenance"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "static_zfs_license_closure",
+    testonly = True,
+    roots = [":boot_transaction_unit_binary", ":static_zfs_pool_bin_binary", ":static_zfs_dataset_bin_binary", ":static_zfs_memory_policy_bin_binary", ":static_zfs_maintenance_bin_binary"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_package(
+    name = "static_zfs_package",
+    package_name = "aos-zfs-provider",
+    version = RUST_PACKAGE.version,
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {
+        ":static_zfs_pool": "bin/aos-zfs-pool-provider",
+        ":static_zfs_dataset": "bin/aos-zfs-dataset-provider",
+        ":static_zfs_memory_policy": "bin/aos-zfs-memory-policy",
+        ":static_zfs_maintenance": "bin/aos-zfs-maintenance",
+    },
+    executables = ["bin/aos-zfs-pool-provider", "bin/aos-zfs-dataset-provider", "bin/aos-zfs-memory-policy", "bin/aos-zfs-maintenance"],
+    visibility = ["//visibility:public"],
+)
+
 aos_source_package(
     name = "source_package",
     package = RUST_PACKAGE,

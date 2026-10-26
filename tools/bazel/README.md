@@ -3020,6 +3020,26 @@ actions. Precise and conservative inventories agree on eight roots, 150
 configured reports and 66 source files. Real encrypted mappings, swap formatting,
 foreign hosts, performance acceptance and default cutover remain separate gates.
 
+`pkgs.aos-zfs-provider.withBuildDriver "bazel"` selects all four static OpenZFS
+commands and retains the original module dependencies, runtime declarations and
+qualification probe. Cargo remains the default and explicit rollback. The
+existing preparation-provider dependency profiles are reused unchanged. A Nix
+repository supplies the packaged OpenZFS version as an immutable compiler input;
+it contains no executable and requires no download or service.
+
+`checks.build.bazel.zfs-provider-production.all`, also exposed through
+`tools/bazel/tests/zfs-provider-production.nix`, compares the actual ordinary
+package's features, installed files, static inputs, ELF contract and runtime
+closure. The retained `tests/evidence/zfs-provider-production-package.json`
+checks 42 library cases, four empty command-test targets, the empty doctest
+target and 28 installed rejection cases. Compiler traces reconstruct the ZFS
+version consumed by three fresh Bazel executions and the actual Cargo
+memory-policy test compilation. Production and release tests execute 119 and
+150 fresh Linux sandbox actions. Precise and conservative inventories agree on
+nine roots, 157 configured reports and 66 source files. Real pool operations,
+module loading, sysfs writes, foreign hosts, performance acceptance and default
+cutover remain separate gates.
+
 Host deadline and observation timestamp exceptions are function-scoped. Two
 metadata fixture maps use ordered lookup maps; EFI decoding retains its checked
 even-length bound. Conditional and alignment expressions have equivalent

@@ -19406,7 +19406,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "133e0db32529119b75ed34b9677527e3572cd704a6d62bd0e0da395244fe3512",
+    "MODULE.bazel": "b632adde21fbba1ef8e314847029b44f027d2ca1741837cf384661d67427c050",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/activation/aos-activation-bpf-lsm/BUILD.bazel": "31443585fe6c983ce87ad0eba7c674e3b12ae680e446e70bc33cf7e13b68fdf5",
     "crates/activation/aos-activation-bpf-network/BUILD.bazel": "309b24ae0631283d14dfbfabe3cebd3d4a425697578d72517a9ec22da018b630",

@@ -60,6 +60,19 @@ class CompilerTraceTests(unittest.TestCase):
         self.assertEqual(result.stdout, "compiler ran\n")
         self.assertEqual(json.loads(self.trace.read_text())["arguments"][0], compiler)
 
+    def test_zfs_compiler_version_is_retained_without_unrelated_aos_environment(self):
+        self.environment["AOS_ZFS_VERSION"] = "2.4.0"
+        self.environment["AOS_UNRELATED_SECRET"] = "keep this value absent"
+
+        result = self.invoke("import os; print(os.environ['AOS_ZFS_VERSION'])")
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "2.4.0\n")
+        record = json.loads(self.trace.read_text())
+        self.assertEqual(record["environment"]["AOS_ZFS_VERSION"], "2.4.0")
+        self.assertNotIn("AOS_UNRELATED_SECRET", record["environment"])
+        self.assertNotIn("keep this value absent", self.trace.read_text())
+
     def test_concurrent_compilers_append_complete_distinct_records(self):
         with ThreadPoolExecutor(max_workers=4) as executor:
             results = list(executor.map(lambda number: self.invoke("pass", str(number)), range(24)))

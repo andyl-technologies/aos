@@ -722,7 +722,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "133e0db32529119b75ed34b9677527e3572cd704a6d62bd0e0da395244fe3512",
+    "MODULE.bazel": "b632adde21fbba1ef8e314847029b44f027d2ca1741837cf384661d67427c050",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "third_party/rust/BUILD.bazel": "1b2d04a3296ca064c1bc355e8f9b819ca0cd433fc873b43f07ff1cfa805667f3",
     "third_party/rust/accache.bzl": "d77d2b31f800f096d790ca0ceecc415017106bf4f50cd597ac449414ac8fbd9a",

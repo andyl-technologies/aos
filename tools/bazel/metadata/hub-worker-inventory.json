@@ -125542,7 +125542,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "133e0db32529119b75ed34b9677527e3572cd704a6d62bd0e0da395244fe3512",
+    "MODULE.bazel": "b632adde21fbba1ef8e314847029b44f027d2ca1741837cf384661d67427c050",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "api/proto/BUILD.bazel": "d35fcce29828e65ffb34d1ac24220231dee3727768ce56d8754c194e8d2b5ce2",
     "crates/artifacts/aos-artifact-evidence/BUILD.bazel": "9ea93404e01064cd55a69ef97845eae72556b81d8aefa076922be8ecc3fdd13b",

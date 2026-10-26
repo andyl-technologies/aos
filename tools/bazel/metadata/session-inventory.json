@@ -23964,7 +23964,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "133e0db32529119b75ed34b9677527e3572cd704a6d62bd0e0da395244fe3512",
+    "MODULE.bazel": "b632adde21fbba1ef8e314847029b44f027d2ca1741837cf384661d67427c050",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/crucible/crucible-campaign/BUILD.bazel": "e0fc23ebe4086e61da68ddf53e22ee8623b2b240258f4b0053917354109ba64e",
     "crates/crucible/crucible-control-api/BUILD.bazel": "3729b0684141aea663bf4d023bbd54bb5c2dd1572f202e1f9b0598734489c316",

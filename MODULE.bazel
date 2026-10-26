@@ -106,3 +106,5 @@ aos_tools(name = "aos_boot_tools")
 
 aos_tools(name = "aos_qemu_plugin_abi")
 aos_tools(name = "aos_qemu_test_tools")
+
+aos_tools(name = "aos_zfs_runtime")
