@@ -147,6 +147,7 @@ in
     nix-store-provider-production = import ./_bazel-nix-store-provider-production.nix {inherit pkgs;};
     package-evaluation-driver-production = import ./_bazel-package-evaluation-driver-production.nix {inherit pkgs;};
     boot-configuration-driver-production = import ./_bazel-boot-configuration-driver-production.nix {inherit pkgs;};
+    deployment-check-production = import ./_bazel-deployment-check-production.nix {inherit pkgs;};
     pilot = import ./_bazel-pilot.nix {inherit pkgs;};
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
@@ -561,6 +562,7 @@ in
             nix-store-provider-production.all
             package-evaluation-driver-production.all
             boot-configuration-driver-production.all
+            deployment-check-production.all
             native-xz-source
             static-runtime.all
             precision-parity

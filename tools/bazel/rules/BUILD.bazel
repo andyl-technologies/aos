@@ -552,3 +552,9 @@ config_setting(
     flag_values = {":dependency_profile": "package-evaluation-driver"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "deployment_check_dependencies",
+    flag_values = {":dependency_profile": "deployment-check"},
+    visibility = ["//visibility:public"],
+)

@@ -26,6 +26,7 @@ TRANSFER_FEATURES = select({
     "//tools/bazel/rules:hub_native_postgres_dependencies": ["transfer"],
     "//tools/bazel/rules:hub_native_tests_dependencies": ["transfer"],
     "//tools/bazel/rules:package_manager_dependencies": ["transfer"],
+    "//tools/bazel/rules:deployment_check_dependencies": ["transfer"],
     "//tools/bazel/rules:package_manager_tests_dependencies": ["transfer"],
     "//tools/bazel/rules:package_evaluation_driver_dependencies": ["transfer"],
     "//tools/bazel/rules:boot_preparation_dependencies": ["transfer"],

@@ -234,6 +234,23 @@ aos_package(
 )
 
 aos_license_check(
+    name = "deployment_check_license_closure",
+    roots = [":aos-deployment-check"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_package(
+    name = "deployment_check_package",
+    package_name = "aos-deployment-check",
+    version = "0.1.0",
+    license_domain = "apache-host",
+    license_expression = "Apache-2.0",
+    artifacts = {":aos-deployment-check": "bin/aos-deployment-check"},
+    executables = ["bin/aos-deployment-check"],
+    visibility = ["//visibility:public"],
+)
+
+aos_license_check(
     name = "boot_configuration_driver_license_closure",
     testonly = True,
     roots = [":unit_binary"],

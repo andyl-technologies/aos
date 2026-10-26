@@ -2527,6 +2527,38 @@ configured reports. The qualification receipt is retained in
 Foreign-host execution, numeric performance acceptance, production default
 cutover and repository-wide Cargo removal remain separate RFC gates.
 
+## Native deployment validator
+
+`aos-deployment-check` retains its Cargo default and exposes the temporary
+`passthru.withBuildDriver "bazel"` selector, reverse selector and Cargo fallback.
+The Bazel installer preserves its executable name, version probe, platform
+contract and declared runtime dependencies. The installed package requires its
+binary tests; the native opt-in rejects foreign execution configurations.
+
+```sh
+nix-build -A checks.build.bazel.deployment-check-production.all --no-out-link
+```
+
+This check compares the installed ELF metadata and full runtime closures,
+actual first-party compiler profiles, resolved dependency features, exact binary
+test inventories and executions. Sixteen command cases cover silent successful
+validation, optional documentation, mismatched target/scope, unknown fields,
+argument errors, trailing documents and the inclusive 96 MiB input boundary.
+The public `mkOciTools.mkDeploymentArtifact` constructor runs once with each
+installed validator against a nonempty package activation graph. Its deployment,
+descriptor, transaction and package documents must match exactly.
+
+The production dependency profile uses the existing package-manager roots with
+separate execution and target features for `getrandom` and `hashbrown`. Binary
+tests reuse `package-evaluation-driver`, including the Cargo dev dependency on
+registry test support. The updater retains pinned source archives; ordinary
+builds do not run the resolver or Cargo. Existing dependency profiles and their
+generated files are preserved. Precise source selections come from configured
+production and test analysis rather than a broad source checkout.
+
+This opt-in does not establish foreign-host execution, a production default
+cutover, numeric performance acceptance, or repository-wide Cargo removal.
+
 ## Storage/campaign compilation measurements
 
 `tests/evidence/store-performance-v3.json` identifies a frozen compilation trial

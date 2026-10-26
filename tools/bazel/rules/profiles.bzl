@@ -28,6 +28,7 @@ def _dependency_profile_impl(ctx):
         "package-manager",
         "package-manager-tests",
         "package-evaluation-driver",
+        "deployment-check",
         "configuration-image",
         "configuration-image-tests",
         "preparation-provider",
