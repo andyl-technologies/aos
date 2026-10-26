@@ -23,7 +23,8 @@ mod context_originals;
 pub use context_originals::BrokerSessionManifestContextOriginalsV1;
 
 use crate::{
-    BROKER_SESSION_SIGNER_REFERENCE_BYTES, BrokerSessionKeyUsageV1, BrokerSessionProtocolV1,
+    BROKER_SESSION_SIGNER_REFERENCE_BYTES, BrokerSessionDurableEndpointV1,
+    BrokerSessionKeyUsageV1, BrokerSessionProtocolV1,
     BrokerSessionSignerReferenceV1, ProtectedBrokerSessionKeyV1,
     ProtectedBrokerSessionVerificationContextV1, hello_message::Audience,
     supported_broker_session_version_v1,
@@ -59,6 +60,8 @@ const MANIFEST_PREFIX_BYTES: usize = 184;
 const KEY_PIN_BYTES: usize = 184;
 const KEY_COUNT: usize = 4;
 const MANIFEST_BINDING_DOMAIN: &[u8] = b"aos-sandbox-broker-session-manifest-v1\0";
+const STABLE_ENDPOINT_IDENTITY_DOMAIN: &[u8] =
+    b"aos.sandbox.broker-session.stable-endpoint-identity.v2\0";
 
 const _: () = assert!(
     MANIFEST_PREFIX_BYTES + (KEY_COUNT * KEY_PIN_BYTES) == BROKER_SESSION_MANIFEST_BYTES
@@ -114,6 +117,34 @@ impl BrokerSessionManifestBindingV1 {
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    /// Derives stable endpoint identity DATA from this exact manifest binding.
+    ///
+    /// The V2 identity commits the protocol code, durable endpoint role and
+    /// canonical manifest binding, without process-incarnation fields. This is
+    /// the same equation used by protected session history. A public-manifest
+    /// comparison can therefore reuse it without loading private endpoint keys.
+    ///
+    /// The protocol and role are comparison DATA. This operation authenticates
+    /// neither their provenance nor the manifest's installed custody, current
+    /// endpoint, Session schema, approval-key separation or physical TPM state.
+    /// Normal protected owners must retain their native revalidation bookends.
+    #[must_use]
+    pub fn stable_endpoint_identity_data_v2(
+        &self,
+        protocol: BrokerSessionProtocolV1,
+        endpoint: BrokerSessionDurableEndpointV1,
+    ) -> [u8; 32] {
+        let role = match endpoint {
+            BrokerSessionDurableEndpointV1::Client => 1,
+            BrokerSessionDurableEndpointV1::Broker => 2,
+        };
+        let mut digest = Sha256::new();
+        digest.update(STABLE_ENDPOINT_IDENTITY_DOMAIN);
+        digest.update([protocol.code(), role]);
+        digest.update(self.as_bytes());
+        digest.finalize().into()
     }
 }
 

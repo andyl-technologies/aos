@@ -29,6 +29,91 @@ const GOLDEN_HEX: &str = concat!(
 );
 const GOLDEN_BINDING_HEX: &str = "61aea33546af9d99c79ac81bf0705500a81c94d472dbf98681c87308103dbb26";
 
+#[test]
+fn stable_endpoint_v2_preserves_all_protocol_and_role_golden_identities() {
+    use crate::BrokerSessionDurableEndpointV1::{Broker, Client};
+
+    // These vectors pin the existing protected-history equation, independently
+    // computed with SHA-256 over the literal domain, two codes and binding.
+    let vectors = [
+        (
+            BrokerSessionProtocolV1::Host,
+            "6c0f17c188062509522bd7c160305611de3aae9c3aaab561b4bd1e109c3b0578",
+            "0e2288b730f88a8396463689fe24edcf3991a0be2d475140b6d95f5aff174d88",
+        ),
+        (
+            BrokerSessionProtocolV1::Storage,
+            "fd9cba274291670bb672f898115872afdda61031992d01948bfb6b3fc975c926",
+            "7e634994c821868de987dcc915980d9ef2b5795c7e6cdafd3d0ac15c97938f29",
+        ),
+        (
+            BrokerSessionProtocolV1::Mount,
+            "743a98c00f724d1d51e0d97630f989746c8735dcb1473c3c7f582ed9e0574d59",
+            "bf7d1f2d109eb2dafa582cc40af28d4295db359942fbc8ffee75e36f7b814fca",
+        ),
+        (
+            BrokerSessionProtocolV1::Network,
+            "e2edd892a3ba234f5384dab75a15b42acc6bfba7a8c22e6c05f702614e47a36e",
+            "5702bc7afd203dc99bf9e63600fa80d35bee05d9da835351acb1c0fca08499c7",
+        ),
+        (
+            BrokerSessionProtocolV1::MountFuse,
+            "37d03dde472d68c8348cba2c6d009bb07531a99e7a914c9dd18d915822a36038",
+            "f13e686d3afde803d2c6521b7de09aa4c15267a8e9836037dd122c9bcf9666d6",
+        ),
+        (
+            BrokerSessionProtocolV1::Nix,
+            "951ccb02e70ca5baa4fe182e49d3d3814c46703847e4bfa2b424531de34c5487",
+            "bd600475237a28ff4302f5df9b048545cc862b06bce7a4a832af9d63b5e6d9cd",
+        ),
+    ];
+    let binding = BrokerSessionManifestBindingV1([7; 32]);
+    let changed = BrokerSessionManifestBindingV1([8; 32]);
+
+    for (protocol, client, broker) in vectors {
+        for (role, expected) in [(Client, client), (Broker, broker)] {
+            let observed = binding.stable_endpoint_identity_data_v2(protocol, role);
+
+            assert_eq!(hex::encode(observed), expected);
+            assert_ne!(
+                changed.stable_endpoint_identity_data_v2(protocol, role),
+                observed
+            );
+        }
+    }
+}
+
+#[test]
+fn stable_endpoint_v2_uses_the_same_canonical_public_manifest_binding() {
+    use crate::BrokerSessionDurableEndpointV1::{Broker, Client};
+
+    let original = manifest();
+    let decoded = BrokerSessionManifestV1::decode(&original.encode()).unwrap();
+
+    for (role, expected) in [
+        (
+            Client,
+            "0736c95f4b434977ea848f352d6d79d0bb8e6e09996311d06deb9d97f30c1ea3",
+        ),
+        (
+            Broker,
+            "b8850134e6f21eed45b939a51f9dad487a2d55ccc071b1e1d9dcdec9d1972048",
+        ),
+    ] {
+        let observed = decoded
+            .binding()
+            .stable_endpoint_identity_data_v2(decoded.protocol(), role);
+
+        assert_eq!(hex::encode(observed), expected);
+        assert_eq!(
+            original
+                .binding()
+                .stable_endpoint_identity_data_v2(original.protocol(), role),
+            observed
+        );
+    }
+}
+
 pub(super) fn manifest() -> BrokerSessionManifestV1 {
     let keys = core::array::from_fn(|index| {
         let seed = [u8::try_from(index + 1).unwrap_or(1); 32];

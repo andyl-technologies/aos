@@ -169,8 +169,6 @@ const HOST_TERMINAL_SESSION_KEY_MAGIC: &[u8; 8] = aos_sandbox_protocol::authenti
 const VALUE_DOMAIN_V2: &[u8] = b"aos.sandbox.broker-session.protected-history.v2\0";
 const VALUE_DOMAIN_V3: &[u8] = b"aos.sandbox.broker-session.protected-history.v3\0";
 const ENDPOINT_PUBLICATION_DOMAIN: &[u8] = b"aos.sandbox.broker-session.endpoint-publication.v1\0";
-const STABLE_ENDPOINT_IDENTITY_DOMAIN: &[u8] =
-    b"aos.sandbox.broker-session.stable-endpoint-identity.v2\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.broker-session.journal-transaction.v2\0";
 const STORAGE_GROUP_ARCHIVE_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.broker-session.storage-group-archive.v1\0";
@@ -612,10 +610,13 @@ impl ProtectedEndpointV1 {
         }
     }
 
-    fn manifest_binding(&mut self) -> Result<[u8; 32], BrokerSessionSecurityError> {
+    fn manifest_binding(&mut self) -> Result<
+        aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestBindingV1,
+        BrokerSessionSecurityError,
+    > {
         match self {
-            Self::Client(endpoint) => endpoint.manifest_binding().map(|value| *value.as_bytes()),
-            Self::Broker(endpoint) => endpoint.manifest_binding().map(|value| *value.as_bytes()),
+            Self::Client(endpoint) => endpoint.manifest_binding(),
+            Self::Broker(endpoint) => endpoint.manifest_binding(),
         }
     }
 
@@ -5797,7 +5798,7 @@ impl ProtectedBrokerSessionJournalV1 {
         let mut digest = Sha256::new();
         digest.update(ENDPOINT_PUBLICATION_DOMAIN);
         digest.update([protocol_code(protocol), role]);
-        digest.update(manifest);
+        digest.update(manifest.as_bytes());
         digest.update(process);
         Ok(digest.finalize().into())
     }
@@ -5819,7 +5820,7 @@ impl ProtectedBrokerSessionJournalV1 {
         Ok(Sha256::new()
             .chain_update(ENDPOINT_PUBLICATION_DOMAIN)
             .chain_update([protocol_code(protocol), role])
-            .chain_update(manifest)
+            .chain_update(manifest.as_bytes())
             .chain_update(process)
             .finalize()
             .into())
@@ -5831,14 +5832,10 @@ impl ProtectedBrokerSessionJournalV1 {
     ) -> Result<[u8; 32], BrokerSessionSecurityError> {
         self.endpoint.revalidate()?;
         let manifest = self.endpoint.manifest_binding()?;
-        let role = endpoint_code(self.endpoint.role());
+        let role = self.endpoint.role();
         self.endpoint.revalidate()?;
 
-        let mut digest = Sha256::new();
-        digest.update(STABLE_ENDPOINT_IDENTITY_DOMAIN);
-        digest.update([protocol_code(protocol), role]);
-        digest.update(manifest);
-        Ok(digest.finalize().into())
+        Ok(manifest.stable_endpoint_identity_data_v2(protocol, role))
     }
 
     fn read_optional(

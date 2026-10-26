@@ -617,6 +617,18 @@ Recent committed startup fixes close narrower prerequisites:
   delivery, normal-key separation, durable intent, physical TPM operations and
   installed producer qualification remain incomplete.
 
+- The existing stable-endpoint V2 identity equation now belongs to the
+  canonical manifest-binding DATA type. Protected session history calls the
+  same function while retaining its existing endpoint revalidation bookends.
+  Public-manifest comparisons can reuse that equation without constructing a
+  private-key endpoint or a second hash implementation. All 475 selected
+  protocol/security library tests pass under isolated nextest, with two
+  existing skips. Two new regressions pin fourteen independently computed
+  identities across every protocol/endpoint role and the canonical manifest
+  roundtrip. Complete Rust target compilation remains pending for this source.
+  This establishes no installed public-manifest provenance, approval-key
+  separation, Session schema, physical TPM or initialization authority.
+
 - Initial main capture now admits historical namespaces and legacy capacity
   ownership through the ordinary protected namespace engine. The read-only
   comparison shares the exact health, complete canonical-family, deleted-history
