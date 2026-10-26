@@ -3,7 +3,7 @@
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/test-support-audit-inventory.json,
 }: let
-  audits = ["crate_unsafe_fence" "concurrency_abi_oracle_standards" "harness_lint_annotations"];
+  audits = ["crate_unsafe_fence" "concurrency_abi_oracle_standards" "harness_lint_annotations" "determinism_core_coverage"];
   parityTools = builtins.path {
     path = ../../tools/bazel/tests;
     name = "aos-source-audit-parity-tools";

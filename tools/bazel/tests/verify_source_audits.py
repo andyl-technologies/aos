@@ -15,7 +15,12 @@ from verify_pilot import cases, verify
 
 
 ROOT_CASE = "crucible_crate_roots_carry_declared_unsafe_fence"
-AUDITS = {"crate_unsafe_fence": 5, "concurrency_abi_oracle_standards": 2, "harness_lint_annotations": 4}
+AUDITS = {
+    "crate_unsafe_fence": 5,
+    "concurrency_abi_oracle_standards": 2,
+    "harness_lint_annotations": 4,
+    "determinism_core_coverage": 2,
+}
 
 
 def oracle_binary(oracle, target="crate_unsafe_fence"):
@@ -148,6 +153,27 @@ def qualify(options):
             if result.returncode == 0 or "missing required crate-root fence" not in result.stdout + result.stderr:
                 raise ValueError("catalog-backed audit missed source fence drift")
         rejected.append("missing-active-unsafe-fence")
+
+        # Mutate the actual scanned source, preserving the audit's own marker
+        # declaration so a passing check cannot come from changing both sides.
+        marker = "fn stable_hasher_is_repeatable("
+        package = next(item for item in catalog["packages"] if item["name"] == "crucible-determinism")
+        sources = [root / path for path in package["sources"]]
+        matches = [path for path in sources if path.suffix == ".rs" and marker in path.read_text()]
+        if len(matches) != 1:
+            raise ValueError("coverage negative control cannot identify the active test marker")
+        source = matches[0]
+        contents = source.read_text()
+        if contents.count(marker) != 1:
+            raise ValueError("coverage negative control has an ambiguous test marker")
+        source.chmod(0o644)
+        source.write_text(contents.replace(marker, "fn removed_coverage_marker(", 1))
+        for selected in (binaries, bazel_binaries):
+            result = run_audit(selected["determinism_core_coverage"], selected_catalog,
+                               "active_determinism_core_paths_have_branch_and_error_coverage_markers")
+            if result.returncode == 0 or "coverage marker `stable_hasher_is_repeatable` is missing" not in result.stdout + result.stderr:
+                raise ValueError("catalog-backed audit missed coverage marker drift")
+        rejected.append("missing-active-coverage-marker")
 
     return {
         "schema_version": 2,
