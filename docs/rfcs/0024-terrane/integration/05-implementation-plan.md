@@ -112,8 +112,11 @@ changing its 60-second case or 240-second guest bounds. Native qualification at
 `659e6144c0` passes in 1,293.832 seconds including compilation and image creation.
 Independent review verifies all eight exact cases in the confined UID-840 ext4
 AOS guest, 8,293 immutable source files and the retained Cargo executable.
-Required application-target compilation remains running. Full Content.Has and
-Negotiate remain unimplemented; acceptance stays 28/64.
+Required application-target compilation at the same checkpoint passes in
+1,496.132 seconds. Independent review matches all 8,293 immutable source files
+and 190 test-executable records across 59 packages; compilation does not imply
+execution. Full Content.Has and Negotiate remain unimplemented; acceptance
+stays 28/64.
 
 A separate restart diagnostic preserves the original successful managed startup
 and shutdown proof, then attempts a fresh publisher and Serve start while the
@@ -122,6 +125,16 @@ fails with `NativeCacheOpen` before SDK presentation. This is a failing diagnost
 not restart acceptance or evidence that an existing SDK checkout caused the
 failure. The native recovery error requires further diagnosis. The contract that
 SDK checkout creates a new private directory remains unchanged.
+
+The explicit startup diagnostic fixture at `2393787b71` calls the same confined
+service startup and emits only its existing redacted error kind and I/O
+category. Strict example Clippy and formatting pass. Required application-target
+compilation passes in 884.180 seconds; independent review matches all 8,293
+immutable source files and 190 test-executable records across 59 packages.
+This is compilation evidence only. Its 96 prerequisite dispatches are audited
+for isolated AOS execution with host-native fallback disabled; image construction
+and actual failure-category diagnosis remain pending. Production CLI output and
+SDK destination semantics are unchanged.
 
 The actual service-manager fixture now declares the public issuer file and
 independent startup Read required by the configured SDK launcher. Its guest
