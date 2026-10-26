@@ -4,6 +4,8 @@
 //! Only immutable DATA is shared within that invocation; actor authorization
 //! remains the enclosing Guard's fresh decision after complete physical closing.
 
+mod contexts;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -200,6 +202,18 @@ where
                     return Err(invalid());
                 }
             }
+            // Other genuine writers can retain new local baselines and commit
+            // associations after this reader opened. Rebind their actual protected
+            // records inside this operation's real exclusions before walking history.
+            let refreshed = contexts::refresh_local(
+                &concrete,
+                &guard,
+                &authority,
+                &proof,
+                &mut exclusion,
+                &mut named,
+            )
+            .await?;
             // Every reached history view already requires an installed opaque
             // Original context. Capture those contexts' real records before
             // installing a retained read scope; this grants no history or ACL.
@@ -266,7 +280,7 @@ where
                 .retain_named(&named.into_iter().collect::<Vec<_>>())
                 .await?;
             reader_guard.retain_original_controls(&late)?;
-            let controls = [early, late];
+            let controls = [refreshed, early, late];
             let original_reads = [snapshot_read];
             let checked = CheckedCurrentHistoryInputs::close(
                 source.fs(),

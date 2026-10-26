@@ -91,6 +91,34 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The first local Ref service AOS batch at `b4da3201d2` fails in 299.524
+seconds. Its first case reads the initial whole record successfully, then the
+second RPC refuses after the independent writer publishes a genuine successor.
+The request is incorrectly classified as malformed retained backend state. The
+original frozen source fingerprint, seven-case inventory, full diagnostics and
+failed controller are preserved; no service case or task is accepted. The
+subsequent stream-controls checkpoint `3772550761` has completed preflight only
+and does not correct this implementation failure.
+
+Source review finds that ordinary current reads copy the reader's startup
+Original-context maps, which omit later native baselines and commit associations
+retained by another writer. Current reads now re-enumerate those exact protected
+local records under the genuine backend and configuration exclusions. Existing
+native binders independently validate physical registration, canonical baseline
+and exact commit association against retained controls. New opaque contexts live
+only in the operation-local guard; previously checked contexts and imported
+supplements remain intact. Complete signed history, selected publication,
+current identity and ACL checks, and all closing physical checks still follow.
+No signing key, copied metadata or configuration label supplies Original authority.
+
+The Ref service validates root-free patterns before dispatch and classifies
+invalid retained backend state as INTERNAL. Strict all-target Clippy passes for
+both native SDK profiles; portable library and wire-contract compilation pass
+with the six existing Guard warning groups. SDK formatting and PLAN-2 pass.
+Fresh AOS execution of all nine service cases, socket/codec regressions and
+required application-target compilation of this correction remain pending.
+Acceptance remains 28/64.
+
 The repository-backed local Ref read service now connects authenticated native
 socket requests to the original repository's current-policy guard. It reads
 actual selected whole records, finite guarded inventories and committed history;

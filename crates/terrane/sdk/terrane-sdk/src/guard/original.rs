@@ -524,6 +524,18 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
         authority: &OriginalAuthority,
         view: BootstrapView<'_>,
     ) -> Result<RetainedBootstrap, StoreFailure> {
+        self.bind_original_bootstrap_at(authority, view, None, None)
+            .await
+    }
+
+    // Retained current reads reuse their genuine backend/control exclusions.
+    async fn bind_original_bootstrap_at(
+        &self,
+        authority: &OriginalAuthority,
+        view: BootstrapView<'_>,
+        held: Option<&HeldIdentity<'_>>,
+        retained: Option<&RetainedControls>,
+    ) -> Result<RetainedBootstrap, StoreFailure> {
         if view.id != authority.id() {
             return Err(invalid());
         }
@@ -545,8 +557,8 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
                     control: &authority.control,
                 },
                 &[record],
-                None,
-                None,
+                held,
+                retained,
             )
             .await?;
         Ok(RetainedBootstrap {

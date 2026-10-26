@@ -24,7 +24,10 @@ mod response;
 use read::{ReadRequest, protocol};
 use response::{ResponseBudget, limit};
 
-use terrane_format::refs::RefName;
+use terrane_format::{
+    auth::{Grant, Verb, Verbs},
+    refs::RefName,
+};
 
 use super::{
     authentication::RequestToken, refs::RefCodec, services::RefService, status::Outcome, v1,
@@ -189,6 +192,17 @@ where
         Ok(())
     }
 
+    fn pattern(&self, pattern: &str, trace: &str) -> Result<(), ConnectError> {
+        self.name_size(pattern, trace)?;
+        if pattern.contains(':') {
+            return Err(limit("ref-pattern", 0, 0, trace));
+        }
+        let read = Verbs::new(Verb::Read as u8).map_err(|_| protocol(Outcome::Internal, trace))?;
+        Grant::new(pattern.to_owned(), read)
+            .map(|_| ())
+            .map_err(|_| limit("ref-pattern", 0, 0, trace))
+    }
+
     fn profile(&self) -> &str {
         &self
             .repository
@@ -325,7 +339,7 @@ where
     ) -> ServiceResult<ServiceStream<v1::RefState>> {
         let read = self.request(&context)?;
         let request = request.to_owned_message();
-        self.name_size(&request.pattern, &read.trace)?;
+        self.pattern(&request.pattern, &read.trace)?;
         let listed = read.listing(&request.pattern).await?;
         if listed.len() > self.limits.max_entries.get() {
             return Err(limit(

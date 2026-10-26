@@ -8,10 +8,7 @@ use terrane_format::{auth, refs::RefRecord};
 use crate::{
     repository::{Error, ListedRef, RefHistory, Repository},
     store::{Clock, LocalFs, RefInventory, Store, StoreErrorKind},
-    wire::{
-        status::{Outcome, ProtocolError},
-        v1,
-    },
+    wire::status::{Outcome, ProtocolError},
 };
 
 // The native SDK context is fixed by the service, never selected by a header.
@@ -83,10 +80,9 @@ fn repository_error(error: Error, trace: &str) -> ConnectError {
             StoreErrorKind::Denied { .. } | StoreErrorKind::Absent(_) => Outcome::NotFound,
             StoreErrorKind::Unsupported => Outcome::MethodUnavailable,
             StoreErrorKind::Unavailable { .. } => Outcome::Transient(None),
-            StoreErrorKind::Invalid(_) => Outcome::Malformed(v1::Limit {
-                name: "ref-request".into(),
-                ..Default::default()
-            }),
+            // Names and patterns are checked before repository dispatch. A
+            // malformed retained backend record is an internal failure.
+            StoreErrorKind::Invalid(_) => Outcome::Internal,
             _ => Outcome::Internal,
         },
         _ => Outcome::Internal,
