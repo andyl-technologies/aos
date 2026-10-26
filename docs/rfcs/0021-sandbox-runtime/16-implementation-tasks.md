@@ -31,6 +31,26 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The initial Source's measured-child driving loan now supplies a bounded
+  public HELLO and lock-ACK handoff. Its captured canonical provisioning selects
+  the endpoint and salt Name; its actual writer loan supplies both original
+  lock descriptions. The shared native sender now retains descriptor-bearing
+  send failures and the same-socket post. Approval and helper handoffs use one
+  native BOOTTIME readiness recipe. The actual zero-rights ACK remains resident
+  before nonce, nominated credentials, original-child pidfd/liveness and held
+  stat/context checks. No executable maps are reread after the helper becomes
+  nondumpable. Independent Source checks separate readiness from send/receive,
+  including after native failure, and funding includes the child lock FDs.
+  All nine affected native descriptor/readiness/approval cases, 427 Broker
+  tests and 125 focused Source tests pass; Security validation is running.
+  Full application compilation is running on the audited corrected snapshot,
+  with 66 changed
+  Rust hashes and both deleted modules checked; its 833-derivation closure
+  excludes production policy. This does not qualify an installed positive
+  Source or confined helper exchange. Private-auth transfer, Security's full
+  initialization composition, TPM write/checkpoint and installed lifecycle and
+  recovery remain open. Admission stays closed.
+
 - The genuine initial Source's durable-intent lock loan now prepays and lends
   a fixed helper child reservoir. Construction precedes allocation; the actual
   finite inherited stack and shared helper runtime calculation precede native
@@ -48,14 +68,14 @@ Recent committed startup fixes close narrower prerequisites:
   after rederiving the same verified approval, completed durable intent and
   actual lock custody; refusal releases its temporary helper borrow before
   independent native posts. One Broker case and two cases in each Security
-  suite remain ignored. Full application target compilation is running on the
-  audited snapshot: its
+  suite remain ignored. Full application target compilation is running on that
+  pre-handoff snapshot: its
   833-derivation closure excludes production policy and matches all 62 changed
   Rust sources plus both deleted-module absences. The retirement regression now
   checks a unique private ancestor with metadata only, allowing legitimate
   numeric FD reuse without opening a reused target.
-  There is no HELLO, record-subject ACK, private-auth transfer or TPM operation
-  API in this birth loan. No installed positive Source or confined helper birth
+  That birth increment supplied no HELLO, record-subject ACK, private-auth
+  transfer or TPM operation API. No installed positive Source or confined helper birth
   is yet qualified. Initialization, checkpoint and installed lifecycle/recovery
   remain open; admission stays closed.
 

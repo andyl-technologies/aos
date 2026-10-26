@@ -8,7 +8,8 @@
 //! compared. Dropping the borrow fences and signals the child while retaining
 //! its native originals and cleanup debt in this owner.
 //!
-//! This module sends no HELLO, reads no credential and performs no TPM command.
+//! The handoff sends public HELLO and validates the retained child ACK. It
+//! reads no private credential and performs no TPM command.
 //! Child identity and MAC comparisons are prerequisites for a future private
 //! carrier, not Source, approval, NV or checkpoint authority.
 
@@ -34,6 +35,9 @@ use rustix::time::{ClockId, Timespec, clock_gettime};
 use crate::fixed_tpm_helper_image::{
     FixedTpmHelperPurposeV1, HelperExecutedImageOriginalV1, MeasuredHelperImageV1,
 };
+
+mod handoff;
+use handoff::InitialHelperHandoffOriginalV1;
 
 const OUTPUT_BYTES: usize = 4096;
 const CHILD_TIMEOUT: Duration = Duration::from_secs(60);
@@ -66,6 +70,7 @@ pub struct FixedInitialTpmHelperBirthOriginalV1 {
     identity: Option<PidFdProcessIdentity>,
     context_matches: Option<bool>,
     executed: HelperExecutedImageOriginalV1,
+    handoff: InitialHelperHandoffOriginalV1,
     entered: bool,
     driven: bool,
     measured: bool,
@@ -93,6 +98,7 @@ impl FixedInitialTpmHelperBirthOriginalV1 {
             identity: None,
             context_matches: None,
             executed: HelperExecutedImageOriginalV1::new(),
+            handoff: InitialHelperHandoffOriginalV1::new(),
             entered: false,
             driven: false,
             measured: false,
@@ -156,10 +162,15 @@ impl FixedInitialTpmHelperBirthOriginalV1 {
                 OUTPUT_BYTES,
                 OUTPUT_BYTES,
             )?)?
-            .checked_add(OUTPUT_BYTES.checked_mul(4)?)?;
-        let files = pair_files.checked_add(spawn_files)?.checked_add(10)?;
+            .checked_add(OUTPUT_BYTES.checked_mul(4)?)?
+            .checked_add(InitialHelperHandoffOriginalV1::receiving_bytes_v1()?)?;
+        let files = pair_files
+            .checked_add(spawn_files)?
+            .checked_add(10)?
+            .checked_add(InitialHelperHandoffOriginalV1::receiving_files_v1()?)?;
         let traffic = PidFdProcOriginalsV1::stat_maximum_requested_read_bytes_v1()?
             .checked_add(PidFdProcOriginalsV1::context_maximum_requested_read_bytes_v1()?)?
+            .checked_add(InitialHelperHandoffOriginalV1::traffic_bytes_v1()?)?
             .checked_add(FixedProcessRunOriginalV3::bounded_output_bytes_v3(
                 OUTPUT_BYTES,
                 OUTPUT_BYTES,
@@ -300,6 +311,9 @@ impl FixedInitialTpmHelperBirthOriginalV1 {
             measured: &mut self.measured,
             first: &mut self.first,
             started: false,
+            channel: self.channel.as_mut().ok_or(InitialTpmHelperBirthClosedV1)?,
+            handoff: &mut self.handoff,
+            cut: self.cut.ok_or(InitialTpmHelperBirthClosedV1)?,
         })
     }
 
@@ -326,6 +340,9 @@ pub struct InitialTpmHelperDrivingLoanV1<'owner> {
     measured: &'owner mut bool,
     first: &'owner mut Option<InitialTpmHelperBirthClosedV1>,
     started: bool,
+    channel: &'owner mut SeqpacketSocket,
+    handoff: &'owner mut InitialHelperHandoffOriginalV1,
+    cut: FixedProcessBoottimeCutV1,
 }
 
 impl InitialTpmHelperDrivingLoanV1<'_> {

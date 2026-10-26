@@ -7,8 +7,11 @@
 
 use std::cell::RefMut;
 
+use aos_sandbox_broker::fixed_tpm_helper_wire::FixedTpmEndpointV2;
+
 use aos_sandbox_broker::fixed_initial_tpm_helper_birth::{
-    FixedInitialTpmHelperBirthOriginalV1, InitialTpmHelperDrivingLoanV1,
+    FixedInitialTpmHelperBirthOriginalV1, InitialTpmHelperBirthClosedV1,
+    InitialTpmHelperDrivingLoanV1,
 };
 
 use super::*;
@@ -26,12 +29,15 @@ pub struct Method46InitialTpmHelperBirthLoanV1<'owner> {
 
 /// Keeps the real Source and child borrowed across the native birth checks.
 ///
-/// This supplies no private-auth destination, TPM operation or approval claim.
+/// This supplies the fixed lock handoff, but no private-auth destination, TPM
+/// operation or approval claim.
 /// Dropping the loan stops automatic progress and signals the retained child.
 #[must_use = "retain this same child borrow through its purpose disposition"]
 pub struct Method46InitialTpmHelperDrivingLoanV1<'owner> {
     startup: &'owner Method46InitialStartupOriginalV1,
     native: InitialTpmHelperDrivingLoanV1<'owner>,
+    endpoint: FixedTpmEndpointV2,
+    salt_name: [u8; 34],
 }
 
 fn require_current(
@@ -49,6 +55,19 @@ fn require_current(
             .map_err(|_| startup.closed)
     })();
     result.map_err(|_| startup.fail(First::TpmHelperBirth))
+}
+
+fn observe_after(
+    startup: &Method46InitialStartupOriginalV1,
+    action: Result<(), InitialTpmHelperBirthClosedV1>,
+) -> Result<(), Method46InitialStartupClosedV1> {
+    // A reached native refusal does not suppress the independent Source sample.
+    let after = require_current(startup);
+    if action.is_err() || after.is_err() {
+        Err(startup.fail(First::TpmHelperBirth))
+    } else {
+        Ok(())
+    }
 }
 
 impl<'owner> Method46InitialTpmLockLoanV1<'owner> {
@@ -128,6 +147,19 @@ impl Method46InitialTpmHelperBirthLoanV1<'_> {
         &mut self,
     ) -> Result<Method46InitialTpmHelperDrivingLoanV1<'_>, Method46InitialStartupClosedV1> {
         require_current(self.startup)?;
+        let (profile, salt_name) = self
+            .helper
+            .provision
+            .as_ref()
+            .and_then(|provision| provision.as_ref().ok())
+            .ok_or(self.startup.closed)?;
+        let endpoint = match profile.endpoint() {
+            Method46EndpointDataV1::ControllerStorageClient => {
+                FixedTpmEndpointV2::ControllerStorageClient
+            }
+            Method46EndpointDataV1::StorageBroker => FixedTpmEndpointV2::StorageBroker,
+        };
+        let salt_name = *salt_name;
         let birth = self.helper.birth.as_mut().ok_or(self.startup.closed)?;
         birth
             .prepare_once_v1()
@@ -139,11 +171,53 @@ impl Method46InitialTpmHelperBirthLoanV1<'_> {
         Ok(Method46InitialTpmHelperDrivingLoanV1 {
             startup: self.startup,
             native,
+            endpoint,
+            salt_name,
         })
     }
 }
 
 impl Method46InitialTpmHelperDrivingLoanV1<'_> {
+    /// Hands both original writer lock descriptions to the same measured helper.
+    ///
+    /// The public HELLO uses this Source's captured canonical provisioning and
+    /// actual lock identities. Each native readiness/send/receive operation has
+    /// independent Source currentness observations; waiting cannot carry an old
+    /// Source check into a later send. The actual zero-rights ACK must nominate
+    /// this retained child and match its fresh pidfd, held proc and nonce checks.
+    /// No private auth is read or transmitted and no TPM request is issued.
+    ///
+    /// # Errors
+    /// Refuses failed/ended Source, missing or changed locks, reentry, timeout,
+    /// native send/receive errors, foreign subject or noncanonical ACK. All
+    /// reached native prefixes remain in the original Source, including after
+    /// failure; dropping the driving loan signals the retained child.
+    pub fn handoff_locks_once_v1(&mut self) -> Result<(), Method46InitialStartupClosedV1> {
+        require_current(self.startup)?;
+        let locks = Method46InitialTpmLockLoanV1 {
+            startup: self.startup,
+        };
+        let identities = locks.borrow_custody_v1()?.identities_data_v1()?;
+        let action = self
+            .native
+            .prepare_hello_once_v1(self.endpoint, self.salt_name, identities);
+        observe_after(self.startup, action)?;
+
+        let action = self.native.wait_hello_once_v1();
+        observe_after(self.startup, action)?;
+        {
+            let view = locks.borrow_custody_v1()?;
+            let descriptors = view.borrowed_descriptors_v1()?;
+            let action = self.native.send_hello_once_v1(descriptors);
+            observe_after(self.startup, action)?;
+        }
+
+        let action = self.native.wait_ack_once_v1();
+        observe_after(self.startup, action)?;
+        let action = self.native.receive_ack_once_v1();
+        observe_after(self.startup, action)
+    }
+
     /// Starts and measures the real fixed initial child under this same Source.
     ///
     /// No HELLO or private authentication is transmitted. Actual pidfd-anchored

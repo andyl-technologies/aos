@@ -5,13 +5,12 @@
 //! key independence and approval verification belong to the enclosing owner.
 //! These native mechanics grant no provisioning or TPM authority.
 
-use std::os::fd::BorrowedFd;
-
-use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::event::{PollFlags, Timespec};
 use rustix::time::{ClockId, clock_gettime};
 
 use super::{
     ReceivedRecord, RecordSubjectListener, RetainedSeqpacketAdmissionErrorV1,
+    SeqpacketReadinessOriginalV1 as ReadinessOriginal,
     RetainedSeqpacketReceiveErrorV1, RetainedSeqpacketSendErrorV1, SeqpacketError,
     SeqpacketOwnedShutdownOriginalV1, SeqpacketRightsRestrictionOriginalV6, SeqpacketSocket,
 };
@@ -26,54 +25,6 @@ pub const INITIAL_APPROVAL_SIGNATURE_BYTES_V1: usize = 64;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("initial approval exchange is closed")]
 pub struct InitialApprovalExchangeClosedV1;
-
-struct ReadinessOriginal {
-    before: Option<Timespec>,
-    timeout: Option<Timespec>,
-    result: Option<rustix::io::Result<usize>>,
-    events: Option<PollFlags>,
-    after: Option<Timespec>,
-}
-
-impl ReadinessOriginal {
-    const fn new() -> Self {
-        Self {
-            before: None,
-            timeout: None,
-            result: None,
-            events: None,
-            after: None,
-        }
-    }
-
-    fn observe(&mut self, fd: BorrowedFd<'_>, expected: PollFlags, deadline: u64) -> bool {
-        self.before = Some(clock_gettime(ClockId::Boottime));
-        let Some(before) = self.before.and_then(nanoseconds) else {
-            return false;
-        };
-        let Some(remaining) = deadline
-            .checked_sub(before)
-            .filter(|remaining| *remaining > 0)
-        else {
-            return false;
-        };
-        self.timeout = Some(Timespec {
-            tv_sec: (remaining / 1_000_000_000) as i64,
-            tv_nsec: (remaining % 1_000_000_000) as i64,
-        });
-        let mut descriptors = [PollFd::new(&fd, expected)];
-        self.result = Some(poll(&mut descriptors, self.timeout.as_ref()));
-        self.events = Some(descriptors[0].revents());
-        self.after = Some(clock_gettime(ClockId::Boottime));
-
-        matches!(self.result, Some(Ok(1)))
-            && self.events == Some(expected)
-            && self
-                .after
-                .and_then(nanoseconds)
-                .is_some_and(|after| after < deadline)
-    }
-}
 
 fn nanoseconds(sample: Timespec) -> Option<u64> {
     let seconds = u64::try_from(sample.tv_sec).ok()?;

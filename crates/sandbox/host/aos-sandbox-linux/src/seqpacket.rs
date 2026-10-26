@@ -37,6 +37,9 @@ use crate::uapi::{self, RawAncillary};
 
 mod listener;
 pub mod initial_approval;
+
+mod readiness;
+pub use readiness::SeqpacketReadinessOriginalV1;
 pub use listener::{
     ListenerAdmissionFailureRefV1, RecordSubjectListener,
     RecordSubjectListenerAdmissionAttemptV1,
@@ -743,6 +746,48 @@ impl SeqpacketSocket {
         descriptors: &[BorrowedFd<'_>],
     ) -> Result<(), SeqpacketError> {
         Self::send_original_with_descriptors(&mut self.fd, payload, descriptors, OriginalSenderDispositionV1::Legacy)
+    }
+
+    /// Sends one descriptor-bearing record while retaining every native refusal.
+    ///
+    /// The supplied descriptions remain borrowed from their original owner.
+    /// Before native entry the sending socket moves into the same retained
+    /// flight used by plain sends. Only a complete send restores active IO;
+    /// failure or unwind preserves the original descriptor and fences retries.
+    /// This proves neither peer receipt nor custody or drain of its effects.
+    ///
+    /// # Errors
+    /// Retains the original descriptor and exact validation, ancillary or send
+    /// failure, including backpressure and interruption. A closed or unfinished
+    /// sender refuses without taking custody from an earlier failed flight.
+    pub fn send_with_descriptors_retaining_v1(
+        &mut self,
+        payload: &[u8],
+        descriptors: &[BorrowedFd<'_>],
+    ) -> Result<(), RetainedSeqpacketSendErrorV1> {
+        if self.retained_send_flight.is_some() || self.fd.is_none() {
+            return Err(RetainedSeqpacketSendErrorV1 {
+                cause: SeqpacketError::Closed,
+                descriptor: None,
+            });
+        }
+
+        self.retained_send_flight = self.fd.take();
+        match Self::send_original_with_descriptors(
+            &mut self.retained_send_flight,
+            payload,
+            descriptors,
+            OriginalSenderDispositionV1::Retained,
+        ) {
+            Ok(()) => {
+                self.fd = self.retained_send_flight.take();
+                Ok(())
+            }
+            Err(cause) => Err(RetainedSeqpacketSendErrorV1 {
+                cause,
+                descriptor: self.retained_send_flight.take(),
+            }),
+        }
     }
 
     fn send_original_with_descriptors(
@@ -3302,6 +3347,74 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn retained_descriptor_send_keeps_native_socket_after_peer_exit() {
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let lock = tempfile::tempfile().unwrap();
+        drop(endpoint);
+
+        let failure = sender
+            .send_with_descriptors_retaining_v1(b"HELLO", &[lock.as_fd()])
+            .unwrap_err();
+
+        assert!(failure.retains_descriptor());
+        assert!(sender.as_fd().is_err());
+        let mut post = SeqpacketSendAfterOriginalV1::new();
+        post.observe_once_v1(&sender, Some(&failure)).unwrap();
+        assert!(
+            sender
+                .send_with_descriptors_retaining_v1(b"retry", &[lock.as_fd()])
+                .is_err()
+        );
+        assert!(failure.retains_descriptor());
+        assert!(lock.metadata().is_ok());
+    }
+
+    #[test]
+    fn retained_descriptor_send_invalid_table_fences_same_original_without_delivery() {
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut recipient = SeqpacketSocket::from_owned(endpoint).unwrap();
+
+        let failure = sender
+            .send_with_descriptors_retaining_v1(b"HELLO", &[])
+            .unwrap_err();
+
+        assert!(failure.retains_descriptor());
+        assert!(sender.as_fd().is_err());
+        let mut post = SeqpacketSendAfterOriginalV1::new();
+        post.observe_once_v1(&sender, Some(&failure)).unwrap();
+        assert!(matches!(
+            recipient.receive(16),
+            Err(SeqpacketError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn retained_descriptor_send_delivers_both_real_descriptions_and_restores_sender() {
+        let (mut sender, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut recipient = SeqpacketSocket::from_owned(endpoint).unwrap();
+        let first = tempfile::tempfile().unwrap();
+        let second = tempfile::tempfile().unwrap();
+
+        sender
+            .send_with_descriptors_retaining_v1(b"HELLO", &[first.as_fd(), second.as_fd()])
+            .unwrap();
+        let received = recipient.receive_with_descriptors(16, 2).unwrap();
+
+        assert_eq!(received.payload(), b"HELLO");
+        assert!(sender.as_fd().is_ok());
+        for (actual, expected) in received.descriptors().iter().zip([&first, &second]) {
+            let actual = rustix::fs::fstat(actual).unwrap();
+            let expected = rustix::fs::fstat(expected).unwrap();
+            assert_eq!(
+                (actual.st_dev, actual.st_ino),
+                (expected.st_dev, expected.st_ino)
+            );
+        }
+        sender.send_retaining(b"next").unwrap();
+        assert_eq!(recipient.receive(16).unwrap().payload(), b"next");
+    }
 
     #[test]
     fn retained_send_refusal_keeps_the_typed_native_classification() {
