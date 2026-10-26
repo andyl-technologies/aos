@@ -46,6 +46,12 @@ profile. Both source contracts pass; native image construction and complete
 owning-gate renewal still require a fresh run. The failed run's raw records and
 independent attribution review remain preserved.
 
+The corrected image builds at `c6a9a68393`. Its metadata review finds that the
+publisher verifier also omits the image's recorded `host_cache_mount_views_vm.py`
+input. The expected helper inventory now includes it and preserves exact
+source equality. This is a source-verifier correction; complete owning-gate
+execution and acceptance remain pending.
+
 The separate 194.410-second warm Serve-restart observation at `10699f7b5d`
 preserves the original units, credentials, endpoints, configuration and limits.
 A third fresh publisher reaches readiness, while Serve exits at SDK

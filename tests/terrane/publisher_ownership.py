@@ -200,7 +200,7 @@ def main():
         "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py",
         "encoded_eviction_vm.py", "host_cache_encoded_recovery_vm.py",
         "shared_reextract_vm.py", "sealed_consumer_cold_vm.py",
-        "native_feature_units_vm.py", "native_sdk_test_image.py",
+        "native_feature_units_vm.py", "host_cache_mount_views_vm.py", "native_sdk_test_image.py",
     ])
     print(json.dumps({
         "requirement": "ARCH-8", "source": str(source),

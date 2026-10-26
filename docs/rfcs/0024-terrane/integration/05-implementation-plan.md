@@ -107,6 +107,13 @@ PLAN-2 and diff checks pass; no production Rust behavior changes. Fresh AOS
 image construction and the complete owning gates remain pending. Acceptance
 stays 27/64.
 
+The corrected image builds at `c6a9a68393`, but metadata review exposes another
+stale owning-verifier inventory: the image records `host_cache_mount_views_vm.py`
+while the publisher verifier omits it. The verifier now requires that helper
+alongside every original input. This corrects the expected source set without
+relaxing exact input equality. Current-source owning-gate qualification remains
+pending; the completed image alone establishes no native runtime acceptance.
+
 The actual warm Serve-restart diagnostic at `10699f7b5d` completes in
 194.410 seconds with all fifteen original enrollment controls and the complete
 original managed proof. Starting the unchanged Serve unit automatically starts
