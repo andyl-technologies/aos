@@ -101,9 +101,17 @@ snapshot, current permission or freshness. Five new socket cases retain the
 original thirty-case inventory and thirty-second limits. Strict all-target
 Clippy passes for default Tokio and explicit `tokio,surface-sdk`; the portable
 library and wire-contract target compile with six existing Guard warning groups.
-SDK formatting, complete selector registration and PLAN-2 pass. Fresh AOS
-execution and required application compilation of this increment remain pending;
-no task is accepted.
+SDK formatting, complete selector registration and PLAN-2 pass.
+
+Fresh AOS qualification at `71c29c7675` passes in 200.096 seconds: all 35 actual
+socket cases and all 22 portable wire cases execute under their original
+thirty-second bounds. Independent review checks 8,278 immutable source files,
+5,501 bound inputs, actual Cargo artifacts and the retained socket ELF; the
+portable executable hash is recorded without retaining its bytes. The fresh
+nonce-bound sandbox proof confirms ext4, a capability-free build user and AOS
+kernel 7.2.3. Exactly the three reviewed derivations execute remotely, and owned
+terminal VM scratch is removed after preserving all raw records and hashes.
+Required application compilation remains pending; no task is accepted.
 
 The native client now stages finite `GetRefLog` responses behind explicit
 entry/content bounds and a whole-call deadline through protocol termination.
@@ -216,9 +224,11 @@ Both reviewed cache outputs are bound to the actual request. All aggregate,
 per-feature, intentional-incompatibility and doctest commands remain, including
 the SDK's one-thread execution and removal of DAC bypass. Host-native fallback
 is disabled and no nested KVM is required. No matrix success or additional task
-acceptance is claimed. The later reflog client at `8c10438255` has separate fresh
-30-socket/22-portable and required application-compilation runs in progress; the
-older matrix does not qualify those later changes.
+acceptance is claimed. The later reflog client at `8c10438255` passes its separate
+30-socket/22-portable execution as recorded above; its required application
+compilation remains in progress. The listing increment at `71c29c7675` passes
+its fresh 35-socket/22-portable run; required application compilation is running.
+Neither later increment is qualified by the older feature matrix.
 
 Required application-target compilation at `e6f214f3ce` passes in 1,498.897
 seconds. Independent review matches all 8,272 immutable source files and 190
