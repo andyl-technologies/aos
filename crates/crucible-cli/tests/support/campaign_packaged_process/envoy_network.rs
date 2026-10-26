@@ -194,6 +194,9 @@ pub(super) fn start_envoy_campaign(
 #[ignore = "requires packaged QEMU and a dedicated five-guest cgroup and project quota"]
 fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
+    // The pending-recovery proof captures an exact savepoint; grant that one
+    // campaign operation before the service loads its policy.
+    super::single_guest::grant_savepoint_permission(&fixture)?;
     let EnvoyCampaignFlight {
         generated,
         lineage,

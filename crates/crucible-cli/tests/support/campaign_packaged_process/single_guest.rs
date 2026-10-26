@@ -291,7 +291,7 @@ fn choice_at(
     )
 }
 
-fn grant_savepoint_permission(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
+pub(super) fn grant_savepoint_permission(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
     // The ordinary execution fixture stays unprivileged for exact captures.
     // Install only this campaign's grant before the service loads its policy.
     let mut policy = fs::OpenOptions::new()
