@@ -59,8 +59,14 @@ def main():
     workspace = Path.cwd()
     inputs = source_hashes(workspace, source)
     reference = source / "docs/rfcs/0024-terrane/spec/reference/protocol.md"
-    blocks = re.findall(r"```protobuf\n(.*?)```", reference.read_text(), re.S)[2:]
-    require(len(blocks) == 5 and "package terrane.v1;" in blocks[0],
+    blocks = re.findall(r"```protobuf\n(.*?)```", reference.read_text(), re.S)
+    distribution = [index for index, block in enumerate(blocks)
+                    if re.search(r"^package terrane\.v1;$", block, re.M)]
+    require(len(distribution) == 1, "Distribution package declaration is not unique")
+    # Host-local schemas may grow independently before the Distribution schema.
+    # Its unique package anchors the same complete five-block comparison below.
+    blocks = blocks[distribution[0]:]
+    require(len(blocks) == 5,
             "Distribution reference block inventory changed")
     schema = workspace / "terrane/sdk/terrane-sdk/proto/terrane.proto"
     def tokens(text):

@@ -106,9 +106,25 @@ preserved policy/candidate fields, record/message limits, transport failure and
 deadline expiry. A portable codec case separately checks the staged context
 boundary without Tokio. The original twenty cases in each owning contract keep
 their relative order, assertions and thirty-second bounds. Formatting, source
-parsing, exact selector registration and PLAN-2 pass; strict compilation and
-fresh native qualification remain pending. This does not implement the
-production Ref service or accept T-PROTO-1.
+parsing, exact selector registration and PLAN-2 pass. At `8b012824d4`, strict
+all-target Clippy passes for default Tokio and explicit `tokio,surface-sdk`;
+the no-default library and wire-contract target compile. Strict no-default
+Clippy fails on six existing dead-code groups in unchanged Guard history, read
+and snapshot files; that profile is not claimed lint-clean.
+
+All 25 actual socket cases at `8b012824d4` pass in the isolated AOS builder.
+Independent review matches 8,274 immutable source files, 5,497 crate inputs and
+the retained Cargo executable. A fresh nonce-bound, capability-free ext4 probe,
+all three exact remote derivations and clean guest shutdown pass independent
+review. The combined invocation fails in 187.639 seconds because the separate
+portable codec verifier stops before executing cases: its fixed two-block
+host-local prefix no longer accounts for the added quota-v2 schema. Its
+correction anchors the same complete five-block comparison at the unique
+`terrane.v1` package; missing/duplicate packages and unexpected following blocks
+still refuse. Complete schema equality and source-level refusal checks pass;
+fresh portable execution remains required. Raw controller evidence and hashes
+are retained, and diagnosed owned VM scratch is removed. This does not implement
+the production Ref service or accept T-PROTO-1.
 
 Renewed native cache prerequisites are running at `e6f214f3ce`. The complete
 preflight classifies all 22 missing prerequisites: two compile-only retained
