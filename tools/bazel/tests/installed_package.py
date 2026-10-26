@@ -34,7 +34,7 @@ def elf_contract(path, readelf, loader):
     }
 
 
-def inventory(outputs, readelf, loader):
+def inventory(outputs, readelf, loader, elf_inspector=elf_contract):
     """Reads every installed entry except Cargo's driver-specific diagnostics."""
     result = {}
     for output, root in outputs.items():
@@ -51,7 +51,7 @@ def inventory(outputs, readelf, loader):
                 data = path.read_bytes()
                 record = {"mode": stat.S_IMODE(path.stat().st_mode)}
                 if data.startswith(b"\x7fELF"):
-                    record.update(kind="elf", contract=elf_contract(path, readelf, loader))
+                    record.update(kind="elf", contract=elf_inspector(path, readelf, loader))
                 else:
                     record.update(kind="file", sha256=hashlib.sha256(normalize(data.decode(), outputs).encode()).hexdigest())
                 result[key] = record

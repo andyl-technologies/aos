@@ -188,6 +188,7 @@ in
     build-services = import ./_bazel-build-services.nix {inherit pkgs;};
     cli-support = import ./_bazel-cli-support.nix {inherit pkgs;};
     activation-crucible = import ./_bazel-activation-crucible.nix {inherit pkgs;};
+    ability-production = import ./_bazel-ability-production.nix {inherit pkgs;};
     activation-systemd = import ./_bazel-activation-systemd.nix {inherit pkgs;};
     wasm = import ./_bazel-wasm.nix {inherit pkgs;};
     recovery = import ./_bazel-recovery.nix {inherit pkgs;};
@@ -565,6 +566,7 @@ in
             activation-storage.all
             activation-systemd.all
             activation-crucible.all
+            ability-production.all
             cli-support.all
             build-services.all
             hub-console.all

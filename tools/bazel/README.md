@@ -2284,7 +2284,38 @@ production readiness, or permission to remove Cargo.
 library, its tests, and the `aos-ability-crucible` command. The export preserves
 the existing Nix package and command names independently of the Rust crate name
 `aos-activation-crucible`. Production keeps static linkage and runtime inputs;
-the original production builder remains in place during qualification.
+Cargo remains the default production driver during qualification.
+
+The production package exposes `aos-ability-crucible.withBuildDriver "bazel"`
+and an explicit `"cargo"` rollback. Its Bazel path compiles the release program
+and requires release unit tests and doctests before installation. It preserves
+the package's module dependencies, executable probe, static-link check, normal
+installation and fixup phases. Evaluating the candidate does not invoke its
+own Cargo package, artifact, dummy-source or vendor constructors; source-built
+upstream dependencies still use the existing bootstrap toolchain.
+
+`checks.build.bazel.ability-production.all`, also exposed by
+`tools/bazel/tests/ability-production.nix`, checks selector round trips and
+compares the actual installed production packages. It requires matching paths,
+modes, non-ELF contents, static ELF contracts and startup errors, with no added
+runtime dependencies. Release libtest and doctest comparisons use the captured
+Cargo oracle; the profile gate inspects both executed test compilations and
+all seven host macros. Successful guest instrumentation, foreign hosts,
+performance budgets and default-driver cutover remain separate gates.
+
+The [installed production receipt](tests/evidence/ability-production-package.json)
+retains passing native qualification: four installed entries, identical static
+ELF and normalized runtime-closure contracts, five startup-error comparisons,
+nine release test cases, and zero doctests. Production and release-test builds
+retain 147 and 320 fresh Linux sandbox actions respectively, including eight
+and sixteen first-party Rust compilations. The installed candidate requires
+the release-test derivation and excludes its own Cargo fallback and dependency
+artifacts from its build prerequisites.
+
+The ordinary Cargo recipe also declares static SQLite for its engine-backed
+release tests and dependency artifacts. Without that input, its libtest link
+fails while looking for `-lsqlite3`; the executable's production dependency
+graph does not require SQLite.
 
 The `activation-crucible` dependency profile matches Cargo's 49 external crate
 identities and seven first-party packages. `activation-crucible-tests` matches
