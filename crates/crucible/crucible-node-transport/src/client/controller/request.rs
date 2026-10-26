@@ -4,6 +4,29 @@
 //! no stream effect, journal insertion, deadline or Source assignment.
 
 use super::*;
+use std::mem::size_of;
+
+struct RequestSizingCounter {
+    used: usize,
+    maximum: usize,
+}
+
+impl Write for RequestSizingCounter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let Some(next) = self.used.checked_add(bytes.len()) else {
+            return Err(io::Error::other("generic body length overflow"));
+        };
+        if next > self.maximum {
+            return Err(io::Error::other("generic frame exceeds original credit"));
+        }
+        self.used = next;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 pub(super) enum RequestExtensions<'a> {
     Owned(Extensions),
@@ -29,13 +52,17 @@ impl RequestExtensions<'_> {
 impl CnpController {
     /// Names the shared request constructor's fixed views and return controls.
     ///
-    /// The actual caller's body header, backing, serializer effects and physical
-    /// stack remain separate. This counts the borrowed envelope, typed result,
-    /// JSON result and the new returned tuple without granting allocation rights.
+    /// The closed packet body's field graph bounds nested serializer controls.
+    /// Arbitrary serializer callbacks, backing and physical stack remain separate.
+    /// This counts the borrowed envelope, typed result, JSON result and returned
+    /// tuple without granting allocation rights.
     pub const fn scoped_request_construction_counter_scratch_data() -> usize {
-        use std::mem::size_of;
-
         size_of::<&Self>()
+            + size_of::<RequestSizingCounter>()
+            + size_of::<serde_json::Serializer<&mut RequestSizingCounter>>()
+            + size_of::<serde_json::value::Serializer>()
+            + closed_serializer_counter_scratch_data()
+            + size_of::<Result<(), serde_json::Error>>()
             + size_of::<CallScope>()
             + size_of::<BorrowedEnvelope<'static, ()>>()
             + size_of::<(RequestBody, Envelope)>()
@@ -134,4 +161,42 @@ impl CnpController {
         };
         Ok((original, request))
     }
+}
+
+/// Names the actual associated serializer controls without copying their fields.
+const fn closed_serializer_counter_scratch_data() -> usize {
+    type Text = &'static mut serde_json::Serializer<&'static mut RequestSizingCounter>;
+    type Value = serde_json::value::Serializer;
+
+    // Sum every compound variant even though one recursive activation selects
+    // only one. The depth comes from the same exhaustive DTO field graph used
+    // by preflight, with an independent allowance for literal JSON recursion.
+    let per_level = size_of::<<Text as serde::Serializer>::SerializeSeq>()
+        + size_of::<<Text as serde::Serializer>::SerializeTuple>()
+        + size_of::<<Text as serde::Serializer>::SerializeTupleStruct>()
+        + size_of::<<Text as serde::Serializer>::SerializeTupleVariant>()
+        + size_of::<<Text as serde::Serializer>::SerializeMap>()
+        + size_of::<<Text as serde::Serializer>::SerializeStruct>()
+        + size_of::<<Text as serde::Serializer>::SerializeStructVariant>()
+        + size_of::<<Value as serde::Serializer>::SerializeSeq>()
+        + size_of::<<Value as serde::Serializer>::SerializeTuple>()
+        + size_of::<<Value as serde::Serializer>::SerializeTupleStruct>()
+        + size_of::<<Value as serde::Serializer>::SerializeTupleVariant>()
+        + size_of::<<Value as serde::Serializer>::SerializeMap>()
+        + size_of::<<Value as serde::Serializer>::SerializeStruct>()
+        + size_of::<<Value as serde::Serializer>::SerializeStructVariant>()
+        + size_of::<serde_json::Value>()
+        + size_of::<Result<(), serde_json::Error>>()
+        + size_of::<Result<serde_json::Value, serde_json::Error>>()
+        + size_of::<&serde_json::Value>()
+        + size_of::<&str>();
+    crate::bodies::packet_runtime_serialization_depth() * per_level
+}
+
+pub(super) fn count_serialized(
+    value: &impl Serialize,
+    maximum: usize,
+) -> Result<(), ProviderError> {
+    serde_json::to_writer(&mut RequestSizingCounter { used: 0, maximum }, value)
+        .map_err(|_| ProviderError::ResourceExhausted("generic whole-frame precredit"))
 }

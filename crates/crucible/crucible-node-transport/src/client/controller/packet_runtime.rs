@@ -7,10 +7,12 @@
 
 use super::*;
 
+mod funding;
 mod identity;
 mod storage;
 
 pub use crate::bodies::PacketRuntimeRequest;
+pub use funding::PacketRuntimeFutureStorageData;
 
 impl PacketRuntimeRequest<'_> {
     fn scope(
@@ -65,7 +67,8 @@ impl PacketRuntimeController {
     ///
     /// # Errors
     /// Refuses occupied output, unavailable or changed original ownership,
-    /// unresolved originals, future assignments or exhausted compact credit.
+    /// unresolved originals, future assignments, unsupported metadata limits or
+    /// exhausted compact credit.
     /// Source admission and native lifecycle authentication remain independent.
     pub fn retain_into(
         original: &mut Option<CnpController>,

@@ -11,6 +11,32 @@ use crucible_node_format::{ContractError, canonical};
 use serde::Serialize;
 use std::io::{self, Write};
 
+impl CompactJson {
+    /// Names the actual direct-envelope output and field serializer controls.
+    pub(in crate::client) fn canonical_encoding_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        Self::envelope_preflight_counter_scratch_data()
+            + canonical::canonical_json_counter_scratch_bytes_data()
+            + size_of::<Output>()
+            + size_of::<serde_json::Serializer<&mut Output>>()
+            + size_of::<&Envelope>()
+            + size_of::<&mut Output>()
+            + size_of::<&[u8]>()
+            + size_of::<&str>()
+            + 13 * size_of::<&serde_json::Value>()
+            + size_of::<Vec<u8>>()
+            + size_of::<Result<Vec<u8>, ProviderError>>()
+            + size_of::<Result<Output, ProviderError>>()
+            + size_of::<Result<(), std::collections::TryReserveError>>()
+            + size_of::<Result<(), serde_json::Error>>()
+            + size_of::<Result<(), io::Error>>()
+            + size_of::<Result<(), ProviderError>>()
+            + size_of::<Option<usize>>()
+            + 3 * size_of::<usize>()
+    }
+}
+
 /// Encodes inert envelope DATA without granting send or allocation authority.
 ///
 /// # Errors

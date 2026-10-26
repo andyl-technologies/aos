@@ -10,41 +10,51 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
-## Packet runtime handoff and metadata
+## Packet runtime funding and handoff
 
-Compact ownership transfer and future funding inspection now share one immutable
-handoff preflight. It checks the same original assignments, completed ACK
-snapshot, live idle connection and unchanged journal credit before moving the
-owner. Refusal preserves both caller slots and does not invoke containment.
+The original Controller now quotes one complete retained/transient/control row
+for SDK-created packet runtime storage. The readonly DATA query uses the same
+immutable handoff preflight as the ownership move, the original lifetime limits
+and remaining journal credit, actual content ceilings, largest historical Provider
+response, installed concrete codec and live idle supervised connection. One
+complete restriction covers the sum; refusal changes no owner or quota and invokes
+no schema or containment callback.
 
-The opaque packet runtime retains a private metadata profile derived from the
-original frame, lifetime request and content-object ceilings. Only the mutable
-content store, three correlation maps, compact suffix and authenticated retained
-incidents use their own bounded traversal scopes. Legacy journals keep the
-ordinary traversal allowance. Refused child walks preserve partial facts and
-restore the previous scope without refunding visits. Native18 and packet runtime
-retain distinct profile DATA while sharing checked scope accounting.
+The aggregate prices independently owning request/response constructors, literal
+JSON, typed vectors, codec and canonicalization work, reference discovery,
+Provider replay, future journal/content/correlation owners and failed prefixes.
+The exhaustive DTO field graph also bounds typed serializer depth beside literal
+recursion; declared controls use the actual compiled serde associated types.
+Current owners, caller DTO backing and transferred caller Ids remain separately
+funded. Numeric DATA cannot issue a Source action or authenticate completed Initial.
 
-A real socket control combines dense legacy responses with a retained runtime
-ProviderFault. Its fenced and revoked owner remains inspectable when the complete
-census exceeds the ordinary traversal limit, preserving original journals and
-both literal and typed failure owners. Separate controls verify that installing
-a runtime profile cannot enlarge a precharged record bank or its existing
-131,072-row ceiling.
+Reporting combines supplied enclosing-Source metadata DATA with a census of the
+actual SDK and its empty suffix. It reprices every current and future tree using
+the widest combined layout and separately prices a complete new record bank.
+Future tree populations follow JSON occurrences rather than treating all metadata
+work visits as maps. This does not allocate that bank or enlarge the existing
+131,072-row constructor. The runtime's private traversal scopes still preserve
+partial facts, original journals and retained literal/typed failure owners after
+fencing or revocation; legacy walks retain their ordinary allowance.
 
-Both codec configurations pass eighty focused handoff, journal and metadata
-controls. Both complete Transport suites pass 2,299 tests with twenty ignored.
-Five-package all-feature/all-target checks, twelve-file scoped formatting and all
-six architecture gates pass. Required application test-target compilation passes
-with 185 artifacts across 58 packages and 76 integration targets; all 774 selected
+Eight actual SDK funding controls cover the exact whole row and one-byte-short
+refusal, request/content/object limits, independent Provider replay, foreign or
+revoked owners, erased callback refusal and a retained ProviderFault under a
+wider enclosing-Source layout. A nested Input control verifies typed/literal
+depth accounting and preserves reserved-looking JSON keys under `raw_value`.
+
+Both codec configurations pass 97 focused controls and complete Transport suites
+of 2,308 passing tests with twenty ignored. Five-package all-feature/all-target
+checks, sixteen-file scoped formatting, all six architecture gates and the RFC
+requirement-map gate pass. Required application test-target compilation passes
+with 185 artifacts across 58 packages and 76 integration targets; all 778 selected
 frozen Rust/Cargo inputs match current and captured source. User-owned changes
-are preserved. This is component qualification; no latest-source strict lint,
-native inactive-lifecycle or complete RFC qualification is claimed.
+are preserved. These are component results; the requirement map records planning
+coverage, and no latest-source strict lint or native lifecycle result is claimed.
 
-Complete SDK R/T/S still needs the enclosing Source's widest tree layout and
-future reporting storage. Same-Source one-use admission, funded handoff and the
-physical Source18 record bank and readers remain unfinished, along with the
-remaining full RFC implementation.
+The genuine same-Source one-use admission and funded move, completed Initial and
+address-bound claim retirement checks, physical Source18 record bank and readers,
+Native18 production selection and the remaining full RFC work are unfinished.
 
 ## Baseline decoder and codec funding inputs
 

@@ -13,6 +13,22 @@ pub(super) struct Preflight {
     remaining: usize,
 }
 
+/// Names the closed preflight's fixed state and borrowed container iterators.
+pub(crate) fn counter_scratch_data() -> usize {
+    size_of::<Preflight>()
+        + packet_runtime_serialization_depth()
+            * (size_of::<&Value>()
+                + size_of::<&mut Preflight>()
+                + size_of::<serde_json::map::Iter<'static>>()
+                + size_of::<std::collections::btree_map::Iter<'static, String, Value>>()
+                + size_of::<std::slice::Iter<'static, Value>>()
+                + size_of::<Option<(&String, &Value)>>()
+                + size_of::<Option<&Value>>()
+                + size_of::<Result<(), ProviderError>>()
+                + size_of::<Result<usize, crucible_node_format::ContractError>>()
+                + 3 * size_of::<usize>())
+}
+
 impl Preflight {
     pub(super) fn new(maximum: usize) -> Self {
         Self { remaining: maximum }

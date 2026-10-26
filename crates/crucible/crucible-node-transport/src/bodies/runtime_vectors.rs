@@ -19,6 +19,7 @@ use std::{collections::BTreeMap, mem::size_of};
 mod preflight;
 
 use preflight::Preflight;
+pub(crate) use preflight::counter_scratch_data as packet_runtime_preflight_counter_scratch_data;
 
 /// Names a concrete baseline root's decoder views and diagnostic literals.
 ///
@@ -43,6 +44,7 @@ struct Shape {
     element_bytes: usize,
     element_bytes_per_wire_byte: usize,
     vector_depth: usize,
+    container_depth: usize,
 }
 
 impl Shape {
@@ -50,6 +52,7 @@ impl Shape {
         element_bytes: 0,
         element_bytes_per_wire_byte: 0,
         vector_depth: 0,
+        container_depth: 0,
     };
 
     const fn merge(self, other: Self) -> Self {
@@ -60,6 +63,7 @@ impl Shape {
                 other.element_bytes_per_wire_byte,
             ),
             vector_depth: maximum(self.vector_depth, other.vector_depth),
+            container_depth: maximum(self.container_depth, other.container_depth),
         }
     }
 }
@@ -113,6 +117,7 @@ impl<T: VectorElement> HeapShape for Vec<T> {
             T::SHAPE.element_bytes_per_wire_byte,
         ),
         vector_depth: 1 + T::SHAPE.vector_depth,
+        container_depth: 1 + T::SHAPE.container_depth,
     };
 
     fn preflight(&self, counter: &mut Preflight) -> Result<(), ProviderError> {
@@ -193,6 +198,7 @@ macro_rules! record {
                 };
                 let mut shape = Shape::EMPTY;
                 $(shape = shape.merge(field_shape(|value: &Self| &value.$field));)+
+                shape.container_depth += 1;
                 shape
             };
 
@@ -672,6 +678,16 @@ pub(crate) const fn counter_scratch_data() -> usize {
         + 5 * size_of::<Option<usize>>()
         + size_of::<[usize; 2]>()
         + size_of::<Result<[usize; 2], ProviderError>>()
+}
+
+/// Bounds closed typed containers, literal recursion and the outer envelope.
+///
+/// Literal JSON permits 64 nested containers and one terminal scalar. Adding
+/// the entire typed path conservatively covers literals in any record field;
+/// Option and Nullable wrappers do not add serializer containers. The envelope
+/// is the one container outside the exhaustive body roster.
+pub(crate) const fn packet_runtime_serialization_depth() -> usize {
+    RUNTIME.container_depth + 65 + 1
 }
 
 fn refused() -> ProviderError {

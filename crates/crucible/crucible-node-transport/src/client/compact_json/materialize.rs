@@ -11,6 +11,34 @@ use crucible_node_format::Id;
 use serde::de::{DeserializeOwned, value::BorrowedStrDeserializer};
 
 impl CompactJson {
+    /// Names bounded bank cursors, scalar adapters and recursive Value controls.
+    pub(in crate::client) fn materialization_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        let frame = 2 * size_of::<Cursor<'static>>()
+            + size_of::<BorrowedValue<'static>>()
+            + size_of::<Value>()
+            + size_of::<Vec<Value>>()
+            + size_of::<serde_json::Map<String, Value>>()
+            + size_of::<crucible_node_format::Extensions>()
+            + size_of::<String>()
+            + size_of::<Result<Value, ProviderError>>()
+            + size_of::<Result<BorrowedValue<'static>, ProviderError>>()
+            + size_of::<std::ops::Range<usize>>()
+            + size_of::<Result<(), std::collections::TryReserveError>>()
+            + size_of::<Option<f64>>()
+            + 4 * size_of::<usize>();
+
+        65 * frame
+            + size_of::<Envelope>()
+            + size_of::<Result<Envelope, ProviderError>>()
+            + size_of::<BorrowedStrDeserializer<'static, ScalarError>>()
+            + size_of::<Result<Nullable<Id>, ProviderError>>()
+            + size_of::<Result<&str, std::str::Utf8Error>>()
+            + size_of::<ScalarError>()
+            + size_of::<&Self>()
+    }
+
     /// Materializes a bank produced by the defining Envelope serializer.
     ///
     /// This allocates one fresh Envelope population. The original immutable

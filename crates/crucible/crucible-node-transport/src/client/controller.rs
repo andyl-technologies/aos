@@ -55,7 +55,9 @@ mod compact_runtime;
 mod content_growth;
 pub use compact_runtime::CompactRuntimeController;
 mod packet_runtime;
-pub use packet_runtime::{PacketRuntimeController, PacketRuntimeRequest};
+pub use packet_runtime::{
+    PacketRuntimeController, PacketRuntimeFutureStorageData, PacketRuntimeRequest,
+};
 mod fresh_restore_query;
 #[path = "controller/input_emitter.rs"]
 mod input_emitter;
@@ -1610,30 +1612,7 @@ struct BorrowedEnvelope<'a, T> {
 }
 
 fn count_serialized(value: &impl Serialize, maximum: usize) -> Result<(), ProviderError> {
-    struct Counter {
-        used: usize,
-        maximum: usize,
-    }
-
-    impl Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            let Some(next) = self.used.checked_add(bytes.len()) else {
-                return Err(io::Error::other("generic body length overflow"));
-            };
-            if next > self.maximum {
-                return Err(io::Error::other("generic frame exceeds original credit"));
-            }
-            self.used = next;
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    serde_json::to_writer(&mut Counter { used: 0, maximum }, value)
-        .map_err(|_| ProviderError::ResourceExhausted("generic whole-frame precredit"))
+    request::count_serialized(value, maximum)
 }
 
 fn references(value: &Value, output: &mut Vec<ContentRef>) -> Result<(), ProviderError> {

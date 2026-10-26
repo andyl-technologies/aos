@@ -179,6 +179,48 @@ fn closed_field_walk_preserves_valid_byte_windows_and_bounds_large_objects() -> 
 }
 
 #[test]
+fn nested_literal_serialization_fits_the_closed_control_depth() -> TestResult {
+    fn container_depth(value: &Value) -> usize {
+        match value {
+            Value::Array(values) => 1 + values.iter().map(container_depth).max().unwrap_or(0),
+            Value::Object(values) => 1 + values.values().map(container_depth).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    // Reserved-looking keys remain literal map entries under raw_value too.
+    // Put a deepest permitted literal below actual typed record/Vec layers.
+    let marker = json!({"$serde_json::private::RawValue": "[1,2,3]"});
+    let mut literal = marker.clone();
+    for _ in 0..62 {
+        literal = Value::Array(vec![literal]);
+    }
+    let mut batch = observation(1, 1);
+    batch.events[0].extensions.insert("literal".into(), literal);
+    let request = InputRequest {
+        binding_hash: batch.owner_binding_hash,
+        owner_generation: batch.owner_generation,
+        batch_id: id("batch"),
+        batch_sequence: U64::new(1),
+        input_epoch: id("epoch"),
+        events: batch.events,
+        batch_hash: batch.world_binding_hash,
+        extensions: Extensions::new(),
+    };
+    let body = PacketRuntimeRequest::Input(&request);
+
+    body.preflight_serialization(&Extensions::new(), 65_536)?;
+    let value = serde_json::to_value(&body)?;
+    let bytes = serde_json::to_vec(&body)?;
+
+    assert_eq!(serde_json::to_value(&marker)?, marker);
+    assert_eq!(serde_json::from_slice::<InputRequest>(&bytes)?, request);
+    assert!(container_depth(&value) > 64);
+    assert!(container_depth(&value) + 1 <= packet_runtime_serialization_depth());
+    Ok(())
+}
+
+#[test]
 fn completed_borrowed_populations_fit_with_independent_nested_capacities() -> TestResult {
     for (batches, events, parents) in [(0, 0, 0), (1, 0, 0), (1, 1, 3), (1, 2050, 0), (3, 2, 257)] {
         let original = ObserveResult {

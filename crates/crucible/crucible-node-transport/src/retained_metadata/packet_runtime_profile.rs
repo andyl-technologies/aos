@@ -22,6 +22,8 @@ pub(crate) struct PacketRuntimeMetadataProfileData {
     correlation: usize,
     journal: usize,
     incident: usize,
+    tree_containers: usize,
+    tree_entries: usize,
 }
 
 impl PacketRuntimeMetadataProfileData {
@@ -36,7 +38,7 @@ impl PacketRuntimeMetadataProfileData {
         }
 
         // Four visits/records per lexical byte covers literal descendants.
-        // Envelope root, fields, optional labels and container records add38.
+        // Envelope root, fields, optional labels and container records add 38.
         let envelope = add(multiply(4, frame)?, 38)?;
         let correlation = add(multiply(3, envelope)?, 12)?;
 
@@ -53,11 +55,24 @@ impl PacketRuntimeMetadataProfileData {
         // retains at most one outgoing and one incoming envelope.
         let content = add(multiply(32, objects)?, 8)?;
         let incident = add(multiply(2, envelope)?, 32)?;
+
+        // Eight independent literal families can survive: three correlation
+        // maps, two incident copies, pending and unexpected Envelopes, and the
+        // unexpected typed Notification. Count actual JSON occurrences for tree
+        // reporting instead of treating every scalar metadata visit as a map.
+        let extent = super::serialization_storage::original_json_value_storage_extent_data(frame)?;
+        let tree_containers = add(multiply(8, extent.maximum_value_nodes)?, 4)?;
+        let tree_entries = add(
+            multiply(8, extent.maximum_object_members)?,
+            add(multiply(2, requests)?, multiply(2, objects)?)?,
+        )?;
         let profile = Self {
             content,
             correlation,
             journal,
             incident,
+            tree_containers,
+            tree_entries,
         };
         profile.maximum_future_rows_data()?;
         Ok(profile)
@@ -70,6 +85,11 @@ impl PacketRuntimeMetadataProfileData {
             PacketRuntimeMetadataPopulation::Journal => self.journal,
             PacketRuntimeMetadataPopulation::Incident => self.incident,
         }
+    }
+
+    /// Bounds independently retained tree containers and entries for reporting.
+    pub(crate) fn maximum_future_tree_population_data(self) -> [usize; 2] {
+        [self.tree_containers, self.tree_entries]
     }
 
     /// Bounds added nodes and capacity records separately for one complete walk.
@@ -86,6 +106,15 @@ impl MetadataObserver<'_> {
         use std::mem::size_of;
 
         Self::scoped_population_metadata_counter_scratch_data()
+            + super::serialization_storage::original_json_value_storage_extent_counter_scratch_data(
+            )
+            + size_of::<super::serialization_storage::OriginalJsonValueStorageExtentData>()
+            + size_of::<
+                Result<
+                    super::serialization_storage::OriginalJsonValueStorageExtentData,
+                    ProviderError,
+                >,
+            >()
             + 2 * size_of::<PacketRuntimeMetadataProfileData>()
             + size_of::<Option<PacketRuntimeMetadataProfileData>>()
             + size_of::<Result<PacketRuntimeMetadataProfileData, ProviderError>>()
@@ -115,7 +144,7 @@ impl MetadataObserver<'_> {
         observe: impl FnOnce(&mut Self) -> Result<(), ProviderError>,
     ) -> Result<(), ProviderError> {
         match self.packet_runtime {
-            // The strict wire parser permits64 literal levels; the Value root
+            // The strict wire parser permits 64 literal levels; the Value root
             // contributes one additional observer activation.
             Some(profile) => self.with_scoped_population_metadata_data(
                 65,

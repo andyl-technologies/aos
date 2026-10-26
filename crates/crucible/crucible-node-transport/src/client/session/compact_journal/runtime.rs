@@ -63,6 +63,31 @@ impl ClientCustody {
 }
 
 impl ClientSession {
+    /// Names the actual runtime prefix, exchange and content-loop controls.
+    pub(in crate::client) fn packet_runtime_exchange_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        size_of::<CompactJournalPrefix<'static>>()
+            + size_of::<Result<CompactJournalPrefix<'static>, ProviderError>>()
+            + size_of::<&mut Self>()
+            + size_of::<&mut ClientCustody>()
+            + size_of::<&mut CompactClientJournal>()
+            + size_of::<&mut ClientContent>()
+            + size_of::<&mut Envelope>()
+            + size_of::<&[crucible_node_format::ContentRef]>()
+            + size_of::<std::slice::Iter<'static, crucible_node_format::ContentRef>>()
+            + size_of::<std::time::Duration>()
+            + size_of::<crate::connection::ReceivedFrame>()
+            + size_of::<Result<Option<crate::connection::ReceivedFrame>, ProviderError>>()
+            + size_of::<crate::bodies::RequestBody>()
+            + size_of::<crate::bodies::ResponseBody>()
+            + size_of::<Result<Envelope, ProviderError>>()
+            + size_of::<Result<(), ProviderError>>()
+            + size_of::<Result<&[u8], ProviderError>>()
+            + size_of::<Option<usize>>()
+            + 4 * size_of::<usize>()
+    }
+
     pub(in crate::client) fn compact_runtime_identity_storage_data(
         &self,
         legacy: &ClientCustody,
