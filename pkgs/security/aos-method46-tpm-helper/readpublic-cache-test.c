@@ -105,18 +105,18 @@ static void lock_shape_requires_empty_rdwr_and_distinct_identity(void)
         }
         put_u32(expected + 16, (uint32_t)observed.st_uid);
     }
-    REQUIRE(validate_locks(hello, locks) == 0);
+    REQUIRE(validate_locks(hello, locks, &method46_profile) == 0);
     REQUIRE(ftruncate(locks[0], 1) == 0);
-    REQUIRE(validate_locks(hello, locks) != 0);
+    REQUIRE(validate_locks(hello, locks, &method46_profile) != 0);
     REQUIRE(ftruncate(locks[0], 0) == 0);
     int read_only = open(paths[0], O_RDONLY | O_CLOEXEC);
     REQUIRE(read_only >= 3);
     int changed[2] = {read_only, locks[1]};
-    REQUIRE(validate_locks(hello, changed) != 0);
+    REQUIRE(validate_locks(hello, changed, &method46_profile) != 0);
     REQUIRE(close(read_only) == 0);
     changed[0] = locks[0];
     changed[1] = locks[0];
-    REQUIRE(validate_locks(hello, changed) != 0);
+    REQUIRE(validate_locks(hello, changed, &method46_profile) != 0);
     for (size_t index = 0; index < 2; ++index) {
         REQUIRE(close(locks[index]) == 0);
         REQUIRE(unlink(paths[index]) == 0);

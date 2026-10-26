@@ -13,9 +13,19 @@ struct aos_nv_custody_role {
     const char *context;
 };
 
+/* Zero preserves every existing runtime purpose's self-owned lock rule.
+ * Initial producers are separate fixed images: their root helper can borrow
+ * Controller-owned locks without changing either writer's UID or capabilities. */
+enum aos_nv_lock_owner_policy {
+    AOS_NV_LOCK_OWNER_SELF = 0,
+    AOS_NV_LOCK_OWNER_INITIAL_CONTROLLER,
+    AOS_NV_LOCK_OWNER_INITIAL_STORAGE,
+};
+
 struct aos_nv_custody_profile {
     const struct aos_nv_custody_role *roles;
     size_t role_count;
+    enum aos_nv_lock_owner_policy lock_owner;
 };
 
 int aos_nv_custody_run(int argc, const struct aos_nv_custody_profile *profile);

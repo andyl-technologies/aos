@@ -31,6 +31,28 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Separate fixed Controller and Storage initial TPM-helper images now share
+  the existing ESYS/carrier implementation. Both run as UID/GID zero, clear
+  effective/permitted/inheritable capabilities before HELLO, accept no role
+  argument and require their distinct initial helper MAC contexts. The initial
+  Controller purpose accepts only same-owner, nonzero-UID lock descriptions for
+  its fixed 046 endpoint; initial Storage accepts only UID-zero locks for 047.
+  Actual device/inode/owner, empty regular single-link0600 and RDWR checks remain
+  mandatory. Existing runtime purposes retain the zero/default self-owned rule.
+  Independent final stripped-image and loader SHA-256 pins match both new images.
+  The new package and all four existing helper families build through AOS Nix;
+  the normal method-46 package's ten cache/private-custody regressions pass.
+  An automated AOS QEMU/KVM component test passes both selected initial-purpose
+  validators with real root fchown, native metadata/flag observations and
+  preserved foreign-flock exclusion; mixed owners, aliases, wrong modes and
+  read-only descriptions refuse. Its required-root cases cannot pass as a
+  nonroot package build, and its temporary files are removed. The audited
+  1,213-derivation combined closure excludes production policy. This VM is
+  nonenforcing and has no TPM: it proves the ownership mechanics, not a running
+  confined helper, private-auth handoff, genuine installed Source or initial
+  TPM effect. No initial helper is installed and no MAC transition is added.
+  Connected initialization, checkpoint and lifecycle/recovery gates remain open.
+
 - The same genuine initial Source now retains both actual writer lock
   duplicates after its signed intent has completed file fsync, parent fsync and
   native posts. Security rederives the same admitted main request and requires
@@ -47,8 +69,9 @@ Recent committed startup fixes close narrower prerequisites:
   composition compiles without a fabricated positive Source. All 121 focused
   initializer, 434 ordinary Security and 443 online-Nix Security tests pass;
   each Security suite retains two existing ignored cases. Full application
-  unit/integration target compilation is running on the audited final Rust
-  source; its 833-derivation closure excludes production policy. This is real native custody, not helper or
+  unit/integration target compilation passed on the audited final Rust source
+  (`73yx0jhvfppayyzazayji2r0pp8k8fqy`); its 833-derivation closure excludes
+  production policy. This result predates the new initial helper C changes. This is real native custody, not helper or
   TPM admission: private auth remains unexported, and its measured-helper
   handoff, first encrypted Extend, durable checkpoint and installed recovery
   and lifecycle qualification remain open. Admission stays closed.
@@ -71,8 +94,9 @@ Recent committed startup fixes close narrower prerequisites:
   preparation order prevents floor creation inside the strict approval interval.
   All 113 focused initializer, 434 ordinary Security and 443 online-Nix Security
   tests pass; each Security suite retains two existing ignored cases. Full
-  application unit/integration compilation is running on the audited source,
-  whose closure excludes production policy. These native tests establish real
+  application unit/integration compilation passed on the audited source
+  (`kp191646d3iihz7850dc6k0wr63w9rj3`), whose closure excludes production
+  policy. This result predates paired lock loans and the new helper C changes. These native tests establish real
   file/lock mechanics, not a positive installed Source. Root-to-Controller UID
   transfer, the connected physical TPM initializer, checkpoint durability and
   installed lifecycle/crash recovery still require qualification. Admission

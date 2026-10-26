@@ -247,7 +247,31 @@ static uint64_t get_u64(const uint8_t *bytes)
     return value;
 }
 
-static int validate_locks(const uint8_t hello[HELLO_BYTES], const int locks[2])
+static int lock_owner_matches(const struct aos_nv_custody_profile *profile,
+    uint32_t owner, uint32_t helper_uid)
+{
+    if (profile == NULL)
+        return 0;
+    switch (profile->lock_owner) {
+    case AOS_NV_LOCK_OWNER_SELF:
+        return owner == helper_uid;
+    case AOS_NV_LOCK_OWNER_INITIAL_CONTROLLER:
+        return helper_uid == 0 && owner != 0 && profile->role_count == 1
+            && profile->roles != NULL
+            && profile->roles[0].index == UINT32_C(0x0180a046)
+            && profile->roles[0].salt == UINT32_C(0x8100a046);
+    case AOS_NV_LOCK_OWNER_INITIAL_STORAGE:
+        return helper_uid == 0 && owner == 0 && profile->role_count == 1
+            && profile->roles != NULL
+            && profile->roles[0].index == UINT32_C(0x0180a047)
+            && profile->roles[0].salt == UINT32_C(0x8100a047);
+    default:
+        return 0;
+    }
+}
+
+static int validate_locks(const uint8_t hello[HELLO_BYTES], const int locks[2],
+    const struct aos_nv_custody_profile *profile)
 {
     struct stat observed[2];
     for (size_t index = 0; index < 2U; ++index) {
@@ -257,7 +281,8 @@ static int validate_locks(const uint8_t hello[HELLO_BYTES], const int locks[2])
             || observed[index].st_size != 0
             || (fcntl(locks[index], F_GETFL) & O_ACCMODE) != O_RDWR
             || (observed[index].st_mode & 07777U) != 0600U
-            || observed[index].st_uid != geteuid()
+            || !lock_owner_matches(profile, (uint32_t)observed[index].st_uid,
+                (uint32_t)geteuid())
             || (uint64_t)observed[index].st_dev != get_u64(expected)
             || (uint64_t)observed[index].st_ino != get_u64(expected + 8)
             || (uint32_t)observed[index].st_uid != get_u32(expected + 16))
@@ -265,8 +290,9 @@ static int validate_locks(const uint8_t hello[HELLO_BYTES], const int locks[2])
     }
     /* No flock call: unlocking this description would also unlock the parent.
      * The exact OFD loan originates only from its healthy protected writer. */
-    return observed[0].st_dev != observed[1].st_dev
-        || observed[0].st_ino != observed[1].st_ino ? 0 : -1;
+    return observed[0].st_uid == observed[1].st_uid
+        && (observed[0].st_dev != observed[1].st_dev
+            || observed[0].st_ino != observed[1].st_ino) ? 0 : -1;
 }
 
 static void put_u16(uint8_t *bytes, uint16_t value)
@@ -613,7 +639,7 @@ int aos_nv_custody_run(int argc, const struct aos_nv_custody_profile *profile)
         || receive_frame(hello, sizeof(hello), parent, 2U, locks) != 0
         || validate_hello(hello, profile) != 0
         || require_helper_role(hello, profile) != 0
-        || validate_locks(hello, locks) != 0)
+        || validate_locks(hello, locks, profile) != 0)
         goto finished;
     memcpy(nonce, hello + 12, sizeof(nonce));
     /* Public HELLO follows the parent's fixed image/loader observation. Become
