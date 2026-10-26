@@ -1,11 +1,14 @@
-//! Joins existing-only main-writer acquisition and replay to the actual Source.
+//! Joins main and empty-floor writer custody to the same actual manual Source.
 //!
 //! Fixed acquisition and the same held physical prefix receive separate debits.
 //! The native writer and all failures remain parked through the final owed name
-//! observation. This stage creates no schema, signed request, intent or floor.
+//! observation. Main acquisition creates no files. The separate floor module
+//! prepares only empty fixed names before the strict main approval interval;
+//! neither stage creates a checkpoint, intent, schema or physical TPM grant.
 
 use super::*;
 
+mod initial_floor;
 mod readback;
 pub use readback::{
     METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1, METHOD46_INITIAL_MAIN_CUT_BYTES_V1,

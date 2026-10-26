@@ -226,7 +226,7 @@ impl Method46InitialStartupOriginalV1 {
                 .map_err(|_| self.closed)?;
             let body = self.body.as_ref().ok_or(self.closed)?;
             let mut writer = body.main_writer.try_borrow_mut().map_err(|_| self.closed)?;
-            if !writer.readback_available_data() {
+            if !writer.readback_available_data() || !writer.initial_floor_ready() {
                 return Err(self.closed);
             }
             self.fund_additional(Some(

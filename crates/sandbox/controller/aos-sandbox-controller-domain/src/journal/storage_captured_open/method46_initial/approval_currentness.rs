@@ -35,7 +35,7 @@ impl ApprovalCurrentnessOriginalV1 {
         }
     }
 
-    pub(super) fn for_initial_intent_publication() -> Self {
+    pub(super) fn for_fixed_sibling_publication() -> Self {
         let mut original = Self::new();
         // Creating and renaming the fixed sibling changes directory size and
         // timestamps. The protected name samples still validate its UID, mode

@@ -11,6 +11,8 @@ use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector}
 use super::*;
 
 mod approval_currentness;
+mod floor_names;
+mod initial_floor;
 mod initial_intent;
 mod namespace;
 mod readback;
@@ -49,6 +51,7 @@ pub(crate) struct Method46InitialMainWriterOriginalV1 {
     readback: readback::MainMapReadbackOriginalV1,
     approval_currentness: approval_currentness::ApprovalCurrentnessOriginalV1,
     initial_intent: initial_intent::InitialIntentOriginal,
+    initial_floor: initial_floor::InitialFloorOriginal,
     namespace: namespace::MainNamespaceOriginalV1,
 }
 
@@ -69,6 +72,7 @@ impl Method46InitialMainWriterOriginalV1 {
             readback: readback::MainMapReadbackOriginalV1::new(),
             approval_currentness: approval_currentness::ApprovalCurrentnessOriginalV1::new(),
             initial_intent: initial_intent::InitialIntentOriginal::new(),
+            initial_floor: initial_floor::InitialFloorOriginal::new(),
             namespace: namespace::MainNamespaceOriginalV1::new(),
         }
     }
@@ -213,6 +217,7 @@ impl Method46InitialMainWriterOriginalV1 {
         let _readback_after = self.finish_readback_after_owed();
         let _approval_after = self.finish_approval_currentness_after_owed();
         let _intent_after = self.finish_initial_intent_after_owed();
+        let _floor_after = self.finish_initial_floor_after_owed();
         self.post = Some((|| {
             self.inner.original.check_named_currentness_retaining(
                 self.inner
@@ -258,6 +263,7 @@ impl Method46InitialMainWriterOriginalV1 {
                     .map(|error| error as _)
             })
             .or_else(|| self.namespace.failure())
+            .or_else(|| self.initial_floor.before_failure())
             // Preserve chronological prefixes across the nested intervals:
             // main readback before, approval before, readback after, approval after.
             .or_else(|| self.readback.before_failure())
@@ -266,6 +272,7 @@ impl Method46InitialMainWriterOriginalV1 {
             .or_else(|| self.approval_currentness.after_failure())
             .or_else(|| self.approval_currentness.order_failure())
             .or_else(|| self.initial_intent.failure())
+            .or_else(|| self.initial_floor.after_failure())
             .or_else(|| self.post_original.failure())
             .or_else(|| {
                 self.post

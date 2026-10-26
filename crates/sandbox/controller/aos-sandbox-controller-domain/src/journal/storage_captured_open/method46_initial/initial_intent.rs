@@ -190,8 +190,7 @@ impl InitialIntentOriginal {
         Self {
             quote: None,
             main:
-                approval_currentness::ApprovalCurrentnessOriginalV1::for_initial_intent_publication(
-                ),
+                approval_currentness::ApprovalCurrentnessOriginalV1::for_fixed_sibling_publication(),
             before: std::array::from_fn(|_| NameOriginal::new()),
             capture: None,
             intent_uid: 0,

@@ -31,6 +31,31 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The genuine manual Source now prepares and retains its empty floor writer
+  before lending the main readback. The actual held main selects the fixed
+  sibling directory, normal UID and shared sidecar limits. Separate native,
+  captured-prefix replay and currentness debits precede their receiving work.
+  Missing floor/lock names are created exclusively; only exact empty UID-zero
+  creation prefixes may complete ownership with the existing CAP_CHOWN. The
+  full roster is checked before mutation. Nonempty, linked, unsafe or compacted
+  state is preserved. A bounded lock probe refuses a held foreign lock before
+  creating a missing floor, explicitly releases even on ownership/sync failure,
+  and supplies no lasting custody claim. The shared existing-only writer engine
+  then acquires the real exclusive floor lock, without cleanup or tail repair.
+  No Journal or private auth is exported. Main preparation bookends retain full
+  main/lock equality while allowing expected sibling directory changes. The
+  empty floor's separately paid native interval remains owed across approval
+  and intent publication; changed floor bytes or names refuse. The mandatory
+  preparation order prevents floor creation inside the strict approval interval.
+  All 113 focused initializer, 434 ordinary Security and 443 online-Nix Security
+  tests pass; each Security suite retains two existing ignored cases. Full
+  application unit/integration compilation is running on the audited source,
+  whose closure excludes production policy. These native tests establish real
+  file/lock mechanics, not a positive installed Source. Root-to-Controller UID
+  transfer, the connected physical TPM initializer, checkpoint durability and
+  installed lifecycle/crash recovery still require qualification. Admission
+  remains closed.
+
 - The same genuine initial Source now prepays a separate native initial-intent
   reservoir on its exclusively held main directory. The fixed, root-owned
   `session-floor.initial-intent` is distinct from the normal floor sidecar and
@@ -73,8 +98,9 @@ Recent committed startup fixes close narrower prerequisites:
   publishing an intent, entering a physical TPM operation or opening admission.
   All 95 focused initializer, 433 ordinary Security and 442 online-Nix Security
   tests pass, with two existing ignored cases per Security suite. Complete
-  application unit/integration target compilation is running against the final
-  source, whose audited closure excludes production policy.
+  application unit/integration target compilation passed for this checkpoint
+  (`csx6rzdxsakkksr74qbgacw9v5jwvrgg`), before the later initial-intent and empty
+  floor changes; its audited closure excludes production policy.
   Installed intent durability, the Source-bound physical initializer and the
   connected enforcing lifecycle/crash tests remain required.
 

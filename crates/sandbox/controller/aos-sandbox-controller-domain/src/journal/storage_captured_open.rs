@@ -170,6 +170,9 @@ enum ProtectedCapturedJournalRecipeV1 {
     JoinedControllerStorageFloor(Option<u32>),
     JoinedStartResourceSession(Option<(crate::ControllerInitialBrokerSessionRoleV1, u32)>),
     JoinedMethod46InitialMain(Option<(aos_sandbox_broker::receiving::Method46InitialServiceRoleV1, u32)>),
+    JoinedMethod46InitialFloor(Option<(aos_sandbox_broker::receiving::Method46InitialServiceRoleV1, u32)>),
+    #[cfg(test)]
+    Method46InitialFloorFixture(std::path::PathBuf, u32),
 }
 
 impl ProtectedCapturedJournalRecipeV1 {
@@ -184,7 +187,8 @@ impl ProtectedCapturedJournalRecipeV1 {
                 Some(Path::new(controller::directory(*role)))
             }
             Self::JoinedControllerSession(None) => None,
-            Self::JoinedMethod46InitialMain(coordinates) => coordinates.map(|(role, _)| {
+            Self::JoinedMethod46InitialMain(coordinates)
+            | Self::JoinedMethod46InitialFloor(coordinates) => coordinates.map(|(role, _)| {
                 Path::new(method46_initial::directory(role))
             }),
             Self::JoinedStartResourceSession(Some((role, _))) => {
@@ -195,6 +199,8 @@ impl ProtectedCapturedJournalRecipeV1 {
                 crate::ControllerInitialBrokerSessionRoleV1::Storage,
             ))),
             Self::JoinedControllerStorageFloor(None) => None,
+            #[cfg(test)]
+            Self::Method46InitialFloorFixture(directory, _) => Some(directory),
         }
     }
 
@@ -207,7 +213,11 @@ impl ProtectedCapturedJournalRecipeV1 {
                 "session.journal"
             }
             Self::JoinedMethod46InitialMain(_) => "session.journal",
-            Self::JoinedControllerStorageFloor(_) => {
+            Self::JoinedControllerStorageFloor(_) | Self::JoinedMethod46InitialFloor(_) => {
+                aos_sandbox_protocol::domain_ledger::floor_sidecar_geometry::SIDECAR_NAME_V1
+            }
+            #[cfg(test)]
+            Self::Method46InitialFloorFixture(_, _) => {
                 aos_sandbox_protocol::domain_ledger::floor_sidecar_geometry::SIDECAR_NAME_V1
             }
         }
@@ -253,6 +263,9 @@ impl ProtectedCapturedJournalRecipeV1 {
             Self::JoinedControllerStorageFloor(uid) => *uid,
             Self::JoinedStartResourceSession(coordinates) => coordinates.map(|(_, uid)| uid),
             Self::JoinedMethod46InitialMain(coordinates) => coordinates.map(|(_, uid)| uid),
+            Self::JoinedMethod46InitialFloor(coordinates) => coordinates.map(|(_, uid)| uid),
+            #[cfg(test)]
+            Self::Method46InitialFloorFixture(_, uid) => Some(*uid),
         }
     }
 }

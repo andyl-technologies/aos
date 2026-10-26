@@ -792,6 +792,9 @@ mod tests {
         startup
             .capture_initial_main_writer_once_v1()
             .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+        startup
+            .prepare_initial_floor_writer_once_v1()
+            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
         let main_loan = startup
             .lend_initial_main_readback_once_v1()
             .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
@@ -823,6 +826,9 @@ mod tests {
         let provision = Method46InitialProvisionDecodeOriginalV1::decode_captured_v1(readback);
         startup
             .capture_initial_main_writer_once_v1()
+            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+        startup
+            .prepare_initial_floor_writer_once_v1()
             .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
         let readback = startup
             .lend_initial_main_readback_once_v1()
