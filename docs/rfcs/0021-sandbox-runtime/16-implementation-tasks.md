@@ -40,9 +40,10 @@ Recent committed startup fixes close narrower prerequisites:
   from its next effect and is independently observed after failed native IO.
   Only comparison DATA leaves the same driving loan; Security still owns
   resident approval, public-area/Name validation and the initial target decision.
-  Non-test online Security compilation, 429 Broker and 125 focused Source tests
-  pass, including two real native record/pidfd regressions. The ordinary and
-  online Security suites are running. One existing EISDIR fixture now uses a
+  Non-test online Security compilation, 429 Broker, 125 focused Source, 428
+  ordinary Security and 437 online-Nix Security tests pass, including two real
+  native record/pidfd regressions. One Broker case and two cases in each Security
+  suite remain ignored. One existing EISDIR fixture now uses a
   private temporary directory so concurrent host writes cannot mask its native
   read error. Full application compilation is running on the audited 71-source
   snapshot and both deleted-module absences; its 833-derivation closure excludes
