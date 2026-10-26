@@ -558,3 +558,9 @@ config_setting(
     flag_values = {":dependency_profile": "deployment-check"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "release_signer_dependencies",
+    flag_values = {":dependency_profile": "release-signer"},
+    visibility = ["//visibility:public"],
+)

@@ -102,6 +102,12 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    release-signer = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "release-signer";
+    };
+
     deployment-check = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;

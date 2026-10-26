@@ -60,6 +60,7 @@ load(":release-coordination/aliases.bzl", RELEASE_COORDINATION_CRATES = "CRATES"
 load(":registry-native.bzl", "REGISTRY_NATIVE_FEATURE_VARIANTS", "REGISTRY_NATIVE_PACKAGES")
 load(":registry-native/aliases.bzl", REGISTRY_NATIVE_CRATES = "CRATES")
 load(":registry-native-tests/aliases.bzl", REGISTRY_NATIVE_TESTS_CRATES = "CRATES")
+load(":release-signer/aliases.bzl", RELEASE_SIGNER_CRATES = "CRATES")
 load(":release-preparation/aliases.bzl", RELEASE_PREPARATION_CRATES = "CRATES")
 load(":hub-client/aliases.bzl", HUB_CLIENT_CRATES = "CRATES")
 load(":hub-model/aliases.bzl", HUB_MODEL_CRATES = "CRATES")
@@ -152,6 +153,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
             "//tools/bazel/rules:release_coordination_dependencies": RELEASE_COORDINATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:registry_native_dependencies": REGISTRY_NATIVE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:registry_native_tests_dependencies": REGISTRY_NATIVE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:release_signer_dependencies": RELEASE_SIGNER_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:release_preparation_dependencies": RELEASE_PREPARATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_client_dependencies": HUB_CLIENT_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_model_tests_dependencies": HUB_MODEL_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -229,6 +231,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         + RELEASE_COORDINATION_CRATES.items()
         + REGISTRY_NATIVE_CRATES.items()
         + REGISTRY_NATIVE_TESTS_CRATES.items()
+        + RELEASE_SIGNER_CRATES.items()
         + RELEASE_PREPARATION_CRATES.items()
         + HUB_CLIENT_CRATES.items()
         + HUB_MODEL_TESTS_CRATES.items()
@@ -587,6 +590,27 @@ HUB_CLIENT_PACKAGES = {
 }
 
 # Release preparation preserves its own assembly and signing feature selection.
+RELEASE_SIGNER_PACKAGES = {
+    "anyhow": crate.spec(version = "=1.0.103"),
+    "base64": crate.spec(version = "=0.22.1"),
+    "clap": crate.spec(version = "=4.6.1", features = ["derive", "env"]),
+    "crc32fast": crate.spec(version = "=1.5.0"),
+    "ed25519-dalek": crate.spec(version = "=2.2.0", features = ["pkcs8"]),
+    "flate2": crate.spec(version = "=1.1.9", default_features = False, features = ["rust_backend"]),
+    "hex": crate.spec(version = "=0.4.3"),
+    "humantime": crate.spec(version = "=2.3.0"),
+    "regex": crate.spec(version = "=1.12.4"),
+    "schemars": crate.spec(version = "=1.2.2"),
+    "semver": crate.spec(version = "=1.0.28"),
+    "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
+    "serde_json": crate.spec(version = "=1.0.150"),
+    "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
+    "ssh-key": crate.spec(version = "=0.6.7", default_features = False, features = ["ed25519", "std"]),
+    "tempfile": crate.spec(version = "=3.27.0"),
+    "thiserror": crate.spec(version = "=2.0.18"),
+    "toml": crate.spec(version = "=0.8.23"),
+}
+
 RELEASE_PREPARATION_PACKAGES = {
     "anyhow": crate.spec(version = "=1.0.103"),
     "async-trait": crate.spec(version = "=0.1.89"),
@@ -1123,6 +1147,13 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "release-signer": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+    },
     "deployment-check": DEPLOYMENT_CHECK_FEATURE_VARIANTS,
     "package-evaluation-driver": PACKAGE_EVALUATION_DRIVER_FEATURE_VARIANTS,
     "nix-store-provider": {
@@ -2065,6 +2096,7 @@ APPROVED_LICENSES = [
         ("registry-native", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("registry-native-tests", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("release-preparation", RELEASE_PREPARATION_PACKAGES, {}, "apache-host"),
+        ("release-signer", RELEASE_SIGNER_PACKAGES, {}, "apache-host"),
         ("hub-client", HUB_CLIENT_PACKAGES, {}, "apache-host"),
         ("hub-model", HUB_MODEL_PACKAGES, {}, "apache-host"),
         ("hub-model-tests", HUB_MODEL_TESTS_PACKAGES, {}, "apache-host"),
@@ -2155,6 +2187,7 @@ APPROVED_LICENSES = [
         "registry-native",
         "registry-native-tests",
         "release-preparation",
+        "release-signer",
         "hub-client",
         "hub-model-tests",
         "hub-model",

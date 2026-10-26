@@ -1,6 +1,6 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "ddd244ed6f78a8c8611a1e74043d5e71b73879866ef3fb01314dc0c3d581cf8d",
+    "third_party/rust/BUILD.bazel": "d9c230ac94c090a4b950c5220a9fdd0ddcafc50cf9ffccec67080eac147ac0d7",
     "third_party/rust/deployment-check.bzl": "c0ee31c36dff63eca47e9e8be32b63289981f86941b99db006dd1ce7408d112d",
     "third_party/rust/package-manager.bzl": "5cdbe87615fd786afffa60a31c5db5edf807952c4a9efb9c810fd25cf719195c",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
@@ -4597,7 +4597,7 @@
       "Zlib OR Apache-2.0 OR MIT"
     ],
     "contracts": {
-      "third_party/rust/BUILD.bazel": "ddd244ed6f78a8c8611a1e74043d5e71b73879866ef3fb01314dc0c3d581cf8d",
+      "third_party/rust/BUILD.bazel": "d9c230ac94c090a4b950c5220a9fdd0ddcafc50cf9ffccec67080eac147ac0d7",
       "third_party/rust/deployment-check.bzl": "c0ee31c36dff63eca47e9e8be32b63289981f86941b99db006dd1ce7408d112d",
       "third_party/rust/package-manager.bzl": "5cdbe87615fd786afffa60a31c5db5edf807952c4a9efb9c810fd25cf719195c",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",

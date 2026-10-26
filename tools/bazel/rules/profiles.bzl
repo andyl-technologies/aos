@@ -45,6 +45,7 @@ def _dependency_profile_impl(ctx):
         "registry-native",
         "registry-native-tests",
         "release-preparation",
+        "release-signer",
         "hub-client",
         "hub-model",
         "hub-model-tests",

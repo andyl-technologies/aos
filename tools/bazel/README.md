@@ -2559,6 +2559,43 @@ production and test analysis rather than a broad source checkout.
 This opt-in does not establish foreign-host execution, a production default
 cutover, numeric performance acceptance, or repository-wide Cargo removal.
 
+## Native release signer
+
+`aos-release-signer` retains its Cargo default and exposes the temporary
+`passthru.withBuildDriver "bazel"` selector, reverse selector and Cargo fallback.
+The native Linux installer preserves its executable name, version, platform
+metadata, qualification probe and empty declared runtime dependency list.
+OpenSSL and `sbsign` remain operator-configured tools rather than package runtime
+inputs. The Bazel package keeps the existing install-only check policy.
+
+```sh
+nix-build -A checks.build.bazel.release-signer-production.all --no-out-link
+```
+
+The qualification requires equal installed ELF contracts and full runtime
+closures, actual release compiler profiles, exact first-party and registry
+features, and execution of all 19 binary tests with both builders. Thirty-seven
+installed command and protocol cases use disposable keys and independent
+source-built OpenSSL, OpenSSH and `sbverify` verification. They cover Ed25519
+request digests and raw payloads, RSA detached signatures, separate Git, DSSE
+and catalog SSHSIG namespaces, measured-boot PCR policy signatures, kernel
+module CMS trailers, Authenticode and signed-evidence envelopes. Framing,
+byte-limit headers, noncanonical requests, changed payloads, unauthorized
+roles, permissive key modes, key links and evidence overwrite attempts must
+fail before emitting a result. Test keys exist only in disposable scratch
+storage and are never retained in qualification outputs.
+
+The separate `release-signer` dependency profile preserves the signer package's
+feature graph instead of unifying it with image finalization dependencies.
+Its version-guarded `indexmap` variant matches Cargo's target feature unit.
+Existing SDK profiles and generated files remain unchanged. Production and
+binary-test analysis define the precise source selection; ordinary Bazel
+compilation uses pinned source dependencies without invoking Cargo.
+
+These format and signature checks do not establish a firmware boot, live kernel
+module loading, foreign-host execution, numeric performance acceptance, a
+production default cutover or repository-wide Cargo removal.
+
 ## Storage/campaign compilation measurements
 
 `tests/evidence/store-performance-v3.json` identifies a frozen compilation trial
