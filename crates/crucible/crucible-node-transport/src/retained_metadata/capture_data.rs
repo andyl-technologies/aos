@@ -33,6 +33,8 @@ pub enum RetainedCaptureProtocolData<'a> {
     /// An ordinary journal has no creator field. Its owning Source must check
     /// process/thread origin before lending physical record rows.
     HelloJournal(&'a crate::client::OriginalHelloJournal),
+    /// Borrows every retained archived mapping owner, including revoked custody.
+    ArchivedMapping(&'a crate::protocol_snapshot::PreparedArchivedProtocolMapping),
     /// Borrows independent restored receipt and underlying model partials.
     ///
     /// Missing or inconsistent partners remain DATA without acquiring native
@@ -90,6 +92,7 @@ impl RetainedCaptureProtocolData<'_> {
             + crate::client::OriginalCanonicalRestoreInputEmitter::capacity_counter_scratch_data()
             + crate::client::OriginalHelloJournal::capacity_counter_scratch_data()
             + crate::reference_packet::service::complete_restore::activation::restoration_native_capacity_counter_scratch_data()
+            + crate::protocol_snapshot::PreparedArchivedProtocolMapping::capacity_counter_scratch_data()
             + size_of::<Self>()
             + size_of::<&Self>()
             + size_of::<MetadataObserver<'static>>()
@@ -101,7 +104,15 @@ impl RetainedCaptureProtocolData<'_> {
             + size_of::<Result<(), ProviderError>>()
     }
 
-    fn check_original_creator(&self) -> Result<(), ProviderError> {
+    /// Checks process/thread custody before a component lends physical rows.
+    ///
+    /// Portable DTO variants carry no creator of their own. The enclosing Source
+    /// supplies its origin check. This predicate tests no registration liveness,
+    /// native evidence, lifecycle eligibility or permission to publish.
+    ///
+    /// # Errors
+    /// Refuses an association created by another process or thread.
+    pub fn check_original_creator(&self) -> Result<(), ProviderError> {
         match self {
             Self::Response(_)
             | Self::AfterConfirmation(_)
@@ -112,6 +123,7 @@ impl RetainedCaptureProtocolData<'_> {
             Self::AckEmitter(value) => value.check_capacity_creator_data(),
             Self::RestoreInputEmitter(value) => value.check_capacity_creator_data(),
             Self::HelloJournal(value) => value.check_capacity_creator_data(),
+            Self::ArchivedMapping(value) => value.check_capacity_creator_data(),
         }
     }
 
@@ -125,6 +137,7 @@ impl RetainedCaptureProtocolData<'_> {
             Self::AckEmitter(value) => value.observe_capacity_data(observer),
             Self::RestoreInputEmitter(value) => value.observe_capacity_data(observer),
             Self::HelloJournal(value) => value.observe_capacity_data(observer),
+            Self::ArchivedMapping(value) => value.observe_capacity_data(observer),
             Self::RestorationNativeEvidence(record, underlying) => {
                 crate::reference_packet::service::complete_restore::activation::observe_restoration_native_capacity_data(
                     *record, *underlying, observer,

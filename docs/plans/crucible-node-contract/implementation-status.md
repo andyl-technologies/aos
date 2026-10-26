@@ -223,11 +223,23 @@ Box geometry even when the matching receipt is absent; failed partials remain
 DATA without passing the existing native-history eligibility checks. Creator
 checks precede the component bank loan. Non-owning source/controller pointers
 stay outside capacity rows, and phase/upload flags remain inline Copy fields.
-Legacy restoration tickets/mappings and observation/producer/Capture/input/suffix
-histories still need their own complete census. All eight new controls pass in
-both codec configurations. Native model DTOs and deliberately unreserved failed
+The Core ticket's shared archive Source graph and the observation, producer,
+Capture, input and suffix histories still need their own complete census. All
+eight new controls pass in both codec configurations. Native model DTOs and deliberately unreserved failed
 activation partials establish retained backing only; they issue no restoration
 claim, private Source/native owner or publication permission.
+
+Legacy restoration body capacity DATA now keeps all six raw banks, independent
+normalized copies, typed journal/request/context partials and the complete SDK
+archived-mapping association. Mapping capacity remains observable while the
+registrar is revoked or its registration gate is held; both original creator
+checks precede physical rows. Repeated identity, controller, connection, codec,
+gate, epoch and extension views receive no sharing credit. The Core ticket's
+shared archive Source graph remains a separate census obligation. These body
+projections grant no signing, native installation or restoration permission.
+All seven new controls pass in both codec configurations. The mapping fixtures
+retain a real registrar and installed immutable codec under modeled Hello; their
+unverified archive commitments issue no Core ticket or native restoration right.
 
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
@@ -238,16 +250,16 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 87 Engine census/installation/holder/startup
+Both codec configurations pass 91 Engine census/installation/holder/startup
 controls, eight execution reservation controls and four Import18 bank constructor
-controls. Complete Engine suites pass 2,158 tests each with thirty-four ignored,
+controls. Complete Engine suites pass 2,162 tests each with thirty-four ignored,
 using matching source-built installed packet fixtures. Current Transport suites
-pass 2,337 tests and 137 focused controls each, with twenty ignored; HostResources
+pass 2,340 tests and 140 focused controls each, with twenty ignored; HostResources
 suites pass all 37 tests each, including both descriptor capacity controls.
-Six-package all-feature/all-target checks, seventeen-file scoped Rust formatting,
+Six-package all-feature/all-target checks, nine-file scoped Rust formatting,
 all six architecture gates and the RFC requirement-map gate pass. Required
 application test-target compilation passes with 185 artifacts across 58 packages
-and 76 integration targets; all 4,936 selected frozen Rust/Cargo inputs match
+and 76 integration targets; all 4,941 selected frozen Rust/Cargo inputs match
 current and captured source. User-owned changes are preserved. These are component
 results; the requirement map records planning coverage, and no latest-source
 strict lint or native lifecycle qualification is claimed. Native executable

@@ -29,6 +29,9 @@ use crucible_node_transport::{
     },
 };
 
+#[path = "complete_restore/capacities.rs"]
+mod capacities;
+
 const BACKEND_BYTES: usize = 512 * 1024;
 pub(super) const MAPPING_BYTES: usize = 64 * 1024;
 const JOURNAL_BYTES: usize = 64 * 1024;

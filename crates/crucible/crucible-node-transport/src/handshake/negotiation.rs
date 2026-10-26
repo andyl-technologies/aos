@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "negotiation/capacities.rs"]
+mod capacities;
+
 #[derive(serde::Serialize)]
 struct OriginalCompletedHello<'a> {
     status: &'static str,

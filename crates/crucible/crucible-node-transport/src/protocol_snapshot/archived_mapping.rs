@@ -7,6 +7,9 @@
 use super::*;
 use crucible_node_format::{ContentRef, Validate};
 
+#[path = "archived_mapping/capacities.rs"]
+mod capacities;
+
 /// Describes only the exact historical native grammar retained by this mapping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RestorationMappingClass {
