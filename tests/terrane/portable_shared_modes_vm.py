@@ -36,11 +36,16 @@ def main():
     artifacts = [row for row in records if row.get("reason") == "compiler-artifact"
                  and row.get("target", {}).get("name") == "terrane_sdk"
                  and row.get("profile", {}).get("test") is True]
+    # The retained test executable can approach the guest's entire memory budget.
+    # Header validation needs only the magic bytes; Cargo metadata binds its target.
+    with (image / "libexec/terrane-native-sdk-tests").open("rb") as executable:
+        elf_header = executable.read(4)
+
     if (len(artifacts) != 1 or artifacts[0]["profile"] != identity["profile"]
             or artifacts[0]["features"] != identity["features"]
             or artifacts[0]["package_id"] != identity["package_id"]
             or artifacts[0]["target"]["kind"] != ["lib"]
-            or not (image / "libexec/terrane-native-sdk-tests").read_bytes().startswith(b"\x7fELF")):
+            or elf_header != b"\x7fELF"):
         raise SystemExit("shared-mode SDK Cargo artifact mismatch")
     binary = image / "bin/terrane-native-sdk-tests"
     for arguments, mode in [(["--list"], "inventory"),

@@ -91,6 +91,18 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+Shared-directory owning-gate renewal at `330e82243d` stops in 164.316
+seconds after all three original private-release guests pass. The 512 MiB
+portable shared-mode guest then OOM-kills its UID-840 Python verifier before
+any native case executes. Independent review binds the original source,
+466,280,768-byte executable, kernel OOM record and unchanged guest limit; raw
+VM records are preserved. The helper read the entire executable to check four
+ELF magic bytes. Header checks now read only those bytes, and the common SDK
+image verifier streams its complete SHA-256. Metadata-only verification of the
+actual 466 MB and 536 MB executables preserves their prior hashes with measured
+Python peak allocations below 12 MiB. Native guest renewal remains required;
+no memory limit or original test selector changes. Acceptance remains 27/64.
+
 Both complete publisher owning gates at `330e82243d` pass in 1,216.385
 seconds. Independent review verifies all eight original KVM guests, all eleven
 original outputs, 135 ordinary plus five administrator filesystem cases,

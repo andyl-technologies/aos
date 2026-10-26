@@ -19,12 +19,21 @@ then be reconciled with all six assigned requirements below.
 
 ## Qualification checkpoint
 
-At the inspected source, canonical evaluation of both owning gates succeeds.
-Their missing dependency graph includes six original KVM guests: read-only,
-isolation, portable shared modes, private release, cold private release and
-cold manifest release. The two test images are being built in an AOS guest
-with a fresh native-builder probe. Their audited missing dependency closure
-has no overlap with the separately running publisher prerequisites.
+At the inspected source, both SDK images and all twelve remaining non-KVM
+prerequisites pass independent source, executable and guest-dispatch review.
+Both native-builder probes retain the original unprivileged ext4 controls;
+fourteen raw records are preserved and owned controller scratch is removed.
+
+Complete owning-gate renewal stops in 164.316 seconds after the three original
+private-release guests pass. The 512 MiB portable shared-mode guest OOM-kills
+its UID-840 Python verifier before native execution: the helper reads its
+466,280,768-byte executable to check the four-byte ELF header. Independent
+failure review and raw VM records preserve that result. Header reads are now
+bounded to four bytes; the common SDK verifier streams the full SHA-256.
+Metadata-only verification of both actual retained executables preserves their
+prior hashes with measured Python peak allocations below 12 MiB. No guest
+memory, filesystem, privilege, selector or deadline control changes. Renewed
+original native execution remains required.
 
 Compilation, retained executable hashes, finite selector results and complete
 gate results are distinct evidence. Neither successful image construction nor

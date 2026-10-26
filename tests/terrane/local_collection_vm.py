@@ -167,8 +167,11 @@ def verify_image(source, image, variant="surface-sdk"):
     assert artifacts[0]["features"] == identity["features"]
     assert artifacts[0]["profile"] == identity["profile"]
     binary = image / "libexec/terrane-native-sdk-tests"
-    assert binary.read_bytes().startswith(b"\x7fELF")
-    return hashlib.sha256(binary.read_bytes()).hexdigest()
+    # Keep verification memory independent of the retained executable's size.
+    with binary.open("rb") as executable:
+        assert executable.read(4) == b"\x7fELF"
+        executable.seek(0)
+        return hashlib.file_digest(executable, "sha256").hexdigest()
 
 
 def main():
