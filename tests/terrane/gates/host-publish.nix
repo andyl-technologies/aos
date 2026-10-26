@@ -184,6 +184,12 @@
       version = "0.1.0";
       src = null;
       buildDeps = [pkgs.coreutils pkgs.python3];
+      # Compile native inputs in the isolated AOS builder before running the
+      # owning kernel check on a KVM host; nested KVM is not required there.
+      passthru = {
+        kernelImage = image;
+        kernelCheck = native;
+      };
       phases = [
         {
           name = "qualify";

@@ -309,6 +309,14 @@ separately, requires the later status to belong to that same process, and record
 both original and fresh listener inode identities alongside the restarted
 publisher's actual actor identity. Corrected qualification remains pending.
 
+The owning publication gate now exposes its existing kernel image and kernel
+check as `passthru.kernelImage` and `passthru.kernelCheck`. This permits native
+input compilation in the isolated AOS builder followed by the original kernel
+fixture on a KVM host, without requiring nested KVM or running native checks on
+the host. Evaluation verifies unchanged normalized gate phases and all 24
+dependency names; both attributes select the original component roles under
+the regenerated source attestations. The complete owning gate remains required.
+
 The full feature matrix at the earlier frozen `e6f214f3ce` checkpoint passes in
 19,245.158 seconds in the isolated 32 GiB AOS builder. Independent review matches
 the immutable source and both native profile compiler records, all 21 passing
