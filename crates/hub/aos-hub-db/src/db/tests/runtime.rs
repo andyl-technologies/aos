@@ -14,8 +14,8 @@ fn generated_relational_ids_are_positive_and_worker_exact() {
 fn fresh_schema_is_final_and_foreign_key_clean() {
     assert_eq!(
         MIGRATIONS.len(),
-        16,
-        "released migrations include bounded OIDC flow retention"
+        18,
+        "released migrations include binding id tombstones"
     );
     let connection = Connection::open_in_memory().unwrap();
     connection
