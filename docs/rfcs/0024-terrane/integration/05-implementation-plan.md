@@ -95,7 +95,25 @@ The actual service-manager fixture now declares the public issuer file and
 independent startup Read required by the configured SDK launcher. Its guest
 comparison also requires those rendered token settings to match the genuine
 repository setup exactly. This closes a stale fixture configuration left by the
-public-reader transition; renewed managed-role execution remains required.
+public-reader transition. Qualification at `ddbbd4407f` now passes the actual
+systemd check in 196.547 seconds with its original 300-second guest limit.
+Independent review matches all 8,291 immutable source files, both images with
+5,512/5,518 bound inputs, five retained Cargo executables and fifteen original
+enrollment controls. The guest verifies eighteen mount observations each for
+Serve and publisher, distinct confined role identities, both GC starts after
+Serve readiness in PID 1's same-boot journal, owner locks, foreign-peer refusal,
+listener retirement and the two original durable SDK snapshots. The rendered
+public issuer and startup Read settings match the genuine setup exactly.
+
+Before that runtime check, all 97 audited prerequisites built in the isolated
+AOS guest in 1,356.131 seconds. Review verifies the fresh AOS 7.2.3 ext4 probe,
+UID 1000 mapped to build UID 30001 with empty capabilities, exact remote
+dispatch, disabled host-native fallback and clean shutdown. Seven raw controller
+records are preserved and its owned scratch directory is removed. The remaining
+dispatch contains only two metadata copies and the unchanged KVM driver. These
+results renew managed public-reader startup and the recorded maintenance
+lifecycle; they do not prove restart recovery, physical release from zero
+draining counts or full role acceptance. Accepted tasks remain 28/64.
 
 File-scoped committed-index membership now has a repository entry point on
 `PreparedFileRead`. It retains authenticated file selection, permits only the
