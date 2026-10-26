@@ -880,3 +880,22 @@ fn zero_peer_guest_hold_refuses_portable_exact_capture_and_keeps_the_log() -> Te
     lifecycle.shutdown()?;
     Ok(())
 }
+
+#[test]
+fn zero_peer_guest_hold_is_not_exact_checkpoint_ready() -> TestResult {
+    // Readiness must agree with capture: a committed guest stop still held as
+    // an unsettled host continuation is a boundary capture refuses, so callers
+    // that poll readiness must keep driving instead of attempting a capture.
+    let mut lifecycle = stopped_lifecycle(0)?;
+    let offset = lifecycle.inner.loop_impl().event_log_offset();
+
+    assert!(lifecycle.inner.has_unsettled_host_continuation());
+    assert_eq!(
+        lifecycle.exact_checkpoint_refusal()?,
+        Some(ProductionExactCheckpointNotReady::UnsettledHostContinuation)
+    );
+    assert!(!lifecycle.exact_checkpoint_ready()?);
+    assert_eq!(lifecycle.inner.loop_impl().event_log_offset(), offset);
+    lifecycle.shutdown()?;
+    Ok(())
+}

@@ -3,6 +3,8 @@
 use super::*;
 use crucible::SchedulerOperationalFailureClass;
 
+#[path = "runtime/checkpoint_readiness.rs"]
+mod checkpoint_readiness;
 #[path = "runtime/debug_evidence.rs"]
 mod debug_evidence;
 #[path = "runtime/observation.rs"]
@@ -11,6 +13,7 @@ mod observation;
 #[path = "runtime/progress.rs"]
 pub(super) mod progress;
 
+pub use checkpoint_readiness::ProductionExactCheckpointNotReady;
 use debug_evidence::*;
 use observation::*;
 
@@ -190,76 +193,6 @@ impl ProductionVmLifecycleLoop {
         self.inner.loop_impl().quanta()
     }
 
-    /// Reports whether every live node can enter an exact checkpoint now.
-    ///
-    /// A false result means an already-admitted device coroutine crosses the
-    /// current scheduler boundary, a selectable catalog outside the initial
-    /// execution boundary has not frozen, or emitted network output is still
-    /// ahead of the shared frontier. The caller may drive another ordinary
-    /// quantum and retry; checkpoint capture itself never advances through the
-    /// deterministic completion coordinate.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when a live node is missing from the backend
-    /// set or its shared device-I/O state cannot be inspected consistently.
-    pub fn exact_checkpoint_ready(&mut self) -> Result<bool, SchedulerError> {
-        // A World-network preselection is published by thin replay from an
-        // earlier admitted ancestor; its withheld TX suffix is not snapshot state.
-        if self.pending_held_host_outcomes.is_some()
-            || self.inner.live_network_preselection().is_some()
-            || self.inner.has_campaign_parks()
-            || self.inner.loop_impl().pending_branch_effect_choice_count() != 0
-            || !self.signal_fault_branches.is_empty()
-            || self.inner.pending_network_output_count() != 0
-        {
-            return Ok(false);
-        }
-        let _pending = self
-            .inner
-            .backend_mut()
-            .drain_pending_selectable_requests()?;
-        let configuration = self.inner.loop_impl().configuration().clone();
-        let event_log_events = self.inner.loop_impl().event_log().offset().events;
-        let selectable_catalog_plans = self.inner.backend().selectable_catalog_plans();
-        let live_nodes = self
-            .source
-            .world()
-            .vm_nodes()
-            .iter()
-            .filter(|node| {
-                self.node_service_states.get(&node.id) == Some(&ProductionNodeServiceState::Running)
-            })
-            .map(|node| node.id.clone())
-            .collect::<Vec<_>>();
-        if !selectable_catalogs_checkpoint_ready(
-            &configuration,
-            self.initial_lifecycle_observations_pending,
-            event_log_events,
-            &live_nodes,
-            &selectable_catalog_plans,
-        ) {
-            return Ok(false);
-        }
-        for node in live_nodes {
-            if !self
-                .inner
-                .backend_mut()
-                .checkpoint_device_io_is_quiescent(&node)?
-            {
-                return Ok(false);
-            }
-            if !self
-                .inner
-                .backend_mut()
-                .selectable_reply_is_checkpoint_quiescent(&node)?
-            {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
     /// Authenticates that one selected VM marker was already released on this branch.
     #[must_use]
     pub fn campaign_marker_release_committed(
@@ -303,10 +236,10 @@ impl ProductionVmLifecycleLoop {
         boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
     ) -> Result<ProductionExactCheckpointClosure, SchedulerError> {
         boundary()?;
-        if !self.exact_checkpoint_ready()? {
+        if let Some(refusal) = self.exact_checkpoint_refusal()? {
             return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "production lifecycle is not at an exact checkpoint-ready boundary",
+                message: format!(
+                    "production lifecycle is not at an exact checkpoint-ready boundary: {refusal}"
                 ),
             });
         }

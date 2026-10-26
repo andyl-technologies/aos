@@ -2186,6 +2186,7 @@ mod quantum_loop;
 mod retention_drain;
 pub use retention_drain::{RetentionDrain, RetentionDrainRefusal};
 mod runtime;
+pub use runtime::ProductionExactCheckpointNotReady;
 mod search;
 mod storage_faults;
 // crucible-lint: allow stringly-error -- private run-directory decoding diagnostics are immediately wrapped in LifecycleApiError.
