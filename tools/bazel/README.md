@@ -2349,6 +2349,41 @@ provider packages, installed runtime closures, kernel attachment and effects,
 foreign-host execution, performance acceptance and production default cutover
 remain required separately. Both production packages retain their Cargo builders.
 
+## Complete BPF provider packages
+
+`pkgs.aos-ebpf-lsm-policy.passthru.withBuildDriver "bazel"` and
+`pkgs.aos-ebpf-net-policy.passthru.withBuildDriver "bazel"` select complete
+installed packages. Each contains its static Rust provider, native C loader,
+BPF object, and immutable JSON policy. The ordinary Cargo builders remain the
+defaults, with an explicit rollback selector. The Bazel branch does not evaluate
+the Cargo constructor, artifacts, dummy source, or vendor tree.
+
+`checks.build.bazel.bpf-provider-production.all`, also available through
+`tools/bazel/tests/bpf-provider-production.nix`, compares installed files and
+complete runtime closures against both original builders. The static Rust
+executables retain the source-built libc and compiler runtime inputs. Loader
+imports and resolved libraries remain identical; installation removes Bazel's
+relative solib search path. BPF instructions, maps, relocations and BTF records
+use the same exact semantic comparison as the native-artifact check.
+
+The qualification compares all eight first-party production Rust compiler
+profiles, six library unit tests, both empty command libtests, and both empty
+doctest suites.
+Production and release-test feature selections match Cargo using the existing
+preparation-provider dependency SDKs. It also exercises bounded provider input
+rejection in 22 cases and cross-tests the installed loaders against both object
+builders in 36 cases.
+Compiler actions must execute freshly in Linux sandboxes; source, tool and
+runtime input digests are checked against the selected immutable inputs. The
+recorded builds execute 125 production actions and 149 release-test actions.
+Precise and conservative source selections agree on 13 roots and 162 configured
+reports, and produce byte-identical package artifacts. The retained receipt is
+`tests/evidence/bpf-provider-production-package.json`.
+
+Kernel attachment and effects, foreign-host execution, numeric performance
+acceptance, production default cutover and repository-wide Cargo removal remain
+separate RFC gates. These userspace checks do not establish live BPF behavior.
+
 ## Storage/campaign compilation measurements
 
 `tests/evidence/store-performance-v3.json` identifies a frozen compilation trial

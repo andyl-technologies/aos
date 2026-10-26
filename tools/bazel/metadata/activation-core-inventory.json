@@ -19408,8 +19408,8 @@
   "contracts": {
     "MODULE.bazel": "58cda7d635284bb6274b4ba95a4ff63716cf5246eb71da8a560239e484f56e51",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
-    "crates/activation/aos-activation-bpf-lsm/BUILD.bazel": "31443585fe6c983ce87ad0eba7c674e3b12ae680e446e70bc33cf7e13b68fdf5",
-    "crates/activation/aos-activation-bpf-network/BUILD.bazel": "309b24ae0631283d14dfbfabe3cebd3d4a425697578d72517a9ec22da018b630",
+    "crates/activation/aos-activation-bpf-lsm/BUILD.bazel": "193476826ce035c2dadf5713813d4587d397a4f59417fa2f940eb92d807f7d95",
+    "crates/activation/aos-activation-bpf-network/BUILD.bazel": "5522fcccbf11b855ff0de1f81f86fa365932ebba35e344f7586330e052d7e38a",
     "crates/activation/aos-activation-config-files/BUILD.bazel": "53b6a993471650f36e6d3d6757bd8021f7d49d384aca33c54eeb644caa2c1e14",
     "crates/activation/aos-activation-kubernetes/BUILD.bazel": "ba539fb973ebeb240283ebb2fa95bd7e88aef7a1cf25582d382deb701ec372fb",
     "crates/activation/aos-activation-nftables/BUILD.bazel": "b5caf5ffd9fe6256db3351f922662b8d8921a0d2a8eeb1bfa3e46000972eb051",

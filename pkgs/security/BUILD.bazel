@@ -5,6 +5,18 @@ load("//tools/bazel/rules:package.bzl", "aos_package")
 
 package(default_visibility = ["//visibility:public"])
 
+filegroup(
+    name = "lsm_policy_json",
+    srcs = ["_aos-bpf-policy/lsm.json"],
+    tags = ["aos-license:apache-host"],
+)
+
+filegroup(
+    name = "net_policy_json",
+    srcs = ["_aos-bpf-policy/net.json"],
+    tags = ["aos-license:apache-host"],
+)
+
 # Both kernel sources retain their original "Dual BSD/GPL" license section.
 # Their userspace loaders are separate executables, linked to AOS libraries.
 aos_bpf_object(

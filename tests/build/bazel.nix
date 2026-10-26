@@ -142,6 +142,7 @@ in
       '')
       // {inherit shared static;};
     bpf-native = import ./_bazel-bpf-native.nix {inherit pkgs;};
+    bpf-provider-production = import ./_bazel-bpf-provider-production.nix {inherit pkgs;};
     pilot = import ./_bazel-pilot.nix {inherit pkgs;};
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
@@ -551,6 +552,7 @@ in
             manifest-extractor
             native-libraries
             bpf-native.check
+            bpf-provider-production.all
             native-xz-source
             static-runtime.all
             precision-parity
