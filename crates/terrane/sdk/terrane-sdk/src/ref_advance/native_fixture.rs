@@ -26,6 +26,13 @@ pub(crate) struct NativeFixture<F: LocalFs + BucketBinding> {
 }
 
 impl<F: LocalFs + BucketBinding + Sync + 'static> NativeFixture<F> {
+    /// Borrows the actual repository for public read preparation in native tests.
+    pub(crate) fn repository(
+        &self,
+    ) -> &Repository<FileBucket<F, TokioClock, Validator>, TokioClock, F> {
+        &self.repository
+    }
+
     /// Initializes the same protected native authority used by repository callers.
     ///
     /// # Panics

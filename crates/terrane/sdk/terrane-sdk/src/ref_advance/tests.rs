@@ -23,7 +23,20 @@ use terrane_format::tree_format::{Property, TreeUse};
 pub(crate) struct Validator;
 
 impl ContentValidator for Validator {
+    fn chunk_requirements(
+        &self,
+        upload: &MetaUpload<'_>,
+    ) -> Result<Vec<crate::store::ChunkRequirement>, StoreFailure> {
+        crate::repository::MetadataValidator::new(ChunkProfile::cdc_1m([0; 32]))
+            .chunk_requirements(upload)
+    }
+
     fn validate_meta(&self, upload: &MetaUpload<'_>) -> Result<(), StoreFailure> {
+        if upload.kind() == IdentityKind::Manifest {
+            return crate::repository::MetadataValidator::new(ChunkProfile::cdc_1m([0; 32]))
+                .validate_meta(upload);
+        }
+
         let valid = match upload.kind() {
             IdentityKind::Node => {
                 terrane_format::tree_format::decode_node(upload.bytes(), true, 262144).is_ok()

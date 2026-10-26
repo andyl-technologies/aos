@@ -12,6 +12,8 @@ use crate::{
 };
 use terrane_format::{identity::Digest, surface::View, tree_format::ContentRef};
 
+mod indexed_presence;
+
 /// Retains an exact file selection until its external preparation is authorized.
 ///
 /// Only the repository constructs this value, after ordinary scoped Read,

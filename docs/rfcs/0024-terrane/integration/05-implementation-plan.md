@@ -91,6 +91,19 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+File-scoped committed-index membership now has a repository entry point on
+`PreparedFileRead`. It retains authenticated file selection, permits only the
+inline chunk or a verified manifest's directly listed chunks, filters all other
+hashes before one index query, and closes with fresh Read against the unchanged
+whole policy reference. It preserves request order and duplicates up to 4,096
+hashes without reading chunk bodies or issuing reusable content-read authority.
+Dictionary dependencies and ancestor metadata still need separate reachability
+evidence. Four additional native cases cover withheld inline and manifest chunk
+bodies, stored but unselected hashes, bounds and changed policy publication.
+Native execution and mandatory application-target compilation for this change
+remain pending. This is a prerequisite for the production Content service, not
+acceptance of Content.Has, Negotiate or T-PROTO1. Accepted tasks remain 28/64.
+
 Actual configured CLI qualification at `221134c592` passes in 208.985 seconds.
 Independent review matches all 8,289 immutable source files, 5,510 bound inputs
 and four retained Cargo executables. All six separate setup actors and the

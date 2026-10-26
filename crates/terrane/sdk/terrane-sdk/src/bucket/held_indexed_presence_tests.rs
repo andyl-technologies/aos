@@ -1,7 +1,8 @@
 //! Checks index-only reads under genuine retained native namespace exclusion.
 //!
-//! These cases publish their setup through the native fixture. They establish
-//! held index mechanics, not current request authorization or a service backend.
+//! These cases publish their setup through the native fixture. The original
+//! cases establish held index mechanics; `guarded_file` additionally exercises
+//! actual file-scoped repository authorization. No service backend is claimed.
 
 #![allow(
     clippy::unwrap_used,
@@ -27,6 +28,8 @@ use crate::{
 };
 
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+
+mod guarded_file;
 
 async fn stored_chunk() -> (Fixture, Bucket, Identity) {
     let fixture = Fixture::new().await;

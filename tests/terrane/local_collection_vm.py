@@ -108,6 +108,14 @@ HELD_INDEX_CASES = [
         "held_index_presence_bounds_requests_and_refuses_replaced_coordination",
     ]
 ]
+HELD_INDEX_CASES += [
+    "bucket::held_indexed_presence_tests::guarded_file::" + name for name in [
+        "guarded_file_presence_uses_index_with_chunk_body_withheld",
+        "guarded_file_presence_filters_stored_siblings_and_bounds_duplicates",
+        "guarded_file_presence_refuses_changed_whole_policy_reference",
+        "guarded_manifest_presence_verifies_metadata_without_chunk_reads",
+    ]
+]
 
 
 def verify_image(source, image, variant="surface-sdk"):
