@@ -11,6 +11,7 @@ use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector}
 use super::*;
 
 mod approval_currentness;
+mod initial_intent;
 mod namespace;
 mod readback;
 
@@ -47,6 +48,7 @@ pub(crate) struct Method46InitialMainWriterOriginalV1 {
     closed: Option<JournalError>,
     readback: readback::MainMapReadbackOriginalV1,
     approval_currentness: approval_currentness::ApprovalCurrentnessOriginalV1,
+    initial_intent: initial_intent::InitialIntentOriginal,
     namespace: namespace::MainNamespaceOriginalV1,
 }
 
@@ -66,6 +68,7 @@ impl Method46InitialMainWriterOriginalV1 {
             closed: None,
             readback: readback::MainMapReadbackOriginalV1::new(),
             approval_currentness: approval_currentness::ApprovalCurrentnessOriginalV1::new(),
+            initial_intent: initial_intent::InitialIntentOriginal::new(),
             namespace: namespace::MainNamespaceOriginalV1::new(),
         }
     }
@@ -209,6 +212,7 @@ impl Method46InitialMainWriterOriginalV1 {
         // A failed map-before/hash cannot suppress its separately paid after.
         let _readback_after = self.finish_readback_after_owed();
         let _approval_after = self.finish_approval_currentness_after_owed();
+        let _intent_after = self.finish_initial_intent_after_owed();
         self.post = Some((|| {
             self.inner.original.check_named_currentness_retaining(
                 self.inner
@@ -261,6 +265,7 @@ impl Method46InitialMainWriterOriginalV1 {
             .or_else(|| self.readback.after_failure())
             .or_else(|| self.approval_currentness.after_failure())
             .or_else(|| self.approval_currentness.order_failure())
+            .or_else(|| self.initial_intent.failure())
             .or_else(|| self.post_original.failure())
             .or_else(|| {
                 self.post

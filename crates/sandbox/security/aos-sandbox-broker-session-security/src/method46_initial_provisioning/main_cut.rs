@@ -205,6 +205,17 @@ impl<'owner> Method46InitialMainCutOriginalV1<'owner> {
             .finish_approval_currentness_after_owed_once_v1()
     }
 
+    pub(super) fn capture_initial_intent_files_once_v1(
+        &self,
+    ) -> Result<
+        aos_sandbox_controller_domain::method46_initial_startup::Method46InitialIntentFileLoanV1<
+            'owner,
+        >,
+        Method46InitialStartupClosedV1,
+    > {
+        self.readback.capture_initial_intent_files_once_v1()
+    }
+
     /// Copies the compared cut as DATA while its actual Source remains current.
     ///
     /// This is not initial approval, a prepared intent or an Extend/checkpoint

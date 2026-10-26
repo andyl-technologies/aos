@@ -690,6 +690,37 @@ impl<P> ProtectedJournalLocation<P> {
         )
     }
 
+    /// Opens a resumable stage without truncation or replacement.
+    ///
+    /// Creation is exclusive. Existing opens cannot follow symlinks or escape
+    /// the held directory. The caller retains and validates the actual file
+    /// before reading or writing its independently approved bounded prefix.
+    ///
+    /// # Errors
+    /// Returns the original openat2 errno, including unsupported resolution.
+    #[cfg(target_os = "linux")]
+    pub fn open_resumable_stage(
+        &self,
+        name: &str,
+        create_new: bool,
+    ) -> Result<std::os::fd::OwnedFd, rustix::io::Errno> {
+        let mut flags = OFlags::RDWR | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        if create_new {
+            flags |= OFlags::CREATE | OFlags::EXCL;
+        }
+        openat2(
+            &self.directory,
+            name,
+            flags,
+            if create_new {
+                Mode::from_bits_truncate(0o600)
+            } else {
+                Mode::empty()
+            },
+            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+        )
+    }
+
     /// Publishes the original stage using the original no-replace rename.
     ///
     /// # Errors

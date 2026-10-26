@@ -40,6 +40,7 @@ use online_floor_issuer::OnlineFloorIssuerOriginal;
 
 mod approval;
 use approval::ApprovalVerificationOriginal;
+mod durable_intent;
 mod normal_manifest;
 use normal_manifest::NormalManifestOriginal;
 mod other_normal_manifests;
@@ -91,6 +92,7 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     root_public: [RootPublicKeyOriginal; 5],
     approval: RefCell<ApprovalVerificationOriginal>,
     approval_main_after: RefCell<Option<Result<(), Method46InitialStartupClosedV1>>>,
+    intent: RefCell<durable_intent::InitialIntentPublicationOriginal<'owner>>,
 }
 
 // The same Source pays this fixed allowance before the result owner exists.
@@ -154,6 +156,7 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             root_public: std::array::from_fn(|_| RootPublicKeyOriginal::new()),
             approval: RefCell::new(ApprovalVerificationOriginal::new()),
             approval_main_after: RefCell::new(None),
+            intent: RefCell::new(durable_intent::InitialIntentPublicationOriginal::new()),
         };
         original.decode();
         if !original.admitted() {
@@ -735,6 +738,9 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
         if after.is_err() {
             self.readback.refuse_decode_v1();
         }
+        if result.is_err() || after.is_err() {
+            self.refuse_intent_and_finish_after();
+        }
         // Native post failure cannot erase the original verification refusal.
         let intent = result?;
         after?;
@@ -802,6 +808,41 @@ mod tests {
             let startup = ManuallyDrop::new(Method46InitialStartupOriginalV1::new(role));
 
             assert!(request_from_originals(&startup).is_err());
+            assert!(startup.finish_source_after_owed_once_v1(Ok(())).is_err());
+        }
+    }
+
+    // Compile the complete simultaneous-borrow composition without constructing
+    // a fake positive Source, approved cut or native publication authority.
+    fn publish_cold_intent_from_originals(
+        startup: &Method46InitialStartupOriginalV1,
+    ) -> Result<(), Method46InitialDataErrorV1> {
+        let readback = startup
+            .lend_provisioning_readback_once_v1()
+            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+        let provision = Method46InitialProvisionDecodeOriginalV1::decode_captured_v1(readback);
+        startup
+            .capture_initial_main_writer_once_v1()
+            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+        let readback = startup
+            .lend_initial_main_readback_once_v1()
+            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+        let main =
+            Method46InitialMainCutOriginalV1::hash_and_validate_captured_v1(readback, &provision);
+        provision.capture_initial_intent_files_once_v1(&main)?;
+        provision.verify_captured_initial_intent_once_v1(&main)?;
+        provision.publish_approved_initial_intent_once_v1(&main)
+    }
+
+    #[test]
+    fn method46_initial_intent_publication_cannot_start_from_an_inert_startup() {
+        for role in [
+            Method46InitialServiceRoleV1::ControllerStorageClient,
+            Method46InitialServiceRoleV1::StorageBroker,
+        ] {
+            let startup = ManuallyDrop::new(Method46InitialStartupOriginalV1::new(role));
+
+            assert!(publish_cold_intent_from_originals(&startup).is_err());
             assert!(startup.finish_source_after_owed_once_v1(Ok(())).is_err());
         }
     }

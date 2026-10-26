@@ -7,6 +7,11 @@ use std::cell::Ref;
 
 use super::*;
 
+mod initial_intent;
+pub use initial_intent::{
+    METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1, Method46InitialIntentFileLoanV1,
+};
+
 /// Bounds the co-live original main-cut hash state, key scratch and carriers.
 ///
 /// The canonical Security implementation checks its compiled layout and the
@@ -278,6 +283,7 @@ mod tests {
 
         assert!(loan.origin_data_v1().is_err());
         assert!(loan.read_map_data_v1().is_err());
+        assert!(loan.capture_initial_intent_files_once_v1().is_err());
         loan.refuse_readback_v1();
         assert!(loan.finish_readback_after_owed_once_v1().is_err());
         assert!(

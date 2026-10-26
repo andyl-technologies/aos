@@ -289,6 +289,30 @@ impl<'owner, P> CanonicalWriterNativeOperationsV1<'owner, P> {
         result
     }
 
+    /// Opens the same directory's resumable stage without truncation.
+    ///
+    /// Existing financial, publication and recipient gates remain with the
+    /// actual upper owner. Creation is exclusive; this supplies no approval.
+    ///
+    /// # Errors
+    /// Preserves the original errno or rejects absent/closed native custody.
+    #[cfg(target_os = "linux")]
+    pub fn open_resumable_stage(
+        self,
+        name: &str,
+        create_new: bool,
+    ) -> Result<OwnedFd, rustix::io::Errno> {
+        let mut guard = enter_root_read(self.invocation).map_err(|_| rustix::io::Errno::PERM)?;
+        let result = self.location.ok_or(rustix::io::Errno::PERM)?
+            .open_resumable_stage(name, create_new);
+        if result.is_err() {
+            if let Some(guard) = guard.as_mut() {
+                guard.refuse();
+            }
+        }
+        result
+    }
+
     /// Delegates the existing `sync_directory` syscall frontier to the same directory.
     ///
     /// Actual upper publication, financial and recipient gates stay unchanged.

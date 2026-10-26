@@ -31,6 +31,32 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The same genuine initial Source now prepays a separate native initial-intent
+  reservoir on its exclusively held main directory. The fixed, root-owned
+  `session-floor.initial-intent` is distinct from the normal floor sidecar and
+  successor intent. Read-only capture retains the final file, bounded pending
+  stage and absent/empty floor originals before approval. Security's publication
+  composition accepts no intent bytes: it rederives the request from its same
+  admitted main, requires the resident strict approval and successful approval
+  post, then encodes that original. Cold verification reads the actual captured
+  final file. A partial pending stage resumes only an exact independently
+  approved prefix; unsafe metadata, nonempty floor, conflicting bytes or dual
+  names refuse without truncation, replacement or cleanup. The native writer
+  retains its single bounded write, file fsync, no-replace rename, parent fsync
+  and independent name/main posts, including failed prefixes. Its publication
+  interval permits the fixed directory's size/timestamp changes while retaining
+  the same protected directory and full main/lock metadata equality; ordinary
+  approval intervals remain strict. The same Source pays 398 persistent bytes,
+  398 staging bytes, sixteen intent-file descriptor carriers plus additional
+  main bookends, and all read/result reservoirs before IO. The focused
+  initializer suite passes 104 tests; 434 ordinary and 443 online-Nix Security
+  tests pass, with two existing ignored cases in each Security suite. Complete
+  application target compilation is running on the audited final Rust source;
+  its closure excludes production policy. These are native component and
+  composition prerequisites: no genuine installed positive Source, physical
+  TPM initializer, durable checkpoint or
+  connected crash/lifecycle qualification is claimed. Admission remains closed.
+
 - The genuine initial Source now prepays a distinct main-writer metadata
   interval across approval. Its first native Directory/Journal/Lock sample must
   match the actual retained replay-prefix file metadata before main decoding;
@@ -68,10 +94,11 @@ Recent committed startup fixes close narrower prerequisites:
   unchanged. All 433 ordinary and 442 online-Nix Security tests pass, with two
   existing ignored cases in each suite. All 90 focused initializer tests pass,
   including the four-endpoint regression and all 4,096 native directory rosters.
-  Complete application unit/integration target compilation is running on the
-  expanded roster. Offline Nix approval, other endpoint contexts, complete
-  runtime/loader provenance, installed initial effects and public lifecycle
-  qualification remain open.
+  Complete application unit/integration target compilation passed for this
+  checkpoint (`1g322sl4mzh9q6mj6an3v0sn4z4z9hv5`), before the later approval
+  currentness and initial-intent changes. Offline Nix approval, other endpoint
+  contexts, complete runtime/loader provenance, installed initial effects and
+  public lifecycle qualification remain open.
 
 - The initial Source now also prepays actual normal Host configuration samples
   before and after its interval. Each native sample must match the NoApply public
@@ -90,10 +117,11 @@ Recent committed startup fixes close narrower prerequisites:
   manifest and approval-interval changes. Its frozen source includes all seventeen
   Rust inputs changed since the policy-pin checkpoint. The older genesis and
   Root key-pair builds were cancelled after proving none of their pending
-  derivations was needed by this build; the preceding build remains live because
-  it owns shared prerequisites. These observations establish public configuration
-  provenance, while complete endpoint/loader proof, offline Nix approval,
-  installed initial effects and public lifecycle qualification remain open.
+  derivations was needed by this build. The preceding Root exclusion build
+  has also passed after supplying those shared prerequisites. These observations
+  establish public configuration provenance, while complete endpoint/loader
+  proof, offline Nix approval, installed initial effects and public lifecycle
+  qualification remain open.
 
 - Initial approval exclusion now includes Root's separately delivered NoApply
   public credential. Both retained native Root samples must match its public

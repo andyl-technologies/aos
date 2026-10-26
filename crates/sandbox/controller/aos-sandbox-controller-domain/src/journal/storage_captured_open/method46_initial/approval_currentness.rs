@@ -16,6 +16,7 @@ pub(super) struct ApprovalCurrentnessOriginalV1 {
     results: [Option<Result<(), JournalError>>; 2],
     entered: bool,
     closed: Option<JournalError>,
+    directory_publication: bool,
 }
 
 impl ApprovalCurrentnessOriginalV1 {
@@ -30,7 +31,17 @@ impl ApprovalCurrentnessOriginalV1 {
             results: [None, None],
             entered: false,
             closed: None,
+            directory_publication: false,
         }
+    }
+
+    pub(super) fn for_initial_intent_publication() -> Self {
+        let mut original = Self::new();
+        // Creating and renaming the fixed sibling changes directory size and
+        // timestamps. The protected name samples still validate its UID, mode
+        // and physical identity. Main and lock retain full metadata equality.
+        original.directory_publication = true;
+        original
     }
 
     fn demand(journal: &Journal) -> Result<ResourceVector, JournalError> {
@@ -127,9 +138,12 @@ impl ApprovalCurrentnessOriginalV1 {
                 let after = self.witnesses[1]
                     .completed_witness()
                     .ok_or(JournalError::ProtectedBoundary)?;
-                if before.directory() != after.directory()
-                    || before.file() != after.file()
-                    || before.lock() != after.lock()
+                let same_directory = if self.directory_publication {
+                    before.directory().physical_pair() == after.directory().physical_pair()
+                } else {
+                    before.directory() == after.directory()
+                };
+                if !same_directory || before.file() != after.file() || before.lock() != after.lock()
                 {
                     return Err(JournalError::StaleAuthoritySnapshot);
                 }
