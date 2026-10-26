@@ -70,16 +70,15 @@ fn selected_sources(
         sources[index] = Some(source);
     }
 
-    let [Some(provision), Some(auth), Some(approval), Some(normal)] = sources else {
-        return Err(Method46InitialStartupClosedV1);
-    };
-    let sources = [provision, auth, approval, normal];
-    for (index, source) in sources.iter().enumerate() {
-        if sources[..index].contains(source) {
+    let mut selected = [""; NAMES.len()];
+    for (index, source) in sources.into_iter().enumerate() {
+        let source = source.ok_or(Method46InitialStartupClosedV1)?;
+        if selected[..index].contains(&source) {
             return Err(Method46InitialStartupClosedV1);
         }
+        selected[index] = source;
     }
-    Ok(sources)
+    Ok(selected)
 }
 
 pub(super) fn require_delivery(
@@ -143,6 +142,28 @@ pub(super) fn require_normal_manifest_source(
         Method46InitialServiceRoleV1::ControllerStorageClient => "storage-manifest",
         Method46InitialServiceRoleV1::StorageBroker => "storage-broker-manifest",
     };
+    require_named_source(values, name, expected)
+}
+
+pub(super) fn require_other_normal_manifest_sources(
+    values: &[OwnedValue],
+    fragment: &[u8],
+) -> Result<(), Method46InitialStartupClosedV1> {
+    let sources = selected_sources(fragment)?;
+    for (name, expected) in ["host-manifest", "mount-manifest", "network-manifest"]
+        .into_iter()
+        .zip(&sources[4..])
+    {
+        require_named_source(values, name, expected)?;
+    }
+    Ok(())
+}
+
+fn require_named_source(
+    values: &[OwnedValue],
+    name: &str,
+    expected: &str,
+) -> Result<(), Method46InitialStartupClosedV1> {
     if values.len() != SIGNATURES.len() {
         return Err(Method46InitialStartupClosedV1);
     }
@@ -344,6 +365,99 @@ mod tests {
         let mut delivery: Vec<_> = values.drain(12..18).collect();
         delivery[0] = value(rows);
         delivery
+    }
+
+    fn other_normal_rows() -> Vec<(String, String)> {
+        ["host-manifest", "mount-manifest", "network-manifest"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| {
+                (
+                    name.to_owned(),
+                    format!("/run/credentials/@system/external-{}", index + 4),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mandatory_endpoint_sources_match_all_original_controller_delivery_rows() {
+        let fragment = fragment();
+        let mut rows = other_normal_rows();
+        rows.push((
+            "private-key".into(),
+            "/run/credentials/@system/private".into(),
+        ));
+
+        for _ in 0..2 {
+            assert!(
+                require_other_normal_manifest_sources(
+                    &normal_properties(rows.clone()),
+                    fragment.as_bytes(),
+                )
+                .is_ok()
+            );
+            rows.reverse();
+        }
+
+        for index in 0..3 {
+            let mut missing = other_normal_rows();
+            missing.remove(index);
+            let mut duplicate = other_normal_rows();
+            duplicate.push(duplicate[index].clone());
+            let mut replaced = other_normal_rows();
+            replaced[index].1 = "/run/credentials/@system/foreign".into();
+            let mut wrong_name = other_normal_rows();
+            wrong_name[index].0 = "foreign-manifest".into();
+
+            for rows in [missing, duplicate, replaced, wrong_name] {
+                assert!(
+                    require_other_normal_manifest_sources(
+                        &normal_properties(rows),
+                        fragment.as_bytes(),
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mandatory_endpoint_delivery_refuses_alternate_credential_mechanisms() {
+        let fragment = fragment();
+        for (index, changed) in [
+            (
+                1,
+                value(vec![("host-manifest".to_string(), "/external".to_string())]),
+            ),
+            (2, value(vec![("mount-manifest".to_string(), vec![1_u8])])),
+            (3, value(vec![("network-manifest".to_string(), vec![1_u8])])),
+            (4, value(vec!["*".to_string()])),
+            (5, value(vec![("*".to_string(), "*".to_string())])),
+        ] {
+            let mut values = normal_properties(other_normal_rows());
+            values[index] = changed;
+
+            assert!(require_other_normal_manifest_sources(&values, fragment.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn every_fixed_initial_credential_source_must_remain_distinct() {
+        let fragment = fragment();
+        for source in 0..NAMES.len() {
+            for destination in 0..NAMES.len() {
+                if source == destination {
+                    continue;
+                }
+                let aliased = fragment.replace(
+                    &format!("@system/external-{source}\n"),
+                    &format!("@system/external-{destination}\n"),
+                );
+
+                assert!(selected_sources(aliased.as_bytes()).is_err());
+            }
+        }
     }
 
     #[test]

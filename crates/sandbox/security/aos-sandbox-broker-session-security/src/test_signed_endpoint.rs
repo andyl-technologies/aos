@@ -56,9 +56,11 @@ pub(super) fn manifest_and_secrets_for_audience(
         )
         .expect("signed test endpoint pin")
     });
+    let (major, minor) =
+        aos_sandbox_broker_session_protocol::supported_broker_session_version_v1(protocol);
     let manifest = BrokerSessionManifestV1::new(
-        protocol, audience, 1, 0, [1; 16], [2; 16], 1, [3; 32], 1, [4; 32], 1, [5; 32], [6; 16],
-        pins,
+        protocol, audience, major, minor, [1; 16], [2; 16], 1, [3; 32], 1, [4; 32], 1, [5; 32],
+        [6; 16], pins,
     )
     .expect("signed test endpoint manifest");
     (manifest, secrets)

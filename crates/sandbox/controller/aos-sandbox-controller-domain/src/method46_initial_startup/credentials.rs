@@ -26,13 +26,26 @@ pub use provisioning_readback::{
 use entries::Entries;
 use observation::Observation;
 
-pub(super) const NAMES: [&str; 4] = [
+pub(super) const NAMES: [&str; 7] = [
     "broker-method46-tpm-provision-v1",
     "broker-method46-tpm-index-auth-v1",
     "method46-initial-approval-public-key-v1",
     "method46-normal-storage-manifest-v1",
+    "method46-normal-host-manifest-v1",
+    "method46-normal-mount-manifest-v1",
+    "method46-normal-network-manifest-v1",
 ];
-const LENGTHS: [usize; NAMES.len()] = [160, 32, 32, 920];
+const MANIFEST_BYTES: usize =
+    aos_sandbox_broker_session_protocol::manifest::BROKER_SESSION_MANIFEST_BYTES;
+const LENGTHS: [usize; NAMES.len()] = [
+    160,
+    32,
+    32,
+    MANIFEST_BYTES,
+    MANIFEST_BYTES,
+    MANIFEST_BYTES,
+    MANIFEST_BYTES,
+];
 
 struct Credential {
     opened: Option<rustix::io::Result<File>>,
@@ -332,7 +345,9 @@ impl Method46InitialStartupOriginalV1 {
         self.fund_additional(Some(
             ResourceVector::ZERO
                 .with(D::MemoryBytes, 1024 * 1024)
-                .with(D::OpenFiles, 24)
+                // Root, both directory names and one spare native carrier,
+                // plus held/named files and three failed read duplicates.
+                .with(D::OpenFiles, 4 + 5 * NAMES.len() as u64)
                 .with(D::OutputBytes, 64 * 1024),
         ))?;
         let body = self.body.as_mut().ok_or(self.closed)?;

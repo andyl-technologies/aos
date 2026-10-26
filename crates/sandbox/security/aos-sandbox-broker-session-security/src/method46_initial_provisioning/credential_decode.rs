@@ -5,9 +5,10 @@
 //! checks role/node against that same Source. It neither adopts the resource
 //! epoch as the deployment epoch nor creates a writer or physical TPM permit.
 //! The same owner retains the canonical public Storage manifest, compares its
-//! stable identity and excludes all delivered normal pins from approval. Full
-//! endpoint provenance, Nix/Root key separation and durable publication remain
-//! owed alongside one strict approval signature verification.
+//! stable identity and excludes its pins and the captured mandatory Host,
+//! Mount and Network pins from approval. Full endpoint provenance, optional
+//! Nix/Mount FUSE and Root key separation, and durable publication remain owed
+//! alongside one strict approval signature verification.
 
 use std::cell::RefCell;
 
@@ -23,6 +24,8 @@ mod approval;
 use approval::ApprovalVerificationOriginal;
 mod normal_manifest;
 use normal_manifest::NormalManifestOriginal;
+mod other_normal_manifests;
+use other_normal_manifests::{OtherNormalManifestOriginal, PROTOCOLS};
 
 use super::{
     METHOD46_INITIAL_INTENT_BYTES_V1, METHOD46_INITIAL_REQUEST_BYTES_V1,
@@ -50,6 +53,8 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     approval_pin: Option<Result<[u8; 32], Method46InitialDataErrorV1>>,
     normal_read: Option<Result<(), Method46InitialStartupClosedV1>>,
     normal: NormalManifestOriginal,
+    other_normal_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; PROTOCOLS.len()],
+    other_normal: [OtherNormalManifestOriginal; PROTOCOLS.len()],
     approval: RefCell<ApprovalVerificationOriginal>,
 }
 
@@ -91,6 +96,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             approval_pin: None,
             normal_read: None,
             normal: NormalManifestOriginal::new(),
+            other_normal_reads: std::array::from_fn(|_| None),
+            other_normal: std::array::from_fn(|_| OtherNormalManifestOriginal::new()),
             approval: RefCell::new(ApprovalVerificationOriginal::new()),
         };
         original.decode();
@@ -165,6 +172,27 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
         };
         self.normal
             .observe_once(&bytes, origin.role, origin.node, *profile, approval);
+        drop(bytes);
+        if !self.normal.admitted() {
+            return;
+        }
+
+        for (index, protocol) in PROTOCOLS.into_iter().enumerate() {
+            let bytes = match self.readback.normal_endpoint_manifest_bytes_v1(protocol) {
+                Ok(bytes) => {
+                    self.other_normal_reads[index] = Some(Ok(()));
+                    bytes
+                }
+                Err(error) => {
+                    self.other_normal_reads[index] = Some(Err(error));
+                    return;
+                }
+            };
+            self.other_normal[index].observe_once(&bytes, protocol, origin.node, approval);
+            if !self.other_normal[index].admitted() {
+                return;
+            }
+        }
     }
 
     fn admitted(&self) -> bool {
@@ -176,6 +204,14 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             && matches!(self.approval_pin, Some(Ok(_)))
             && matches!(self.normal_read, Some(Ok(())))
             && self.normal.admitted()
+            && self
+                .other_normal_reads
+                .iter()
+                .all(|read| matches!(read, Some(Ok(()))))
+            && self
+                .other_normal
+                .iter()
+                .all(OtherNormalManifestOriginal::admitted)
     }
 
     /// Borrows the original admitted manifest only for this startup's held main.

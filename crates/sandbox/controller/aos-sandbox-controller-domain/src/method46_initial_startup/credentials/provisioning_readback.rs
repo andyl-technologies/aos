@@ -11,19 +11,19 @@ use std::cell::Ref;
 
 use super::*;
 
-/// Bounds the provisioning/normal manifest decoders and one approval verification.
+/// Bounds the provisioning and mandatory manifest decoders and one approval verification.
 ///
 /// Security checks its compiled retained layouts and fixed wire carriers
-/// against this prepaid bound, including the normal public manifest, signature
-/// and public pin.
+/// against this prepaid bound, including all four mandatory normal public
+/// manifests, the signature and public pin.
 /// Actual credential buffers and original native observations are paid by the
 /// enclosing file owner separately. This size alone authenticates no payer.
-pub const METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1: usize = 16 * 1024;
+pub const METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1: usize = 32 * 1024;
 
 /// Borrows one Source-paid original public provisioning readback for decoding.
 ///
 /// Only the actual startup owner constructs this loan after unit and credential
-/// admission and the stopped normal owner's manifest-source comparison. The
+/// admission and the stopped owners' manifest-source comparisons. The
 /// original files remain resident; all reached posts are still owed. Neither
 /// this loan nor a decoded public record authorizes an effect.
 #[must_use = "retain the original readback loan with its canonical decode result"]
@@ -97,6 +97,34 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
         &self,
     ) -> Result<Ref<'_, [u8]>, Method46InitialStartupClosedV1> {
         self.public_bytes(3)
+    }
+
+    /// Borrows a mandatory normal endpoint's original public manifest.
+    ///
+    /// The stopped Controller's PID1 delivery samples must independently match
+    /// each fixed public source before this loan is issued. Optional Nix and
+    /// Mount FUSE manifests are outside this mandatory roster and refuse here.
+    /// No normal endpoint or signing material is constructed.
+    ///
+    /// # Errors
+    /// Refuses another protocol, ended Source custody, busy credentials, missing
+    /// original readback or an entered post. No file is reopened or copied.
+    pub fn normal_endpoint_manifest_bytes_v1(
+        &self,
+        protocol: aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1,
+    ) -> Result<Ref<'_, [u8]>, Method46InitialStartupClosedV1> {
+        use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
+
+        let slot = match protocol {
+            BrokerSessionProtocolV1::Storage => 3,
+            BrokerSessionProtocolV1::Host => 4,
+            BrokerSessionProtocolV1::Mount => 5,
+            BrokerSessionProtocolV1::Network => 6,
+            BrokerSessionProtocolV1::MountFuse | BrokerSessionProtocolV1::Nix => {
+                return Err(self.startup.closed);
+            }
+        };
+        self.public_bytes(slot)
     }
 
     /// Exchanges fixed public request DATA through the same original listener.

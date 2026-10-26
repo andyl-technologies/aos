@@ -31,6 +31,24 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The initial credential owner now retains the mandatory Host, Mount and Network
+  public manifests alongside Storage. Both original stopped-Controller samples
+  must match each manifest's fixed external credential source; the exact initial
+  roster rejects missing, duplicate, aliased and alternate deliveries. The same
+  actual Source prepays all seven credential files, their held/named posts and
+  retained failed reads, plus a 32 KiB canonical-decode allowance checked against
+  compiled private layouts. Resource-bank capacities remain unchanged. Security
+  decodes each original with the existing manifest codec, checks its protocol,
+  node and audience, and excludes all four public pins from initial approval,
+  including revoked and superseded pins. Every comparison is required before
+  request derivation and the held-map schema join can succeed; no private key
+  or auth accessor is added. All 77 focused initializer tests, 415 ordinary
+  Security tests and 424 online-Nix Security tests pass, with two existing ignored
+  cases in each Security configuration. Complete unit/integration target
+  compilation is running for the final seven Rust inputs. Optional Nix/Mount
+  FUSE and Root key separation, complete endpoint provenance, durable approved
+  intent, physical TPM effects and installed qualification remain open.
+
 - PID1 now excludes competing normal Controller/Storage starts and the other
   manual initializer while an initial job is queued or its service remains
   active, stopping or failed. Initial start also requires both normal owners
@@ -75,7 +93,10 @@ Recent committed startup fixes close narrower prerequisites:
   cases. New regressions pin twelve independently computed publication digests
   and retained failed/retired successful manifest-context scopes. Complete
   application unit/integration target compilation is running for the sixteen
-  Rust inputs. This implements the held-map/schema DATA join, without qualifying
+  Rust inputs. The preceding shared native engine passes complete application
+  target compilation before the initial adapter
+  (`/nix/store/1hd2bqzh4lj6ihjq2gfx87g2k6294h9r-aos-test-targets-0.1.0`).
+  This implements the held-map/schema DATA join, without qualifying
   installed positive admission, full endpoint/key provenance and Nix/Root key
   separation, job exclusion, durable approved intent, physical TPM operations,
   the installed producer or public readiness.

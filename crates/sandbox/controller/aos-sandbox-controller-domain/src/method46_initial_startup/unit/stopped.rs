@@ -44,6 +44,7 @@ pub(super) struct InitialStoppedOwnersOriginalV1 {
     entered: Cell<bool>,
     before_completed: Cell<bool>,
     manifest_source_match: [Cell<Option<bool>>; 2],
+    other_manifest_source_match: [Cell<Option<bool>>; 2],
     fragment: RefCell<normal_fragment::NormalFragmentOriginalV1>,
 }
 
@@ -56,6 +57,7 @@ impl InitialStoppedOwnersOriginalV1 {
             entered: Cell::new(false),
             before_completed: Cell::new(false),
             manifest_source_match: std::array::from_fn(|_| Cell::new(None)),
+            other_manifest_source_match: std::array::from_fn(|_| Cell::new(None)),
             fragment: RefCell::new(normal_fragment::NormalFragmentOriginalV1::new()),
         }
     }
@@ -112,6 +114,19 @@ impl InitialStoppedOwnersOriginalV1 {
                         .map(std::slice::from_ref),
                     cgroup,
                 )?;
+                if index == 0 {
+                    let matched =
+                        values
+                            .and_then(|values| values.get(1..7))
+                            .is_some_and(|values| {
+                                delivery::require_other_normal_manifest_sources(values, fragment)
+                                    .is_ok()
+                            });
+                    self.other_manifest_source_match[round].set(Some(matched));
+                    if !matched {
+                        return Err(Method46InitialStartupClosedV1);
+                    }
+                }
                 if selected == Some(index) {
                     let properties = sample
                         .original
@@ -243,6 +258,7 @@ impl InitialUnitOriginalV1 {
                 .try_borrow()
                 .is_ok_and(|fragment| fragment.completed())
             && self.stopped.manifest_source_match[0].get() == Some(true)
+            && self.stopped.other_manifest_source_match[0].get() == Some(true)
             && self.stopped.samples[0].iter().all(|sample| {
                 sample.try_borrow().is_ok_and(|sample| {
                     matches!(sample.result, Some(Ok(())))
@@ -411,6 +427,7 @@ mod tests {
         let unit = InitialUnitOriginalV1::new();
         unit.stopped.before_completed.set(true);
         unit.stopped.manifest_source_match[0].set(Some(true));
+        unit.stopped.other_manifest_source_match[0].set(Some(true));
 
         assert!(!unit.stopped_units_before_completed());
         assert!(unit.stopped.samples[0].iter().all(|sample| {
