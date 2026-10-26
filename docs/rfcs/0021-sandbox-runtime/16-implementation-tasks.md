@@ -393,6 +393,21 @@ Recent committed startup fixes close narrower prerequisites:
   writer/TPM ownership and installed producers remain open. No new service or
   credential MAC role is selected by this change.
 
+- Both initial-job PID1 samples also retain the six credential-delivery
+  properties. After Source-bound fragment measurement, borrowed comparisons
+  require exactly the three fixed credential names and distinct canonical
+  `/run/credentials/@system/` sources from those same immutable bytes. PID1
+  traversal order may vary; duplicate, foreign or changed pairs, encrypted or
+  literal alternatives, imports, wrong types and ambiguous fragment mappings
+  refuse. The initial unit prerequisite stays closed until this comparison
+  succeeds. The same Source pays both eighteen-property tables and the larger
+  finite manager schedule: two 35-call samples, 96 outgoing and 112 incoming
+  ceilings, and 7 MiB cumulative response materialization. All 39 focused tests
+  pass; exact-source complete Rust target compilation is running. Image
+  composition must still join these sources to the normal owners and establish
+  independent approval-key provenance. Full hardening, protected writer/TPM
+  ownership and installed production qualification remain open.
+
 - The isolated manager candidate gives initrd SwitchRoot its own appended
   `system:aos_switch_root` permission. Production grants only `init_t` to itself;
   whole-policy checks reject foreign grants, including disabled and attribute

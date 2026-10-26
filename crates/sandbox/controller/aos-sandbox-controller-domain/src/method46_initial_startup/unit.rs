@@ -12,6 +12,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::*;
 
+mod delivery;
 mod service;
 
 const UNIT_BYTES: usize = 64 * 1024;
@@ -159,6 +160,13 @@ impl InitialUnitOriginalV1 {
             if fragment_path(&initial.original)? != path {
                 return Err(Method46InitialStartupClosedV1);
             }
+            delivery::require_delivery(
+                observation
+                    .original
+                    .service_values_v2()
+                    .ok_or(Method46InitialStartupClosedV1)?,
+                self.acquisition.bytes(),
+            )?;
         }
         Ok(())
     }
@@ -342,9 +350,9 @@ fn normalize_fragment(
 }
 
 fn manager_schedule() -> Option<ReadonlyPropertyReceiveScheduleV2> {
-    // Two fixed 29-call PID1 samples, Hello and bounded signal/header carryover.
+    // Two fixed 35-call PID1 samples, Hello and bounded signal/header carryover.
     // These are native-enforced ceilings, never an account or semantic claim.
-    ReadonlyPropertyReceiveScheduleV2::new(64, 80, 64 * 1024, 4096, 80 * 64 * 1024).ok()
+    ReadonlyPropertyReceiveScheduleV2::new(96, 112, 64 * 1024, 4096, 112 * 64 * 1024).ok()
 }
 
 fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVector> {
@@ -368,7 +376,7 @@ fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVe
         .with(D::MetadataEntries, 4 * PATH_BYTES as u64)
         .with(
             D::OutputBytes,
-            read.checked_add((80 * 64 * 1024 + 64 * 4096 + 4096) as u64)?,
+            read.checked_add((112 * 64 * 1024 + 96 * 4096 + 4096) as u64)?,
         )
         .checked_add(ImmutableFileAcquisitionOriginalV1::receiving_demand_v1(
             PATH_BYTES,
@@ -444,6 +452,13 @@ impl Method46InitialStartupOriginalV1 {
                 profile.ok_or(self.closed)?,
                 path,
             )?;
+            {
+                let initial = unit.properties[0].try_borrow().map_err(|_| self.closed)?;
+                delivery::require_delivery(
+                    initial.original.service_values_v2().ok_or(self.closed)?,
+                    unit.acquisition.bytes(),
+                )?;
+            }
             unit.admitted = true;
             Ok(())
         })();

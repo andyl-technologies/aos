@@ -21,7 +21,7 @@ mod observation;
 use entries::Entries;
 use observation::Observation;
 
-const NAMES: [&str; 3] = [
+pub(super) const NAMES: [&str; 3] = [
     "broker-method46-tpm-provision-v1",
     "broker-method46-tpm-index-auth-v1",
     "method46-initial-approval-public-key-v1",

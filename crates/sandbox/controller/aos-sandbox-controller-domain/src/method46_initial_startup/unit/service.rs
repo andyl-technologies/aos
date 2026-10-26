@@ -23,6 +23,12 @@ pub(super) const PROPERTIES: &[&str] = &[
     "ExitType",
     "KillMode",
     "TimeoutStopUSec",
+    "LoadCredential",
+    "LoadCredentialEncrypted",
+    "SetCredential",
+    "SetCredentialEncrypted",
+    "ImportCredential",
+    "ImportCredentialEx",
 ];
 
 pub(super) fn require_service(
@@ -32,6 +38,9 @@ pub(super) fn require_service(
     executable: &str,
     pid: u32,
 ) -> Result<(), Method46InitialStartupClosedV1> {
+    if values.len() != PROPERTIES.len() {
+        return Err(Method46InitialStartupClosedV1);
+    }
     let [
         cgroup,
         subject,
@@ -45,6 +54,7 @@ pub(super) fn require_service(
         exit_type,
         kill_mode,
         timeout,
+        ..,
     ] = values
     else {
         return Err(Method46InitialStartupClosedV1);
@@ -123,6 +133,12 @@ mod tests {
             value("cgroup"),
             value("control-group"),
             u64::MAX.into(),
+            value(Vec::<(String, String)>::new()),
+            value(Vec::<(String, String)>::new()),
+            value(Vec::<(String, Vec<u8>)>::new()),
+            value(Vec::<(String, Vec<u8>)>::new()),
+            value(Vec::<String>::new()),
+            value(Vec::<(String, String)>::new()),
         ]
     }
 
@@ -205,7 +221,7 @@ mod tests {
         values.push(false.into());
         assert!(require_service(&values, UNIT, CONTEXT, EXE, 7).is_err());
 
-        for index in 0..PROPERTIES.len() {
+        for index in 0..12 {
             let mut values = properties();
             values[index] = 1_u8.into();
             assert!(
