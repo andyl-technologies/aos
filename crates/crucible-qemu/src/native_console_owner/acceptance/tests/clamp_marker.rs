@@ -4,8 +4,9 @@
 //! the provider thread models the plugin's slot writes as production makes
 //! them. A console RUN publishes no control request, so the RUN's doorbell
 //! reaches the plugin's control callback with an odd token, which only pumps
-//! fault commands and publishes nothing. The host must keep waiting on the
-//! marker until the vCPU's own idle pass reports the RUN.
+//! fault commands and publishes nothing, and a late budget-query answer to
+//! the clamp's advance rolls back. The host must keep waiting on the marker
+//! until the vCPU's own idle pass reports the RUN.
 
 use super::*;
 
@@ -61,6 +62,9 @@ fn native_run_waits_past_the_clamp_marker_for_the_vcpu_report() -> Result<(), Fi
         // No request rides the RUN: the control callback sees an odd token
         // and, as control_callback_stage does, publishes nothing.
         assert_eq!(slot.control_boundary_token(), accepted + 1);
+        // A budget query that loaded the clamp's advance before the RUN's
+        // replaced it answers too late: the advance-bound writer rolls back.
+        assert!(!slot.publish_reached_icount_retaining_idle_for_advance(50, marker_advance)?);
         assert_eq!(slot.snapshot().publish_gen, unanswered.publish_gen);
         resumed
             .recv_timeout(Duration::from_secs(3))

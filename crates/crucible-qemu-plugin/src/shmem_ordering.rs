@@ -93,19 +93,27 @@ impl PluginShmemOrdering {
         Ok(())
     }
 
-    /// Publishes the reached icount, keeping an idle boundary already published there.
+    /// Publishes the reached icount, keeping an idle boundary already published
+    /// there, only while `advance_sequence` is still the published advance.
+    ///
+    /// Returns `false` when the host has replaced that advance; the slot and
+    /// its publication generation are then unchanged.
     ///
     /// # Errors
     ///
     /// Returns [`NodeSlotError`] when the reached icount exceeds the scheduler
     /// ceiling.
-    pub fn publish_reached_icount_retaining_idle(
+    pub fn publish_reached_icount_retaining_idle_for_advance(
         slot: &NodeSlot,
         reached_icount: u64,
-    ) -> Result<(), NodeSlotError> {
-        slot.publish_reached_icount_retaining_idle(reached_icount)?;
-        slot_writer_trace::note(slot, SlotWriter::ReachedIcountRetainingIdle);
-        Ok(())
+        advance_sequence: u64,
+    ) -> Result<bool, NodeSlotError> {
+        let published = slot
+            .publish_reached_icount_retaining_idle_for_advance(reached_icount, advance_sequence)?;
+        if published {
+            slot_writer_trace::note(slot, SlotWriter::ReachedIcountRetainingIdle);
+        }
+        Ok(published)
     }
 
     /// Publishes the reached icount together with QEMU's settlement attestation.

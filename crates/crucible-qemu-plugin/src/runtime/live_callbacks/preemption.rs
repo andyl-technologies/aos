@@ -136,7 +136,7 @@ impl LiveVcpuTimeCallbackState {
             raw_icount,
             true,
             "zero-length-advance",
-            BoundaryIcountPublication::RetainingIdle,
+            BoundaryIcountPublication::RetainingIdle(advance.sequence()),
         );
         zero_length_trace::note(
             if matches!(published, Ok(true)) {

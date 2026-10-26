@@ -945,8 +945,9 @@ enum BoundaryIcountPublication {
     /// A retirement boundary of a running node.
     Reached,
     /// A zero-length advance answer, which keeps an idle boundary published
-    /// at the same coordinate.
-    RetainingIdle,
+    /// at the same coordinate and lands only while the answered advance,
+    /// named by its publication sequence, is still the live one.
+    RetainingIdle(u64),
     /// QEMU's settlement through the sampled ceiling.
     Settled(u64),
 }
@@ -1798,11 +1799,22 @@ impl LiveVcpuTimeCallbackState {
                 "reached",
                 PluginShmemOrdering::publish_reached_icount(slot, current_icount).map(|()| None),
             ),
-            BoundaryIcountPublication::RetainingIdle => (
-                "reached",
-                PluginShmemOrdering::publish_reached_icount_retaining_idle(slot, current_icount)
-                    .map(|()| None),
-            ),
+            BoundaryIcountPublication::RetainingIdle(advance_sequence) => {
+                let published =
+                    PluginShmemOrdering::publish_reached_icount_retaining_idle_for_advance(
+                        slot,
+                        current_icount,
+                        advance_sequence,
+                    )
+                    .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+                if !published {
+                    // The host replaced the answered advance; the rolled-back
+                    // publication committed nothing.
+                    self.observe_unpublished_boundary(boundary, "advance-replaced", raw_icount);
+                    return Ok(false);
+                }
+                ("reached", Ok(None))
+            }
             BoundaryIcountPublication::Settled(settled_ceiling) => (
                 "settled",
                 PluginShmemOrdering::publish_settled_icount(slot, current_icount, settled_ceiling)

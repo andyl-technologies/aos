@@ -33,6 +33,8 @@ impl PreparedControlBoundaryRequest {
     }
 }
 
+#[path = "frame_node/advance_bound_publication.rs"]
+mod advance_bound_publication;
 #[path = "frame_node/contention_backoff.rs"]
 mod contention_backoff;
 #[path = "frame_node/control_boundary_wait.rs"]
