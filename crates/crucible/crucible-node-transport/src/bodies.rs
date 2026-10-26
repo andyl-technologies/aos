@@ -21,6 +21,7 @@ mod results;
 mod runtime_vectors;
 pub use runtime_vectors::PacketRuntimeRequest;
 pub(crate) use runtime_vectors::{
+    BODY_DIAGNOSTIC_NAMES_BYTES, RuntimeBodyDecoderCompanion, body_decoder_counter_scratch_data,
     counter_scratch_data as runtime_typed_vector_counter_scratch_data, typed_vector_storage_data,
 };
 

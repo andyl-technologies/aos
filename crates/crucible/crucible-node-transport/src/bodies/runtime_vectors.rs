@@ -10,7 +10,8 @@
 //! The same closed field and method rosters also drive an allocation-free input
 //! preflight before the defining DTO serializers run. The preflight bounds
 //! populations, eager Bytes encoding and literal recursion without admitting
-//! their later construction or replacing complete frame sizing.
+//! their later construction or replacing complete frame sizing. The closed
+//! method roster also requires concrete decoder companions for every body root.
 
 use super::*;
 use std::{collections::BTreeMap, mem::size_of};
@@ -18,6 +19,19 @@ use std::{collections::BTreeMap, mem::size_of};
 mod preflight;
 
 use preflight::Preflight;
+
+/// Names a concrete baseline root's decoder views and diagnostic literals.
+///
+/// Implementations under reference_packet reuse the defining partial graph.
+/// This interface keeps that graph private while making every method/Begin
+/// roster entry require its own real companion at compile time.
+pub(crate) trait RuntimeBodyDecoderCompanion: Sized {
+    /// Bounds the complete reachable type, field and variant name literals.
+    const DECODER_DIAGNOSTIC_NAMES_BYTES: usize;
+
+    /// Names explicit decoder controls, excluding backing and machine frames.
+    fn decoder_counter_scratch_data() -> usize;
+}
 
 // serde_core 1.0.228 caps Vec<T>'s initial reservation at this many bytes.
 // A rejected first element can leave that entire reservation live. The pinned
@@ -154,6 +168,7 @@ scalar_shapes!(
     EventStage,
     OperatingMode,
     OperationState,
+    EffectCertainty,
     Phase,
     RetirementDisposition,
     Visibility,
@@ -189,6 +204,21 @@ macro_rules! record {
         }
     };
 }
+
+record!(ErrorRecord {
+    code,
+    message,
+    effect,
+    retryable,
+    details,
+});
+
+record!(NotificationBody {
+    operation_state,
+    last_observation_sequence,
+    details,
+    extensions,
+});
 
 record!(BeginAccepted { operation_id, kind });
 
@@ -490,6 +520,19 @@ macro_rules! begin_variants {
                 counter.consume(1)
             }
         }
+
+        impl RuntimeBodyDecoderCompanion for BeginKind {
+            const DECODER_DIAGNOSTIC_NAMES_BYTES: usize = stringify!(BeginKind).len()
+                $(+ 2 * stringify!($variant).len() + 8
+                    + <$argument as RuntimeBodyDecoderCompanion>::DECODER_DIAGNOSTIC_NAMES_BYTES
+                    + <$result as RuntimeBodyDecoderCompanion>::DECODER_DIAGNOSTIC_NAMES_BYTES)+;
+
+            fn decoder_counter_scratch_data() -> usize {
+                size_of::<Self>() + size_of::<Result<Self, serde_json::Error>>()
+                    $(+ <$argument as RuntimeBodyDecoderCompanion>::decoder_counter_scratch_data()
+                      + <$result as RuntimeBodyDecoderCompanion>::decoder_counter_scratch_data())+
+            }
+        }
     };
 }
 
@@ -539,8 +582,25 @@ macro_rules! packet_requests {
         const RUNTIME: Shape = {
             let mut shape = Shape::EMPTY;
             $(shape = shape.merge(<$request>::SHAPE).merge(<$result>::SHAPE);)+
-            shape
+            shape.merge(NotificationBody::SHAPE).merge(ErrorRecord::SHAPE)
         };
+
+        /// Names all closed request/result and unsolicited-body decoder views.
+        pub(crate) fn body_decoder_counter_scratch_data() -> usize {
+            <$crate::bodies::BeginKind as RuntimeBodyDecoderCompanion>::decoder_counter_scratch_data()
+                + <NotificationBody as RuntimeBodyDecoderCompanion>::decoder_counter_scratch_data()
+                + <ErrorRecord as RuntimeBodyDecoderCompanion>::decoder_counter_scratch_data()
+                $(+ <$request as RuntimeBodyDecoderCompanion>::decoder_counter_scratch_data()
+                  + <$result as RuntimeBodyDecoderCompanion>::decoder_counter_scratch_data())+
+        }
+
+        /// Bounds diagnostic literals under the same exhaustive method roster.
+        pub(crate) const BODY_DIAGNOSTIC_NAMES_BYTES: usize =
+            <BeginKind as RuntimeBodyDecoderCompanion>::DECODER_DIAGNOSTIC_NAMES_BYTES
+                + <NotificationBody as RuntimeBodyDecoderCompanion>::DECODER_DIAGNOSTIC_NAMES_BYTES
+                + <ErrorRecord as RuntimeBodyDecoderCompanion>::DECODER_DIAGNOSTIC_NAMES_BYTES
+                $(+ <$request as RuntimeBodyDecoderCompanion>::DECODER_DIAGNOSTIC_NAMES_BYTES
+                  + <$result as RuntimeBodyDecoderCompanion>::DECODER_DIAGNOSTIC_NAMES_BYTES)+;
     };
 }
 

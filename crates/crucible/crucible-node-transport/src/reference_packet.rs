@@ -19,6 +19,7 @@ const MAXIMUM_PAYLOAD: usize = 1024;
 mod native_import18_policy;
 pub(crate) use native_import18_policy::NativeImport18PolicyData;
 
+pub(crate) mod runtime_body_storage;
 pub(crate) mod runtime_codec_storage;
 
 mod birth;

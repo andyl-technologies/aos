@@ -10,7 +10,22 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
-## Concrete codec and connection funding inputs
+## Packet runtime funding inputs
+
+The baseline body quote follows the same closed method and Begin rosters as
+serialization and typed-vector sizing. Every concrete root requires its own
+decoder companion; exhaustive field and scalar-variant witnesses bind the quote
+to the actual schemas. It names real decoder partials and wrapper controls while
+leaving the existing typed-vector backing geometry independent.
+
+Poll validation can retain three literal populations at once: the raw response
+result, its decoded typed result and the response shape decoded from the Poll
+outcome. The quote prices all three independently, including an error outcome's
+second typed string population. Validation separately prices borrowed producer
+sequence sets, Input's owned-ID set and output vector, Capture's adjacent cloned
+sort keys, cloned error codes and canonical detail-validation work. These are
+requested backing and explicit control layouts; they establish no compiler-frame
+or physical-stack bound.
 
 The closed packet runtime now has private DATA queries for its actual installed
 Controller codec, synchronous correlation maps and one containment incident.
@@ -37,14 +52,15 @@ Provider reply, including replacement-sequence growth, therefore refuses
 against today's frame ceiling before reaching codec or correlation allocation.
 Its original cached clone remains a separate actual-history funding input.
 
-Both codec configurations pass sixteen focused controls covering real tagged
+Both codec configurations pass twenty-eight focused controls covering baseline
+body ownership and validation, unchanged typed-vector geometry, real tagged
 buffers, positional Prepare and nested Commit canonicalization, dense
 correlation/incident populations, installed ownership, revocation and oversized
-legacy replies. Both complete Transport suites pass 2,288 tests with twenty
-ignored. Five-package all-feature/all-target checks, thirteen-file formatting
+legacy replies. Both complete Transport suites pass 2,292 tests with twenty
+ignored. Five-package all-feature/all-target checks, seven-file scoped formatting
 and all six architecture gates pass. Required application test-target
 compilation passes with 185 artifacts across 58 packages and 76 integration
-targets; all 768 selected frozen Rust/Cargo inputs match current and captured
+targets; all 772 selected frozen Rust/Cargo inputs match current and captured
 source. User-owned changes are preserved; this is not clean whole-PR or full
 RFC qualification. No latest-source strict lint or native inactive-lifecycle
 qualification is claimed here.
