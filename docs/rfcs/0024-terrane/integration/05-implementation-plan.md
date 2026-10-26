@@ -129,7 +129,14 @@ committed-index answers or current disclosure permission. Four actual-socket
 scenarios extend the sixteen existing selectors without changing their bounds.
 Strict SDK all-target Clippy passes with default Tokio and explicit
 `tokio,surface-sdk` profiles; Rust formatting, proof parsing and PLAN-2 pass.
-Native qualification and mandatory application-target compilation are required;
+Native transport qualification at `a5f1f3d5b7` passes in 178.735 seconds.
+Complete independent review matches all 8,268 immutable source files, 5,493
+crate inputs, the retained Cargo integration-test executable and all twenty
+actual socket cases. Both missing derivations execute on the isolated AOS
+builder with host builds disabled. The fresh nonce-bound capability-free ext4
+sandbox proof, imported outputs and clean shutdown pass review; temporary
+controller disks are removed. Required application-target compilation is running
+at the subsequent fixture correction, `513ed9e29a`, which includes this client.
 T-PROTO-1, the production service backend and remote store remain open.
 
 The native Distribution client now receives bounded `Has` membership hints.
