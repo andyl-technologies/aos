@@ -91,6 +91,42 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The corrected Ref service batch at `5e93bbf1f2` passes in 360.089 seconds
+in the AOS native builder: all nine service cases, 35 distribution socket cases
+and 22 portable wire cases pass under their original thirty-second limits.
+Independent review matches all 8,286 immutable source files and 5,507 bound
+crate inputs, the actual Cargo artifacts and retained service/socket executable
+hashes. A fresh nonce proves UID 1000 and guest build UID 30001, zero effective
+capabilities, ext4 build/temp/output filesystems and the AOS 7.2.3 kernel.
+Exactly four derivations execute remotely with host jobs disabled. The controller
+stops cleanly, removes its temporary disks, and its seven raw records are
+preserved before owned scratch cleanup. Earlier failed batches remain failed.
+This qualifies the local read service and its stream controls at that revision;
+it does not qualify the later direct-file extension or accept a complete task.
+
+Direct immutable tree reads have the same stale startup Original-context
+inventory as current ref reads after another local writer publishes. Their
+native factory now uses the shared operation-local protected-record refresher.
+The existing physical binding, native baseline/association checks, selected
+publication and signed-history verification, and closing inputs remain required.
+The shared refresher's behavior is unchanged apart from its module location.
+
+A tenth native case keeps an independently opened reader through an actual
+writer publication. It requires the new commit's exact file bytes, the updated
+whole head and unchanged historical bytes from the preceding immutable commit
+using a Read-only token. All nine existing selectors retain their order and
+thirty-second limits. Both native SDK profiles pass strict all-target Clippy;
+portable compilation, SDK formatting and PLAN-2 pass. Actual direct-file
+execution and required application compilation remain pending; no task is
+accepted by these compile checks.
+
+Required application-target compilation at the initial local Ref service
+revision `b4da3201d2` passes in 1,480.399 seconds. Independent review matches
+all 8,284 immutable source files and 190 test-executable records across 59
+packages. This is compilation only, without retained executable bytes. Its
+recorded native runtime failure remains a failure; this compilation does not
+qualify the later context refresh, stream assertions or direct-file changes.
+
 The corrected current-read AOS batch at `3f05115d6d` fails in 307.015
 seconds. Both deterministic stream controls and the original publication-change
 point read execute successfully, providing measured evidence for the native

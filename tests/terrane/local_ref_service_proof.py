@@ -19,6 +19,7 @@ CASES = [
     "response_budgets_refuse_whole_results_at_exact_boundaries",
     "missing_authentication_and_unavailable_mutations_preserve_the_head",
     "identity_expiring_after_middleware_dispatch_cannot_reach_repository_data",
+    "independent_native_reader_observes_later_commits_and_preserves_history",
 ]
 
 
@@ -26,7 +27,7 @@ if __name__ == "__main__":
     run_sdk_contract(
         "local_ref_service", CASES,
         "Actual local repository reads through authenticated native sockets, "
-        "current signed ACLs and canonical ref records; "
+        "current signed ACLs, canonical ref records and direct reads after publication; "
         "no CAS, resumable watch, remote/cache freshness or deployment claim",
     )
     output = Path(os.environ["out"])

@@ -1,9 +1,9 @@
-//! Rebinds new local Original records within an actual current read's exclusions.
+//! Rebinds new local Original records within actual current or direct read exclusions.
 //!
 //! A reader's startup context inventory is incomplete after another writer
 //! publishes. Protected records are inputs to the existing native binders, never
 //! authority by themselves. Newly checked contexts stay local to this operation;
-//! complete signed history, selected publication and current ACL checks follow.
+//! complete signed history, selected publication and the owning request checks follow.
 
 use std::collections::BTreeMap;
 
@@ -42,7 +42,7 @@ where
         .fs()
         .read_dir(authority.control())
         .await
-        .map_err(super::super::super::io_failure)?;
+        .map_err(super::super::io_failure)?;
     for path in paths {
         let name = path
             .file_name()

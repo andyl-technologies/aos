@@ -4,8 +4,6 @@
 //! Only immutable DATA is shared within that invocation; actor authorization
 //! remains the enclosing Guard's fresh decision after complete physical closing.
 
-mod contexts;
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -205,7 +203,7 @@ where
             // Other genuine writers can retain new local baselines and commit
             // associations after this reader opened. Rebind their actual protected
             // records inside this operation's real exclusions before walking history.
-            let refreshed = contexts::refresh_local(
+            let refreshed = super::local_contexts::refresh_local(
                 &concrete,
                 &guard,
                 &authority,

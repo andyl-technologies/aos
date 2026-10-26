@@ -193,6 +193,18 @@ where
                     return Err(invalid());
                 }
             }
+            // Direct immutable reads can name a genuine local commit retained
+            // by another writer since this reader opened. Rebind those records
+            // within this invocation's actual exclusions before walking history.
+            let refreshed = super::local_contexts::refresh_local(
+                &concrete,
+                &guard,
+                &authority,
+                &proof,
+                &mut exclusion,
+                &mut named,
+            )
+            .await?;
             // Every reached history view already requires an installed opaque
             // Original context. Capture those contexts' real records before
             // installing a retained read scope; this grants no history or ACL.
@@ -267,7 +279,7 @@ where
                 .retain_named(&named.into_iter().collect::<Vec<_>>())
                 .await?;
             reader_guard.retain_original_controls(&late)?;
-            let controls = [early, late];
+            let controls = [refreshed, early, late];
             let original_reads = [snapshot_read];
             let checked = CheckedDirectHistoryInputs::close(
                 source.fs(),

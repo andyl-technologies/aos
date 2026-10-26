@@ -747,3 +747,46 @@ async fn identity_expiring_after_middleware_dispatch_cannot_reach_repository_dat
     assert_eq!(error.code, ErrorCode::Unauthenticated);
     running.stop().await
 }
+
+#[tokio::test]
+async fn independent_native_reader_observes_later_commits_and_preserves_history() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let first = fixture.commit_bytes(OLD).await?;
+    let observer = reader(&fixture).await?;
+    let token = attenuated(
+        &fixture,
+        Attenuation {
+            grants: Some(vec![Grant::new(MAIN.into(), Verbs::new(1)?)?]),
+            caveats: vec![Caveat::Surface("sdk".into())],
+            ..Default::default()
+        },
+    )?;
+
+    let initial = observer
+        .read_file(&fixture::fixed(first), b"file", &token, "sdk")
+        .await?;
+    assert_eq!(initial, (first, OLD.to_vec()));
+
+    let second = fixture.commit_bytes(NEW).await?;
+    assert_ne!(first, second);
+    let updated = observer
+        .read_file(&fixture::fixed(second), b"file", &token, "sdk")
+        .await?;
+
+    assert_eq!(updated, (second, NEW.to_vec()));
+    assert_eq!(
+        observer
+            .ref_head(MAIN, &token, "sdk")
+            .await?
+            .ok_or("missing actual updated head")?
+            .commit,
+        second
+    );
+    assert_eq!(
+        observer
+            .read_file(&fixture::fixed(first), b"file", &token, "sdk")
+            .await?,
+        (first, OLD.to_vec())
+    );
+    Ok(())
+}
