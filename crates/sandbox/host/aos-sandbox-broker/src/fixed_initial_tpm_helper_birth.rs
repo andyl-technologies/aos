@@ -10,9 +10,10 @@
 //!
 //! The handoff sends public HELLO and validates the retained child ACK. It
 //! receives no credential path or exported key. A private Source borrow sends
-//! AUTH only after the actual child ACK; no TPM request is issued here.
-//! Child identity and MAC comparisons are prerequisites for a future private
-//! carrier, not Source, approval, NV or checkpoint authority.
+//! AUTH only after the actual child ACK. The same carrier then bounds an initial
+//! Read, at most one Extend and a final Read, retaining native replies before
+//! admission. Decoded projections are DATA; Security owns approval, public-area
+//! interpretation and checkpoint authority.
 
 use std::os::fd::OwnedFd;
 use std::time::Duration;

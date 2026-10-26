@@ -14,7 +14,9 @@ use rustix::event::PollFlags;
 use zeroize::Zeroizing;
 
 mod auth;
+mod nv;
 use auth::InitialHelperAuthOriginalV1;
+use nv::InitialHelperNvOriginalV1;
 
 use super::*;
 use crate::bounded_entropy::RetainedKernelNonceOriginalV1;
@@ -38,6 +40,14 @@ enum Phase {
     AuthReady,
     Authenticating,
     Authenticated,
+    NvPreparing,
+    NvPrepared,
+    NvSendReady,
+    NvSending,
+    NvSent,
+    NvReceiveReady,
+    NvReceiving,
+    NvObserved,
 }
 
 enum ChildPostV1 {
@@ -45,11 +55,15 @@ enum ChildPostV1 {
     AfterAck,
     BeforeAuth,
     AfterAuth,
+    NvBeforeSend(usize),
+    NvAfterSend(usize),
+    NvAfterReceive(usize),
 }
 
 pub(super) struct InitialHelperHandoffOriginalV1 {
     phase: Phase,
     auth: InitialHelperAuthOriginalV1,
+    nv: InitialHelperNvOriginalV1,
     entropy: [RetainedKernelNonceOriginalV1; 2],
     nonce: Option<[u8; 32]>,
     hello: Option<Result<Zeroizing<[u8; HELLO_BYTES]>, TpmHelperFrameErrorV2>>,
@@ -60,8 +74,7 @@ pub(super) struct InitialHelperHandoffOriginalV1 {
     received: Option<Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1>>,
     clocks: [Option<Timespec>; 5],
     proc_posts: [PidFdProcOriginalsV1; 4],
-    subject_info: [Option<Result<PidFdInfo, LinuxError>>; 2],
-    subject_alive: Option<Result<bool, LinuxError>>,
+    subject: HelperRecordSubjectOriginalV1,
     ack: Option<Result<(), TpmHelperFrameErrorV2>>,
 }
 
@@ -70,6 +83,7 @@ impl InitialHelperHandoffOriginalV1 {
         Self {
             phase: Phase::Fresh,
             auth: InitialHelperAuthOriginalV1::new(),
+            nv: InitialHelperNvOriginalV1::new(),
             entropy: std::array::from_fn(|_| RetainedKernelNonceOriginalV1::new()),
             nonce: None,
             hello: None,
@@ -80,8 +94,7 @@ impl InitialHelperHandoffOriginalV1 {
             received: None,
             clocks: [None; 5],
             proc_posts: std::array::from_fn(|_| PidFdProcOriginalsV1::new()),
-            subject_info: std::array::from_fn(|_| None),
-            subject_alive: None,
+            subject: HelperRecordSubjectOriginalV1::new(),
             ack: None,
         }
     }
@@ -92,7 +105,8 @@ impl InitialHelperHandoffOriginalV1 {
         receive
             .checked_add(PidFdProcOriginalsV1::receiving_bytes_v1()?.checked_mul(4)?)?
             .checked_add(8192)?
-            .checked_add(InitialHelperAuthOriginalV1::receiving_bytes_v1()?)
+            .checked_add(InitialHelperAuthOriginalV1::receiving_bytes_v1()?)?
+            .checked_add(InitialHelperNvOriginalV1::receiving_bytes_v1()?)
     }
 
     pub(super) fn receiving_files_v1() -> Option<usize> {
@@ -100,7 +114,8 @@ impl InitialHelperHandoffOriginalV1 {
         // installs the two borrowed lock descriptions in the actual child.
         SeqpacketSocket::closed_zero_rights_receive_obligations_v1(LOCK_ACK_BYTES)?
             .1
-            .checked_add(2)
+            .checked_add(2)?
+            .checked_add(InitialHelperNvOriginalV1::receiving_files_v1()?)
     }
 
     pub(super) fn traffic_bytes_v1() -> Option<usize> {
@@ -113,7 +128,8 @@ impl InitialHelperHandoffOriginalV1 {
             .checked_add(9 * 32)?
             .checked_add(HELLO_BYTES)?
             .checked_add(LOCK_ACK_BYTES.checked_mul(2)?)?
-            .checked_add(InitialHelperAuthOriginalV1::traffic_bytes_v1()?)
+            .checked_add(InitialHelperAuthOriginalV1::traffic_bytes_v1()?)?
+            .checked_add(InitialHelperNvOriginalV1::traffic_bytes_v1()?)
     }
 
     fn sample(&mut self, index: usize, cut: FixedProcessBoottimeCutV1) -> bool {
@@ -121,6 +137,47 @@ impl InitialHelperHandoffOriginalV1 {
         self.clocks[index]
             .and_then(nanoseconds)
             .is_some_and(|now| now < cut.exclusive_nanoseconds())
+    }
+}
+
+struct HelperRecordSubjectOriginalV1 {
+    entered: bool,
+    info: [Option<Result<PidFdInfo, LinuxError>>; 2],
+    alive: Option<Result<bool, LinuxError>>,
+}
+
+impl HelperRecordSubjectOriginalV1 {
+    fn new() -> Self {
+        Self {
+            entered: false,
+            info: std::array::from_fn(|_| None),
+            alive: None,
+        }
+    }
+
+    fn observe_once(
+        &mut self,
+        record: &ReceivedRecord,
+        child: &aos_linux_descriptors::pidfd::PidFd,
+        expected_pid: u32,
+    ) -> Result<(), InitialTpmHelperBirthClosedV1> {
+        if std::mem::replace(&mut self.entered, true) {
+            return Err(InitialTpmHelperBirthClosedV1);
+        }
+        let subject = record.subject();
+        let credentials = subject.credentials();
+        self.info[0] = Some(subject.pidfd().info());
+        self.info[1] = Some(child.info());
+        self.alive = Some(subject.is_alive());
+        if credentials.pid().get() != expected_pid
+            || credentials.uid() != 0
+            || credentials.gid() != 0
+            || !matches!((&self.info[0], &self.info[1]), (Some(Ok(a)), Some(Ok(b))) if a == b)
+            || !matches!(self.alive, Some(Ok(true)))
+        {
+            return Err(InitialTpmHelperBirthClosedV1);
+        }
+        Ok(())
     }
 }
 
@@ -312,19 +369,11 @@ impl InitialTpmHelperDrivingLoanV1<'_> {
                 .driving
                 .original_child()
                 .ok_or(InitialTpmHelperBirthClosedV1)?;
-            let subject = record.subject();
-            let credentials = subject.credentials();
-            self.handoff.subject_info[0] = Some(subject.pidfd().info());
-            self.handoff.subject_info[1] = Some(child.info());
-            self.handoff.subject_alive = Some(subject.is_alive());
-            if credentials.pid().get() != self.identity.ok_or(InitialTpmHelperBirthClosedV1)?.pid()
-                || credentials.uid() != 0
-                || credentials.gid() != 0
-                || !matches!((&self.handoff.subject_info[0], &self.handoff.subject_info[1]), (Some(Ok(a)), Some(Ok(b))) if a == b)
-                || !matches!(self.handoff.subject_alive, Some(Ok(true)))
-            {
-                return Err(InitialTpmHelperBirthClosedV1);
-            }
+            self.handoff.subject.observe_once(
+                record,
+                child,
+                self.identity.ok_or(InitialTpmHelperBirthClosedV1)?.pid(),
+            )?;
             self.handoff.ack = Some(require_lock_ack_v2(
                 record.payload(),
                 self.handoff.nonce.ok_or(InitialTpmHelperBirthClosedV1)?,
@@ -351,11 +400,16 @@ impl InitialTpmHelperDrivingLoanV1<'_> {
     }
 
     fn observe_child(&mut self, phase: ChildPostV1) -> Result<(), InitialTpmHelperBirthClosedV1> {
-        let (originals, offset) = match phase {
+        let (originals, offset): (&mut [PidFdProcOriginalsV1], usize) = match phase {
             ChildPostV1::BeforeHello => (&mut self.handoff.proc_posts, 0),
             ChildPostV1::AfterAck => (&mut self.handoff.proc_posts, 2),
             ChildPostV1::BeforeAuth => (&mut self.handoff.auth.child_posts, 0),
             ChildPostV1::AfterAuth => (&mut self.handoff.auth.child_posts, 2),
+            ChildPostV1::NvBeforeSend(index) => (&mut self.handoff.nv.slots[index].child_posts, 0),
+            ChildPostV1::NvAfterSend(index) => (&mut self.handoff.nv.slots[index].child_posts, 2),
+            ChildPostV1::NvAfterReceive(index) => {
+                (&mut self.handoff.nv.slots[index].child_posts, 4)
+            }
         };
         let (child, _) = self
             .driving
@@ -403,4 +457,71 @@ fn nanoseconds(sample: Timespec) -> Option<u64> {
                 .ok()
                 .filter(|nanos| *nanos < 1_000_000_000)?,
         )
+}
+
+#[cfg(test)]
+mod subject_tests {
+    use super::*;
+    use aos_linux_descriptors::pidfd::PidFd;
+    use std::num::NonZeroU32;
+
+    #[test]
+    fn foreign_pid_refusal_retains_actual_record_and_pidfd_observations() {
+        // This tests only the shared native subject comparison. Neither a
+        // measured helper nor Source/approval authority is constructed.
+        let (mut receiver, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(endpoint).unwrap();
+        let pid = std::process::id();
+        let held = PidFd::open(NonZeroU32::new(pid).unwrap()).unwrap();
+        sender.send(b"subject comparison").unwrap();
+        let record = receiver.receive(32).unwrap();
+        let mut original = HelperRecordSubjectOriginalV1::new();
+
+        assert!(
+            original
+                .observe_once(&record, &held, pid.checked_add(1).unwrap())
+                .is_err()
+        );
+
+        let observed = *original.info[0].as_ref().unwrap().as_ref().unwrap();
+        let held_info = *original.info[1].as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(observed, held_info);
+        assert_eq!(observed.pid(), pid);
+        assert!(matches!(original.alive, Some(Ok(true))));
+        assert_eq!(record.payload(), b"subject comparison");
+
+        assert!(original.observe_once(&record, &held, pid).is_err());
+
+        assert_eq!(
+            original.info[0].as_ref().unwrap().as_ref().unwrap(),
+            &observed
+        );
+        assert_eq!(
+            original.info[1].as_ref().unwrap().as_ref().unwrap(),
+            &held_info
+        );
+        assert!(matches!(original.alive, Some(Ok(true))));
+    }
+
+    #[test]
+    fn native_subject_comparison_requires_actual_root_credentials() {
+        let (mut receiver, endpoint) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let mut sender = SeqpacketSocket::from_owned(endpoint).unwrap();
+        let pid = std::process::id();
+        let held = PidFd::open(NonZeroU32::new(pid).unwrap()).unwrap();
+        sender.send(b"root subject comparison").unwrap();
+        let record = receiver.receive(32).unwrap();
+        let credentials = record.subject().credentials();
+        let expected = credentials.uid() == 0 && credentials.gid() == 0;
+        let mut original = HelperRecordSubjectOriginalV1::new();
+
+        assert_eq!(original.observe_once(&record, &held, pid).is_ok(), expected);
+
+        assert!(original.entered);
+        assert!(matches!(original.alive, Some(Ok(true))));
+        assert_eq!(
+            original.info[0].as_ref().unwrap().as_ref().unwrap(),
+            original.info[1].as_ref().unwrap().as_ref().unwrap()
+        );
+    }
 }

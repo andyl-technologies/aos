@@ -14,6 +14,8 @@ use aos_sandbox_broker::fixed_initial_tpm_helper_birth::{
     InitialTpmHelperDrivingLoanV1,
 };
 
+mod nv;
+
 use super::*;
 
 /// Borrows the same Source's funded fixed initial helper and native reservoir.
@@ -29,8 +31,8 @@ pub struct Method46InitialTpmHelperBirthLoanV1<'owner> {
 
 /// Keeps the real Source and child borrowed across the native birth checks.
 ///
-/// This supplies the fixed lock handoff, but no private-auth destination, TPM
-/// operation or approval claim.
+/// This supplies the fixed lock handoff and finite NV exchanges as DATA, with
+/// no private-auth destination or approval claim.
 /// Dropping the loan stops automatic progress and signals the retained child.
 #[must_use = "retain this same child borrow through its purpose disposition"]
 pub struct Method46InitialTpmHelperDrivingLoanV1<'owner> {

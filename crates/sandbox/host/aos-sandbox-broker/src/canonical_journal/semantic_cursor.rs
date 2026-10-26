@@ -953,7 +953,10 @@ mod tests {
 
     #[test]
     fn ordinary_cursor_moves_the_actual_native_read_error() {
-        let file = File::open(std::env::temp_dir()).unwrap();
+        // An unrelated writer can change the shared temporary directory's
+        // length between metadata samples and mask the intended EISDIR error.
+        let directory = tempfile::tempdir().unwrap();
+        let file = File::open(directory.path()).unwrap();
         let length = file.metadata().unwrap().len();
         let mut ordinary = CanonicalReplayOriginalV1::new();
         let mut cursor = ordinary.begin_ordinary_semantic_cursor_once(

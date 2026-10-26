@@ -31,6 +31,26 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The same Source-held, authenticated helper now has bounded native mechanics
+  for initial Read, at most one Extend and final Read. Three prepaid reservoirs
+  retain the actual request, send/socket/held-child posts, zero-rights reply,
+  root credentials, both pidfd observations, liveness, held proc observations,
+  correlated decode and finite-clock samples. ACK and all replies share one
+  native subject-comparison recipe. Source currentness separates each wait
+  from its next effect and is independently observed after failed native IO.
+  Only comparison DATA leaves the same driving loan; Security still owns
+  resident approval, public-area/Name validation and the initial target decision.
+  Non-test online Security compilation, 429 Broker and 125 focused Source tests
+  pass, including two real native record/pidfd regressions. The ordinary and
+  online Security suites are running. One existing EISDIR fixture now uses a
+  private temporary directory so concurrent host writes cannot mask its native
+  read error. Full application compilation is running on the audited 71-source
+  snapshot and both deleted-module absences; its 833-derivation closure excludes
+  production policy. This supplies no installed positive Source/helper/NV
+  qualification. Security's complete approved workflow, original cleanup/drain,
+  canonical checkpoint and installed lifecycle/recovery remain open. Admission
+  stays closed.
+
 - The shared C TPM reader now admits the exact authenticated Defined public
   area for the two fixed initial profiles and their matching indices. It
   reports zero comparison DATA without attempting an unreadable NV value or
@@ -80,7 +100,7 @@ Recent committed startup fixes close narrower prerequisites:
   All nine affected native descriptor/readiness/approval cases, 427 Broker,
   125 focused Source, 428 ordinary Security and 437 online-Nix Security tests
   pass. One Broker case and two cases in each Security suite remain ignored.
-  Full application compilation is running on the audited corrected snapshot,
+  Full application compilation passes on the audited corrected snapshot,
   with 66 changed Rust hashes and both deleted modules checked; its
   833-derivation closure excludes production policy. This does not qualify an installed positive
   Source or confined helper exchange. Private-auth transfer, Security's full
@@ -104,7 +124,7 @@ Recent committed startup fixes close narrower prerequisites:
   after rederiving the same verified approval, completed durable intent and
   actual lock custody; refusal releases its temporary helper borrow before
   independent native posts. One Broker case and two cases in each Security
-  suite remain ignored. Full application target compilation is running on that
+  suite remain ignored. Full application target compilation passes on that
   pre-handoff snapshot: its
   833-derivation closure excludes production policy and matches all 62 changed
   Rust sources plus both deleted-module absences. The retirement regression now
