@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn inert_row() -> Result<OriginalImport18CaptureBankConstructionData, RuntimeError> {
+pub(super) fn inert_row() -> Result<OriginalImport18CaptureBankConstructionData, RuntimeError> {
     let protocol =
         ProtocolSnapshotReservation::owned11_retained_reservation_construction_data(128, 256, 2, 7)
             .map_err(|_| RuntimeError::ResourceLimit)?;

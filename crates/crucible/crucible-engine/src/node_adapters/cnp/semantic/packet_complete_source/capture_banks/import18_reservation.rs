@@ -5,7 +5,11 @@
 //! partial Some slots are custody, never completion, a ticket or native credit.
 
 use super::*;
+
+#[path = "import18_reservation/metadata.rs"]
+mod metadata;
 use crate::node_contract::RuntimeError;
+pub(super) use metadata::capacity_counter_scratch_data;
 use std::{
     cell::{BorrowError, Ref, RefCell},
     mem::size_of,

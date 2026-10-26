@@ -18,7 +18,12 @@ use std::{
 };
 
 impl PacketCompleteCaptureBanks {
-    fn record_capacity_data(
+    /// Records every present bank through its defining capacity walk.
+    ///
+    /// # Errors
+    /// Refuses foreign SDK origins, invalid layouts, exhausted selected rows or
+    /// unavailable physical backing, preserving every earlier recorded prefix.
+    pub(super) fn record_capacity_data(
         &self,
         census: &mut OriginalOwnerCapacityMetadataData<'_>,
     ) -> Result<(), RuntimeError> {
@@ -97,7 +102,9 @@ impl PacketCompleteCaptureBanks {
 impl PacketCompleteSemanticSource {
     /// Reports every actual retained capture-bank capacity and optional rows.
     ///
-    /// Partial, failed and independently coexisting slots keep their backing.
+    /// The original Import18 reservation Box and its partial banks remain
+    /// independent of banks already published in the Source. Partial, failed
+    /// and independently coexisting slots keep their backing.
     /// These facts establish no completed capture, valid owner association or
     /// whole-Source traversal-work bound. Callers first admit the physical bank
     /// and [`Self::original_complete_capture_banks_capacity_counter_scratch_data`].
@@ -111,12 +118,20 @@ impl PacketCompleteSemanticSource {
         bank: Option<&mut PacketRuntimeMetadataRecordBank>,
     ) -> Result<RetainedProtocolMetadataFacts, RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
+        // Acquire both holders before lending any physical rows to a child walk.
+        let reservation = self
+            .native_import18_bank_reservation
+            .try_borrow()
+            .map_err(|_| RuntimeError::OwnerBusy)?;
         let slot = self
             .capture_banks
             .try_borrow()
             .map_err(|_| RuntimeError::OwnerBusy)?;
         let maximum = bank.as_ref().map_or(usize::MAX, |bank| bank.maximum_rows());
         let mut census = OriginalOwnerCapacityMetadataData::new(maximum, bank);
+        if let Some(owner) = reservation.as_ref() {
+            owner.record_boxed_capacity_data(&mut census)?;
+        }
         if let Some(banks) = slot.as_ref() {
             banks.record_capacity_data(&mut census)?;
         }
@@ -132,6 +147,7 @@ impl PacketCompleteSemanticSource {
         type NativeObjects = std::slice::Iter<'static, Option<InputPayload>>;
 
         OriginalOwnerCapacityMetadataData::counter_scratch_data()
+            + super::import18_reservation::capacity_counter_scratch_data()
             + size_of::<std::iter::Flatten<BankSlots>>()
             + size_of::<std::iter::Flatten<ObjectSlots>>()
             + size_of::<std::iter::Flatten<NativeBanks>>()

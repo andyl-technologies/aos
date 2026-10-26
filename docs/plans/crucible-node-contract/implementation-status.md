@@ -171,6 +171,19 @@ busy/foreign custody. They establish capacity DATA without constructing genuine
 native completion or one-use Source authority. All eight existing execution
 reservation controls also pass with the updated constructor observation demand.
 
+The capture-bank capacity query now includes the original Import18 reservation
+Box and its partial banks alongside independently published Source banks. The
+closed reservation roster keeps its Copy construction row and attempt flags
+inline; its non-owning Source pointer never enters capacity rows. Both Source
+holders are borrowed before any physical bank is lent to a child. Empty, failed
+and unsupported partial states retain every actual allocation without satisfying
+construction or publication gates. Six controls cover the three declarations,
+actual reservation refusal, independent coexisting banks, exact/short byte credit,
+refused prefixes, repeated Box views and busy/foreign custody. Their deliberately
+inert failed rows establish storage DATA only; genuine Import18 publication and
+one-use Source authority remain separate qualification obligations. The four
+existing reservation constructor controls and legacy byte gates still pass.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its twelve
@@ -180,15 +193,16 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 68 Engine census/installation/holder/startup
-controls and eight execution reservation controls. Complete Engine suites pass
-2,139 tests each with thirty-four ignored, using matching source-built installed
-packet fixtures. Previously qualified Transport suites pass 2,328 tests and 128
-focused controls each, with twenty ignored; all 2,015 SDK Rust/Cargo inputs match
+Both codec configurations pass 74 Engine census/installation/holder/startup
+controls, eight execution reservation controls and four Import18 bank constructor
+controls. Complete Engine suites pass 2,145 tests each with thirty-four ignored,
+using matching source-built installed packet fixtures. Previously qualified
+Transport suites pass 2,328 tests and 128 focused controls each, with twenty
+ignored; all 2,015 SDK Rust/Cargo inputs match
 the previously qualified captured source. Five-package all-feature/all-target
 checks, five-file scoped Rust formatting, all six architecture gates and the RFC
 requirement-map gate pass. Required application test-target compilation passes
-with 185 artifacts across 58 packages and 76 integration targets; all 4,896
+with 185 artifacts across 58 packages and 76 integration targets; all 4,898
 selected frozen Rust/Cargo inputs match current and captured source. User-owned
 changes are preserved. These are component results; the requirement map records
 planning coverage, and no latest-source strict lint or native lifecycle result
