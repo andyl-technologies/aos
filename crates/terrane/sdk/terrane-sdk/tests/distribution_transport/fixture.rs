@@ -22,6 +22,8 @@ pub(super) struct Services {
     pub(super) tokens: std::sync::Mutex<Vec<Vec<u8>>>,
     pub(super) has_bitmap: Option<Vec<u8>>,
     pub(super) has_delay: std::time::Duration,
+    pub(super) negotiation_response: Option<v1::NegotiateResponse>,
+    pub(super) negotiation_delay: std::time::Duration,
 }
 
 fn unsupported() -> connectrpc::ConnectError {
@@ -55,7 +57,6 @@ macro_rules! unavailable_stream {
 // The fixture intentionally exposes concrete messages for opaque generated responses.
 #[allow(refining_impl_trait)]
 impl ContentService for Services {
-    unavailable_unary!(negotiate, v1::NegotiateRequest, v1::NegotiateResponse);
     unavailable_unary!(
         presign_read,
         v1::PresignReadRequest,
@@ -64,6 +65,38 @@ impl ContentService for Services {
     unavailable_stream!(get_bundle, v1::GetBundleRequest, v1::BundleFrame);
     unavailable_stream!(get_filter, v1::GetFilterRequest, v1::FilterShard);
     unavailable_stream!(get_index, v1::GetIndexRequest, v1::IndexShard);
+
+    async fn negotiate(
+        &self,
+        _context: RequestContext,
+        request: ServiceRequest<'_, v1::NegotiateRequest>,
+    ) -> ServiceResult<v1::NegotiateResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if !self.negotiation_delay.is_zero() {
+            tokio::time::sleep(self.negotiation_delay).await;
+        }
+        if let Some(response) = &self.negotiation_response {
+            return Ok(Response::new(response.clone()));
+        }
+
+        let request = request.to_owned_message();
+        let mut missing_bitmap = vec![0; request.hashes.len().div_ceil(8)];
+        for (position, hash) in request.hashes.iter().enumerate() {
+            if hash.value != [7; 32] {
+                missing_bitmap[position / 8] |= 1 << (position % 8);
+            }
+        }
+        Ok(Response::new(v1::NegotiateResponse {
+            known_commits: request
+                .have_commits
+                .into_iter()
+                .filter(|hash| hash.value == [7; 32])
+                .collect(),
+            missing_nodes: request.roots,
+            missing_bitmap,
+            ..Default::default()
+        }))
+    }
 
     async fn has(
         &self,

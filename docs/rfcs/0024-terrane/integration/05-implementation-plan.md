@@ -91,6 +91,21 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-25)
 
+The native Distribution client now receives bounded `Negotiate` hints across
+any combination of ancestry, tree roots and hashes. It checks hash widths and
+local ancestry/root budgets before connecting, rejects more than 4,096 hash
+entries, requires known commits to come from the offered ancestry, bounds the
+received frontier and requires exact missing-bitmap coverage. Missing bits retain
+request order and duplicates; unused tail bits remain ignored. Empty input makes
+no connection. The absolute deadline includes complete reception and final
+validation. These are remote hints, not proof of correct graph comparison,
+committed-index answers or current disclosure permission. Four actual-socket
+scenarios extend the sixteen existing selectors without changing their bounds.
+Strict SDK all-target Clippy passes with default Tokio and explicit
+`tokio,surface-sdk` profiles; Rust formatting, proof parsing and PLAN-2 pass.
+Native qualification and mandatory application-target compilation are required;
+T-PROTO-1, the production service backend and remote store remain open.
+
 The native Distribution client now receives bounded `Has` membership hints.
 It rejects more than 4,096 digests and invalid call bounds before connecting,
 handles empty input without network I/O, preserves request order and duplicates,

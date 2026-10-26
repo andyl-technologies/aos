@@ -30,6 +30,9 @@ pub mod range;
 /// Receives bounded request-order membership hints from the remote peer.
 pub mod presence;
 
+/// Receives bounded ancestry, frontier and request-order missing-content hints.
+pub mod negotiation;
+
 /// Reads a complete bounded bundle through the generated native RPC client.
 ///
 /// `options` must explicitly set positive message and element-memory limits and

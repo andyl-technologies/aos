@@ -28,6 +28,10 @@ CASES = [
     "presence::refuses_missing_or_extra_bitmap_bytes_without_partial_hints",
     "presence::ignores_unused_bits_but_preserves_each_requested_bit",
     "presence::retains_transport_bounds_and_whole_call_deadline",
+    "negotiation::combines_all_stages_and_preserves_maximum_request_order",
+    "negotiation::empty_and_invalid_inputs_never_connect",
+    "negotiation::refuses_unsolicited_and_malformed_hints_without_partial_results",
+    "negotiation::retains_transport_bounds_deadlines_and_unused_tail_bits",
 ]
 
 
@@ -99,7 +103,7 @@ def main():
     (output / "source-review.json").write_text(json.dumps({
         "source": str(source), "input_sha256": inputs, "artifact": artifact, "executable_sha256": digest,
         "retained_executable": str(retained),
-        "executed_cases": CASES, "scope": "Native HTTP/TLS binding, optional capability-header authentication and bounded membership reception over real sockets; no repository authorization or durability claim",
+        "executed_cases": CASES, "scope": "Native HTTP/TLS binding, optional capability-header authentication and bounded membership/negotiation reception over real sockets; no repository authorization or durability claim",
     }, indent=2) + "\n")
 
 

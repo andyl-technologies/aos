@@ -13,6 +13,9 @@ mod authentication;
 #[path = "distribution_transport/presence.rs"]
 mod presence;
 
+#[path = "distribution_transport/negotiation.rs"]
+mod negotiation;
+
 use buffa::Message;
 use fixture::{Services, limits};
 use std::{
