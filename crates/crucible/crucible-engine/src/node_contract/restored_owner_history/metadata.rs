@@ -14,7 +14,10 @@ use crucible_node_transport::{
         records::{MetadataCapacityRecord, MetadataRecordKind, PacketRuntimeMetadataRecordBank},
     },
 };
-use std::mem::size_of;
+use std::{
+    mem::{align_of, size_of},
+    rc::Weak,
+};
 
 /// Observes original capacities while optionally retaining their physical rows.
 pub(crate) struct OriginalOwnerCapacityMetadataData<'a> {
@@ -46,6 +49,33 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
         owner: &T,
     ) -> Result<(), RuntimeError> {
         owner.capacities(0, &mut |row| self.record(packet_row_data(row)?))
+    }
+
+    /// Records the actual allocation shell retained by one original weak view.
+    ///
+    /// Empty Weak values retain no allocation. An expired original Weak still
+    /// retains its compiled payload slot and shared header, even after payload
+    /// destruction. This capacity-only walk never upgrades or dereferences the
+    /// weak view. Nested payload owners remain separate; repeated views receive
+    /// no alias discount and no pointer enters the physical rows.
+    ///
+    /// # Errors
+    /// Refuses checked geometry overflow, selected-row exhaustion or unready
+    /// physical backing. Earlier rows and the original weak owner stay retained.
+    pub(crate) fn observe_weak_allocation_data<T>(
+        &mut self,
+        owner: &Weak<T>,
+    ) -> Result<(), RuntimeError> {
+        if Weak::ptr_eq(owner, &Weak::new()) {
+            return Ok(());
+        }
+
+        self.record(MetadataCapacityRecord {
+            kind: MetadataRecordKind::Shared,
+            extent: size_of::<T>(),
+            element_bytes: 1,
+            alignment: align_of::<T>(),
+        })
     }
 
     /// Includes a typed enclosing allocation omitted from its payload's walk.
@@ -114,6 +144,8 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
     pub(crate) const fn counter_scratch_data() -> usize {
         size_of::<Self>()
             + size_of::<&mut Self>()
+            + size_of::<Weak<()>>()
+            + size_of::<&Weak<()>>()
             + size_of::<OriginalRestoredOwnerCapacityRow>()
             + size_of::<MetadataCapacityRecord>()
             + size_of::<Result<MetadataCapacityRecord, RuntimeError>>()

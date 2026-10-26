@@ -31,6 +31,9 @@ use crate::{
 
 type ContentBank = BTreeMap<ContentRef, Vec<u8>>;
 
+#[path = "host_startup/metadata.rs"]
+mod metadata;
+
 #[path = "host_startup/initial_lifecycle.rs"]
 mod initial_lifecycle;
 pub(crate) use initial_lifecycle::{
@@ -74,17 +77,11 @@ pub(super) struct OriginalHostStartupMarker {
 
 impl OriginalHostStartupMarker {
     pub(super) fn retained_storage_data(&self) -> Result<usize, RuntimeError> {
-        // This same allocation has a strong owner in the registered SDK holder.
-        // Its conservative weak view remains charged even after that owner is
-        // dropped; expired origin never reopens a construction attempt.
-        NodeRuntime::capture_shared_allocation_storage::<OriginalHostSdkOrigin>()
-            .checked_add(
-                self.launch
-                    .as_ref()
-                    .map(|identity| identity.retained_requested_storage_data())
-                    .unwrap_or(0),
-            )
-            .ok_or(RuntimeError::ResourceLimit)
+        let facts = self.retained_capacity_data(None)?;
+        PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+            &facts,
+            usize::MAX,
+        )
     }
 }
 
@@ -115,6 +112,8 @@ impl PacketCompleteSemanticSource {
             size_of::<OriginalNativeHostStartupMember>(),
             size_of::<OriginalNativeHostStartupQuote>(),
             size_of::<PacketNativeHostStartupInputs<'static>>(),
+            // The future origin and launch weak-view header quotes.
+            size_of::<usize>(), size_of::<usize>(),
             size_of::<[u8; 32]>(), size_of::<blake3::Hasher>(),
             size_of::<std::cell::Ref<'static, OriginalAckPeerBirth>>(),
             size_of::<std::cell::RefMut<'static, Option<OriginalHostStartupMarker>>>(),
@@ -167,21 +166,17 @@ impl PacketCompleteSemanticSource {
             &birth.private_launch,
         )
         .map_err(|_| RuntimeError::ResourceLimit)?;
+        let marker_origin = OriginalHostStartupMarker::origin_capacity_requested_bound_data()?;
+        let marker_launch = crate::node_adapters::cnp::semantic::process::OriginalHostLaunchIdentity::retained_capacity_requested_bound_data()?;
         let source_extra = size_of::<PacketCompleteOriginalHostSdk>()
             .checked_sub(size_of::<OriginalPacketHostStartup>())
             .ok_or(RuntimeError::ResourceLimit)?
             .checked_add(NodeRuntime::capture_shared_allocation_storage::<
                 OriginalHostSdkOrigin,
             >())
-            // The original Source's weak marker is an independent retained view.
-            .and_then(|bytes| {
-                bytes.checked_add(NodeRuntime::capture_shared_allocation_storage::<
-                    OriginalHostSdkOrigin,
-                >())
-            })
-            .ok_or(RuntimeError::ResourceLimit)?;
-        let source_extra = source_extra.checked_add(
-            crate::node_adapters::cnp::semantic::process::OriginalHostLaunchIdentity::retained_requested_storage_bound_data())
+            // Future weak views use the same header envelope as their census.
+            .and_then(|bytes| bytes.checked_add(marker_origin))
+            .and_then(|bytes| bytes.checked_add(marker_launch))
             .ok_or(RuntimeError::ResourceLimit)?;
         // Reuse the actual selected acquisition producer as a conservative
         // complete Source guard window. It names fixed stat/hash/path banks

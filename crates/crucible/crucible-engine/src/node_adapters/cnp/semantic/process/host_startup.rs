@@ -52,6 +52,18 @@ impl CnpSemanticLaunchReservation {
 }
 
 impl OriginalHostLaunchIdentity {
+    /// Records the original read-owner allocation without upgrading its weak link.
+    ///
+    /// # Errors
+    /// Refuses selected-row exhaustion, invalid geometry or unavailable physical
+    /// backing. Revoked or expired launch custody supplies no execution rights.
+    pub(in crate::node_adapters::cnp::semantic) fn record_retained_capacity_data(
+        &self,
+        census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        census.observe_weak_allocation_data(&self.owner)
+    }
+
     pub(in crate::node_adapters::cnp::semantic) fn retained_requested_storage_data(&self) -> usize {
         Self::retained_requested_storage_bound_data()
     }
@@ -59,6 +71,25 @@ impl OriginalHostLaunchIdentity {
     pub(in crate::node_adapters::cnp::semantic) fn retained_requested_storage_bound_data() -> usize
     {
         crate::node_contract::NodeRuntime::capture_shared_allocation_storage::<current::ReadOwner>()
+    }
+
+    /// Bounds the prospective weak view with the same metadata header envelope.
+    ///
+    /// This constructor DATA names the compiled read-owner allocation only; it
+    /// neither observes a current allocation nor reconstructs launch custody.
+    ///
+    /// # Errors
+    /// Refuses checked shared-header or combined requested-size overflow.
+    pub(in crate::node_adapters::cnp::semantic) fn retained_capacity_requested_bound_data()
+    -> Result<usize, RuntimeError> {
+        let header = crate::node_contract::NodeRuntime::capture_protocol_shared_header_storage(
+            1,
+            std::mem::align_of::<current::ReadOwner>(),
+            usize::MAX,
+        )?;
+        std::mem::size_of::<current::ReadOwner>()
+            .checked_add(header)
+            .ok_or(RuntimeError::ResourceLimit)
     }
 
     fn authenticate<'a>(
@@ -358,6 +389,49 @@ mod tests {
         assert!(custody.kernel_identity.is_none());
         assert!(custody.executable_guard.is_none());
         assert!(identity.retained_requested_storage_data() > 0);
+    }
+
+    #[test]
+    fn original_host_launch_capacity_keeps_expired_read_owner_without_upgrading_custody() {
+        use crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData;
+
+        let reservation = selected();
+        let identity = reservation.original_host_launch_identity_data().unwrap();
+        let mut live = OriginalOwnerCapacityMetadataData::new(1, None);
+        identity.record_retained_capacity_data(&mut live).unwrap();
+        let expected = live.finish();
+        let original = identity.retained_requested_storage_data();
+        let metadata_bound =
+            OriginalHostLaunchIdentity::retained_capacity_requested_bound_data().unwrap();
+
+        drop(reservation);
+        let mut expired = OriginalOwnerCapacityMetadataData::new(1, None);
+        identity
+            .record_retained_capacity_data(&mut expired)
+            .unwrap();
+        let actual = expired.finish();
+
+        assert_eq!(actual, expected);
+        assert_eq!(
+            actual.shared_value_bytes,
+            std::mem::size_of::<current::ReadOwner>()
+        );
+        assert_eq!(
+            actual.maximum_shared_value_alignment,
+            std::mem::align_of::<current::ReadOwner>()
+        );
+        assert_eq!(actual.shared_backing_views, 1);
+        assert_eq!(actual.capacity_records, 1);
+        assert!(identity.owner.upgrade().is_none());
+        assert_eq!(identity.retained_requested_storage_data(), original);
+        assert!(metadata_bound >= original);
+        assert_eq!(
+            crate::node_adapters::cnp::PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(&actual, metadata_bound),
+            Ok(metadata_bound)
+        );
+        assert!(
+            crate::node_adapters::cnp::PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(&actual, metadata_bound - 1).is_err()
+        );
     }
 
     #[test]

@@ -86,24 +86,34 @@ without becoming native completion witnesses. Constructor validation and
 production byte admission consume this same census. The literal capacity walk
 does not report a scalar-work bound.
 
+The original host startup marker now records the actual SDK-origin and launch
+read-owner weak allocations. Empty weak links retain no allocation; expired links
+retain their allocation shells without upgrading custody or traversing destroyed
+payloads. Repeated views receive no alias discount. Constructor allowances use
+the same shared-header envelope as the retained census, and the production
+marker byte query consumes those facts. Controls cover empty and expired links,
+aligned and zero-sized payloads, exact and short credit, and busy or foreign
+Source custody. Marker flags and launch permissions remain independent. Other
+birth/finalization owners still require their own complete census.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
-stay outside the four-field rows; repeated views receive no discount. Its seven
+stay outside the four-field rows; repeated views receive no discount. Its ten
 controls include the separate packet row ceiling, malformed geometry and checked
 merging without inferring tree width from unrelated byte totals. Capacity-only
 Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 120 focused Transport controls and 25 Engine
-census/installation/holder controls. Complete Transport suites pass 2,320 tests each
+Both codec configurations pass 120 focused Transport controls and 34 Engine
+census/installation/holder/startup controls. Complete Transport suites pass 2,320 tests each
 with twenty ignored; all 646 selected SDK/dependency inputs match the tested
-Transport snapshot. Complete Engine suites pass 2,098 tests each with thirty-four
+Transport snapshot. Complete Engine suites pass 2,105 tests each with thirty-four
 ignored, using matching source-built installed packet fixtures. Five-package
-all-feature/all-target checks, sixteen-file scoped formatting, all six architecture
+all-feature/all-target checks, seven-file scoped formatting, all six architecture
 gates and the RFC requirement-map gate pass. Required application test-target
 compilation passes with 185 artifacts across 58 packages and 76 integration targets;
-all 802 selected frozen Rust/Cargo inputs match current and captured source. User-owned
+all 805 selected frozen Rust/Cargo inputs match current and captured source. User-owned
 changes are preserved. These are component results; the requirement map records
 planning coverage, and no latest-source strict lint or native lifecycle result
 is claimed.

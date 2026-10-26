@@ -5,6 +5,68 @@ use crate::node_contract::{OwnerIdentity, SavedRuntimeActivation};
 use crucible_node_format::{HashRef, Id, Phase, Position, U64};
 use std::{collections::BTreeMap, mem::align_of, rc::Rc};
 
+#[test]
+fn empty_weak_view_has_no_allocation_even_with_zero_selected_rows() {
+    let owner = std::rc::Weak::<String>::new();
+    let mut census = OriginalOwnerCapacityMetadataData::new(0, None);
+
+    census.observe_weak_allocation_data(&owner).unwrap();
+
+    assert_eq!(census.finish(), RetainedProtocolMetadataFacts::default());
+    assert!(owner.upgrade().is_none());
+}
+
+#[test]
+fn expired_weak_view_retains_its_actual_shell_without_traversing_dropped_payload() {
+    #[repr(align(64))]
+    struct Payload {
+        _text: String,
+    }
+    let payload = Rc::new(Payload {
+        _text: String::with_capacity(173),
+    });
+    let owner = Rc::downgrade(&payload);
+    let mut live = OriginalOwnerCapacityMetadataData::new(1, None);
+    live.observe_weak_allocation_data(&owner).unwrap();
+    let expected = live.finish();
+
+    drop(payload);
+    let mut expired = OriginalOwnerCapacityMetadataData::new(2, None);
+    expired.observe_weak_allocation_data(&owner).unwrap();
+    let actual = expired.finish();
+
+    assert!(owner.upgrade().is_none());
+    assert_eq!(actual, expected);
+    assert_eq!(actual.shared_value_bytes, size_of::<Payload>());
+    assert_eq!(actual.maximum_shared_value_alignment, align_of::<Payload>());
+    assert_eq!(actual.shared_backing_views, 1);
+    assert_eq!(actual.capacity_records, 1);
+    assert_eq!(actual.string_banks, 0);
+    assert_eq!(actual.string_capacity_bytes, 0);
+    assert_eq!(actual.observed_nodes, 0);
+
+    let mut short = OriginalOwnerCapacityMetadataData::new(0, None);
+    assert!(short.observe_weak_allocation_data(&owner).is_err());
+}
+
+#[test]
+fn repeated_zero_sized_weak_views_keep_each_real_shared_header() {
+    let payload = Rc::new(());
+    let owner = Rc::downgrade(&payload);
+    drop(payload);
+    let mut census = OriginalOwnerCapacityMetadataData::new(2, None);
+
+    census.observe_weak_allocation_data(&owner).unwrap();
+    census.observe_weak_allocation_data(&owner).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.shared_backing_views, 2);
+    assert_eq!(facts.shared_value_bytes, 0);
+    assert_eq!(facts.maximum_shared_value_alignment, align_of::<()>());
+    assert_eq!(facts.capacity_records, 2);
+    assert!(owner.upgrade().is_none());
+}
+
 fn activation() -> SavedRuntimeActivation {
     let mut algorithm = String::with_capacity(113);
     algorithm.push_str("sha256");
