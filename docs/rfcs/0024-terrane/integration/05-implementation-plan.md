@@ -91,6 +91,26 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-25)
 
+The [common surface and SDK audit](acceptance/surface-interface.md) now maps
+all 38 T-SURF-1 requirement IDs to inspected source, reviewed owning-gate
+evidence and the remaining acceptance boundary. The shared feature matrix
+remains required. Conditional follow, writable, foreign-credential and
+out-of-process obligations retain their production surface owners; an SDK
+read-only refusal does not establish those implementations.
+
+Both native-cache profiles at `4f3f0bf522` pass in 3,189.774 seconds and their
+complete reviews pass. Each profile matches all 8,263 immutable source files,
+four retained Cargo executables and three original guests. Base/all-features
+execute 130/258 ordinary cases and five creator cases per profile. All five
+allocation-mount controls preserve original inodes; the original recovery,
+finite-consumer expiry, eviction and measured charge-release witnesses pass.
+This qualifies that recorded revision, preceding the managed setgid correction.
+
+Mandatory application-target compilation at `80cf0444bf` passes in 697.001
+seconds. Complete review matches all 8,263 immutable source files and 190
+test-executable build records across 59 packages. This is compilation only,
+without retained executable bytes. Its focused collection guest remains live.
+
 The managed setgid correction at `31aa0ae05f` passes mandatory
 application-target compilation in 722.560 seconds. Review matches all 8,263
 immutable source files and 190 test-executable build records across 59
@@ -12577,6 +12597,8 @@ requirements; it does not grant acceptance.
   `checks.terrane.gates.surface-interface`,
   `checks.terrane.gates.surface-schema`,
   `checks.terrane.gates.surface-status`.
+  The [common/SDK audit](acceptance/surface-interface.md) records clause
+  coverage, qualified source and the outstanding feature-matrix boundary.
 - [x] **T-PKG-3** `modules/terrane/` options, unit rendering for the
   `serve`, `realize`, `publish`, and `gc` roles, and the module evaluation
   check. — satisfies PKG-8, PKG-10; `checks.terrane.module-eval`.
