@@ -219,14 +219,74 @@ impl<'rows> Iterator for SchemaRows<'rows> {
 }
 
 impl ProtectedBrokerSessionJournalV1 {
-    pub(super) fn read_optional_schema_captured(&mut self, protocol: BrokerSessionProtocolV1,
-        work: &mut StoredReadOriginalsV1, retaining: bool) -> Result<(), BrokerSessionSecurityError>
-    {
-        let fixed_protocol = self.endpoint.protected_protocol_and_node().0;
-        let before_identity = stage(self.stable_endpoint_identity(protocol),
-            retaining.then_some(&mut work.before_identity))?;
+    pub(super) fn read_optional_schema_captured(
+        &mut self,
+        protocol: BrokerSessionProtocolV1,
+        work: &mut StoredReadOriginalsV1,
+        retaining: bool,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.schema_read_engine_v1()
+            .read_optional_schema_captured(protocol, work, retaining)
+    }
+}
+
+#[cfg(test)]
+mod delete_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn fixed_delete_entry_refusal_prevents_later_native_read_entry() {
+        // This genuine native Host fixture intentionally lives outside the
+        // production fixed directory, so the real D predicate must refuse it.
+        let mut fixture = super::super::lifecycle_test_fixture::LifecycleTerminalFixture::new();
+        let mut read = StoredReadOriginalsV1::new();
+
+        assert!(read.observe_delete_current_once_v1(&mut fixture.journal,
+            BrokerSessionProtocolV1::Host).is_err());
+        assert!(read.observe_protocol_once_v1(&mut fixture.journal, true,
+            BrokerSessionProtocolV1::Host).is_err());
+
+        assert!(read.floor_before.is_none());
+        assert!(read.current.is_none());
+        assert!(read.snapshot().is_none());
+        assert!(read.failure().is_some());
+    }
+
+    #[test]
+    fn same_native_stored_reader_keeps_the_actual_host_checkpoint_in_its_selected_destination() {
+        // Genuine signed/native Host fixture with the established test-only
+        // unscoped floor. This tests the shared reader, not production D minting.
+        let mut fixture = super::super::lifecycle_test_fixture::LifecycleTerminalFixture::new();
+        let expected = fixture.journal.read_current(BrokerSessionProtocolV1::Host).unwrap();
+        let mut read = StoredReadOriginalsV1::new();
+
+        read.observe_protocol_once_v1(&mut fixture.journal, true, BrokerSessionProtocolV1::Host).unwrap();
+
+        assert_eq!(read.snapshot().unwrap(), &expected);
+        let checkpoint = read.negotiated_checkpoint_data_v2().unwrap();
+        assert!(!checkpoint.client_hello_bytes().is_empty());
+        assert!(!checkpoint.broker_hello_bytes().is_empty());
+        assert_eq!(read.selected_ref().unwrap().protocol, BrokerSessionProtocolV1::Host);
+        assert!(read.failure().is_none());
+    }
+}
+
+impl<C: crate::recovery::journal::schema_read::SessionSchemaContextV1>
+    crate::recovery::journal::schema_read::SessionSchemaReadV1<C>
+{
+    pub(in crate::recovery::journal) fn read_optional_schema_captured(
+        &mut self,
+        protocol: BrokerSessionProtocolV1,
+        work: &mut StoredReadOriginalsV1,
+        retaining: bool,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let fixed_protocol = self.context.protocol_and_node().0;
+        let before_identity = stage(
+            self.stable_endpoint_identity(protocol),
+            retaining.then_some(&mut work.before_identity),
+        )?;
         #[cfg(feature = "online-nix")]
-        let online = self.online_schema.as_ref().map(|schema| (schema.key, schema.seed));
+        let online = self.context.online_seed_data();
         {
             let mut authority = self.schema_authority_v3()?;
 
@@ -235,9 +295,10 @@ impl ProtectedBrokerSessionJournalV1 {
                 .map_err(|_| BrokerSessionSecurityError::Currentness)?
             {
                 #[cfg(feature = "online-nix")]
-                if online.as_ref().is_some_and(|(seed_key, seed)| {
-                    key == seed_key && value == seed
-                }) || online.is_some() && is_online_nix_authorization_key(key)
+                if online
+                    .as_ref()
+                    .is_some_and(|(seed_key, seed)| key == seed_key && value == seed)
+                    || online.is_some() && is_online_nix_authorization_key(key)
                 {
                     continue;
                 }
@@ -257,12 +318,19 @@ impl ProtectedBrokerSessionJournalV1 {
                 }
                 if retaining {
                     work.current = Some(StoredBrokerSessionHistoryDecodeCaptureV1::new());
-                    let current = work.current.as_mut().ok_or(BrokerSessionSecurityError::Currentness)?;
+                    let current = work
+                        .current
+                        .as_mut()
+                        .ok_or(BrokerSessionSecurityError::Currentness)?;
                     CanonicalStoredHistoryV1::decode_retaining(key, value, current)
                         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-                    work.rows.push(StoredProtocolHistoryV1::from_canonical_for_key_v2(
-                        current.take_stored_once().map_err(|_| BrokerSessionSecurityError::Currentness)?, key,
-                    )?);
+                    work.rows
+                        .push(StoredProtocolHistoryV1::from_canonical_for_key_v2(
+                            current
+                                .take_stored_once()
+                                .map_err(|_| BrokerSessionSecurityError::Currentness)?,
+                            key,
+                        )?);
                     // The private wrapper owns the actual complete lower value first.
                     drop(work.current.take());
                 } else {
@@ -270,12 +338,15 @@ impl ProtectedBrokerSessionJournalV1 {
                 }
             }
         }
-        let after_identity = stage(self.stable_endpoint_identity(protocol),
-            retaining.then_some(&mut work.after_identity))?;
+        let after_identity = stage(
+            self.stable_endpoint_identity(protocol),
+            retaining.then_some(&mut work.after_identity),
+        )?;
         if before_identity != after_identity
-            || work.rows
+            || work
+                .rows
                 .iter()
-                .any(|record| record.endpoint != self.endpoint.role())
+                .any(|record| record.endpoint != self.context.endpoint_role())
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
@@ -287,13 +358,22 @@ impl ProtectedBrokerSessionJournalV1 {
         };
         for (index, record) in rows.enumerate() {
             let observed = self.stable_endpoint_identity(record.protocol);
-            let identity = stage(observed, if retaining {
-                Some(work.row_identities.get_mut(index).ok_or(BrokerSessionSecurityError::Currentness)?)
-            } else { None })?;
+            let identity = stage(
+                observed,
+                if retaining {
+                    Some(
+                        work.row_identities
+                            .get_mut(index)
+                            .ok_or(BrokerSessionSecurityError::Currentness)?,
+                    )
+                } else {
+                    None
+                },
+            )?;
             if record.stable_endpoint_identity != identity {
                 return Err(BrokerSessionSecurityError::Currentness);
             }
-            if record.protocol == protocol && record.purpose == self.purpose {
+            if record.protocol == protocol && record.purpose == self.context.purpose() {
                 if selected.replace(record).is_some() {
                     return Err(BrokerSessionSecurityError::Currentness);
                 }
@@ -301,7 +381,7 @@ impl ProtectedBrokerSessionJournalV1 {
         }
         if let Some(current) = &selected {
             if protocol == BrokerSessionProtocolV1::Host
-                && self.endpoint.role() == BrokerSessionDurableEndpointV1::Client
+                && self.context.endpoint_role() == BrokerSessionDurableEndpointV1::Client
             {
                 for record in current.history_model()?.records() {
                     if super::original_host_argument_method_v2(record.method())
@@ -355,46 +435,5 @@ impl ProtectedBrokerSessionJournalV1 {
             None => {}
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod delete_protocol_tests {
-    use super::*;
-
-    #[test]
-    fn fixed_delete_entry_refusal_prevents_later_native_read_entry() {
-        // This genuine native Host fixture intentionally lives outside the
-        // production fixed directory, so the real D predicate must refuse it.
-        let mut fixture = super::super::lifecycle_test_fixture::LifecycleTerminalFixture::new();
-        let mut read = StoredReadOriginalsV1::new();
-
-        assert!(read.observe_delete_current_once_v1(&mut fixture.journal,
-            BrokerSessionProtocolV1::Host).is_err());
-        assert!(read.observe_protocol_once_v1(&mut fixture.journal, true,
-            BrokerSessionProtocolV1::Host).is_err());
-
-        assert!(read.floor_before.is_none());
-        assert!(read.current.is_none());
-        assert!(read.snapshot().is_none());
-        assert!(read.failure().is_some());
-    }
-
-    #[test]
-    fn same_native_stored_reader_keeps_the_actual_host_checkpoint_in_its_selected_destination() {
-        // Genuine signed/native Host fixture with the established test-only
-        // unscoped floor. This tests the shared reader, not production D minting.
-        let mut fixture = super::super::lifecycle_test_fixture::LifecycleTerminalFixture::new();
-        let expected = fixture.journal.read_current(BrokerSessionProtocolV1::Host).unwrap();
-        let mut read = StoredReadOriginalsV1::new();
-
-        read.observe_protocol_once_v1(&mut fixture.journal, true, BrokerSessionProtocolV1::Host).unwrap();
-
-        assert_eq!(read.snapshot().unwrap(), &expected);
-        let checkpoint = read.negotiated_checkpoint_data_v2().unwrap();
-        assert!(!checkpoint.client_hello_bytes().is_empty());
-        assert!(!checkpoint.broker_hello_bytes().is_empty());
-        assert_eq!(read.selected_ref().unwrap().protocol, BrokerSessionProtocolV1::Host);
-        assert!(read.failure().is_none());
     }
 }

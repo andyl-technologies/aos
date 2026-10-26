@@ -40,42 +40,15 @@ impl ProtectedBrokerSessionJournalV1 {
         &mut self,
         original_request_id: [u8; 16],
     ) -> Result<Option<AuthenticatedOriginalHostNoApplyJoinV1>, BrokerSessionSecurityError> {
-        let value = {
-            let mut authority = self.schema_authority_v3()?;
-            authority
-                .get(&host_terminal_archive_key(original_request_id))
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-                .map(<[u8]>::to_vec)
-        };
-        let Some(value) = self.schema_retain_value_v3(value)? else {
-            return Ok(None);
-        };
-        let bytes = open_history_archive_frame(original_request_id, &value, MAGIC, DOMAIN)?;
-        let stored = self.schema_decode_stored_v3(&protocol_key(BrokerSessionProtocolV1::Host), bytes)?;
-        self.verify_host_terminal_archive(&stored, Some(original_request_id))
-            .map(Some)
+        self.schema_read_engine_v1()
+            .read_host_terminal_archive(original_request_id)
     }
 
     pub(super) fn validate_host_terminal_archives(
         &mut self,
     ) -> Result<usize, BrokerSessionSecurityError> {
-        let keys = self.bounded_host_archive_request_ids(
-            BrokerSessionJournalKeyKind::HostTerminalSessionArchive,
-            MAXIMUM_HOST_TERMINAL_ARCHIVES,
-        )?;
-        for request_id in &keys {
-            let scope = self.schema_scope_v3();
-            let result = (|| {
-                if self.read_closed_host_terminal_archive_v2(*request_id)?.is_some() {
-                    return Ok(());
-                }
-                self.read_host_terminal_archive(*request_id)?
-                    .ok_or(BrokerSessionSecurityError::Currentness).map(|_| ())
-            })();
-            self.schema_complete_scope_v3(scope, &result);
-            result?;
-        }
-        Ok(keys.len())
+        self.schema_read_engine_v1()
+            .validate_host_terminal_archives()
     }
 
     pub(super) fn prepare_host_terminal_archive(
@@ -123,6 +96,114 @@ impl ProtectedBrokerSessionJournalV1 {
         stored: &StoredProtocolHistoryV1,
         expected_original_request_id: Option<[u8; 16]>,
     ) -> Result<AuthenticatedOriginalHostNoApplyJoinV1, BrokerSessionSecurityError> {
+        self.schema_read_engine_v1()
+            .verify_host_terminal_archive(stored, expected_original_request_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{HOST_TERMINAL_SESSION_KEY_MAGIC, classified_broker_session_key};
+    use super::*;
+
+    #[test]
+    fn terminal_archive_has_distinct_exact_key_and_frame() {
+        let original_request_id = [37; 16];
+        let key = host_terminal_archive_key(original_request_id);
+        assert_eq!(key.len(), 24);
+        assert!(key.starts_with(HOST_TERMINAL_SESSION_KEY_MAGIC));
+        assert_eq!(
+            classified_broker_session_key(&key).unwrap().0,
+            BrokerSessionJournalKeyKind::HostTerminalSessionArchive
+        );
+        assert_ne!(
+            key,
+            super::super::host_argument_archive_key(original_request_id)
+        );
+
+        let frame = encode_history_archive_frame(
+            original_request_id,
+            b"signed-terminal-transcript",
+            MAGIC,
+            DOMAIN,
+        )
+        .unwrap();
+        assert_eq!(
+            open_history_archive_frame(original_request_id, &frame, MAGIC, DOMAIN).unwrap(),
+            b"signed-terminal-transcript"
+        );
+        assert!(open_history_archive_frame([38; 16], &frame, MAGIC, DOMAIN).is_err());
+        let mut changed = frame.clone();
+        let final_byte = changed.len() - 1;
+        changed[final_byte] ^= 1;
+        assert!(open_history_archive_frame(original_request_id, &changed, MAGIC, DOMAIN).is_err());
+        assert!(
+            open_history_archive_frame(
+                original_request_id,
+                &frame,
+                super::super::HOST_ARGUMENT_ARCHIVE_MAGIC,
+                super::super::HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
+            )
+            .is_err()
+        );
+    }
+}
+
+impl<C: crate::recovery::journal::schema_read::SessionSchemaContextV1>
+    crate::recovery::journal::schema_read::SessionSchemaReadV1<C>
+{
+    pub(in crate::recovery::journal) fn read_host_terminal_archive(
+        &mut self,
+        original_request_id: [u8; 16],
+    ) -> Result<Option<AuthenticatedOriginalHostNoApplyJoinV1>, BrokerSessionSecurityError> {
+        let value = {
+            let mut authority = self.schema_authority_v3()?;
+            authority
+                .get(&host_terminal_archive_key(original_request_id))
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                .map(<[u8]>::to_vec)
+        };
+        let Some(value) = self.schema_retain_value_v3(value)? else {
+            return Ok(None);
+        };
+        let bytes = open_history_archive_frame(original_request_id, &value, MAGIC, DOMAIN)?;
+        let stored =
+            self.schema_decode_stored_v3(&protocol_key(BrokerSessionProtocolV1::Host), bytes)?;
+        self.verify_host_terminal_archive(&stored, Some(original_request_id))
+            .map(Some)
+    }
+
+    pub(in crate::recovery::journal) fn validate_host_terminal_archives(
+        &mut self,
+    ) -> Result<usize, BrokerSessionSecurityError> {
+        let keys = self.bounded_host_archive_request_ids(
+            BrokerSessionJournalKeyKind::HostTerminalSessionArchive,
+            MAXIMUM_HOST_TERMINAL_ARCHIVES,
+        )?;
+        for request_id in &keys {
+            let scope = self.schema_scope_v3();
+            let result = (|| {
+                if self
+                    .read_closed_host_terminal_archive_v2(*request_id)?
+                    .is_some()
+                {
+                    return Ok(());
+                }
+                self.read_host_terminal_archive(*request_id)?
+                    .ok_or(BrokerSessionSecurityError::Currentness)
+                    .map(|_| ())
+            })();
+            self.schema_complete_scope_v3(scope, &result);
+            result?;
+        }
+        Ok(keys.len())
+    }
+
+    pub(in crate::recovery::journal) fn verify_host_terminal_archive(
+        &mut self,
+        stored: &StoredProtocolHistoryV1,
+        expected_original_request_id: Option<[u8; 16]>,
+    ) -> Result<AuthenticatedOriginalHostNoApplyJoinV1, BrokerSessionSecurityError> {
         let checkpoint = stored
             .checkpoint
             .as_ref()
@@ -132,7 +213,7 @@ impl ProtectedBrokerSessionJournalV1 {
             || stored.endpoint != BrokerSessionDurableEndpointV1::Client
             || stored.stable_endpoint_identity
                 != self.stable_endpoint_identity(BrokerSessionProtocolV1::Host)?
-            || self.endpoint.historical_context(checkpoint.context())? != *checkpoint.context()
+            || self.context.historical_context(checkpoint.context())? != *checkpoint.context()
             || stored.endpoint_publication
                 != self
                     .historical_endpoint_publication(BrokerSessionProtocolV1::Host, &transcript)?
@@ -203,53 +284,5 @@ impl ProtectedBrokerSessionJournalV1 {
             .map_err(|_| BrokerSessionSecurityError::Currentness)?
             .ok_or(BrokerSessionSecurityError::Currentness)?;
         archive.join_no_apply(&readback)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::{HOST_TERMINAL_SESSION_KEY_MAGIC, classified_broker_session_key};
-    use super::*;
-
-    #[test]
-    fn terminal_archive_has_distinct_exact_key_and_frame() {
-        let original_request_id = [37; 16];
-        let key = host_terminal_archive_key(original_request_id);
-        assert_eq!(key.len(), 24);
-        assert!(key.starts_with(HOST_TERMINAL_SESSION_KEY_MAGIC));
-        assert_eq!(
-            classified_broker_session_key(&key).unwrap().0,
-            BrokerSessionJournalKeyKind::HostTerminalSessionArchive
-        );
-        assert_ne!(
-            key,
-            super::super::host_argument_archive_key(original_request_id)
-        );
-
-        let frame = encode_history_archive_frame(
-            original_request_id,
-            b"signed-terminal-transcript",
-            MAGIC,
-            DOMAIN,
-        )
-        .unwrap();
-        assert_eq!(
-            open_history_archive_frame(original_request_id, &frame, MAGIC, DOMAIN).unwrap(),
-            b"signed-terminal-transcript"
-        );
-        assert!(open_history_archive_frame([38; 16], &frame, MAGIC, DOMAIN).is_err());
-        let mut changed = frame.clone();
-        let final_byte = changed.len() - 1;
-        changed[final_byte] ^= 1;
-        assert!(open_history_archive_frame(original_request_id, &changed, MAGIC, DOMAIN).is_err());
-        assert!(
-            open_history_archive_frame(
-                original_request_id,
-                &frame,
-                super::super::HOST_ARGUMENT_ARCHIVE_MAGIC,
-                super::super::HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
-            )
-            .is_err()
-        );
     }
 }

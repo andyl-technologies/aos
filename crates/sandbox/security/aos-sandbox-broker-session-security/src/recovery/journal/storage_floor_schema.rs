@@ -8,7 +8,9 @@
 use std::collections::TryReserveError;
 use std::mem::size_of;
 
-use aos_sandbox_controller_domain::journal::{ProtectedJournalAuthority, ProtectedJournalPreopenReplayExtentV1};
+use aos_sandbox_controller_domain::journal::{
+    ProtectedJournalAuthority, ProtectedJournalPreopenReplayExtentV1,
+};
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use aos_sandbox_protocol::authenticated_session::stored_history::StoredBrokerSessionHistoryDecodeCaptureV1;
 use aos_sandbox_protocol::domain_ledger::capacity_family::family::CanonicalCapacityReadCaptureV1;
@@ -90,9 +92,22 @@ impl StorageFloorSchemaOriginalV3 {
             .and_then(|bytes| bytes.checked_add(size_of::<Vec<[u8; 16]>>()))
             .and_then(|bytes| bytes.checked_mul(SLOTS))
             .ok_or_else(invalid)?;
+        // Native startup can nest a borrowed engine while retaining an archive
+        // comparison. Price both adapter/read headers at every bounded lane;
+        // borrowing the existing owner creates no new writer or descriptor.
+        let engine = size_of::<
+            super::schema_read::SessionSchemaReadV1<
+                super::schema_read::NativeSessionSchemaContextV1<'static>,
+            >,
+        >()
+        .checked_add(size_of::<super::schema_read::SchemaReadDataV1<'static>>())
+        .and_then(|bytes| bytes.checked_mul(SLOTS))
+        .and_then(|bytes| bytes.checked_mul(2))
+        .ok_or_else(invalid)?;
         let fixed = size_of::<Self>()
             .checked_mul(2)
             .and_then(|bytes| bytes.checked_add(slots))
+            .and_then(|bytes| bytes.checked_add(engine))
             .and_then(|bytes| bytes.checked_add(size_of::<SchemaClaimOriginalV3>()))
             .and_then(|bytes| bytes.checked_add(capacity.checked_mul(2)?))
             .ok_or_else(invalid)?;
@@ -486,5 +501,77 @@ mod tests {
         assert!(original.codecs.is_empty());
         assert!(fixture.journal.schema_original.is_none());
         assert!(original.failure().is_some());
+    }
+
+    #[test]
+    fn shared_schema_walk_checks_every_archive_family_and_keeps_failed_values() {
+        let request_id = [57; 16];
+        let repair_key = [
+            super::super::operator_repair_history::KEY_MAGIC.as_slice(),
+            request_id.as_slice(),
+        ]
+        .concat();
+        let keys = [
+            host_argument_archive_key(request_id),
+            host_terminal_archive_key(request_id),
+            storage_archive_key(
+                RecordNamespace::BrokerSessionStorageGroupArchive,
+                request_id,
+            )
+            .unwrap(),
+            storage_archive_key(
+                RecordNamespace::BrokerSessionStorageInventoryArchive,
+                request_id,
+            )
+            .unwrap(),
+            storage_archive_key(
+                RecordNamespace::BrokerSessionStorageInventoryAbandonment,
+                request_id,
+            )
+            .unwrap(),
+            repair_key,
+        ];
+
+        for key in keys {
+            // Native files, the exclusive writer, and signed traffic are real.
+            // The established fixture floor remains test-only and unscoped.
+            let mut fixture =
+                super::super::lifecycle_test_fixture::LifecycleTerminalFixture::storage_client();
+            fixture.journal.validate_schema_only().unwrap();
+            let malformed = b"malformed archive after valid signed traffic".to_vec();
+            let transaction = JournalTransaction::new(
+                request_id,
+                vec![JournalRecord::put(
+                    RecordNamespace::BrokerSessionTraffic,
+                    key.clone(),
+                    malformed.clone(),
+                )],
+            )
+            .unwrap();
+            fixture
+                .journal
+                .journal_mut()
+                .unwrap()
+                .commit(&transaction)
+                .unwrap();
+            let mut original = StorageFloorSchemaOriginalV3::new();
+
+            let returned = fixture
+                .journal
+                .validate_schema_only_retaining_v3(&mut original);
+
+            assert!(returned.is_err(), "accepted malformed archive key {key:?}");
+            assert!(
+                original.values.iter().any(|value| value == &malformed)
+                    || original
+                        .entries
+                        .iter()
+                        .flatten()
+                        .any(|(_, value)| value == &malformed),
+                "lost failed archive value for key {key:?}"
+            );
+            assert!(original.failure().is_some());
+            assert!(fixture.journal.schema_original.is_none());
+        }
     }
 }

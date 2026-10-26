@@ -30,6 +30,7 @@ pub(crate) use outcome_current::OutcomeCurrentOriginalsV1;
 mod peer_current;
 pub(in crate::recovery) use peer_current::CurrentPeerOriginalsV1;
 mod stored_readback;
+mod schema_read;
 pub(crate) use stored_readback::StoredReadOriginalsV1;
 mod storage_floor_schema;
 pub(crate) use storage_floor_schema::StorageFloorSchemaOriginalV3;
@@ -4433,68 +4434,13 @@ impl ProtectedBrokerSessionJournalV1 {
         &mut self,
         request_id: [u8; 16],
     ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
-        let value = {
-            let mut authority = self.schema_authority_v3()?;
-            authority
-                .get(&host_argument_archive_key(request_id))
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-                .map(<[u8]>::to_vec)
-        };
-        // Absence is OutcomeUnknown, never proof that the original request
-        // was unsent: an earlier journal snapshot could have been restored.
-        let Some(value) = self.schema_retain_value_v3(value)? else {
-            return Ok(None);
-        };
-        let bytes = open_history_archive_frame(
-            request_id,
-            &value,
-            HOST_ARGUMENT_ARCHIVE_MAGIC,
-            HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
-        )?;
-        let stored = self.schema_decode_stored_v3(&protocol_key(BrokerSessionProtocolV1::Host), bytes)?;
-        let checkpoint = stored
-            .checkpoint
-            .as_ref()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let transcript = checkpoint.verify()?;
-        let history = stored.history_model()?;
-        let head = history
-            .head()
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        if stored.endpoint != BrokerSessionDurableEndpointV1::Client
-            || stored.stable_endpoint_identity
-                != self.stable_endpoint_identity(BrokerSessionProtocolV1::Host)?
-            || self.endpoint.historical_context(checkpoint.context())? != *checkpoint.context()
-            || stored.endpoint_publication
-                != self
-                    .historical_endpoint_publication(BrokerSessionProtocolV1::Host, &transcript)?
-            || head.phase() != BrokerSessionDurablePhaseV1::RequestPrepared
-            || (!original_host_argument_method_v2(head.method())
-                && self.closed_host_prepared_request_id_v2(&stored)? != Some(request_id))
-            || head.request_id() != request_id
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        if original_host_argument_method_v2(head.method()) {
-            validate_host_argument_source(head.request_packet(), request_id)?;
-        }
-        reconstruct_traffic(&history, &transcript, checkpoint.context())?;
-        Ok(Some(stored))
+        self.schema_read_engine_v1()
+            .read_host_argument_archive(request_id)
     }
 
     fn validate_host_argument_archives(&mut self) -> Result<usize, BrokerSessionSecurityError> {
-        let keys = self.bounded_host_archive_request_ids(
-            BrokerSessionJournalKeyKind::HostOriginalSessionArchive,
-            MAXIMUM_HOST_ARGUMENT_ARCHIVES,
-        )?;
-        for request_id in &keys {
-            let scope = self.schema_scope_v3();
-            let result = self.read_host_argument_archive(*request_id)
-                .and_then(|archive| archive.ok_or(BrokerSessionSecurityError::Currentness));
-            self.schema_complete_scope_v3(scope, &result);
-            result?;
-        }
-        Ok(keys.len())
+        self.schema_read_engine_v1()
+            .validate_host_argument_archives()
     }
 
     fn bounded_host_archive_request_ids(
@@ -4502,28 +4448,8 @@ impl ProtectedBrokerSessionJournalV1 {
         expected_kind: BrokerSessionJournalKeyKind,
         maximum: usize,
     ) -> Result<Vec<[u8; 16]>, BrokerSessionSecurityError> {
-        let mut keys = Vec::new();
-        let result = (|| {
-            let mut authority = self.schema_authority_v3()?;
-            for (key, _) in authority
-                .records()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-            {
-                let (kind, logical_key) = classified_broker_session_key(key)?;
-                if kind == expected_kind {
-                    if keys.len() == maximum {
-                        return Err(BrokerSessionSecurityError::Currentness);
-                    }
-                    keys.push(
-                        logical_key
-                            .try_into()
-                            .map_err(|_| BrokerSessionSecurityError::Currentness)?,
-                    );
-                }
-            }
-            Ok(())
-        })();
-        self.schema_retain_ids_v3(keys, result)
+        self.schema_read_engine_v1()
+            .bounded_host_archive_request_ids(expected_kind, maximum)
     }
 
     fn bounded_storage_records(
@@ -4531,96 +4457,21 @@ impl ProtectedBrokerSessionJournalV1 {
         namespace: RecordNamespace,
         maximum: usize,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BrokerSessionSecurityError> {
-        let expected_kind = BrokerSessionJournalKeyKind::from_storage_namespace(namespace)?;
-        let mut entries = Vec::new();
-        let result = (|| {
-            let mut authority = self.schema_authority_v3()?;
-            for (key, value) in authority
-                .records()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-            {
-                let (kind, logical_key) = classified_broker_session_key(key)?;
-                if kind != expected_kind {
-                    continue;
-                }
-                if entries.len() == maximum {
-                    return Err(BrokerSessionSecurityError::Currentness);
-                }
-                entries.push((logical_key.to_vec(), value.to_vec()));
-            }
-            Ok(())
-        })();
-        self.schema_retain_entries_v3(entries, result)
+        self.schema_read_engine_v1()
+            .bounded_storage_records(namespace, maximum)
     }
 
     fn validate_storage_group_archives(&mut self) -> Result<usize, BrokerSessionSecurityError> {
-        let entries = self.bounded_storage_records(
-            RecordNamespace::BrokerSessionStorageGroupArchive,
-            MAXIMUM_STORAGE_GROUP_ARCHIVES,
-        )?;
-        for (key, _) in &entries {
-            let request_id: [u8; 16] = key
-                .as_slice()
-                .try_into()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            let scope = self.schema_scope_v3();
-            let result = self.read_atomic_storage_archive(request_id)
-                .and_then(|archive| archive.ok_or(BrokerSessionSecurityError::Currentness));
-            self.schema_complete_scope_v3(scope, &result);
-            result?;
-        }
-        Ok(entries.len())
+        self.schema_read_engine_v1()
+            .validate_storage_group_archives()
     }
 
     fn read_atomic_storage_archive(
         &mut self,
         request_id: [u8; 16],
     ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
-        let key = storage_archive_key(
-            RecordNamespace::BrokerSessionStorageGroupArchive,
-            request_id,
-        )?;
-        let value = {
-            let mut authority = self.schema_authority_v3()?;
-            authority
-                .get(&key)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-                .map(<[u8]>::to_vec)
-        };
-        let Some(value) = self.schema_retain_value_v3(value)? else {
-            return Ok(None);
-        };
-        let stored_bytes = open_atomic_storage_archive_frame(request_id, &value)?;
-        let stored = self.schema_decode_stored_v3(
-            &protocol_key(BrokerSessionProtocolV1::Storage),
-            stored_bytes,
-        )?;
-        let checkpoint = stored
-            .checkpoint
-            .as_ref()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let transcript = checkpoint.verify()?;
-        let history = stored.history_model()?;
-        // A group archive may outlive or precede its inventory archive, so
-        // cold replay must authenticate it independently of inventory links.
-        if stored.endpoint != self.endpoint.role()
-            || stored.stable_endpoint_identity
-                != self.stable_endpoint_identity(BrokerSessionProtocolV1::Storage)?
-            || self.endpoint.historical_context(checkpoint.context())? != *checkpoint.context()
-            || stored.endpoint_publication
-                != self.historical_endpoint_publication(
-                    BrokerSessionProtocolV1::Storage,
-                    &transcript,
-                )?
-            || !history.records().iter().any(|record| {
-                record.method() == BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
-                    && record.request_id() == request_id
-            })
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        reconstruct_traffic(&history, &transcript, checkpoint.context())?;
-        Ok(Some(stored))
+        self.schema_read_engine_v1()
+            .read_atomic_storage_archive(request_id)
     }
 
     fn atomic_storage_history_for_request(
@@ -5968,23 +5819,7 @@ impl ProtectedBrokerSessionJournalV1 {
             let _ = self.read_optional_schema(BrokerSessionProtocolV1::Nix)?;
             return Ok(());
         }
-        for protocol in [
-            BrokerSessionProtocolV1::Host,
-            BrokerSessionProtocolV1::Storage,
-            BrokerSessionProtocolV1::Mount,
-            BrokerSessionProtocolV1::Network,
-            BrokerSessionProtocolV1::MountFuse,
-            BrokerSessionProtocolV1::Nix,
-        ] {
-            let _ = self.read_optional_schema(protocol)?;
-        }
-        self.validate_host_argument_archives()?;
-        self.validate_host_terminal_archives()?;
-        self.validate_storage_group_archives()?;
-        self.validate_storage_inventory_archives()?;
-        self.validate_storage_inventory_abandonments()?;
-        self.validate_operator_repair_inventory_archives()?;
-        Ok(())
+        self.schema_read_engine_v1().validate_all_schema_data_v1()
     }
 
     #[cfg(feature = "online-nix")]
@@ -7716,5 +7551,210 @@ impl ProtectedBrokerSessionOwnerV1 {
         self.catalog_maintenance_client_journal_v2()?
             .get(RecordNamespace::BrokerSessionTraffic, &protocol_key(BrokerSessionProtocolV1::Host))
             .ok_or(BrokerSessionSecurityError::Currentness)
+    }
+}
+
+impl<C: crate::recovery::journal::schema_read::SessionSchemaContextV1>
+    crate::recovery::journal::schema_read::SessionSchemaReadV1<C>
+{
+    pub(in crate::recovery::journal) fn bounded_host_archive_request_ids(
+        &mut self,
+        expected_kind: BrokerSessionJournalKeyKind,
+        maximum: usize,
+    ) -> Result<Vec<[u8; 16]>, BrokerSessionSecurityError> {
+        let mut keys = Vec::new();
+        let result = (|| {
+            let mut authority = self.schema_authority_v3()?;
+            for (key, _) in authority
+                .records()
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+            {
+                let (kind, logical_key) = classified_broker_session_key(key)?;
+                if kind == expected_kind {
+                    if keys.len() == maximum {
+                        return Err(BrokerSessionSecurityError::Currentness);
+                    }
+                    keys.push(
+                        logical_key
+                            .try_into()
+                            .map_err(|_| BrokerSessionSecurityError::Currentness)?,
+                    );
+                }
+            }
+            Ok(())
+        })();
+        self.schema_retain_ids_v3(keys, result)
+    }
+
+    pub(in crate::recovery::journal) fn bounded_storage_records(
+        &mut self,
+        namespace: RecordNamespace,
+        maximum: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BrokerSessionSecurityError> {
+        let expected_kind = BrokerSessionJournalKeyKind::from_storage_namespace(namespace)?;
+        let mut entries = Vec::new();
+        let result = (|| {
+            let mut authority = self.schema_authority_v3()?;
+            for (key, value) in authority
+                .records()
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+            {
+                let (kind, logical_key) = classified_broker_session_key(key)?;
+                if kind != expected_kind {
+                    continue;
+                }
+                if entries.len() == maximum {
+                    return Err(BrokerSessionSecurityError::Currentness);
+                }
+                entries.push((logical_key.to_vec(), value.to_vec()));
+            }
+            Ok(())
+        })();
+        self.schema_retain_entries_v3(entries, result)
+    }
+
+    pub(in crate::recovery::journal) fn read_atomic_storage_archive(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
+        let key = storage_archive_key(
+            RecordNamespace::BrokerSessionStorageGroupArchive,
+            request_id,
+        )?;
+        let value = {
+            let mut authority = self.schema_authority_v3()?;
+            authority
+                .get(&key)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                .map(<[u8]>::to_vec)
+        };
+        let Some(value) = self.schema_retain_value_v3(value)? else {
+            return Ok(None);
+        };
+        let stored_bytes = open_atomic_storage_archive_frame(request_id, &value)?;
+        let stored = self.schema_decode_stored_v3(
+            &protocol_key(BrokerSessionProtocolV1::Storage),
+            stored_bytes,
+        )?;
+        let checkpoint = stored
+            .checkpoint
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let transcript = checkpoint.verify()?;
+        let history = stored.history_model()?;
+        // A group archive may outlive or precede its inventory archive, so
+        // cold replay must authenticate it independently of inventory links.
+        if stored.endpoint != self.context.endpoint_role()
+            || stored.stable_endpoint_identity
+                != self.stable_endpoint_identity(BrokerSessionProtocolV1::Storage)?
+            || self.context.historical_context(checkpoint.context())? != *checkpoint.context()
+            || stored.endpoint_publication
+                != self.historical_endpoint_publication(
+                    BrokerSessionProtocolV1::Storage,
+                    &transcript,
+                )?
+            || !history.records().iter().any(|record| {
+                record.method() == BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
+                    && record.request_id() == request_id
+            })
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        reconstruct_traffic(&history, &transcript, checkpoint.context())?;
+        Ok(Some(stored))
+    }
+
+    pub(in crate::recovery::journal) fn read_host_argument_archive(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
+        let value = {
+            let mut authority = self.schema_authority_v3()?;
+            authority
+                .get(&host_argument_archive_key(request_id))
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                .map(<[u8]>::to_vec)
+        };
+        // Absence is OutcomeUnknown, never proof that the original request
+        // was unsent: an earlier journal snapshot could have been restored.
+        let Some(value) = self.schema_retain_value_v3(value)? else {
+            return Ok(None);
+        };
+        let bytes = open_history_archive_frame(
+            request_id,
+            &value,
+            HOST_ARGUMENT_ARCHIVE_MAGIC,
+            HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
+        )?;
+        let stored =
+            self.schema_decode_stored_v3(&protocol_key(BrokerSessionProtocolV1::Host), bytes)?;
+        let checkpoint = stored
+            .checkpoint
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let transcript = checkpoint.verify()?;
+        let history = stored.history_model()?;
+        let head = history
+            .head()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if stored.endpoint != BrokerSessionDurableEndpointV1::Client
+            || stored.stable_endpoint_identity
+                != self.stable_endpoint_identity(BrokerSessionProtocolV1::Host)?
+            || self.context.historical_context(checkpoint.context())? != *checkpoint.context()
+            || stored.endpoint_publication
+                != self
+                    .historical_endpoint_publication(BrokerSessionProtocolV1::Host, &transcript)?
+            || head.phase() != BrokerSessionDurablePhaseV1::RequestPrepared
+            || (!original_host_argument_method_v2(head.method())
+                && self.closed_host_prepared_request_id_v2(&stored)? != Some(request_id))
+            || head.request_id() != request_id
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        if original_host_argument_method_v2(head.method()) {
+            validate_host_argument_source(head.request_packet(), request_id)?;
+        }
+        reconstruct_traffic(&history, &transcript, checkpoint.context())?;
+        Ok(Some(stored))
+    }
+
+    pub(in crate::recovery::journal) fn validate_host_argument_archives(
+        &mut self,
+    ) -> Result<usize, BrokerSessionSecurityError> {
+        let keys = self.bounded_host_archive_request_ids(
+            BrokerSessionJournalKeyKind::HostOriginalSessionArchive,
+            MAXIMUM_HOST_ARGUMENT_ARCHIVES,
+        )?;
+        for request_id in &keys {
+            let scope = self.schema_scope_v3();
+            let result = self
+                .read_host_argument_archive(*request_id)
+                .and_then(|archive| archive.ok_or(BrokerSessionSecurityError::Currentness));
+            self.schema_complete_scope_v3(scope, &result);
+            result?;
+        }
+        Ok(keys.len())
+    }
+
+    pub(in crate::recovery::journal) fn validate_storage_group_archives(
+        &mut self,
+    ) -> Result<usize, BrokerSessionSecurityError> {
+        let entries = self.bounded_storage_records(
+            RecordNamespace::BrokerSessionStorageGroupArchive,
+            MAXIMUM_STORAGE_GROUP_ARCHIVES,
+        )?;
+        for (key, _) in &entries {
+            let request_id: [u8; 16] = key
+                .as_slice()
+                .try_into()
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let scope = self.schema_scope_v3();
+            let result = self
+                .read_atomic_storage_archive(request_id)
+                .and_then(|archive| archive.ok_or(BrokerSessionSecurityError::Currentness));
+            self.schema_complete_scope_v3(scope, &result);
+            result?;
+        }
+        Ok(entries.len())
     }
 }

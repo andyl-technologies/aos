@@ -125,6 +125,65 @@ impl ProtectedBrokerSessionJournalV1 {
         &mut self,
         request_id: [u8; 16],
     ) -> Result<Option<AuthenticatedBrokerMethodOutcomeV1>, BrokerSessionSecurityError> {
+        self.schema_read_engine_v1()
+            .read_operator_repair_inventory(request_id)
+    }
+
+    fn verify_operator_repair_inventory(
+        &mut self,
+        stored: &StoredProtocolHistoryV1,
+        request_id: [u8; 16],
+    ) -> Result<AuthenticatedBrokerMethodOutcomeV1, BrokerSessionSecurityError> {
+        self.schema_read_engine_v1()
+            .verify_operator_repair_inventory(stored, request_id)
+    }
+
+    pub(super) fn validate_operator_repair_inventory_archives(
+        &mut self,
+    ) -> Result<usize, BrokerSessionSecurityError> {
+        self.schema_read_engine_v1()
+            .validate_operator_repair_inventory_archives()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repair_archive_key_and_frame_are_distinct_and_exact() {
+        let id = [7; 16];
+        let key = archive_key(id);
+
+        assert_eq!(key.len(), 24);
+        assert_eq!(
+            classified_broker_session_key(&key).unwrap().0,
+            BrokerSessionJournalKeyKind::OperatorRepairInventoryArchive,
+        );
+
+        let frame = encode_history_archive_frame(id, b"history", MAGIC, DOMAIN).unwrap();
+
+        assert_eq!(open_history_archive_frame(id, &frame, MAGIC, DOMAIN).unwrap(), b"history");
+        assert!(open_history_archive_frame([8; 16], &frame, MAGIC, DOMAIN).is_err());
+        assert!(
+            open_history_archive_frame(
+                id,
+                &frame,
+                HOST_ARGUMENT_ARCHIVE_MAGIC,
+                HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
+            )
+            .is_err(),
+        );
+    }
+}
+
+impl<C: crate::recovery::journal::schema_read::SessionSchemaContextV1>
+    crate::recovery::journal::schema_read::SessionSchemaReadV1<C>
+{
+    pub(in crate::recovery::journal) fn read_operator_repair_inventory(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<Option<AuthenticatedBrokerMethodOutcomeV1>, BrokerSessionSecurityError> {
         let value = {
             let mut authority = self.schema_authority_v3()?;
             authority
@@ -136,15 +195,31 @@ impl ProtectedBrokerSessionJournalV1 {
             return Ok(None);
         };
         let frame = open_history_archive_frame(request_id, &value, MAGIC, DOMAIN)?;
-        let stored = self.schema_decode_stored_v3(
-            &protocol_key(BrokerSessionProtocolV1::Storage),
-            frame,
-        )?;
+        let stored =
+            self.schema_decode_stored_v3(&protocol_key(BrokerSessionProtocolV1::Storage), frame)?;
         self.verify_operator_repair_inventory(&stored, request_id)
             .map(Some)
     }
 
-    fn verify_operator_repair_inventory(
+    pub(in crate::recovery::journal) fn validate_operator_repair_inventory_archives(
+        &mut self,
+    ) -> Result<usize, BrokerSessionSecurityError> {
+        let ids = self.bounded_host_archive_request_ids(
+            BrokerSessionJournalKeyKind::OperatorRepairInventoryArchive,
+            MAXIMUM_ARCHIVES,
+        )?;
+        for id in &ids {
+            let scope = self.schema_scope_v3();
+            let result = self
+                .read_operator_repair_inventory(*id)
+                .and_then(|archive| archive.ok_or(BrokerSessionSecurityError::Currentness));
+            self.schema_complete_scope_v3(scope, &result);
+            result?;
+        }
+        Ok(ids.len())
+    }
+
+    pub(in crate::recovery::journal) fn verify_operator_repair_inventory(
         &mut self,
         stored: &StoredProtocolHistoryV1,
         request_id: [u8; 16],
@@ -159,7 +234,7 @@ impl ProtectedBrokerSessionJournalV1 {
             || stored.endpoint != BrokerSessionDurableEndpointV1::Client
             || stored.stable_endpoint_identity
                 != self.stable_endpoint_identity(BrokerSessionProtocolV1::Storage)?
-            || self.endpoint.historical_context(checkpoint.context())? != *checkpoint.context()
+            || self.context.historical_context(checkpoint.context())? != *checkpoint.context()
             || stored.endpoint_publication
                 != self.historical_endpoint_publication(
                     BrokerSessionProtocolV1::Storage,
@@ -201,7 +276,8 @@ impl ProtectedBrokerSessionJournalV1 {
                     record.phase() == BrokerSessionDurablePhaseV1::Terminal
                         && record.request_id() == request_id
                 })
-                .count() != 1
+                .count()
+                != 1
         {
             return Err(BrokerSessionSecurityError::Currentness);
         }
@@ -212,53 +288,5 @@ impl ProtectedBrokerSessionJournalV1 {
         )
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         Ok(outcome)
-    }
-
-    pub(super) fn validate_operator_repair_inventory_archives(
-        &mut self,
-    ) -> Result<usize, BrokerSessionSecurityError> {
-        let ids = self.bounded_host_archive_request_ids(
-            BrokerSessionJournalKeyKind::OperatorRepairInventoryArchive,
-            MAXIMUM_ARCHIVES,
-        )?;
-        for id in &ids {
-            let scope = self.schema_scope_v3();
-            let result = self.read_operator_repair_inventory(*id)
-                .and_then(|archive| archive.ok_or(BrokerSessionSecurityError::Currentness));
-            self.schema_complete_scope_v3(scope, &result);
-            result?;
-        }
-        Ok(ids.len())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn repair_archive_key_and_frame_are_distinct_and_exact() {
-        let id = [7; 16];
-        let key = archive_key(id);
-
-        assert_eq!(key.len(), 24);
-        assert_eq!(
-            classified_broker_session_key(&key).unwrap().0,
-            BrokerSessionJournalKeyKind::OperatorRepairInventoryArchive,
-        );
-
-        let frame = encode_history_archive_frame(id, b"history", MAGIC, DOMAIN).unwrap();
-
-        assert_eq!(open_history_archive_frame(id, &frame, MAGIC, DOMAIN).unwrap(), b"history");
-        assert!(open_history_archive_frame([8; 16], &frame, MAGIC, DOMAIN).is_err());
-        assert!(
-            open_history_archive_frame(
-                id,
-                &frame,
-                HOST_ARGUMENT_ARCHIVE_MAGIC,
-                HOST_ARGUMENT_ARCHIVE_VALUE_DOMAIN,
-            )
-            .is_err(),
-        );
     }
 }

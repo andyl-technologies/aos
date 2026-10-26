@@ -93,155 +93,21 @@ impl ProtectedBrokerSessionJournalV1 {
         Ok(is_closed_request(&request)?.then(|| request.request_id()))
     }
 
-    pub(in crate::recovery::journal) fn read_closed_host_terminal_archive_v2(
-        &mut self,
-        request_id: [u8; 16],
-    ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
-        let Some(stored) = self.read_host_terminal_archive_stored_v2(request_id)? else {
-            return Ok(None);
-        };
-        let Some(outcome) = self.closed_host_terminal_outcome_v2(&stored)? else {
-            return Ok(None);
-        };
-        if outcome.request().request_id() != request_id {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        Ok(Some(stored))
-    }
 
     fn read_host_terminal_archive_stored_v2(
         &mut self,
         request_id: [u8; 16],
     ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
-        let value = {
-            let mut authority = self.schema_authority_v3()?;
-            authority
-                .get(&host_terminal_archive_key(request_id))
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?
-                .map(<[u8]>::to_vec)
-        };
-        let Some(value) = self.schema_retain_value_v3(value)? else {
-            return Ok(None);
-        };
-        let bytes = open_history_archive_frame(request_id, &value, MAGIC, DOMAIN)?;
-        let stored =
-            self.schema_decode_stored_v3(&protocol_key(BrokerSessionProtocolV1::Host), bytes)?;
-        Ok(Some(stored))
+        self.schema_read_engine_v1()
+            .read_host_terminal_archive_stored_v2(request_id)
     }
 
     fn closed_host_terminal_outcome_v2(
         &mut self,
         stored: &StoredProtocolHistoryV1,
     ) -> Result<Option<AuthenticatedBrokerMethodOutcomeV1>, BrokerSessionSecurityError> {
-        if stored.protocol != BrokerSessionProtocolV1::Host
-            || stored.endpoint != BrokerSessionDurableEndpointV1::Client
-        {
-            return Ok(None);
-        }
-        let history = stored.history_model()?;
-        let head = history
-            .head()
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        if head.phase() != BrokerSessionDurablePhaseV1::Terminal {
-            return Ok(None);
-        }
-        if !matches!(
-            head.method(),
-            BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2
-                | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
-                | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
-        ) {
-            return Ok(None);
-        }
-        let checkpoint = stored
-            .checkpoint
-            .as_ref()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let transcript = checkpoint.verify()?;
-        let index = history
-            .records()
-            .len()
-            .checked_sub(1)
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let outcome =
-            historical_terminal_observation_v2(history.records(), index, checkpoint, &transcript)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        if !is_closed_request(outcome.request())? {
-            return Ok(None);
-        }
-        if stored.stable_endpoint_identity
-            != self.stable_endpoint_identity(BrokerSessionProtocolV1::Host)?
-            || self.endpoint.historical_context(checkpoint.context())? != *checkpoint.context()
-            || stored.endpoint_publication
-                != self
-                    .historical_endpoint_publication(BrokerSessionProtocolV1::Host, &transcript)?
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        let original = self
-            .read_host_argument_archive(outcome.request().request_id())?
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let original_checkpoint = original
-            .checkpoint
-            .as_ref()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let original_transcript = original_checkpoint.verify()?;
-        let original_history = original.history_model()?;
-        let original_index = original_history
-            .records()
-            .len()
-            .checked_sub(1)
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let (request, _) = historical_client_request(
-            original_history.records(),
-            original_index,
-            original_checkpoint,
-            &original_transcript,
-        )?;
-        if request.canonical_packet() != outcome.request().canonical_packet() {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        if let Some(early) = outcome.request().host_before_argument_no_apply_data_v2() {
-            let source = early.source();
-            let accepted = self
-                .read_host_terminal_archive_stored_v2(source.fields().create_operation)?
-                .ok_or(BrokerSessionSecurityError::Currentness)?;
-            let accepted_history = accepted.history_model()?;
-            // Require the finite64 predecessor before following any semantic
-            // association. A hostile39 cycle cannot recurse through archives.
-            let accepted_head = accepted_history
-                .head()
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            if accepted_head.method()
-                != BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2
-                || accepted_head.request_id() != source.fields().create_operation
-            {
-                return Err(BrokerSessionSecurityError::Currentness);
-            }
-            let accepted_outcome = self
-                .closed_host_terminal_outcome_v2(&accepted)?
-                .ok_or(BrokerSessionSecurityError::Currentness)?;
-            let bind = accepted_outcome
-                .request()
-                .execution_availability_data_v2()
-                .ok_or(BrokerSessionSecurityError::Currentness)?;
-            if bind.canonical_accepted_source() != source.encode_canonical()
-                || !successful_terminal(
-                    accepted_history
-                        .head()
-                        .map_err(|_| BrokerSessionSecurityError::Currentness)?,
-                )?
-            {
-                return Err(BrokerSessionSecurityError::Currentness);
-            }
-            // Only the existing canonical helper supplies common H/T on success.
-            if successful_terminal(head)? {
-                aos_sandbox_protocol::host_execution_no_apply::closed_host_terminal_archive_data_v2(&outcome)
-                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            }
-        }
-        Ok(Some(outcome))
+        self.schema_read_engine_v1()
+            .closed_host_terminal_outcome_v2(stored)
     }
 
     pub(in crate::recovery::journal) fn prepare_closed_host_terminal_archive_v2(
@@ -365,5 +231,160 @@ impl ProtectedBrokerSessionJournalV1 {
             }
         }
         selected.ok_or(BrokerSessionSecurityError::Currentness)
+    }
+}
+
+impl<C: crate::recovery::journal::schema_read::SessionSchemaContextV1>
+    crate::recovery::journal::schema_read::SessionSchemaReadV1<C>
+{
+    pub(in crate::recovery::journal) fn closed_host_terminal_outcome_v2(
+        &mut self,
+        stored: &StoredProtocolHistoryV1,
+    ) -> Result<Option<AuthenticatedBrokerMethodOutcomeV1>, BrokerSessionSecurityError> {
+        if stored.protocol != BrokerSessionProtocolV1::Host
+            || stored.endpoint != BrokerSessionDurableEndpointV1::Client
+        {
+            return Ok(None);
+        }
+        let history = stored.history_model()?;
+        let head = history
+            .head()
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if head.phase() != BrokerSessionDurablePhaseV1::Terminal {
+            return Ok(None);
+        }
+        if !matches!(
+            head.method(),
+            BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2
+                | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+                | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+        ) {
+            return Ok(None);
+        }
+        let checkpoint = stored
+            .checkpoint
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let transcript = checkpoint.verify()?;
+        let index = history
+            .records()
+            .len()
+            .checked_sub(1)
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let outcome =
+            historical_terminal_observation_v2(history.records(), index, checkpoint, &transcript)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if !is_closed_request(outcome.request())? {
+            return Ok(None);
+        }
+        if stored.stable_endpoint_identity
+            != self.stable_endpoint_identity(BrokerSessionProtocolV1::Host)?
+            || self.context.historical_context(checkpoint.context())? != *checkpoint.context()
+            || stored.endpoint_publication
+                != self
+                    .historical_endpoint_publication(BrokerSessionProtocolV1::Host, &transcript)?
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let original = self
+            .read_host_argument_archive(outcome.request().request_id())?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let original_checkpoint = original
+            .checkpoint
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let original_transcript = original_checkpoint.verify()?;
+        let original_history = original.history_model()?;
+        let original_index = original_history
+            .records()
+            .len()
+            .checked_sub(1)
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let (request, _) = historical_client_request(
+            original_history.records(),
+            original_index,
+            original_checkpoint,
+            &original_transcript,
+        )?;
+        if request.canonical_packet() != outcome.request().canonical_packet() {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        if let Some(early) = outcome.request().host_before_argument_no_apply_data_v2() {
+            let source = early.source();
+            let accepted = self
+                .read_host_terminal_archive_stored_v2(source.fields().create_operation)?
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            let accepted_history = accepted.history_model()?;
+            // Require the finite64 predecessor before following any semantic
+            // association. A hostile39 cycle cannot recurse through archives.
+            let accepted_head = accepted_history
+                .head()
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            if accepted_head.method()
+                != BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2
+                || accepted_head.request_id() != source.fields().create_operation
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            let accepted_outcome = self
+                .closed_host_terminal_outcome_v2(&accepted)?
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            let bind = accepted_outcome
+                .request()
+                .execution_availability_data_v2()
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            if bind.canonical_accepted_source() != source.encode_canonical()
+                || !successful_terminal(
+                    accepted_history
+                        .head()
+                        .map_err(|_| BrokerSessionSecurityError::Currentness)?,
+                )?
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            // Only the existing canonical helper supplies common H/T on success.
+            if successful_terminal(head)? {
+                aos_sandbox_protocol::host_execution_no_apply::closed_host_terminal_archive_data_v2(&outcome)
+                    .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            }
+        }
+        Ok(Some(outcome))
+    }
+
+    pub(in crate::recovery::journal) fn read_closed_host_terminal_archive_v2(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
+        let Some(stored) = self.read_host_terminal_archive_stored_v2(request_id)? else {
+            return Ok(None);
+        };
+        let Some(outcome) = self.closed_host_terminal_outcome_v2(&stored)? else {
+            return Ok(None);
+        };
+        if outcome.request().request_id() != request_id {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(Some(stored))
+    }
+
+    pub(in crate::recovery::journal) fn read_host_terminal_archive_stored_v2(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<Option<StoredProtocolHistoryV1>, BrokerSessionSecurityError> {
+        let value = {
+            let mut authority = self.schema_authority_v3()?;
+            authority
+                .get(&host_terminal_archive_key(request_id))
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?
+                .map(<[u8]>::to_vec)
+        };
+        let Some(value) = self.schema_retain_value_v3(value)? else {
+            return Ok(None);
+        };
+        let bytes = open_history_archive_frame(request_id, &value, MAGIC, DOMAIN)?;
+        let stored =
+            self.schema_decode_stored_v3(&protocol_key(BrokerSessionProtocolV1::Host), bytes)?;
+        Ok(Some(stored))
     }
 }

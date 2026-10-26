@@ -31,6 +31,22 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The complete read-only Session schema recipe now runs through a borrowed
+  context engine. The ordinary adapter keeps the same native namespace claims,
+  endpoint revalidation bookends, canonical traffic decoder, six archive-family
+  checks, recursive inventory and abandonment checks, and retained failure
+  destinations. Archive decoders receive only their codec/retention hook.
+  Bounded adapter/read headers are included in the existing receiving demand;
+  no writer, floor, descriptor or effect authority is created. Signed native
+  fixtures reject malformed data in every archive family and retain its actual
+  failed value or entry collection. All 409 runnable ordinary Security library
+  tests pass; the online-Nix configuration passes 418, with two existing ignored
+  cases in each. Complete Rust unit and integration target compilation is
+  running for this source. The initializer's actual held-map adapter and its
+  combined hash/schema read before the independently owed native after remain
+  unimplemented; this extraction does not qualify initial provisioning, installed
+  startup or public readiness.
+
 - Host fixed-file admission now observes the mount held by the original file
   with `statx(AT_EMPTY_PATH)` and `statmount(STATMOUNT_BY_FD)`. An inherited
   PID1 file can refer to a mount outside the service's private mount namespace.
