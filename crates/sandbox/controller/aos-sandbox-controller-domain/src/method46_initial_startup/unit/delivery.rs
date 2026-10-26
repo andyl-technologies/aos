@@ -17,6 +17,21 @@ use super::super::credentials::{
 use super::{Method46InitialServiceRoleV1, Method46InitialStartupClosedV1};
 
 const SIGNATURES: [&str; 6] = ["a(ss)", "a(ss)", "a(say)", "a(say)", "as", "a(ss)"];
+const ROOT_NOAPPLY_PUBLIC: &str = "root-noapply-floor-public";
+const ROOT_NOAPPLY_PRIVATE: &str = "root-noapply-floor-signing";
+
+fn canonical_system_source(source: &str) -> bool {
+    source
+        .strip_prefix("/run/credentials/@system/")
+        .is_some_and(|name| {
+            !name.is_empty()
+                && name.len() <= 255
+                && !matches!(name, "." | "..")
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        })
+}
 
 fn selected_sources(
     fragment: &[u8],
@@ -59,17 +74,7 @@ fn selected_sources(
             .iter()
             .position(|expected| *expected == name)
             .ok_or(Method46InitialStartupClosedV1)?;
-        let suffix = source
-            .strip_prefix("/run/credentials/@system/")
-            .ok_or(Method46InitialStartupClosedV1)?;
-        if sources[index].is_some()
-            || suffix.is_empty()
-            || suffix.len() > 255
-            || matches!(suffix, "." | "..")
-            || !suffix
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-        {
+        if sources[index].is_some() || !canonical_system_source(source) {
             return Err(Method46InitialStartupClosedV1);
         }
         sources[index] = Some(source);
@@ -244,6 +249,40 @@ pub(super) fn require_normal_root_public_sources(
             (!expected.is_empty()).then_some(expected),
         )?;
     }
+    let public = sources[31];
+    require_source(
+        values,
+        ROOT_NOAPPLY_PUBLIC,
+        (!public.is_empty()).then_some(public),
+    )?;
+    if public.is_empty() {
+        require_source(values, ROOT_NOAPPLY_PRIVATE, None)?;
+    } else {
+        // Compare only the native source name. The initializer never opens or
+        // decodes Root's private credential. Root's paid signer binds its key
+        // to the public copy before either finite signing purpose can run.
+        let Value::Array(rows) = &**values.first().ok_or(Method46InitialStartupClosedV1)? else {
+            return Err(Method46InitialStartupClosedV1);
+        };
+        let mut private = None;
+        for row in rows.inner() {
+            let Value::Structure(pair) = row else {
+                return Err(Method46InitialStartupClosedV1);
+            };
+            let [Value::Str(name), Value::Str(source)] = pair.fields() else {
+                return Err(Method46InitialStartupClosedV1);
+            };
+            if name.as_str() == ROOT_NOAPPLY_PRIVATE && private.replace(source.as_str()).is_some() {
+                return Err(Method46InitialStartupClosedV1);
+            }
+        }
+        let private = private.ok_or(Method46InitialStartupClosedV1)?;
+        if private == public || !canonical_system_source(private) {
+            return Err(Method46InitialStartupClosedV1);
+        }
+        require_named_source(values, ROOT_NOAPPLY_PRIVATE, private)?;
+    }
+
     Ok(())
 }
 
@@ -525,7 +564,7 @@ mod tests {
     }
 
     fn root_extra_rows(selected: &[bool; NAMES.len()]) -> Vec<(String, String)> {
-        ROOT_POLICY_MEMBERS
+        let mut rows: Vec<_> = ROOT_POLICY_MEMBERS
             .into_iter()
             .enumerate()
             .map(|(index, member)| (member.name(), 24 + index))
@@ -534,6 +573,7 @@ mod tests {
                     .into_iter()
                     .map(|member| (member.name(), member.slot())),
             )
+            .chain([(ROOT_NOAPPLY_PUBLIC, 31)])
             .filter(|(_, slot)| selected[*slot])
             .map(|(name, slot)| {
                 (
@@ -541,7 +581,14 @@ mod tests {
                     format!("/run/credentials/@system/external-{slot}"),
                 )
             })
-            .collect()
+            .collect();
+        if selected[31] {
+            rows.push((
+                ROOT_NOAPPLY_PRIVATE.to_owned(),
+                "/run/credentials/@system/private-root-noapply".to_owned(),
+            ));
+        }
+        rows
     }
 
     fn policy_rows(owner: PublicOwner) -> Vec<(String, String)> {
@@ -720,7 +767,11 @@ mod tests {
             let mut duplicate = rows.clone();
             duplicate.push(rows[index].clone());
             let mut substituted = rows.clone();
-            substituted[index].1.push_str("-substituted");
+            if rows[index].0 == ROOT_NOAPPLY_PRIVATE {
+                substituted[index].1 = "/foreign/private-source".to_owned();
+            } else {
+                substituted[index].1.push_str("-substituted");
+            }
             for changed in [duplicate, substituted] {
                 assert!(
                     require_normal_root_public_sources(
@@ -754,6 +805,79 @@ mod tests {
             values[index] = changed;
             assert!(require_normal_root_public_sources(&values, fragment.as_bytes()).is_err());
         }
+    }
+
+    #[test]
+    fn root_noapply_delivery_requires_both_names_or_their_compared_absence() {
+        use super::super::super::credentials::METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1 as MEMBERS;
+        let fragment = fragment();
+        let mut rows = MEMBERS
+            .into_iter()
+            .enumerate()
+            .map(|(index, member)| {
+                (
+                    member.name().to_owned(),
+                    format!("/run/credentials/@system/external-{}", index + 10),
+                )
+            })
+            .collect::<Vec<_>>();
+        rows.extend(root_extra_rows(&[true; NAMES.len()]));
+        let without_pin = fragment
+            .lines()
+            .filter(|line| !line.starts_with(&format!("LoadCredential={}:", NAMES[31])))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for present in [false, true] {
+            let selected = if present { &fragment } else { &without_pin };
+            for public in [false, true] {
+                for private in [false, true] {
+                    let mut changed = rows.clone();
+                    changed.retain(|(name, _)| {
+                        (public || name != ROOT_NOAPPLY_PUBLIC)
+                            && (private || name != ROOT_NOAPPLY_PRIVATE)
+                    });
+                    assert_eq!(
+                        require_normal_root_public_sources(
+                            &normal_properties(changed),
+                            selected.as_bytes(),
+                        )
+                        .is_ok(),
+                        public == present && private == present
+                    );
+                }
+            }
+        }
+
+        for source in [
+            "/run/credentials/@system/external-31",
+            "/foreign/seed",
+            "/run/credentials/@system/..",
+        ] {
+            let mut changed = rows.clone();
+            changed
+                .iter_mut()
+                .find(|(name, _)| name == ROOT_NOAPPLY_PRIVATE)
+                .unwrap()
+                .1 = source.to_owned();
+            assert!(
+                require_normal_root_public_sources(
+                    &normal_properties(changed),
+                    fragment.as_bytes(),
+                )
+                .is_err()
+            );
+        }
+        // The initial job never chooses the private source. A different valid
+        // native source is allowed; Root itself must compare its actual bytes.
+        rows.iter_mut()
+            .find(|(name, _)| name == ROOT_NOAPPLY_PRIVATE)
+            .unwrap()
+            .1 = "/run/credentials/@system/another-private-root-source".to_owned();
+        assert!(
+            require_normal_root_public_sources(&normal_properties(rows), fragment.as_bytes(),)
+                .is_ok()
+        );
     }
 
     #[test]

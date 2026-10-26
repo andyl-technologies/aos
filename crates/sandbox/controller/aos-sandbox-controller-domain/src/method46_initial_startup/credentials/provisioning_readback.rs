@@ -18,7 +18,9 @@ use super::*;
 /// normal public manifests, the signature and public pin.
 /// Actual credential buffers and original native observations are paid by the
 /// enclosing file owner separately. This size alone authenticates no payer.
-pub const METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1: usize = 32 * 1024;
+// Root NoApply adds a separate canonical frame, strict point result and
+// retained comparison. The genuine Source prepays this expanded carrier.
+pub const METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1: usize = 36 * 1024;
 
 /// Lists the existing normal-Root public signer members in their fixed read order.
 ///
@@ -257,6 +259,22 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
         self.optional_public_bytes(member.slot())
     }
 
+    /// Borrows Root's independently delivered NoApply public pin.
+    ///
+    /// Both native Root delivery samples must match this source and a distinct
+    /// private credential source, or agree that both names are absent. Root's
+    /// own funded signer verifies the private/public pair. This loan opens no
+    /// private signing credential and grants no Root or signing authority.
+    ///
+    /// # Errors
+    /// Refuses an ended Source, incomplete credential admission, a busy owner
+    /// or entered posts. Absence is returned only from the original selection.
+    pub fn normal_root_noapply_public_key_bytes_v2(
+        &self,
+    ) -> Result<Option<Ref<'_, [u8]>>, Method46InitialStartupClosedV1> {
+        self.optional_public_bytes(31)
+    }
+
     /// Borrows one original public signer credential delivered to normal Root.
     ///
     /// Only the five members in [`METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1`]
@@ -460,6 +478,7 @@ mod tests {
         assert!(loan.normal_storage_manifest_bytes_v1().is_err());
         assert!(loan.controller_nix_floor_issuer_bytes_v1().is_err());
         assert!(loan.owner_nix_floor_issuer_bytes_v1().is_err());
+        assert!(loan.normal_root_noapply_public_key_bytes_v2().is_err());
         for owner in [
             Method46InitialPublicPinOwnerV1::Controller,
             Method46InitialPublicPinOwnerV1::NixBroker,

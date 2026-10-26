@@ -36,7 +36,7 @@ use entries::Entries;
 use observation::Observation;
 
 pub(super) const REQUIRED_CREDENTIAL_SLOTS: [usize; 12] = [0, 1, 2, 3, 4, 5, 6, 10, 11, 17, 18, 19];
-pub(super) const NAMES: [&str; 31] = [
+pub(super) const NAMES: [&str; 32] = [
     "broker-method46-tpm-provision-v1",
     "broker-method46-tpm-index-auth-v1",
     "method46-initial-approval-public-key-v1",
@@ -68,6 +68,7 @@ pub(super) const NAMES: [&str; 31] = [
     "method46-normal-root-project-authorization-issuer-v2",
     "method46-normal-controller-source-seed-issuer-v1",
     "method46-normal-controller-project-authorization-issuer-v2",
+    "method46-normal-root-noapply-public-key-v2",
 ];
 const MANIFEST_BYTES: usize =
     aos_sandbox_broker_session_protocol::manifest::BROKER_SESSION_MANIFEST_BYTES;
@@ -99,6 +100,7 @@ const LENGTHS: [usize; NAMES.len()] = [
     32,
     32,
     32,
+    80,
     80,
     80,
     80,

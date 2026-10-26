@@ -31,6 +31,9 @@ use public_policy_pins::PublicPolicyPinOriginal;
 mod genesis_public;
 use genesis_public::GenesisPublicPinOriginal;
 
+mod root_noapply_public;
+use root_noapply_public::RootNoApplyPublicPinOriginal;
+
 mod online_floor_issuer;
 use online_floor_issuer::OnlineFloorIssuerOriginal;
 
@@ -79,6 +82,8 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     root_policy_public: [PublicPolicyPinOriginal; 3],
     genesis_public_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; 4],
     genesis_public: [GenesisPublicPinOriginal; 4],
+    root_noapply_public_read: Option<Result<(), Method46InitialStartupClosedV1>>,
+    root_noapply_public: RootNoApplyPublicPinOriginal,
     root_public_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; 5],
     root_public: [RootPublicKeyOriginal; 5],
     approval: RefCell<ApprovalVerificationOriginal>,
@@ -137,6 +142,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             root_policy_public: std::array::from_fn(|_| PublicPolicyPinOriginal::new()),
             genesis_public_reads: std::array::from_fn(|_| None),
             genesis_public: std::array::from_fn(|_| GenesisPublicPinOriginal::new()),
+            root_noapply_public_read: None,
+            root_noapply_public: RootNoApplyPublicPinOriginal::new(),
             root_public_reads: std::array::from_fn(|_| None),
             root_public: std::array::from_fn(|_| RootPublicKeyOriginal::new()),
             approval: RefCell::new(ApprovalVerificationOriginal::new()),
@@ -357,6 +364,22 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             }
         }
 
+        let bytes = match self.readback.normal_root_noapply_public_key_bytes_v2() {
+            Ok(bytes) => {
+                self.root_noapply_public_read = Some(Ok(()));
+                bytes
+            }
+            Err(error) => {
+                self.root_noapply_public_read = Some(Err(error));
+                return;
+            }
+        };
+        self.root_noapply_public
+            .observe_once(bytes.as_deref(), approval);
+        if !self.root_noapply_public.admitted() {
+            return;
+        }
+
         for (index, member) in METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1
             .into_iter()
             .enumerate()
@@ -417,6 +440,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
                 .genesis_public
                 .iter()
                 .all(GenesisPublicPinOriginal::admitted)
+            && matches!(self.root_noapply_public_read, Some(Ok(())))
+            && self.root_noapply_public.admitted()
             && self
                 .root_public_reads
                 .iter()

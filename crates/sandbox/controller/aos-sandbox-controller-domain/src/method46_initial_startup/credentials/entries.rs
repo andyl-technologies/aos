@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn optional_native_names_match_the_exact_selected_roster() {
-        for mask in 0_u16..2048 {
+        for mask in 0_u16..4096 {
             let mut selected = [true; NAMES.len()];
             selected[7] = mask & 1 != 0;
             selected[8] = mask & 2 != 0;
@@ -174,6 +174,7 @@ mod tests {
             selected[28] = selected[27];
             selected[29] = mask & 512 != 0;
             selected[30] = mask & 1024 != 0;
+            selected[31] = mask & 2048 != 0;
             let directory = tempfile::tempdir().unwrap();
             for (index, name) in NAMES.iter().enumerate() {
                 if selected[index] {

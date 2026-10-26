@@ -31,6 +31,26 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Initial approval exclusion now includes Root's separately delivered NoApply
+  public credential. Both retained native Root samples must match its public
+  source and a distinct, canonically named private source, or agree that both
+  credential names are absent. The initializer never opens that private source;
+  Root's own funded signer checks the actual key pair. The same Source prepays
+  the thirty-two-file maximum, 164 descriptor carriers and all reached native
+  posts. The directory regression covers all 4,096 valid rosters; a missing or
+  ended Source cannot supply an absence exemption. Security retains the canonical
+  AOSRNP02 decoder and strict point-decoder results, rejects weak keys and initial
+  approval reuse regardless of generation, and preserves first results on reentry.
+  The compiled layout check caught the old 32 KiB allowance being exceeded. The
+  genuine Source now prepays 36 KiB for these retained decoders; resource-bank
+  capacities remain unchanged. All 88 focused initializer, 433 ordinary Security
+  and 442 online-Nix Security tests pass, with two existing ignored cases per
+  Security suite. Complete application unit/integration target compilation is
+  running for the six final Rust files. The superseded full build was
+  cancelled after the native compile exposed the insufficient prepayment.
+  Actual Host delivery provenance, offline Nix approval, installed producer
+  effects and public lifecycle qualification remain open.
+
 - Normal Root now receives the same independently provisioned NoApply public
   pin source as Host. Its existing funded signer retains both native credential
   originals, canonical decoder results and the exact private-derived/public
@@ -91,7 +111,9 @@ Recent committed startup fixes close narrower prerequisites:
   private authentication or signing-seed accessor. All 86 focused initializer,
   426 ordinary Security and 435 online-Nix Security tests pass; each Security
   suite retains two existing ignored cases. Complete application unit/integration
-  target compilation is running for the eight final Rust inputs. Offline Nix
+  target compilation passes for the eight final Rust inputs
+  (`/nix/store/i25wcarxzkpkc1i9phllfl15frh50iwn-aos-test-targets-0.1.0`),
+  before the genesis and NoApply additions. Offline Nix
   approval provenance, remaining Root trust families, full endpoint provenance,
   durable intent, installed TPM effects and public lifecycle qualification
   remain open.
