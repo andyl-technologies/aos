@@ -53,14 +53,14 @@ result does not renew current role execution or accept T-HOST-1.
 | HOST-2, HOST-14 | [Encoded sources][source], [admission custody][admission] and [verification][verification] bind encoded bytes, chunk identity, length, boundary and dictionaries before exposure or admission. | The native admission guest must establish actual temporary writes, synchronization and canonical insertion. |
 | HOST-3 to HOST-5, OBJ-5 | [Native publication][publisher] closes writers, verifies the independent content claim, enables and measures verity, publishes without replacement and durably records its binding. [Adoption][adoption] independently verifies the existing original inode and binding. | The renewed native guests qualify the directory-open correction at the recorded source. Later service mount behavior and full publisher deployment remain separately owned by T-HOST-2. |
 | HOST-11 to HOST-13 | [Reassembly][reassembly] verifies the same ordered stream that reaches the output, including manifest identity, chunk boundaries and whole-file hashes. [Residence recovery][residences] verifies ranges and metadata independently. | Reassembly and eviction guests must prove source retention and dependent extraction. A plan object grants neither funding nor publication authority. |
-| HOST-15 | [Read failure custody][corruption] latches denial across original aliases. The [physical worker][quarantine] retains the failed inode for publisher quarantine; [read-through][read-through] can fetch independently verified lower bytes. | Failed or uncertain quarantine retains custody and requires recovery. This evidence does not establish a scrub scheduler or complete structured security logging. |
+| HOST-15 | [Read failure custody][corruption] latches denial across original aliases. The [physical worker][quarantine] reports the native failure and retains the failed inode for publisher quarantine; [read-through][read-through] can fetch independently verified lower bytes. | Failed or uncertain quarantine retains custody and requires recovery. Retention must end only after confirmation of another good copy or the quarantine deadline; HOST-15 does not prescribe a scrub scheduler or a structured log format. |
 | HOST-16 to HOST-21 | [Cache policy][policy] reserves before admission, implements bounded probation/main FIFOs, second chance, pins and grace. [Retirement][retirement] retains charges until physical completion. [Lower reads][driver] remain usable when admission fails. | Policy holds are distinct from measured allocation. Whole-pack retirement and exact accounting require the physical guests. |
 | HOST-22, HOST-24 | [State][state] records pin owner, digest and expiry. [Snapshots][snapshot] require actual synchronization and bounded readback. The [worker][worker] sweeps before commands and on its one-second idle bound; [expiry][expiry] uses durable deadlines without applying grace twice. | Expired policy rows alone are insufficient: evidence must reach original-inode retirement and measured reclamation while the expired handle remains retained. |
-| HOST-23, PROTO-60 | [Preparation][preparation] authenticates the configured owner, roots, project and epoch. [Native completion][completion] distinguishes allocation, charged/reserved usage and future holds. The [quota transport][quota] queries actual kernel state; [confinement][confinement] denies project setters across threads and descendants. | Trusted host identity isolation, provisioning and production boot ordering need separate deployment proof. Component confinement does not establish those host obligations. |
+| HOST-23, PROTO-60 | [Preparation][preparation] authenticates the configured owner, roots, project and epoch. [Native completion][completion] distinguishes allocation, charged/reserved usage and future holds. The [quota transport][quota] queries actual kernel state; [confinement][confinement] denies project setters across threads and descendants. [Provisioning][quota-configuration] bounds the sum of finite project limits by the tier budget; the [configured opener][configured-cache] checks the authenticated ledger and complete domain partition before opening owners. | [Identity assertions][identity-checks] reject UID/GID aliases, foreign role-group members and other units using a role identity. [Service configuration][services] orders roles after the quota service and restricts writable paths, capabilities and process visibility. Actual current-source manager execution remains necessary to qualify deployment of these controls. |
 | HOST-25, HOST-27, DOM-18 | [Host configuration][configuration] rejects sealed zero-wipe before startup under D-128. Domain-bound [layouts][domain-layout] prevent cross-domain sealed reuse. The [signed read policy][read-policy] checks effective erasure requirements before content I/O. `none` means unlink; it never means overwrite. | The private-domain default remains `zero`, so unsupported sealed configuration must refuse rather than silently select `none`. Discard and volatile implementations remain optional worklines. |
 | HOST-28 | [Pending recovery][pending], [physical retirement][retirement] and the [publisher channel][lifecycle] retain original custody, durable deadlines, no-replace names and restoration before final removal. Pack/index reconciliation preserves the original pair. | Unknown deadlines require a conservative recovery interval. Queue transitions do not prove deletion or release retained inode charges. |
 | HOST-29, HOST-30 | [Embedded state][state] contains bounded policy and physical obligations, excluding reconstruction manifests, trees and indexes. [Sealed backing][backing] and its atomic [failure latch][corruption] do not enter embedded state or its command queue. | Exposure records describe retained pins and custody; they are not resumed execution or a content lookup index. |
-| HOST-31 to HOST-34, BKT-15 | [NativeReady][ready] validates the complete portable bucket before and after actual recovery, compares its checkpoint and requires physical Resume. [Namespace recovery][namespace], [manifest recovery][manifests], [residence recovery][residences] and [pending recovery][pending] verify actual inventory before service. | Bare cache recovery is insufficient for BKT-15. Old exposures are not resumed. Writable upper recovery remains conditional on its owning surface implementation; production role deployment is still unqualified. |
+| HOST-31 to HOST-34, BKT-15 | [NativeReady][ready] validates the complete portable bucket before and after actual recovery, compares its checkpoint and requires physical Resume. The [configured opener][configured-cache] constructs this value for every configured domain before returning its content store. [Namespace recovery][namespace], [manifest recovery][manifests], [residence recovery][residences] and [pending recovery][pending] verify actual inventory before service. | Bare cache recovery is insufficient for BKT-15. Portable validation and native custody are separate obligations, reconciled below. Old exposures are not resumed. Writable upper recovery remains conditional on its owning surface implementation; production role deployment is still unqualified. |
 | HOST-35, HOST-36 | The [native driver][driver] checks residents before lower routing, shares circuit state across clones and bounds the complete lower attempt. [Ordered fetch][fetch] skips open circuits and performs bounded probes. | This host-local composition does not establish a production remote Distribution backend or full T3 expression deployment. |
 
 ## Acceptance evidence
@@ -79,12 +79,38 @@ original derivations, four gate outputs, each selector transcript, the source
 image and its retained Cargo artifact. The crash-recovery gate's separately
 reviewed dependencies retain their original source and execution attribution.
 
-The initial-enrollment transcript still records `capabilities-update` as an
-unqualified actual Original native-fence refusal. Its passing enclosing guest
-does not turn that refusal into positive evidence for administrative bucket
-reopening. BKT-15 reconciliation must inspect the independent portable-bucket
-validation and actual NativeReady composition, rather than infer conformance
-from the enrollment component's success result.
+### Portable validity and native readiness
+
+BKT-15 requires the disk tier's durable state to remain a valid `file://`
+bucket extended only by the registered host prefixes. It does not require an
+allocation role to reopen the bucket's administrative publication authority.
+The initial-enrollment transcript records `capabilities-update` as an
+unqualified actual Original native-fence refusal. That result remains a refusal;
+the enclosing guest's success supplies no positive administrative reopening proof.
+
+The independent [portable validator][portable-validation] reuses the complete
+portable-copy validators through a bounded native filesystem binding that denies
+every mutation. It captures the selected portable pointer, capabilities,
+history, generation manifest and payload through the same retained descriptors,
+then checks capture continuity before returning. Its private `Access::Writable`
+tag selects the existing layout-two validators; the binding supplies no write,
+initialization, repair, lock or publication-control operation. The returned
+snapshot retains neither pack bodies nor serving authority.
+
+The configured native opener combines portable validation with authenticated
+quota and publisher custody, recovery of the original inventory and completed
+physical Resume. Validation runs before cache initialization and again after
+recovery. The opener
+compares the before/after checkpoint before returning `NativeReady`. This is the
+composition exercised by the separately qualified configured SDK guests consumed
+by the current host gates. Seven of their original physical guests record 24
+explicit portable-validation, recovery and Resume witnesses across the public
+and private fixture domains. The fixture also repeats portable validation after
+its populated native content operations. These are the original reviewed
+transcripts, not additional executions. A decoded portable observation or a bare
+recovery result cannot construct the private readiness value. This evidence applies to
+portable validity and the configured native opener; it does not establish full
+Serve restart or conditional surface recovery.
 
 Separate base/all-feature native cache renewal at `31aa0ae05f` passes in
 3,235.284 seconds. Each profile matches 8,263 immutable source files, four
@@ -132,3 +158,8 @@ because its source is listed in this audit.
 [manifests]: ../../../../../crates/terrane/linux/terrane-linux/src/host_cache/owner/recovery_manifests.rs
 [fetch]: ../../../../../crates/terrane/sdk/terrane-sdk/src/host/cache/fetch.rs
 [read-policy]: ../../../../../crates/terrane/linux/terrane-linux/src/host_cache/content/presentation.rs
+[portable-validation]: ../../../../../crates/terrane/sdk/terrane-sdk/src/bucket/portable_reader/native.rs
+[configured-cache]: ../../../../../crates/terrane/linux/terrane-linux/src/configured/cache.rs
+[quota-configuration]: ../../../../../modules/terrane/_host-quota.nix
+[identity-checks]: ../../../../../modules/terrane/_identity-checks.nix
+[services]: ../../../../../modules/terrane/host.nix
