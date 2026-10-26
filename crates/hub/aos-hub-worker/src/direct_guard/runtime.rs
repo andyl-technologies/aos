@@ -542,17 +542,13 @@ async fn reserve(
             .await?
         }
     };
-    let now = qualified.latest_now()?;
-    let expires_at = WireInteger::new(
-        turn.context
-            .expires_at
-            .get()
-            .min(turn.admission.expires_at.get()),
-    );
-    ensure!(
-        now < expires_at.get(),
-        "direct baseline observation expired"
-    );
+    let observed_at = u64::try_from(aos_hub_model::clock::now_unix_secs())?;
+    let window = super::observation_window::ObservationWindow::new(
+        &turn.context,
+        turn.admission.expires_at,
+        observed_at,
+        qualified.latest_now()?,
+    )?;
     if owner.baseline.is_none() {
         let baseline = DirectDestinationBaselineEvidence {
             binding: owner.binding.clone(),
@@ -562,8 +558,8 @@ async fn reserve(
                 &turn.complete.operation_id,
                 "baseline-original",
             )?,
-            issued_at: WireInteger::new(now),
-            expires_at,
+            issued_at: window.issued_at,
+            expires_at: window.expires_at,
             state: state.clone(),
         };
         owner = owner.retain_baseline(baseline)?;
@@ -585,8 +581,8 @@ async fn reserve(
             &turn.context.request_nonce,
             "held-baseline-witness",
         ))?,
-        issued_at: WireInteger::new(now),
-        expires_at,
+        issued_at: window.issued_at,
+        expires_at: window.expires_at,
     };
     let witness =
         match read::<DirectDestinationBaselineWitness>(storage, &witness_key(&proposed)?).await? {

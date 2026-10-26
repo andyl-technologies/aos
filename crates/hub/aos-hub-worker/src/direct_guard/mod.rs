@@ -16,6 +16,8 @@
 
 mod state;
 
+mod observation_window;
+
 #[cfg(any(test, target_arch = "wasm32"))]
 mod diagnostics;
 
