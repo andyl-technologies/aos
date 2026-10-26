@@ -1,10 +1,11 @@
 # T-STORE-3 shared-directory audit
 
-This audit inspects the implementation at
-`330e82243d9441a63e9fbbb7672b9e4fd6883041`. It does not accept T-STORE-3.
-The complete `shared-dir-read-only` and `dom-host-isolation` owning gates
-require current-source execution and independent review. Their results must
-then be reconciled with all six assigned requirements below.
+The complete `shared-dir-read-only` and `dom-host-isolation` owning gates pass
+at `806f6b98a509de4b2f28c84e88e7a51c343f0963` in 220.802 seconds.
+Independent review checks all six original KVM guests and both aggregate roots.
+T-STORE-3 remains unaccepted: the backend results must be reconciled with all
+six assigned requirements, including the production realization and retained
+kernel-reference boundaries below.
 
 ## Requirement coverage
 
@@ -19,12 +20,12 @@ then be reconciled with all six assigned requirements below.
 
 ## Qualification checkpoint
 
-At the inspected source, both SDK images and all twelve remaining non-KVM
+At `330e82243d`, both SDK images and all twelve remaining non-KVM
 prerequisites pass independent source, executable and guest-dispatch review.
 Both native-builder probes retain the original unprivileged ext4 controls;
 fourteen raw records are preserved and owned controller scratch is removed.
 
-Complete owning-gate renewal stops in 164.316 seconds after the three original
+That owning-gate renewal stops in 164.316 seconds after the three original
 private-release guests pass. The 512 MiB portable shared-mode guest OOM-kills
 its UID-840 Python verifier before native execution: the helper reads its
 466,280,768-byte executable to check the four-byte ELF header. Independent
@@ -32,8 +33,35 @@ failure review and raw VM records preserve that result. Header reads are now
 bounded to four bytes; the common SDK verifier streams the full SHA-256.
 Metadata-only verification of both actual retained executables preserves their
 prior hashes with measured Python peak allocations below 12 MiB. No guest
-memory, filesystem, privilege, selector or deadline control changes. Renewed
-original native execution remains required.
+memory, filesystem, privilege, selector or deadline control changes.
+
+Renewal at `806f6b98a5` passes after 3,426.661 seconds of prerequisite
+construction in the original AOS builder. Independent review checks all 9,597
+tracked files, both SDK images and the enrollment image, including their
+immutable source and actual retained Cargo executable identities. Nineteen
+original non-KVM prerequisites and a fresh isolation probe account for exactly
+twenty paired remote-dispatch and guest-build records; host-native builds stay
+disabled. Seven raw controller records are preserved and the exact owned
+scratch is removed.
+
+The repeated canonical preflight leaves exactly the original six KVM guests
+and two aggregate derivations. All thirteen original shared-directory selectors,
+the actual setgid-mode case and all three private-release scenarios pass.
+Each private-release scenario retains its fifteen common enrollment controls,
+original positive selectors and publisher reassembly, including cold inline and
+manifest recovery. Review checks the original inode and project-charge
+witnesses, actual executable identities, UID/GID 840, empty capabilities,
+no-new-privileges and ext4 controls. The formerly failing portable guest retains
+512 MiB, one CPU, its 120-second Firecracker deadline and 300-second complete
+job deadline. The other five guests retain their original 1 GiB envelopes.
+Both aggregates contain the exact source-defined result and proof links.
+All eight outputs are preserved as 33 hashed regular files.
+
+The runtime reviewer initially assumed that every guest used the direct
+Firecracker timeout form. The private-release guests use an outer complete-job
+deadline instead. That review refusal is preserved; the corrected parser
+records both original forms and verifies the portable guest's exact bounds.
+No runtime command, limit, selector or assertion changes to obtain the result.
 
 Compilation, retained executable hashes, finite selector results and complete
 gate results are distinct evidence. Neither successful image construction nor

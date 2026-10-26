@@ -102,6 +102,32 @@ scope, unchanged production source and retained evidence. T-HOST-1, global
 NativeReady and complete Serve restart remain unaccepted. Counts in earlier
 checkpoints below describe acceptance at their respective sources.
 
+Complete `shared-dir-read-only` and `dom-host-isolation` renewal at
+`806f6b98a5` passes in 220.802 seconds after 3,426.661 seconds of guest-only
+prerequisite construction. Independent review matches 9,597 tracked files,
+both actual SDK images, the enrollment image and all twenty original remote
+dispatches including the fresh isolation probe. All six original KVM guests,
+thirteen shared-directory selectors, the setgid-mode case and the three
+private-release scenarios pass. The portable guest retains its original
+512 MiB limit and deadlines. Eight runtime outputs are preserved as 33 hashed
+files; seven controller records are preserved and owned scratch is removed.
+The [shared-directory audit](acceptance/shared-directory.md) records the
+remaining mixed-domain consumer and retained-kernel-reference obligations.
+T-STORE-3 remains open and trunk acceptance remains 28/64.
+
+The original systemd-manager owning check at `330e82243d` also passes in
+245.146 seconds under its original 300-second/4-GiB/two-CPU limits. Independent
+review matches 9,596 tracked files, 8,297 immutable source files, five retained
+Cargo executables, fifteen enrollment controls and actual role mounts. Both
+fresh GC processes start after Serve readiness in complete same-boot PID 1
+journal pairs. Publisher notify readiness, fresh publisher PID/listener on
+restart, original listener retirement and completed SDK snapshots pass.
+Forty-eight original packaging prerequisites plus the fresh AOS probe pass
+review; seven controller and four runtime records are preserved. The
+[host audit](acceptance/host-tier.md) retains the unrelated degraded boot-service
+observations and the remaining complete Serve restart and physical-lifetime
+limits. This renewal does not accept another task.
+
 Shared-directory owning-gate renewal at `330e82243d` stops in 164.316
 seconds after all three original private-release guests pass. The 512 MiB
 portable shared-mode guest then OOM-kills its UID-840 Python verifier before
