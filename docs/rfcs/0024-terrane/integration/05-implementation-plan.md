@@ -91,6 +91,23 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+`DomainStore::indexed_presence` now routes committed-index queries through the
+operation's Guard-proven read set. It rejects more than 4,096 digests, performs
+no index I/O for empty or entirely unreadable requests, and forwards only the
+permitted digests while preserving request order and duplicates. Incorrect reply
+lengths and backend failures return no partial hints. It never falls back to
+body-verifying `has`, `get` or listing. Temporary digest sets remain bounded by
+the request even when the existing read decision is large. Four in-memory cases
+cover routing, root-only and foreign decisions, request bounds, malformed replies
+and maximum-length duplicate requests; a dedicated exact-selector AOS check is
+registered. Strict all-target Clippy passes for default Tokio and explicit
+`tokio,surface-sdk` native profiles; SDK Rust formatting, Nix formatting and
+parsing, PLAN-2 and diff checks pass. Runtime qualification and required
+application-target compilation remain pending. This is a scoped backend
+primitive: the production service must
+still obtain fresh token, revocation and current-ACL authorization for each
+operation. It does not implement the Distribution service or accept T-PROTO-1.
+
 The complete committed manager fixture at `874c01676f` now passes in 218.935
 seconds under its original 300-second bound. Independent review matches all
 8,266 immutable source files, five retained Cargo executables, fifteen enrollment

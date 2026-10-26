@@ -17,6 +17,9 @@ mod storage;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod indexed_presence_tests;
+
 #[cfg(all(test, feature = "tokio", unix))]
 mod native_tests;
 

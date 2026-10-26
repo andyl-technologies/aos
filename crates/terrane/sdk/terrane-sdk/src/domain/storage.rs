@@ -8,12 +8,13 @@
 //! residual channels; this module makes no Security-level conformance claim.
 
 use terrane_format::auth::Verb;
-use terrane_format::identity::{Identity, IdentityKind};
+use terrane_format::identity::{Digest, Identity, IdentityKind};
 use terrane_format::properties::Domain;
 
 use super::{DomainAccess, DomainRecord};
 use crate::store::{
-    ByteRange, ContentStore, ContentUpload, InvalidReason, StoreErrorKind, StoreFailure,
+    ByteRange, ContentStore, ContentUpload, IndexedContent, InvalidReason, MAX_INDEXED_HASHES,
+    StoreErrorKind, StoreFailure,
 };
 
 /// Records an explicitly authorized admission into an existing open root.
@@ -285,6 +286,66 @@ impl<S: ContentStore> DomainStore<S> {
                 }
             })
             .collect())
+    }
+
+    /// Tests committed index membership only for the operation's readable hashes.
+    ///
+    /// Preserves request order and duplicates, with at most 4,096 digests. Hashes
+    /// outside the guard-proven read set return false without a backend lookup.
+    /// Empty and entirely unreadable requests perform no index I/O. The backend
+    /// receives only permitted hashes and answers from its committed index;
+    /// ordinary body reads and their verification are never used as a fallback.
+    ///
+    /// The caller must supply a fresh guard decision for this operation. This
+    /// method does not refresh token validity or current ACLs, and its result
+    /// grants neither content admission nor authority for a later operation.
+    ///
+    /// # Errors
+    /// Rejects another domain, excessive requests, failed index observations and
+    /// responses that do not cover the exact permitted request. No partial
+    /// membership result escapes a failed observation.
+    pub async fn indexed_presence(
+        &self,
+        access: &DomainAccess,
+        hashes: &[Digest],
+    ) -> Result<Vec<bool>, StoreFailure>
+    where
+        S: IndexedContent,
+    {
+        self.check(access, Verb::Read)?;
+        if hashes.len() > MAX_INDEXED_HASHES {
+            return Err(StoreFailure::new(StoreErrorKind::Invalid(
+                InvalidReason::Upload {
+                    rule_id: "PROTO-10",
+                },
+            )));
+        }
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let permitted = access.readable_requested_hashes(hashes);
+        let positions: Vec<_> = hashes
+            .iter()
+            .enumerate()
+            .filter_map(|(position, hash)| permitted.contains(hash).then_some(position))
+            .collect();
+        if positions.is_empty() {
+            return Ok(vec![false; hashes.len()]);
+        }
+        let readable: Vec<_> = positions.iter().map(|position| hashes[*position]).collect();
+        let present = self.backend.indexed_presence(&readable).await?;
+        if present.len() != positions.len() {
+            return Err(StoreFailure::new(StoreErrorKind::Unavailable {
+                retry_after: None,
+            }));
+        }
+
+        let mut result = vec![false; hashes.len()];
+        for (position, present) in positions.into_iter().zip(present) {
+            result[position] = present;
+        }
+        Ok(result)
     }
 
     /// Retrieves a filter built and stored in this domain alone (DOM-11).

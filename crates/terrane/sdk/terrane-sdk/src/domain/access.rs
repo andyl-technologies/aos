@@ -1,5 +1,7 @@
 //! Binds guarded operations to trusted root policy without forwarding tokens.
 
+use std::collections::BTreeSet;
+
 use terrane_format::auth::Verb;
 use terrane_format::identity::{Digest, Identity};
 use terrane_format::properties::Domain;
@@ -82,6 +84,19 @@ impl DomainAccess {
     /// Reports whether guard proved this identity readable in the bound scope.
     pub(crate) fn permits_identity(&self, identity: &Identity) -> bool {
         self.read_identities.contains(identity)
+    }
+
+    /// Intersects requested v1 digests with the operation's verified read set.
+    ///
+    /// Both temporary sets are bounded by the caller's request, regardless of
+    /// the size of the existing read decision. Other profiles grant no v1 bit.
+    pub(crate) fn readable_requested_hashes(&self, hashes: &[Digest]) -> BTreeSet<Digest> {
+        let requested: BTreeSet<_> = hashes.iter().copied().collect();
+        self.read_identities
+            .iter()
+            .filter_map(|identity| identity.terrane_v1_digest().ok())
+            .filter(|hash| requested.contains(hash))
+            .collect()
     }
 
     /// Binds one identity to its exact authenticated full source-file path.

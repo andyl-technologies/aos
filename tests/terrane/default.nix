@@ -617,6 +617,7 @@ in {
   integration.store-expression-opened = import ./store-expression-opened.nix {inherit sourceGate;};
   integration.ref-history = import ./ref-history.nix {inherit sourceGate;};
   integration.indexed-presence = import ./indexed-presence.nix {inherit sourceGate;};
+  integration.scoped-indexed-presence = import ./scoped-indexed-presence.nix {inherit sourceGate;};
   integration.structural-index = import ./structural-index.nix {inherit pkgs sourceGateWithInputs;};
   integration.structural-mapping = (import ./structural-mapping.nix {inherit pkgs lib sourceGateWithInputs;}).native;
   integration.structural-mapping-image = (import ./structural-mapping.nix {inherit pkgs lib sourceGateWithInputs;}).image;
