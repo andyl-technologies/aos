@@ -91,6 +91,22 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The actual warm Serve-restart diagnostic at `10699f7b5d` completes in
+194.410 seconds with all fifteen original enrollment controls and the complete
+original managed proof. Starting the unchanged Serve unit automatically starts
+a third fresh publisher, which reaches its original notify readiness. The
+second Serve process runs the original CLI with unchanged configuration,
+credentials, endpoints, namespace and privilege controls, but exits with status
+1 at `configured SDK presentation failed`. Both completed snapshots retain
+identical bytes and inode metadata. Independent source, retained-executable,
+transformation and runtime review passes for the diagnostic observation only;
+the actual Serve restart remains failed. The third publisher stops cleanly.
+Raw VM configuration, Firecracker and serial records are preserved and the
+exact owned scratch directory is removed. This does not establish the underlying
+presentation error, restart recovery, physical release or task acceptance. The
+SDK contract still requires a new private checkout directory; no existing
+snapshot is removed or accepted as a fresh checkout to bypass the failure.
+
 Native dictionary-reachability qualification at `5b117a70e2` fails in
 1,275.025 seconds including compilation and image creation. Genuine signed
 publication and the ordinary scoped decoded read succeed. With every data-pack
