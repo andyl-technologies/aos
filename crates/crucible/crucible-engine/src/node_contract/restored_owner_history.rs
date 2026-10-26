@@ -24,8 +24,11 @@ use std::{
 };
 
 mod aliases;
+mod metadata;
 mod values;
+
 pub(crate) use aliases::OriginalRestoredOwnerCapacityAliases;
+pub(crate) use metadata::{OriginalOwnerCapacityMetadataData, merge_capacity_metadata_data};
 pub(crate) use values::OriginalRestoredOwnerHistory;
 
 const MAXIMUM_ROWS: usize = 131_072;

@@ -55,19 +55,37 @@ Nine actual SDK funding controls include exact whole-row and one-byte-short
 refusal, request/content/object limits, independent Provider replay, foreign or
 revoked owners, erased callback refusal, recording a retained ProviderFault under
 a wider enclosing-Source layout and preserving history under foreign supervisors.
-Six physical bank controls cover populations above the legacy limit, ordered rows,
+Eight physical bank controls cover populations above the legacy limit, ordered rows,
 independent backing credit, sticky failed reservations, retained allocator
-overshoot history and strict rejection of malformed, truncated or impossible history.
+overshoot history, checked component appends that preserve earlier and refused
+prefixes, and strict rejection of malformed, truncated or impossible history.
 A nested Input control preserves reserved-looking JSON keys under `raw_value`.
 
-Both codec configurations pass 104 focused controls. Complete Transport suites
-pass 2,315 tests each with twenty ignored; those runs preceded removal of two
-redundant parentheses in one test, with production inputs unchanged. Both focused
-configurations and five-package all-feature/all-target checks were rerun after
-that cleanup. Eight-file scoped formatting, all six architecture gates and the
-RFC requirement-map gate pass. Required final application test-target compilation
-passes with 185 artifacts across 58 packages and 76 integration targets; all 782
-selected frozen Rust/Cargo inputs match current and captured source. User-owned
+The actual Source installation component now preserves its capacity facts instead
+of reducing them immediately to bytes. The same typed protocol walk can append
+to the funded packet bank without clearing previous components. Core's actual
+facet Vec, independently boxed coordinator and saved activation add their defining
+capacity rows. Production byte admission consumes this same census. Tests compare
+it with the independent original component accounting for the producer and both
+reactive members, including spare capacity, exact credit and one-byte-short refusal.
+
+The common-owner adapter preserves actual tuple padding, empty and zero-sized
+layouts, alignment and repeated shared views. Pointer observations and alias labels
+stay outside the four-field rows; repeated views receive no discount. Its seven
+controls include the separate packet row ceiling, malformed geometry and checked
+merging without inferring tree width from unrelated byte totals. Capacity-only
+Core walks omit scalar visits, so these component facts cannot establish a
+whole-Source traversal-work restriction. Other Source owners still need their own
+actual census before the genuine one-use handoff can be admitted.
+
+Both codec configurations pass 106 focused Transport controls and thirteen Engine
+census/installation controls. Complete Transport suites pass 2,317 tests each with
+twenty ignored. Complete Engine suites pass 2,089 tests each with thirty-four
+ignored, using current source-built installed packet fixtures. Five-package
+all-feature/all-target checks, twelve-file scoped formatting, all six architecture
+gates and the RFC requirement-map gate pass. Required application test-target
+compilation passes with 185 artifacts across 58 packages and 76 integration targets;
+all 789 selected frozen Rust/Cargo inputs match current and captured source. User-owned
 changes are preserved. These are component results; the requirement map records
 planning coverage, and no latest-source strict lint or native lifecycle result
 is claimed.

@@ -137,6 +137,22 @@ impl PacketRuntimeMetadataRecordBank {
         }
     }
 
+    /// Appends checked capacity DATA without growing or clearing the bank.
+    ///
+    /// The enclosing Source derives each row from its actual private typed
+    /// owners. Numeric rows authenticate no owner and grant no Source action.
+    /// A refusal preserves all earlier rows and backing.
+    ///
+    /// # Errors
+    /// Refuses malformed scalar layout, an unready bank or exhausted slots.
+    pub fn append_capacity_record_data(
+        &mut self,
+        record: MetadataCapacityRecord,
+    ) -> Result<(), ProviderError> {
+        record.validate_data()?;
+        self.recording_bank_data()?.append(record)
+    }
+
     pub(crate) fn recording_bank_data(&mut self) -> Result<&mut MetadataRecordBank, ProviderError> {
         if !matches!(self.bank.reservation, ReservationState::Ready) {
             return Err(credit());
@@ -164,6 +180,8 @@ impl PacketRuntimeMetadataRecordBank {
             + size_of::<&Vec<MetadataCapacityRecord>>()
             + size_of::<&usize>()
             + size_of::<&ReservationState>()
+            + size_of::<MetadataCapacityRecord>()
+            + size_of::<&MetadataCapacityRecord>()
             + 2 * size_of::<usize>()
     }
 }

@@ -200,6 +200,40 @@ impl RetainedCompleteSourceMetadata<'_> {
     pub fn observe_retained_metadata(
         &self,
     ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer = MetadataObserver::new();
+        self.observe_into(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    /// Appends this actual borrowed component to a separately admitted bank.
+    ///
+    /// Existing rows are preserved. The caller authenticates Source custody and
+    /// the complete object; this DATA walk grants no action or traversal rights.
+    ///
+    /// # Errors
+    /// Refuses unready backing, exhausted rows, arithmetic overflow or the
+    /// unchanged ordinary component traversal/depth restriction. Refusal retains
+    /// every initialized prefix and its actual backing.
+    pub fn record_retained_metadata_data(
+        &self,
+        bank: &mut records::PacketRuntimeMetadataRecordBank,
+    ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer = MetadataObserver::appending(bank.recording_bank_data()?);
+        self.observe_into(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    /// Names actual component observer, bank loan and result controls.
+    ///
+    /// Physical frames, encoding and Source custody require separate admission.
+    pub fn recording_counter_scratch_data() -> usize {
+        Self::counter_scratch_data()
+            + size_of::<&mut MetadataObserver<'static>>()
+            + size_of::<&mut records::PacketRuntimeMetadataRecordBank>()
+            + size_of::<Result<&mut records::MetadataRecordBank, ProviderError>>()
+    }
+
+    fn observe_into(&self, observer: &mut MetadataObserver<'_>) -> Result<(), ProviderError> {
         let Self {
             provider,
             manifest,
@@ -220,7 +254,6 @@ impl RetainedCompleteSourceMetadata<'_> {
             coordinator,
             definition,
         } = self;
-        let mut observer = MetadataObserver::new();
         observer.observe(*provider)?;
         observer.observe(*manifest)?;
         observer.observe(*descriptor)?;
@@ -242,7 +275,7 @@ impl RetainedCompleteSourceMetadata<'_> {
             RetainedCompleteSourceDefinition::Program(value) => observer.observe(*value)?,
             RetainedCompleteSourceDefinition::Connected(value) => observer.observe(*value)?,
         }
-        Ok(observer.finish())
+        Ok(())
     }
 }
 

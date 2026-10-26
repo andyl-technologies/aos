@@ -66,6 +66,32 @@ pub struct MetadataCapacityRecord {
     pub alignment: usize,
 }
 
+impl MetadataCapacityRecord {
+    /// Checks the defining scalar layout without interpreting it as ownership.
+    ///
+    /// # Errors
+    /// Refuses unsupported alignment, a non-byte String/shared/boxed record or
+    /// an overflowing capacity times element size.
+    pub fn validate_data(&self) -> Result<(), ProviderError> {
+        if !self.alignment.is_power_of_two()
+            || self.alignment > isize::MAX as usize
+            || (self.kind == MetadataRecordKind::String && self.alignment != 1)
+        {
+            return Err(invalid());
+        }
+        if self.kind != MetadataRecordKind::Vector
+            && self.kind != MetadataRecordKind::Tree
+            && self.element_bytes != 1
+        {
+            return Err(invalid());
+        }
+        self.extent
+            .checked_mul(self.element_bytes)
+            .ok_or_else(invalid)?;
+        Ok(())
+    }
+}
+
 impl Serialize for MetadataCapacityRecord {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         (
@@ -472,25 +498,14 @@ impl<'a> Cursor<'a> {
         self.literal(b",")?;
         let alignment = self.number()?;
         self.literal(b"]")?;
-        if !alignment.is_power_of_two()
-            || alignment > isize::MAX as usize
-            || (kind == MetadataRecordKind::String && alignment != 1)
-        {
-            return Err(invalid());
-        }
-        if kind != MetadataRecordKind::Vector
-            && kind != MetadataRecordKind::Tree
-            && element_bytes != 1
-        {
-            return Err(invalid());
-        }
-        extent.checked_mul(element_bytes).ok_or_else(invalid)?;
-        Ok(MetadataCapacityRecord {
+        let record = MetadataCapacityRecord {
             kind,
             extent,
             element_bytes,
             alignment,
-        })
+        };
+        record.validate_data()?;
+        Ok(record)
     }
 }
 

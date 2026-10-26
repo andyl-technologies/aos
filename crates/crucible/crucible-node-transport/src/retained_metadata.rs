@@ -55,6 +55,11 @@ impl<'a> MetadataObserver<'a> {
 
     pub(crate) fn recording(records: &'a mut MetadataRecordBank) -> Self {
         records.clear();
+        Self::appending(records)
+    }
+
+    /// Preserves the earlier components of the same complete physical roster.
+    pub(crate) fn appending(records: &'a mut MetadataRecordBank) -> Self {
         Self {
             facts: RetainedProtocolMetadataFacts::default(),
             json_depth: 0,

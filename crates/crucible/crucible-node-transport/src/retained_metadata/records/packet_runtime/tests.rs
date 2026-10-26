@@ -245,3 +245,62 @@ fn malformed_headers_rows_truncation_and_trailing_input_are_refused() {
     }
     assert!(ValidatedPacketRuntimeMetadataRecords::validate(&valid, 2, usize::MAX, 24).is_ok());
 }
+
+#[test]
+fn public_capacity_data_appends_checked_rows_without_growing_or_erasing_prefixes() {
+    let mut bank = bank(2);
+    bank.reserve_retained_data().unwrap();
+    let backing = bank.allocated_bytes();
+    let first = row(MetadataRecordKind::String, 7, 1, 1);
+    bank.append_capacity_record_data(first).unwrap();
+
+    assert!(
+        bank.append_capacity_record_data(row(MetadataRecordKind::String, 7, 1, 8))
+            .is_err()
+    );
+    assert!(
+        bank.append_capacity_record_data(row(MetadataRecordKind::Vector, usize::MAX, 2, 8))
+            .is_err()
+    );
+    assert_eq!(bank.rows(), [first]);
+    let empty_aligned_tree = row(MetadataRecordKind::Tree, 0, 0, 64);
+    bank.append_capacity_record_data(empty_aligned_tree)
+        .unwrap();
+    assert!(bank.append_capacity_record_data(first).is_err());
+    assert_eq!(bank.rows(), [first, empty_aligned_tree]);
+    assert_eq!(bank.allocated_bytes(), backing);
+    let encoded = serde_json::to_vec(&bank).unwrap();
+    let decoded = ValidatedPacketRuntimeMetadataRecords::validate(&encoded, 2, backing, 7).unwrap();
+    assert_eq!(
+        decoded.rows().collect::<Result<Vec<_>, _>>().unwrap(),
+        bank.rows()
+    );
+}
+
+#[test]
+fn appending_component_observer_keeps_earlier_and_refused_component_rows() {
+    use crate::retained_metadata::MetadataObserver;
+
+    let mut bank = bank(2);
+    bank.reserve_retained_data().unwrap();
+    let first = row(MetadataRecordKind::Boxed, 16, 1, 8);
+    bank.append_capacity_record_data(first).unwrap();
+    let mut value = String::with_capacity(17);
+    value.push('x');
+    let mut observer = MetadataObserver::appending(bank.recording_bank_data().unwrap());
+    observer.observe(&value).unwrap();
+    assert!(observer.observe(&String::new()).is_err());
+    let _partial_facts = observer.finish();
+
+    assert_eq!(
+        bank.rows(),
+        [
+            first,
+            row(MetadataRecordKind::String, value.capacity(), 1, 1)
+        ]
+    );
+    let mut observer = MetadataObserver::appending(bank.recording_bank_data().unwrap());
+    assert!(observer.observe(&value).is_err());
+    let _partial_facts = observer.finish();
+    assert_eq!(bank.rows().len(), 2);
+}

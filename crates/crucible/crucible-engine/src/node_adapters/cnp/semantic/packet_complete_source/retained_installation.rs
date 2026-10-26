@@ -12,6 +12,9 @@ use crucible_node_transport::retained_metadata::{
 };
 use std::mem::size_of;
 
+#[path = "retained_installation/metadata.rs"]
+mod metadata;
+
 impl PacketCompleteSemanticSource {
     /// Counts actual installation, model, coordinator and saved-world storage.
     ///
@@ -42,78 +45,8 @@ impl PacketCompleteSemanticSource {
         &self,
         maximum: usize,
     ) -> Result<usize, E> {
-        self.storage_origin_with_error::<E>()?;
-        let (definition, coordinator, activation) = match &self.original {
-            CompletePacketOriginal::Producer(source) => {
-                let (definition, coordinator, activation) =
-                    source.complete_retained_declaration_parts_with_error::<E>()?;
-                (
-                    RetainedCompleteSourceDefinition::Program(definition),
-                    coordinator,
-                    activation,
-                )
-            }
-            CompletePacketOriginal::Reactive(source) => {
-                let (definition, coordinator, activation) =
-                    source.complete_retained_declaration_parts_with_error::<E>()?;
-                (
-                    RetainedCompleteSourceDefinition::Connected(definition),
-                    coordinator,
-                    activation,
-                )
-            }
-        };
-        let installation = self.installation();
-        let view = RetainedCompleteSourceMetadata {
-            provider: &installation.provider,
-            manifest: &installation.profile,
-            descriptor: &installation.descriptor,
-            binding: &installation.binding,
-            capabilities: &installation.capabilities,
-            facet: &installation.exact_facet,
-            guarantees: &installation.guarantees,
-            owner: &installation.owner,
-            realize: &installation.realize,
-            admission: &installation.admission,
-            transaction: &installation.transaction,
-            gate: &installation.gate,
-            admission_receipt: &installation.admission_receipt,
-            world: &installation.world_binding_hash,
-            receipt_schema: &installation.receipt_schema,
-            operating_contract: &installation.binding.compatibility.operating_contract,
-            coordinator,
-            definition,
-        };
-        let facts = view.observe_retained_metadata().map_err(E::unknown)?;
-        let typed = Self::complete_retained_metadata_storage_with_error::<E>(&facts, maximum)?;
-        for facet in &installation.facets {
-            match facet {
-                FacetKind::ExactExecution
-                | FacetKind::QuantizedExecution
-                | FacetKind::PhysicalPause
-                | FacetKind::Preservation
-                | FacetKind::Replay
-                | FacetKind::FaultInjection
-                | FacetKind::Coverage
-                | FacetKind::Introspection
-                | FacetKind::Debugging
-                | FacetKind::TerminalAssertions => {}
-            }
-        }
-        let facets = installation
-            .facets
-            .capacity()
-            .checked_mul(size_of::<FacetKind>())
-            .ok_or_else(|| E::refused("complete retained facets capacity overflow"))?;
-        sum_with_error::<E, _>(
-            [
-                typed,
-                facets,
-                size_of::<PacketNative5CoordinatorInstallation>(),
-                activation_storage_with_error::<E>(activation, maximum)?,
-            ],
-            maximum,
-        )
+        let facts = self.original_complete_installation_capacity_with_error::<E>(None)?;
+        Self::complete_retained_metadata_storage_with_error::<E>(&facts, maximum)
     }
 }
 
