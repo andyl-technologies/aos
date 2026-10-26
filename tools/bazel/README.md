@@ -2322,7 +2322,7 @@ the existing Nix package and command names independently of the Rust crate name
 `aos-activation-crucible`. Production keeps static linkage and runtime inputs;
 Cargo remains the default production driver during qualification.
 
-The production package exposes `aos-ability-crucible.withBuildDriver "bazel"`
+The production package exposes `aos-ability-crucible.passthru.withBuildDriver "bazel"`
 and an explicit `"cargo"` rollback. Its Bazel path compiles the release program
 and requires release unit tests and doctests before installation. It preserves
 the package's module dependencies, executable probe, static-link check, normal
@@ -2944,7 +2944,7 @@ retains the tool closure's store paths and NAR identities. A separate boundary
 check builds the configuration library without this repository and rejects a
 command build that omits it. No service or remote cache is introduced.
 
-`pkgs.aos-configuration-lower.withBuildDriver "bazel"` selects the native
+`pkgs.aos-configuration-lower.passthru.withBuildDriver "bazel"` selects the native
 static production commands, with `"cargo"` as an explicit rollback. It keeps
 all four installed commands and requires their release tests and doctests.
 Cargo remains the default during qualification.
@@ -2972,7 +2972,7 @@ conservative inventories agree on nine roots, 157 configured reports and 52 sour
 files. The 65 existing dependency specifications and their 16,104 generated and
 lock files remain unchanged apart from source-contract hash refreshes.
 
-`pkgs.aos-boot-preparation-provider.withBuildDriver "bazel"` selects the static
+`pkgs.aos-boot-preparation-provider.passthru.withBuildDriver "bazel"` selects the static
 preparation handler without enabling the other boot programs. Cargo remains the
 default and `"cargo"` selects its rollback. Dedicated `preparation-provider` and
 `preparation-provider-tests` profiles retain the exact native dependency features,
@@ -2990,7 +2990,7 @@ input-rejection comparisons. It does not exercise live authenticated dispatch.
 Precise and conservative source inventories agree; foreign hosts, performance
 acceptance and default cutover remain separate gates.
 
-`pkgs.aos-boot-transaction-storage-provider.withBuildDriver "bazel"` selects the
+`pkgs.aos-boot-transaction-storage-provider.passthru.withBuildDriver "bazel"` selects the
 static journal-view command, with Cargo as the default and explicit rollback.
 Its independently compared production and release-test compiler features reuse
 the preparation provider's SDKs without changing those profiles.
@@ -3010,8 +3010,8 @@ agree on six roots, 145 configured reports and 66 source files. Live ESP and VM
 execution, foreign hosts, performance acceptance and default cutover remain
 separate gates.
 
-`pkgs.aos-cryptsetup-provider.withBuildDriver "bazel"` and
-`pkgs.aos-storage-format-provider.withBuildDriver "bazel"` select their original
+`pkgs.aos-cryptsetup-provider.passthru.withBuildDriver "bazel"` and
+`pkgs.aos-storage-format-provider.passthru.withBuildDriver "bazel"` select their original
 static commands. Cargo remains the default and explicit rollback for each.
 The selectors share the static storage library, release tests and existing
 preparation-provider dependency profiles. Each installed package retains its
@@ -3030,7 +3030,7 @@ actions. Precise and conservative inventories agree on eight roots, 150
 configured reports and 66 source files. Real encrypted mappings, swap formatting,
 foreign hosts, performance acceptance and default cutover remain separate gates.
 
-`pkgs.aos-zfs-provider.withBuildDriver "bazel"` selects all four static OpenZFS
+`pkgs.aos-zfs-provider.passthru.withBuildDriver "bazel"` selects all four static OpenZFS
 commands and retains the original module dependencies, runtime declarations and
 qualification probe. Cargo remains the default and explicit rollback. The
 existing preparation-provider dependency profiles are reused unchanged. A Nix
@@ -3050,7 +3050,7 @@ nine roots, 157 configured reports and 66 source files. Real pool operations,
 module loading, sysfs writes, foreign hosts, performance acceptance and default
 cutover remain separate gates.
 
-`pkgs.aos-storage-provisioning-provider.withBuildDriver "bazel"` selects both
+`pkgs.aos-storage-provisioning-provider.passthru.withBuildDriver "bazel"` selects both
 static provisioning commands and preserves the installed repart/topology
 helpers, module dependencies and runtime declarations. Cargo remains the default
 and explicit rollback. The existing preparation-provider profiles are reused.
@@ -3073,7 +3073,7 @@ Precise and conservative inventories agree on nine roots, 152 configured reports
 and 66 source files. Real block devices, MD assembly, VM boot, foreign hosts,
 performance acceptance and default cutover remain separate gates.
 
-`pkgs.aos-kernel-tunable-provider.withBuildDriver "bazel"` selects the static
+`pkgs.aos-kernel-tunable-provider.passthru.withBuildDriver "bazel"` selects the static
 sysctl handler and preserves its module, runtime declarations and executable
 probe. Cargo remains the default and explicit rollback. Dedicated production
 and test dependency profiles retain the native compiler features observed in
