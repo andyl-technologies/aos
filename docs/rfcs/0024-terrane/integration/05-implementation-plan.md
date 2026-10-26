@@ -13566,6 +13566,9 @@ requirements; it does not grant acceptance.
   descriptor channel. — satisfies HOST-6 to HOST-9, ARCH-5, ARCH-8,
   PROTO-56 to PROTO-59; `checks.terrane.gates.publisher-sole-writer`,
   `checks.terrane.gates.host-publish-sequence`.
+  The [publisher role audit](acceptance/publisher-role.md) maps all ten assigned
+  clauses to implementation, required evidence and current qualification limits;
+  complete owning-gate renewal remains pending.
 - [ ] **T-STORE-3** `shared-dir` backend and per-domain object directories.
   — satisfies STORE-14, DOM-12 to DOM-15, HOST-27;
   `checks.terrane.gates.shared-dir-read-only`,
