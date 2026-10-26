@@ -665,3 +665,33 @@ fn final_collection_revision_authority_is_unavailable_by_default() {
 
 #[path = "conformance/capture_profile.rs"]
 mod capture_profile;
+
+#[test]
+fn original_plan_weak_capacity_keeps_expired_shell_without_renewing_authority() {
+    use crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData;
+    let authority = Authority::new();
+    let plan = authority.plan();
+    let weak = plan.downgrade();
+    let old_bound = weak.retained_allocation_bytes();
+    let mut live = OriginalOwnerCapacityMetadataData::new(1, None);
+    weak.record_retained_capacity_data(&mut live).unwrap();
+    let expected = live.finish();
+
+    drop(plan);
+    let mut expired = OriginalOwnerCapacityMetadataData::new(1, None);
+    weak.record_retained_capacity_data(&mut expired).unwrap();
+    let actual = expired.finish();
+
+    assert_eq!(actual, expected);
+    assert_eq!(actual.shared_backing_views, 1);
+    assert_eq!(actual.capacity_records, 1);
+    assert_eq!(actual.observed_nodes, 0);
+    assert!(weak.upgrade().is_err());
+    assert!(actual.shared_value_bytes < old_bound);
+    let mut refused = OriginalOwnerCapacityMetadataData::new(0, None);
+    assert_eq!(
+        weak.record_retained_capacity_data(&mut refused),
+        Err(crate::node_contract::RuntimeError::ResourceLimit)
+    );
+    assert_eq!(refused.finish().capacity_records, 0);
+}

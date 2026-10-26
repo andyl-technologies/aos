@@ -38,6 +38,9 @@ use std::{
     rc::Rc,
 };
 
+#[path = "native_startup/metadata.rs"]
+mod metadata;
+
 #[path = "native_startup/import18.rs"]
 mod import18;
 pub(super) use import18::OriginalNativeImport18Finalization;

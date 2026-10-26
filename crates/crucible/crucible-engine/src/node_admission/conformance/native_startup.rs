@@ -19,6 +19,9 @@ use super::{InstalledConformancePlan, WeakInstalledConformancePlan};
 use crate::{node_adapters::cnp::PacketCompleteSemanticSource, node_contract::RuntimeError};
 use crucible_node_transport::reference_packet::service::report_startup::PacketNativeReportStartupAllocationRow;
 
+#[path = "native_startup/metadata.rs"]
+mod metadata;
+
 mod host_finalization;
 pub(crate) use host_finalization::{
     OriginalHostFinalizationBarrier, OriginalHostFinalizationSource,

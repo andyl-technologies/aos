@@ -541,3 +541,47 @@ mod tests {
         }
     }
 }
+
+impl OriginalRestoredSettledStartupMember {
+    /// Checks the defining inline SDK quote without borrowing a native owner.
+    ///
+    /// # Errors
+    /// Refuses a changed SDK quote that would require out-of-line capacity rows.
+    pub(super) fn record_retained_capacity_data(
+        &self,
+        census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        let Self {
+            rows,
+            wire_attempted,
+            wire_completed,
+        } = self;
+        let SettledRows {
+            storage,
+            construction,
+        } = rows;
+
+        fn fixed_cell<T: Copy>(_: &Cell<T>) {}
+
+        fixed_cell(wire_attempted);
+        fixed_cell(wire_completed);
+        census.observe_inline_data(construction);
+        if storage.retained_metadata_data() != Default::default() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        Ok(())
+    }
+}
+
+impl OriginalRestoredSettledStartupMember {
+    /// Names actual non-Copy inline quote and default-fact return controls.
+    pub(super) fn retained_capacity_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<&SettledRows>()
+            + size_of::<Option<&Self>>()
+            + size_of::<&PacketRestoredSettledNativeStorageData>()
+            + size_of::<&PacketNativeSettledConstructionStorageData>()
+            + PacketRestoredSettledNativeStorageData::retained_metadata_counter_scratch_data()
+            + size_of::<crucible_node_transport::retained_metadata::RetainedProtocolMetadataFacts>()
+    }
+}

@@ -16,7 +16,7 @@ use crucible_node_transport::{
 };
 use std::{
     mem::{align_of, size_of},
-    rc::Weak,
+    rc::{Rc, Weak},
 };
 
 /// Observes original capacities while optionally retaining their physical rows.
@@ -49,6 +49,32 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
         owner: &T,
     ) -> Result<(), RuntimeError> {
         owner.capacities(0, &mut |row| self.record(packet_row_data(row)?))
+    }
+
+    /// Keeps a Copy field in the defining allocation-free roster.
+    ///
+    /// This compile-time bound prevents a fixed field from silently acquiring an
+    /// owned String, Vec, Box, Rc or Weak. It adds no allocation or scalar-work
+    /// row; borrowed references and external resources remain separate owners.
+    pub(crate) const fn observe_inline_data<T: Copy>(&self, _value: &T) {}
+
+    /// Records the real enclosing allocation of one borrowed strong Rc view.
+    ///
+    /// Nested payload owners require their own defining walk. Repeated views
+    /// keep their independent shared headers without cloning or pointer output.
+    ///
+    /// # Errors
+    /// Refuses invalid geometry, selected-row exhaustion or unready backing.
+    pub(crate) fn observe_shared_allocation_data<T>(
+        &mut self,
+        _owner: &Rc<T>,
+    ) -> Result<(), RuntimeError> {
+        self.record(MetadataCapacityRecord {
+            kind: MetadataRecordKind::Shared,
+            extent: size_of::<T>(),
+            element_bytes: 1,
+            alignment: align_of::<T>(),
+        })
     }
 
     /// Records the actual allocation shell retained by one original weak view.
@@ -144,6 +170,9 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
     pub(crate) const fn counter_scratch_data() -> usize {
         size_of::<Self>()
             + size_of::<&mut Self>()
+            + size_of::<Rc<()>>()
+            + size_of::<&Rc<()>>()
+            + size_of::<&Self>()
             + size_of::<Weak<()>>()
             + size_of::<&Weak<()>>()
             + size_of::<OriginalRestoredOwnerCapacityRow>()

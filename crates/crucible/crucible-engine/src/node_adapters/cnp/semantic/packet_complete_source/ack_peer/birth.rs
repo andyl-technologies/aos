@@ -17,6 +17,9 @@ use crucible_node_format::{ContentRef, Id, Validate};
 
 use super::{OperationFailure, refused};
 
+#[path = "birth/metadata.rs"]
+mod metadata;
+
 #[path = "birth/history.rs"]
 mod history;
 

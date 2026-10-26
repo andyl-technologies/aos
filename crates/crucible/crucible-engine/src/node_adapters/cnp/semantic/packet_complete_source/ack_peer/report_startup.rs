@@ -548,3 +548,31 @@ impl OriginalAckPeerBirth {
 
 #[path = "report_startup/settled17.rs"]
 mod settled17;
+
+impl OriginalReportStartupFinalization {
+    /// Records every actual original member, replacement and retained JSON prefix.
+    ///
+    /// # Errors
+    /// Refuses unsupported depth/layout, exhausted rows or unavailable backing.
+    pub(super) fn record_retained_capacity_data(
+        &self,
+        census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        let Self {
+            member,
+            replacement,
+            body,
+            additions,
+            complete,
+        } = self;
+        census.observe_inline_data(complete);
+        member.record_retained_capacity_data(census)?;
+        census.observe(replacement)?;
+        for value in [body, additions].into_iter().flatten() {
+            retained_values::record_value_capacity_data_with_error::<
+                crate::node_contract::RuntimeError,
+            >(value, 0, census)?;
+        }
+        Ok(())
+    }
+}

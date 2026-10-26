@@ -196,6 +196,50 @@ pub struct PacketRestoredSettledNativeStorageData {
 }
 
 impl PacketRestoredSettledNativeStorageData {
+    /// Reports the fixed inline quote without reconstructing a native owner.
+    ///
+    /// The enclosing holder already owns this header. Its defining field roster
+    /// contains Copy DATA only, so it contributes no dynamic capacity rows. A
+    /// new owning field must replace this contract with an explicit bank walk.
+    /// Admit [`Self::retained_metadata_counter_scratch_data`] before observing.
+    pub fn retained_metadata_data(
+        &self,
+    ) -> crate::retained_metadata::RetainedProtocolMetadataFacts {
+        let Self {
+            carrier,
+            retained,
+            transient,
+            scratch,
+            frame_bytes,
+            metadata_rows,
+            requested,
+            existing_rows,
+        } = self;
+
+        fn inline<T: Copy>(_: &T) {}
+
+        inline(carrier);
+        inline(retained);
+        inline(transient);
+        inline(scratch);
+        inline(frame_bytes);
+        inline(metadata_rows);
+        inline(requested);
+        inline(existing_rows);
+        crate::retained_metadata::RetainedProtocolMetadataFacts::default()
+    }
+
+    /// Names the actual inline-field loans, helper argument and returned facts.
+    pub fn retained_metadata_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<&PacketRestoredSettledNativeCarrierData>()
+            + 5 * size_of::<&usize>()
+            + size_of::<&[usize; 2]>()
+            + size_of::<&PacketRestoredSettledNativeExistingRowsData>()
+            + size_of::<&usize>()
+            + size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>()
+    }
+
     /// Borrows all exact advertised fields for the new writer and MAC boundary.
     pub const fn carrier_data(&self) -> &PacketRestoredSettledNativeCarrierData {
         &self.carrier

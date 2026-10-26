@@ -471,3 +471,59 @@ mod settled;
 
 pub use settled::CompleteOriginalRestoredSettledStartupAdmission;
 pub(crate) use settled::OriginalRestoredSettledStartupMember;
+
+impl OriginalRestoredSuffixStartupMember {
+    /// Records the original restored member's weak owners and nested inline rows.
+    ///
+    /// # Errors
+    /// Refuses unsupported SDK backing, exhausted rows or unavailable physical
+    /// backing. Neither spent suffix counts nor settled completion is renewed.
+    pub(crate) fn record_retained_capacity_data(
+        &self,
+        census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        let Self {
+            process,
+            thread,
+            source,
+            plan,
+            rows,
+            wire_attempted,
+            wire_completed,
+            settled,
+        } = self;
+        let OriginalRestoredSuffixStartupRows {
+            reservation,
+            construction,
+        } = rows;
+
+        fn fixed_cell<T: Copy>(_: &Cell<T>) {}
+
+        census.observe_inline_data(process);
+        census.observe_inline_data(thread);
+        census.observe_inline_data(reservation);
+        census.observe_inline_data(construction);
+        fixed_cell(wire_attempted);
+        fixed_cell(wire_completed);
+        plan.record_retained_capacity_data(census)?;
+        census.observe_weak_allocation_data(source)?;
+        if let Some(settled) = settled {
+            settled.record_retained_capacity_data(census)?;
+        }
+        Ok(())
+    }
+}
+
+impl OriginalRestoredSuffixStartupMember {
+    /// Names actual optional suffix/settled row and fixed-cell borrowed views.
+    pub(crate) fn retained_capacity_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<&OriginalRestoredSuffixStartupRows>()
+            + size_of::<Option<&Self>>()
+            + size_of::<&Cell<bool>>()
+            + size_of::<&PacketNativeRestoredSuffixStartupStorageData>()
+            + size_of::<&PacketNativeSuffixConstructionStorageData>()
+            + settled::OriginalRestoredSettledStartupMember::retained_capacity_counter_scratch_data(
+            )
+    }
+}

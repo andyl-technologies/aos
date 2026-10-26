@@ -340,6 +340,43 @@ mod tests {
     }
 
     #[test]
+    fn barrier_capacity_keeps_real_and_expired_shell_without_opening_a_phase() {
+        use crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData;
+        let barrier = inert_barrier();
+        let alias = OriginalHostFinalizationSource {
+            barrier: Rc::downgrade(&barrier),
+            index: 0,
+        };
+        let mut live = OriginalOwnerCapacityMetadataData::new(1, None);
+
+        barrier.record_retained_capacity_data(&mut live).unwrap();
+        let expected = live.finish();
+
+        assert_eq!(expected.shared_backing_views, 1);
+        assert_eq!(expected.capacity_records, 1);
+        assert_eq!(
+            expected.shared_value_bytes,
+            size_of::<OriginalHostFinalizationBarrier>()
+        );
+        assert_eq!(
+            expected.maximum_shared_value_alignment,
+            std::mem::align_of::<OriginalHostFinalizationBarrier>()
+        );
+        assert_eq!(Rc::strong_count(&barrier), 1);
+        assert!(barrier.phase.ready().is_err());
+        assert_eq!(barrier.phase.completed.get(), 0);
+        assert_eq!(barrier.phase.active.get(), None);
+        assert!(!barrier.phase.aborted.get());
+        drop(barrier);
+        let mut expired = OriginalOwnerCapacityMetadataData::new(1, None);
+
+        alias.record_retained_capacity_data(&mut expired).unwrap();
+
+        assert_eq!(expired.finish(), expected);
+        assert!(alias.barrier.upgrade().is_none());
+    }
+
+    #[test]
     fn actual_phase_lease_drop_and_unwind_latch_before_another_effect() {
         for unwind in [false, true] {
             let barrier = inert_barrier();
@@ -429,3 +466,72 @@ mod tests {
 }
 
 mod settled17;
+
+impl OriginalHostFinalizationBarrier {
+    /// Records this strong view and every original nested weak allocation shell.
+    ///
+    /// # Errors
+    /// Refuses exhausted rows, invalid layout or unready physical backing. This
+    /// walk does not inspect phase currentness or upgrade plan/Source custody.
+    pub(crate) fn record_retained_capacity_data(
+        self: &Rc<Self>,
+        census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        let Self {
+            origin,
+            plan,
+            sources,
+            phase,
+        } = self.as_ref();
+        let HostOrigin { process, thread } = origin;
+        let HostPhase {
+            completed,
+            active,
+            aborted,
+        } = phase;
+
+        fn fixed_cell<T: Copy>(_: &Cell<T>) {}
+
+        census.observe_inline_data(process);
+        census.observe_inline_data(thread);
+        fixed_cell(completed);
+        fixed_cell(active);
+        fixed_cell(aborted);
+
+        census.observe_shared_allocation_data(self)?;
+        plan.record_retained_capacity_data(census)?;
+        for source in sources {
+            census.observe_weak_allocation_data(source)?;
+        }
+        Ok(())
+    }
+}
+
+impl OriginalHostFinalizationSource {
+    /// Records the weak barrier shell without borrowing its destroyed payload.
+    ///
+    /// # Errors
+    /// Refuses exhausted rows, invalid layout or unavailable physical backing.
+    pub(crate) fn record_retained_capacity_data(
+        &self,
+        census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        let Self { barrier, index } = self;
+        census.observe_inline_data(index);
+        census.observe_weak_allocation_data(barrier)
+    }
+}
+
+impl OriginalHostFinalizationBarrier {
+    /// Names actual nested shared-barrier and fixed-cell borrowed views.
+    pub(crate) fn retained_capacity_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<&HostOrigin>()
+            + size_of::<&HostPhase>()
+            + size_of::<&Cell<u8>>()
+            + size_of::<&Cell<Option<usize>>>()
+            + size_of::<&Cell<bool>>()
+            + size_of::<&WeakInstalledConformancePlan>()
+            + size_of::<&Weak<PacketCompleteSemanticSource>>()
+    }
+}

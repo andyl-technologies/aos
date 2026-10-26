@@ -36,21 +36,36 @@ impl OriginalHostStartupMarker {
         &self,
         bank: Option<&mut PacketRuntimeMetadataRecordBank>,
     ) -> Result<RetainedProtocolMetadataFacts, RuntimeError> {
-        let Self {
-            origin,
-            complete: _,
-            initial_lifecycle_issued: _,
-            initial_lifecycle_quote: _,
-            initial_lifecycle_completed: _,
-            launch,
-        } = self;
         let maximum = bank.as_ref().map_or(usize::MAX, |bank| bank.maximum_rows());
         let mut census = OriginalOwnerCapacityMetadataData::new(maximum, bank);
+        self.record_retained_capacity_data(&mut census)?;
+        Ok(census.finish())
+    }
+    /// Includes the marker in its parent's existing census without resetting rows.
+    ///
+    /// # Errors
+    /// Refuses exhausted rows, invalid layout or unready physical backing.
+    pub(in super::super) fn record_retained_capacity_data(
+        &self,
+        census: &mut OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        let Self {
+            origin,
+            complete,
+            initial_lifecycle_issued,
+            initial_lifecycle_quote,
+            initial_lifecycle_completed,
+            launch,
+        } = self;
+        census.observe_inline_data(complete);
+        census.observe_inline_data(initial_lifecycle_issued);
+        census.observe_inline_data(initial_lifecycle_quote);
+        census.observe_inline_data(initial_lifecycle_completed);
         census.observe_weak_allocation_data(origin)?;
         if let Some(launch) = launch {
-            launch.record_retained_capacity_data(&mut census)?;
+            launch.record_retained_capacity_data(census)?;
         }
-        Ok(census.finish())
+        Ok(())
     }
 }
 

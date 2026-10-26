@@ -93,8 +93,8 @@ payloads. Repeated views receive no alias discount. Constructor allowances use
 the same shared-header envelope as the retained census, and the production
 marker byte query consumes those facts. Controls cover empty and expired links,
 aligned and zero-sized payloads, exact and short credit, and busy or foreign
-Source custody. Marker flags and launch permissions remain independent. Other
-birth/finalization owners still require their own complete census.
+Source custody. Marker flags and launch permissions remain independent. The complete birth census below composes those
+marker views with the independent finalization owners.
 
 The private JSON capacity walk now preserves spare String/Vec backing and each
 object's actual compiled key/value layout, including empty objects. Its existing
@@ -107,24 +107,36 @@ compare against the independent original byte walk, exact and short credit,
 empty-object layout, refused prefixes and repeated views. These capacity facts
 do not establish scalar traversal work or finalization eligibility.
 
+The complete private-birth capacity DATA query now composes the actual retained
+ContentRef/Id/input banks, all three finalization families, the original host
+marker and Core startup-member views. Strong barrier views include their nested
+plan/Source weak shells; expired weak views retain only their allocation shells.
+Optional restored suffix and settled members retain their defining field rosters.
+The opaque non-Copy settled SDK quote supplies its own exhaustive inline-data
+observer and declared controls. Keys, revisions, file handles and fixed state
+remain in the enclosing Source allocation; the census performs no executable
+read, weak upgrade or lifecycle renewal. The independent File-seed controls cover
+spare banks, exact/short credit, revoked backing and busy/foreign refusal. This
+query's integration into the genuine one-use Source handoff remains unfinished.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
-stay outside the four-field rows; repeated views receive no discount. Its ten
+stay outside the four-field rows; repeated views receive no discount. Its twelve
 controls include the separate packet row ceiling, malformed geometry and checked
 merging without inferring tree width from unrelated byte totals. Capacity-only
 Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 120 focused Transport controls and 39 Engine
+Both codec configurations pass 120 focused Transport controls and 47 Engine
 census/installation/holder/startup controls. Complete Transport suites pass 2,320 tests each
-with twenty ignored; all 646 selected SDK/dependency inputs match the tested
-Transport snapshot. Complete Engine suites pass 2,110 tests each with thirty-four
+with twenty ignored; all 649 selected SDK/dependency inputs match the tested
+Transport snapshot. Complete Engine suites pass 2,118 tests each with thirty-four
 ignored, using matching source-built installed packet fixtures. Five-package
-all-feature/all-target checks, four-file scoped formatting, all six architecture
+all-feature/all-target checks, 21-file scoped formatting, all six architecture
 gates and the RFC requirement-map gate pass. Required application test-target
 compilation passes with 185 artifacts across 58 packages and 76 integration targets;
-all 808 selected frozen Rust/Cargo inputs match current and captured source. User-owned
+all 824 selected frozen Rust/Cargo inputs match current and captured source. User-owned
 changes are preserved. These are component results; the requirement map records
 planning coverage, and no latest-source strict lint or native lifecycle result
 is claimed.

@@ -11,7 +11,9 @@ pub(crate) mod edition18_tokens;
 #[path = "retained_values/metadata.rs"]
 mod metadata;
 pub(super) use metadata::value_capacity_counter_scratch_data;
-pub(in crate::node_adapters::cnp::semantic) use metadata::value_capacity_data_with_error;
+pub(in crate::node_adapters::cnp::semantic) use metadata::{
+    record_value_capacity_data_with_error, value_capacity_data_with_error,
+};
 
 use super::*;
 use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;

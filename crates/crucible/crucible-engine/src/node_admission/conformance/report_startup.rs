@@ -526,3 +526,30 @@ fn add(left: usize, right: usize) -> Result<usize, EvidenceError> {
 mod invocation;
 
 mod settled17;
+
+impl OriginalReportStartupMember {
+    /// Records the original plan and Source weak shells as capacity-only DATA.
+    ///
+    /// # Errors
+    /// Refuses exhausted rows, invalid layout or unready physical backing. No
+    /// authority is upgraded and no spent member or publication is renewed.
+    pub(crate) fn record_retained_capacity_data(
+        &self,
+        census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), crate::node_contract::RuntimeError> {
+        let Self {
+            plan,
+            source,
+            process,
+            thread,
+            rows,
+            finalization_bytes,
+        } = self;
+        census.observe_inline_data(process);
+        census.observe_inline_data(thread);
+        census.observe_inline_data(rows);
+        census.observe_inline_data(finalization_bytes);
+        plan.record_retained_capacity_data(census)?;
+        census.observe_weak_allocation_data(source)
+    }
+}

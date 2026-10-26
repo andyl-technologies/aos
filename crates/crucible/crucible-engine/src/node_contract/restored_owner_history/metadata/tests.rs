@@ -285,3 +285,46 @@ fn independently_observed_geometry_merges_without_widening_by_byte_count() {
     assert_eq!(target.shared_backing_views, 2);
     assert_eq!(target.capacity_records, 3);
 }
+
+#[test]
+fn strong_shared_census_keeps_actual_aligned_shell_without_walking_child_owners() {
+    #[repr(align(64))]
+    struct Payload {
+        _text: String,
+    }
+    let owner = Rc::new(Payload {
+        _text: String::with_capacity(173),
+    });
+    let mut census = OriginalOwnerCapacityMetadataData::new(1, None);
+
+    census.observe_shared_allocation_data(&owner).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.capacity_records, 1);
+    assert_eq!(facts.shared_backing_views, 1);
+    assert_eq!(facts.shared_value_bytes, size_of::<Payload>());
+    assert_eq!(facts.maximum_shared_value_alignment, align_of::<Payload>());
+    assert_eq!(facts.string_banks, 0);
+    assert_eq!(facts.observed_nodes, 0);
+    assert_eq!(Rc::strong_count(&owner), 1);
+}
+
+#[test]
+fn repeated_strong_zero_sized_views_keep_each_header_and_refused_prefix() {
+    let owner = Rc::new(());
+    let mut census = OriginalOwnerCapacityMetadataData::new(2, None);
+    census.observe_shared_allocation_data(&owner).unwrap();
+    census.observe_shared_allocation_data(&owner).unwrap();
+
+    assert_eq!(
+        census.observe_shared_allocation_data(&owner),
+        Err(RuntimeError::ResourceLimit)
+    );
+    let facts = census.finish();
+
+    assert_eq!(facts.capacity_records, 2);
+    assert_eq!(facts.shared_backing_views, 2);
+    assert_eq!(facts.shared_value_bytes, 0);
+    assert_eq!(facts.maximum_shared_value_alignment, align_of::<()>());
+    assert_eq!(Rc::strong_count(&owner), 1);
+}

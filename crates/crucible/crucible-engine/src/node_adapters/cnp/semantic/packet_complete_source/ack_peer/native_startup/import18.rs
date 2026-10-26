@@ -222,3 +222,39 @@ mod tests {
 
 #[path = "import18/geometry.rs"]
 mod geometry;
+
+impl OriginalNativeImport18Finalization {
+    /// Records every actual prefix without requiring a completed native member.
+    ///
+    /// # Errors
+    /// Refuses unsupported depth/layout, exhausted rows or unavailable backing.
+    pub(in super::super) fn record_retained_capacity_data(
+        &self,
+        census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        let Self {
+            member,
+            baseline,
+            additions,
+            wrapper,
+            replacement,
+            prepared,
+            complete,
+            wire,
+        } = self;
+
+        fn fixed_cell<T: Copy>(_: &Cell<T>) {}
+
+        census.observe_inline_data(prepared);
+        census.observe_inline_data(complete);
+        fixed_cell(wire);
+        member.record_retained_capacity_data(census)?;
+        census.observe(replacement)?;
+        for value in [baseline, additions, wrapper].into_iter().flatten() {
+            retained_values::record_value_capacity_data_with_error::<RuntimeError>(
+                value, 0, census,
+            )?;
+        }
+        Ok(())
+    }
+}

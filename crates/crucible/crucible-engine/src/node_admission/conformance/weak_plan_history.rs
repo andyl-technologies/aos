@@ -22,3 +22,16 @@ impl WeakInstalledConformancePlan {
             + std::mem::size_of::<Result<OriginalRestoredOwnerCapacityRow, RuntimeError>>()
     }
 }
+
+impl WeakInstalledConformancePlan {
+    /// Records only the real weak allocation shell without upgrading authority.
+    ///
+    /// # Errors
+    /// Refuses selected-row exhaustion, invalid layout or unready physical backing.
+    pub(crate) fn record_retained_capacity_data(
+        &self,
+        census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        census.observe_weak_allocation_data(&self.0)
+    }
+}
