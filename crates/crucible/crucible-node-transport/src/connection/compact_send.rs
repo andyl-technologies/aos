@@ -7,6 +7,25 @@
 use super::*;
 
 impl<S: ProviderStream> Connection<S> {
+    /// Checks an idle compact boundary without containing revoked authority.
+    ///
+    /// Funding queries run before admission of incident allocation. Unlike the
+    /// operational check below, this read-only check cannot call `contain`.
+    ///
+    /// # Errors
+    /// Refuses foreign, fenced or revoked ownership, pending native responses,
+    /// or unresolved correlation in any direction.
+    pub(crate) fn authenticate_compact_exchange_idle_data(&self) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.ensure_no_pending_native_restore_response()?;
+        if self.fenced {
+            return Err(ProviderError::Correlation("connection is fenced"));
+        }
+        self.authority.ensure_live()?;
+        self.guard
+            .protocol_cut(crate::protocol_snapshot::ProtocolCaptureCut::HostSettled)
+    }
+
     /// Checks the empty correlation boundary around an ordinary compact exchange.
     ///
     /// Historical sequence and journal use need not be empty. The settled-cut
@@ -29,11 +48,15 @@ impl<S: ProviderStream> Connection<S> {
     pub(crate) fn send_compact(&mut self, envelope: &Envelope) -> Result<(), ProviderError> {
         self.ensure_no_pending_native_restore_response()?;
         self.check_authority()?;
-        self.validate_body(envelope, false)?;
 
         let limits = self.authority.limits();
         let maximum_bytes = allowance(limits.frame_bytes.get())?;
         let maximum_nesting = allowance(limits.nesting.get())?;
+        // A legacy provider reply may exceed today's F, including after its
+        // replacement sequence grows. Refuse that complete original before any
+        // typed decoder or selected extension codec can allocate from its K.
+        crate::client::compact_json::envelope_encoded_bytes(envelope, maximum_bytes)?;
+        self.validate_body(envelope, false)?;
         let bytes = crate::client::compact_json::encode_envelope(envelope, maximum_bytes)?;
         canonical::parse_json_with_depth(&bytes, maximum_bytes, maximum_nesting)?;
 

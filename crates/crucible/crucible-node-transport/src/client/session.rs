@@ -27,6 +27,7 @@ pub(in crate::client) mod capture_capacity;
 mod compact_journal;
 mod fresh_restore_query;
 mod journal_storage;
+mod packet_runtime_storage;
 pub(in crate::client) use compact_journal::CompactClientJournal;
 pub use compact_journal::physical18;
 pub use compact_journal::physical19;

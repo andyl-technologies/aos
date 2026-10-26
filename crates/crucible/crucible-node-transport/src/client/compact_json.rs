@@ -33,8 +33,8 @@ const MAXIMUM_DEPTH: usize = 64;
 mod canonical;
 mod envelope;
 mod materialize;
-pub(crate) use canonical::encode_envelope;
 pub(in crate::client) use canonical::{Output, field};
+pub(crate) use canonical::{encode_envelope, envelope_encoded_bytes};
 
 /// Reconstructs versioned compact envelope history as inert DATA.
 pub mod physical18;

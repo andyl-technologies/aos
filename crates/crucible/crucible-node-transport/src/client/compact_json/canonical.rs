@@ -20,8 +20,7 @@ pub(crate) fn encode_envelope(
     envelope: &Envelope,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>, ProviderError> {
-    let maximum_bank = maximum_bytes.checked_mul(9).ok_or_else(credit)?;
-    let (_, expected) = CompactJson::envelope_extents(envelope, maximum_bank, maximum_bytes)?;
+    let expected = envelope_encoded_bytes(envelope, maximum_bytes)?;
     let mut output = Output::new(expected)?;
     let result = write_envelope(envelope, &mut output);
     if output.refused {
@@ -32,6 +31,19 @@ pub(crate) fn encode_envelope(
         return Err(ProviderError::Frame("compact canonical envelope extent"));
     }
     Ok(output.bytes)
+}
+
+/// Measures the defining wire encoding before typed codec work or allocation.
+///
+/// # Errors
+/// Refuses unsupported geometry, overflow or an encoding beyond the ceiling.
+pub(crate) fn envelope_encoded_bytes(
+    envelope: &Envelope,
+    maximum_bytes: usize,
+) -> Result<usize, ProviderError> {
+    let maximum_bank = maximum_bytes.checked_mul(9).ok_or_else(credit)?;
+    let (_, expected) = CompactJson::envelope_extents(envelope, maximum_bank, maximum_bytes)?;
+    Ok(expected)
 }
 
 fn write_envelope(envelope: &Envelope, output: &mut Output) -> Result<(), ProviderError> {

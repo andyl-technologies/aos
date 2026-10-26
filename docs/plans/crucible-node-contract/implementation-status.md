@@ -10,6 +10,49 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Concrete codec and connection funding inputs
+
+The closed packet runtime now has private DATA queries for its actual installed
+Controller codec, synchronous correlation maps and one containment incident.
+The codec quote separately prices decoded strings/Bytes and literal maps, both
+nested tagged-buffer levels, the complete fixed payload/control graph,
+diagnostics and Native18's actual compiled schema factory. It also prices the
+Value DOM, canonical work and output of Native18 request validation and binding
+authentication. Its closed field roster includes the syntax introduced when a
+positional private record is serialized with field names; fixed arrays charge
+each element. Baseline typed vectors and input identity remain separate terms.
+
+The connection query requires the same installed Controller codec, live idle
+connection, exact retained supervisor and empty incident history. It bounds all
+three correlation maps, both request collections cloned by one containment,
+and the conservative growth of a Connection metadata report. Revoked DATA
+queries refuse without invoking containment or arbitrary schema callbacks.
+An enclosing Source with wider map layouts still needs its own reporting term.
+Session forwarding adds its concrete query controls and applies the complete
+independent restriction, with exact and one-byte-short controls.
+
+Compact publication now measures the complete defining wire encoding before
+running a typed decoder or selected extension codec. A larger historical
+Provider reply, including replacement-sequence growth, therefore refuses
+against today's frame ceiling before reaching codec or correlation allocation.
+Its original cached clone remains a separate actual-history funding input.
+
+Both codec configurations pass sixteen focused controls covering real tagged
+buffers, positional Prepare and nested Commit canonicalization, dense
+correlation/incident populations, installed ownership, revocation and oversized
+legacy replies. Both complete Transport suites pass 2,288 tests with twenty
+ignored. Five-package all-feature/all-target checks, thirteen-file formatting
+and all six architecture gates pass. Required application test-target
+compilation passes with 185 artifacts across 58 packages and 76 integration
+targets; all 768 selected frozen Rust/Cargo inputs match current and captured
+source. User-owned changes are preserved; this is not clean whole-PR or full
+RFC qualification. No latest-source strict lint or native inactive-lifecycle
+qualification is claimed here.
+
+These are component inputs. Complete SDK R/T/S, its dedicated metadata
+population profile, same-Source one-use admission and funded handoff remain
+unfinished, along with the remaining full RFC implementation.
+
 ## Object-only baseline records and provider replay
 
 All 108 named baseline records now require an object at their defining

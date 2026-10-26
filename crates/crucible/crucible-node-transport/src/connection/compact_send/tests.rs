@@ -11,6 +11,73 @@ use std::{cell::RefCell, io::Cursor};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn oversized_legacy_reply_refuses_before_typed_codec_or_correlation_copy() -> TestResult {
+    struct CountingSchemas(std::cell::Cell<usize>);
+
+    impl BodySchemaVerifier for CountingSchemas {
+        fn verify(
+            &self,
+            _: &ConnectionAuthority,
+            _: &Envelope,
+            _: &ReceivedBody,
+        ) -> Result<(), ProviderError> {
+            self.0.set(self.0.get() + 1);
+            Ok(())
+        }
+    }
+
+    let (_lease, authority) = crate::handshake::tests::authority();
+    let request = frame(&authority);
+    let maximum = usize::try_from(authority.limits().frame_bytes.get())?;
+    let schemas = Rc::new(CountingSchemas(std::cell::Cell::new(0)));
+    let supervisor = Rc::new(Supervisor::default());
+    let mut connection = Connection::new(
+        Stream {
+            input: Cursor::new(Vec::new()),
+            output: Vec::new(),
+            remaining: usize::MAX,
+            fenced: false,
+        },
+        authority,
+        supervisor.clone(),
+        schemas.clone(),
+        EndpointRole::Controller,
+    )?;
+    connection.guard.receive(&request)?;
+    let mut response = request.clone();
+    response.message = MessageKind::Response;
+    response.body = json!({
+        "status": "error", "operation_state": "not_started",
+        "error": {"code": "RESOURCE_EXHAUSTED", "message": "original refusal",
+                  "effect": "not_started", "retryable": true,
+                  "details": {"original": "x".repeat(maximum)}},
+        "extensions": {}
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    // This is otherwise a valid old response. A larger historical negotiated
+    // ceiling can admit it; today's compact send must reject it before codecs.
+    connection.validate_body(&response, false)?;
+    assert_eq!(schemas.0.get(), 1);
+    schemas.0.set(0);
+    let before = serde_json::to_value(connection.guard.protocol_view())?;
+
+    let result = connection.send_compact(&response);
+
+    assert!(matches!(result, Err(ProviderError::ResourceExhausted(_))));
+    assert_eq!(schemas.0.get(), 0);
+    assert_eq!(
+        serde_json::to_value(connection.guard.protocol_view())?,
+        before
+    );
+    assert!(connection.reader.stream_mut().output.is_empty());
+    assert!(!connection.reader.stream_mut().fenced);
+    assert!(supervisor.0.borrow().is_empty());
+    Ok(())
+}
+
 #[derive(Default)]
 struct Supervisor(RefCell<Vec<ConnectionIncident>>);
 
