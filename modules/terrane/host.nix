@@ -175,7 +175,11 @@
     if role == "gc" && maintenanceEnabled
     then []
     else if role == "publish"
-    then ["/run/terrane-publish"] ++ builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots
+    # Publication and retirement link or rename between these directories.
+    # Separate bind mounts reject those operations even on the same device.
+    # Root-owned namespace parents remain unwritable through DAC; private
+    # cache state receives its own read-only bind below.
+    then ["/run/terrane-publish"] ++ roots
     else if role == "serve" || role == "gc"
     then
       builtins.concatMap (root: ["${root}/state/cache" "${root}/chunks" "${root}/objects" "${root}/quarantine"]) roots
@@ -305,7 +309,10 @@
       # Native startup compares O_PATH identities with the quota helper's actual
       # roots. Inaccessible mounts replace those inodes. Preserve them through
       # read-only binds; publisher-owned mode 0700 still denies directory reads.
-      ReadOnlyPaths = lib.optionals (role != "publish") (builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication"]) roots);
+      ReadOnlyPaths =
+        if role == "publish"
+        then map (root: "${root}/state/cache") roots
+        else builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication"]) roots;
     };
   };
 in {

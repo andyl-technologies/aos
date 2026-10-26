@@ -91,6 +91,34 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-25)
 
+The managed setgid correction at `31aa0ae05f` passes mandatory
+application-target compilation in 722.560 seconds. Review matches all 8,263
+immutable source files and 190 test-executable build records across 59
+packages; it does not establish execution or retained executable bytes.
+The same revision passes its isolated manager-image prerequisites in 876.414
+seconds. Complete review accounts for all 49 remote derivations, both imported
+outputs, the fresh nonce-bound capability-free ext4 sandbox proof and clean
+shutdown. Twelve unchanged package checks retain their previously reviewed
+guest results; no fresh execution is claimed. Both native-cache profiles
+remain in qualification.
+
+The original service-manager run at that revision fails in 193.378 seconds.
+The publisher's actual journal reports publication request 7 failing with
+`EXDEV`; Serve again stops before readiness. Source review identifies the
+atomic staging-to-sealed link crossing separate writable bind mounts. The
+module now keeps each enrolled domain on one writable mount. Root-owned
+namespace parents retain their permission boundary, private cache state
+receives a read-only bind, and capabilities and service hardening remain
+unchanged. The actual publisher launcher now requires all 18 mount observations,
+one mount identity per domain's publication directories, denied namespace-parent
+creation and denied private-state reads. The supervisor retains this evidence
+and the original publisher identity. All 117 module-evaluation controls pass,
+including the single-domain and private-domain write policies. Pure proof
+verification accepts the complete record and rejects nine incomplete or
+invalid variants. Python parsing, Nix formatting, plan coverage and diff
+checks pass. Fresh manager qualification remains required; no task is accepted
+from the correction alone.
+
 Source audit found that the combined collection/reconciliation test selected
 a copied head whose missing destination Original is intentional. The test now
 first requires that copied-root refusal. Its positive scenario omits source
@@ -101,6 +129,17 @@ late-residue, checkpoint and reopen assertions, clocks and bounds remain.
 The default-Tokio and surface-SDK profiles pass strict Clippy; native
 qualification of this strengthened fixture remains required. Production
 verification is unchanged.
+
+The preceding test-only startup diagnostic at `4f3f0bf522` fails in 1,599.925
+seconds. Its static phase records independently place the refusal during
+current-root resolution, before checkpoint publication and reconciliation.
+Closure dispatch prevents its caller-location diagnostic from identifying
+the underlying Guard check; the missing destination Original is established
+by the separate source audit. The unchanged diagnostic source fingerprint,
+patch, raw guest logs and guest configuration are preserved. This result
+qualifies no production behavior. The corrected fixture at `80cf0444bf` has
+its original five-case native guest and mandatory application-target
+compilation running after unchanged-dispatch review.
 
 The managed presentation diagnostic identifies an actual Serve worker's
 `mkdirat(..., 02770)` failing with `EPERM` under the original

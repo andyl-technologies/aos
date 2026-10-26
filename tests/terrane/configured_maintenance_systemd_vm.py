@@ -46,6 +46,75 @@ def verify_serve_mounts():
           file=sys.stderr, flush=True)
 
 
+def check_publisher_mount_policy(proof, domains):
+    """Requires complete ordered mount and namespace-denial observations."""
+    labels = [".", "chunks", "objects", "quarantine", "state/cache",
+              "sealed", "staging", "pending-delete", "state/publication"]
+    expected = [{"domain": domain, "directory": label,
+                 "readonly": label == "state/cache"}
+                for domain in domains for label in labels]
+    rows = proof["mounts"]
+    require([{key: value for key, value in row.items() if key != "mount_id"}
+             for row in rows] == expected, "managed publisher mount policy differs")
+    require(all(type(row["mount_id"]) is int and row["mount_id"] > 0 for row in rows),
+            "managed publisher mount identity is invalid")
+    for domain in domains:
+        require(len({row["mount_id"] for row in rows
+                     if row["domain"] == domain and not row["readonly"]}) == 1,
+                "managed publication directories cross mount boundaries")
+    require(proof["protected_roots"] == [
+        {"domain": domain, "directory": label, "write_denied": True}
+        for domain in domains for label in [".", "state"]],
+        "managed publisher namespace write denials are incomplete")
+    require(proof["private_state_denied"] is True,
+            "managed publisher can read private cache state")
+
+
+def verify_publisher_mounts():
+    """Observes one actual publication mount while requiring protected parents."""
+    domains = tomllib.loads(CONFIG.read_text())["host_tier"]["domains"]
+    observations, protected = [], []
+    for domain, settings in domains.items():
+        root = pathlib.Path(settings["path"])
+        for label in [".", "chunks", "objects", "quarantine", "state/cache",
+                      "sealed", "staging", "pending-delete", "state/publication"]:
+            descriptor = os.open(root / label, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                info = dict(line.split(":", 1) for line in
+                            pathlib.Path(f"/proc/self/fdinfo/{descriptor}").read_text().splitlines())
+                observations.append({"domain": domain, "directory": label,
+                    "readonly": bool(os.statvfs(root / label).f_flag & os.ST_RDONLY),
+                    "mount_id": int(info["mnt_id"])})
+            finally:
+                os.close(descriptor)
+        for label in [".", "state"]:
+            parent = root / label
+            metadata = parent.stat()
+            require(metadata.st_uid == 0 and stat.S_IMODE(metadata.st_mode) & 0o022 == 0,
+                    "managed publication namespace parent is writable by another identity")
+            probe = parent / f".managed-publisher-denied-{os.getpid()}"
+            try:
+                descriptor = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except PermissionError:
+                protected.append({"domain": domain, "directory": label, "write_denied": True})
+            else:
+                os.close(descriptor)
+                probe.unlink()
+                raise RuntimeError("managed publisher can modify a namespace parent")
+        try:
+            descriptor = os.open(root / "state/cache", os.O_RDONLY | os.O_DIRECTORY)
+        except PermissionError:
+            pass
+        else:
+            os.close(descriptor)
+            raise RuntimeError("managed publisher can read private cache state")
+
+    proof = {"mounts": observations, "protected_roots": protected, "private_state_denied": True}
+    check_publisher_mount_policy(proof, domains)
+    print("TERRANE_MANAGED_PUBLISHER_MOUNT_POLICY " + json.dumps(proof, sort_keys=True),
+          file=sys.stderr, flush=True)
+
+
 def actor(image, arguments):
     """Executes the original CLI after observing actual manager-applied custody."""
     require(len(arguments) == 4 and arguments[:3] == ["--config", str(CONFIG), "--role"]
@@ -67,6 +136,8 @@ def actor(image, arguments):
             "managed actor has a private user namespace")
     if role == "serve":
         verify_serve_mounts()
+    if role == "publish":
+        verify_publisher_mounts()
     if role == "gc":
         for domain in ["public", "private"]:
             try:
@@ -207,6 +278,24 @@ def run(driver, image):
                            "managed GC responses differ from the original owners")
         serve_log = command(driver, ["journalctl", "--no-pager", "--output=cat", "--unit=terrane-serve.service",
                                      "_PID=" + serve["MainPID"]])
+        publisher = properties(driver, "publish", ["MainPID", "ActiveState"])
+        driver.require(publisher["ActiveState"] == "active" and int(publisher["MainPID"]) > 0,
+                       "managed original publisher is no longer active")
+        publisher_log = command(driver, ["journalctl", "--no-pager", "--output=cat",
+            "--unit=terrane-publish.service", "_PID=" + publisher["MainPID"]])
+        publisher_policy = [json.loads(line.removeprefix("TERRANE_MANAGED_PUBLISHER_MOUNT_POLICY "))
+                            for line in publisher_log.splitlines()
+                            if line.startswith("TERRANE_MANAGED_PUBLISHER_MOUNT_POLICY ")]
+        driver.require(len(publisher_policy) == 1, "managed publisher mount evidence is missing or duplicated")
+        check_publisher_mount_policy(publisher_policy[0], tomllib.loads(expected["configuration"])["host_tier"]["domains"])
+        publisher_identity = [json.loads(line.removeprefix("TERRANE_MANAGED_ACTOR_IDENTITY "))
+                              for line in publisher_log.splitlines()
+                              if line.startswith("TERRANE_MANAGED_ACTOR_IDENTITY ")]
+        driver.require(len(publisher_identity) == 1
+                       and publisher_identity[0]["pid"] == int(publisher["MainPID"])
+                       and publisher_identity[0]["role"] == "publish"
+                       and publisher_identity[0]["uid"] == 841,
+                       "managed mount policy did not belong to the original publisher")
         serve_identity = [json.loads(line.removeprefix("TERRANE_MANAGED_ACTOR_IDENTITY ")) for line in serve_log.splitlines()
                           if line.startswith("TERRANE_MANAGED_ACTOR_IDENTITY ")]
         driver.require(len(serve_identity) == 1 and serve_identity[0]["pid"] == int(serve["MainPID"])
@@ -258,6 +347,7 @@ def run(driver, image):
             "listener_names_retired": True, "cli_combined_journal": completion,
             "units_sha256": {name: hashlib.sha256(text.encode()).hexdigest() for name, text in expected["units"].items()},
             "systemd_pid1": True, "restart_recovery": False, "physical_release": False,
+            "publisher_mount_policy": publisher_policy[0], "publisher_identity": publisher_identity[0],
         }, sort_keys=True), flush=True)
         print("PASS actual systemd starts GC only after original Serve owners and listeners are ready; fresh confined roles preserve custody and acknowledge shutdown", flush=True)
         completed = True
