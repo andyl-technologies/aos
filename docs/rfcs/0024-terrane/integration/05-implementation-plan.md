@@ -91,6 +91,44 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The corrected configured read-only Serve batch at `638698fefc` passes in
+376.160 seconds: all eleven local service/direct/read-only cases, 35 socket
+cases and 22 portable wire cases pass under their original thirty-second limits.
+Independent review matches all 8,287 immutable source files and 5,508 bound
+crate inputs, actual Cargo artifacts and retained service/socket executables.
+A fresh nonce proves the capability-free AOS 7.2.3 ext4 sandbox, exactly four
+remote derivations and disabled host-native fallback. Clean stop, temporary disk
+removal and preservation of seven raw controller records are verified. The
+original full bootstrap policy resolves the earlier failed startup. That failed
+batch remains failed, with its raw evidence preserved before owned scratch
+cleanup. This qualifies the read-only route, broad-token mutation refusal,
+publication visibility, historical bytes and backing-state equality at this
+revision; no complete deployed role or trunk task is accepted.
+
+Native read-only repositories now also have an explicit public-trust reopen
+factory, with a configured Serve adapter. They take an independently supplied
+public issuer keyring and a startup Read capability; existing protected native
+registration, selected publication, Original and whole-root Read checks remain.
+They never load issuer/terminal signing seeds or the instance token and return
+no signing, authoring, audit or collection binding. The legacy configured
+factory and production launcher migration remain separate work.
+
+A twelfth native case removes all three private credential files, rejects missing
+public trust and a different signing key with the same issuer/key identifiers,
+rejects a malformed startup capability, serves authenticated
+whole heads and exact immutable file bytes, rejects the writer's broad token for
+authorship, and requires unchanged backing state. An unavailable configured host
+token locator must remain unopened. All eleven prior selectors and their bounds
+remain. Both native SDK profiles pass strict all-target Clippy; portable
+compilation, SDK formatting and PLAN-2 pass. Actual public-reader execution and
+required application compilation remain pending; process confinement and full
+role deployment are not established by this factory.
+
+Required application-target compilation for `da9223ef67` also passes in
+1,482.574 seconds. Independent review matches all 8,286 immutable source files
+and 190 test-executable records across 59 packages. This is compilation evidence;
+the executable bytes are not retained and those records do not prove execution.
+
 The configured read-only service batch at `5a8beaee9a` fails in 325.226
 seconds. All 35 socket cases and the ten preceding service/direct-read cases
 pass; the new configured case fails in 1.30 seconds during native reopening

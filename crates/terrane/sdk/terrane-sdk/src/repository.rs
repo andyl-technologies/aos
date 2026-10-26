@@ -54,7 +54,8 @@ pub use history::RefHistory;
 pub use import::import_directory;
 #[cfg(all(feature = "std", unix))]
 pub use local::{
-    CommitMetadata, LocalMaintenanceIdentity, LocalRepositoryLocation, LocalRepositoryPolicy,
+    CommitMetadata, LocalMaintenanceIdentity, LocalReaderIdentity, LocalRepositoryLocation,
+    LocalRepositoryPolicy,
 };
 #[cfg(all(feature = "std", unix))]
 pub use local_authority::{LocalAuthority, LocalAuthorityIdentity, LocalAuthorityParameters};

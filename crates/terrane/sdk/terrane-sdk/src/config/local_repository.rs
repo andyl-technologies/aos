@@ -157,4 +157,6 @@ mod maintenance;
 #[cfg(all(feature = "std", unix))]
 mod open;
 #[cfg(all(feature = "std", unix))]
+mod public_reader;
+#[cfg(all(feature = "std", unix))]
 pub use open::LocalOpenError;

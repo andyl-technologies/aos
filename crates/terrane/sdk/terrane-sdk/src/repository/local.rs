@@ -1,10 +1,12 @@
 //! Opens and initializes actual local bucket repositories with sibling authority.
 
 mod maintenance;
+mod public_reader;
 mod readonly;
 mod recovery;
 
 pub use maintenance::LocalMaintenanceIdentity;
+pub use public_reader::LocalReaderIdentity;
 
 use std::{os::unix::fs::MetadataExt, path::PathBuf, time::SystemTime};
 

@@ -21,6 +21,7 @@ CASES = [
     "identity_expiring_after_middleware_dispatch_cannot_reach_repository_data",
     "independent_native_reader_observes_later_commits_and_preserves_history",
     "read_only::configured_native_serve_reads_preserve_backing_and_observe_publication",
+    "read_only::public_reader_requires_explicit_trust_without_private_credentials",
 ]
 
 
