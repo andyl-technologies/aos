@@ -663,7 +663,30 @@ pub struct ValidatedEpochLease {
     pub next_floor: EpochLeaseFloor,
 }
 
+/// An exact signed lease payload authenticated against one pinned issuer key.
+///
+/// Authentication alone grants no dispatch authority. Callers must validate the
+/// current cohort, profile, permanent floor, key, effect and clock at every
+/// admission boundary. Keeping this value within one operation avoids repeating
+/// signature verification while those independent checks remain current.
+#[derive(Debug, Clone)]
+pub struct AuthenticatedEpochLease {
+    payload: EpochLeasePayload,
+}
+
 impl EpochLeaseVerifier {
+    /// Authenticates canonical lease bytes without admitting an operation.
+    ///
+    /// # Errors
+    /// Returns an error for malformed, noncanonical, incorrectly signed or
+    /// untrusted lease bytes. Current admission requires a subsequent call to
+    /// [`AuthenticatedEpochLease::validate`].
+    pub fn authenticate_lease(&self, bytes: &[u8]) -> Result<AuthenticatedEpochLease> {
+        Ok(AuthenticatedEpochLease {
+            payload: self.verify(bytes)?,
+        })
+    }
+
     /// Authenticates exact cohort/time/effect/key against a retained local floor.
     ///
     /// `expected` is an independently verified immutable snapshot, not facts
@@ -694,7 +717,36 @@ impl EpochLeaseVerifier {
         ensure!(!floor.retired, "retirement is terminal");
         expected.validate()?;
         profile.validate()?;
-        let payload = self.verify(bytes)?;
+        self.authenticate_lease(bytes)?
+            .validate(expected, profile, floor, full_key, effect, clock)
+    }
+}
+
+impl AuthenticatedEpochLease {
+    /// Validates current admission for the exact authenticated payload.
+    ///
+    /// This repeats every floor, scope, timing and revocation check performed by
+    /// [`EpochLeaseVerifier::validate_lease`], using the supplied current inputs.
+    /// It does not authenticate another envelope, renew a lease or settle I/O.
+    /// The proposed floor must still be persisted before a new dispatch.
+    ///
+    /// # Errors
+    /// Returns an error for snapshot/profile/key/effect mismatch, stale or forked
+    /// epochs, issuance rollback, local denial, retirement or invalid time.
+    pub fn validate(
+        &self,
+        expected: &LeaseCohort,
+        profile: &LeaseTimingProfile,
+        floor: &EpochLeaseFloor,
+        full_key: &str,
+        effect: LeaseEffect,
+        clock: LeaseClock,
+    ) -> Result<ValidatedEpochLease> {
+        floor.validate()?;
+        ensure!(!floor.retired, "retirement is terminal");
+        expected.validate()?;
+        profile.validate()?;
+        let payload = &self.payload;
         ensure!(
             payload.cohort == *expected && payload.timing_profile == *profile,
             "immutable cohort or pinned time profile mismatch"
@@ -737,7 +789,7 @@ impl EpochLeaseVerifier {
                 "same-sequence lease fork"
             );
         }
-        validate_time(&payload, floor.clock_floor, clock)?;
+        validate_time(payload, floor.clock_floor, clock)?;
 
         let mut next = floor.clone();
         next.generation = expected.admission_generation;
@@ -750,7 +802,7 @@ impl EpochLeaseVerifier {
         next.denied = false;
         next.clock_floor = LeaseInteger::new(clock.observed_at)?;
         Ok(ValidatedEpochLease {
-            payload,
+            payload: payload.clone(),
             next_floor: next,
         })
     }

@@ -1,5 +1,6 @@
 //! Pure wire, persistence-order, fork, denial and clock regressions.
 
+mod authenticated;
 mod observation;
 
 use std::cell::RefCell;

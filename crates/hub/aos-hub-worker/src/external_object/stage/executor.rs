@@ -617,8 +617,17 @@ async fn dispatch(
         );
     }
 
-    // Both crypto validations and all async guard/manifest/binding work finish
-    // before a fresh scalar observation. Actual JS Fetch starts synchronously.
+    // These exact immutable bytes and issuer pin remain borrowed throughout the
+    // operation. Authenticate once; every wait/body check still validates the
+    // current floor, scope and clock before a synchronous Fetch or continuation.
+    let verifier = object.verifier()?;
+    let authenticated_lease = verifier.authenticate_lease(lease.as_bytes())?;
+    let authenticated_source = work
+        .operation
+        .destination()
+        .then(|| verifier.authenticate_lease(work.read_lease.as_bytes()))
+        .transpose()?;
+
     let fresh = || {
         validate_publication(
             object,
@@ -627,8 +636,7 @@ async fn dispatch(
             publication,
             &publication.snapshot.deployment_id,
         )?;
-        let validated = object.verifier()?.validate_lease(
-            lease.as_bytes(),
+        let validated = authenticated_lease.validate(
             cohort,
             &object.timing_profile,
             floor,
@@ -639,15 +647,19 @@ async fn dispatch(
         let source_validated = if work.operation.destination() {
             let source =
                 source.ok_or_else(|| anyhow::anyhow!("destination lost immutable source"))?;
-            Some(object.verifier()?.validate_lease(
-                work.read_lease.as_bytes(),
-                &domain.read_cohort,
-                &object.timing_profile,
-                &source.floor,
-                &work.context.stage_key()?,
-                LeaseEffect::Read,
-                object.clock(),
-            )?)
+            Some(
+                authenticated_source
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("destination lost authenticated source lease"))?
+                    .validate(
+                        &domain.read_cohort,
+                        &object.timing_profile,
+                        &source.floor,
+                        &work.context.stage_key()?,
+                        LeaseEffect::Read,
+                        object.clock(),
+                    )?,
+            )
         } else {
             None
         };
@@ -811,8 +823,7 @@ async fn dispatch(
         // Dispatch authentication is checked only at invocation. The actual
         // validated read lease separately bounds this immutable body's resources.
         let validated_read = || {
-            object.verifier()?.validate_lease(
-                work.read_lease.as_bytes(),
+            authenticated_lease.validate(
                 &domain.read_cohort,
                 &object.timing_profile,
                 floor,
