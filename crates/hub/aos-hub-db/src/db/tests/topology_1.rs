@@ -195,8 +195,90 @@ async fn unused_topology_binding_can_be_checked_and_deleted() {
         .await
         .unwrap()
         .is_empty());
-    assert!(db.delete_topology_binding(binding_id, 1).await.unwrap());
-    assert!(!db.delete_topology_binding(binding_id, 1).await.unwrap());
+    let binding = db.binding(binding_id).await.unwrap().unwrap();
+    assert!(db
+        .delete_topology_binding(binding_id, &binding.stable_id, &binding.owner_scope_key, 1,)
+        .await
+        .unwrap());
+    assert!(!db
+        .delete_topology_binding(binding_id, &binding.stable_id, &binding.owner_scope_key, 1,)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn binding_deletion_rejects_a_different_reviewed_identity() {
+    let db = Database::open_in_memory().await.unwrap();
+    let first_org = db.create_org("first-owner", "First Owner").await.unwrap();
+    let second_org = db.create_org("second-owner", "Second Owner").await.unwrap();
+    let first_id = create_test_binding(&db, first_org, "first", "first").await;
+    let second_id = create_test_binding(&db, second_org, "second", "second").await;
+    let first = db.binding(first_id).await.unwrap().unwrap();
+    let second = db.binding(second_id).await.unwrap().unwrap();
+    let write_generation =
+        create_valid_write_credential(&db, second_id, "native://second/write/v1").await;
+    let write_revision = db
+        .create_binding_write_revision(&NewBindingWriteRevision {
+            binding_id: second_id,
+            write_credential_generation: write_generation,
+            writes_supported: true,
+            conditional_writes_supported: false,
+            revision_fingerprint: "second-write-v1".into(),
+            capability_fingerprint: "second-writes".into(),
+        })
+        .await
+        .unwrap();
+
+    assert!(!db
+        .delete_topology_binding(
+            second_id,
+            &first.stable_id,
+            &first.owner_scope_key,
+            first.resource_version,
+        )
+        .await
+        .unwrap());
+
+    assert!(db.binding(second_id).await.unwrap().is_some());
+    assert!(db
+        .current_binding_credential(second_id, "write")
+        .await
+        .unwrap()
+        .is_some());
+    assert!(db.binding_write_state(second_id).await.unwrap().is_some());
+    assert!(db
+        .binding_write_revision(second_id, write_revision.revision)
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        db.list_bindings_available_to_scope(&second.owner_scope_key)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn deleted_binding_ids_are_not_reallocated() {
+    let db = Database::open_in_memory().await.unwrap();
+    let org = db.create_org("id-owner", "ID Owner").await.unwrap();
+    let first_id = create_test_binding(&db, org, "first-id", "first").await;
+    let first = db.binding(first_id).await.unwrap().unwrap();
+
+    assert!(db
+        .delete_topology_binding(
+            first.id,
+            &first.stable_id,
+            &first.owner_scope_key,
+            first.resource_version,
+        )
+        .await
+        .unwrap());
+
+    let replacement_id = create_test_binding(&db, org, "replacement-id", "replacement").await;
+    assert!(replacement_id > first_id);
 }
 
 #[tokio::test]

@@ -141,7 +141,9 @@ impl RpcService {
                 "failed",
                 0,
                 serde_json::json!({ "registryId": registry.slug }).to_string(),
-                Some(format!("{error:#}")),
+                Some(crate::jobs::redacted_operation_failure(&format!(
+                    "{error:#}"
+                ))),
             ),
         };
         let terminal = self
@@ -410,7 +412,7 @@ impl RpcService {
                 .stage_retention_refresh_reason_topology(&refresh_id, &reason)
                 .await
             {
-                let detail = format!("{error:#}");
+                let detail = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
                 let _ = self
                     .db
                     .fail_retention_refresh_topology(&refresh_id, &detail, clock::now_unix_secs())
@@ -427,7 +429,7 @@ impl RpcService {
             )
             .await
         {
-            let detail = format!("{error:#}");
+            let detail = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
             let _ = self
                 .db
                 .fail_retention_refresh_topology(&refresh_id, &detail, clock::now_unix_secs())
@@ -737,7 +739,9 @@ impl RpcService {
             {
                 Ok(_) => refreshed += 1,
                 Err(error) => {
-                    failure = Some(format!("{error:#}"));
+                    failure = Some(crate::jobs::redacted_operation_failure(&format!(
+                        "{error:#}"
+                    )));
                     break;
                 }
             }

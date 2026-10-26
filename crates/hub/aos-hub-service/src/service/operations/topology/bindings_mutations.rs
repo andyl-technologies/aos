@@ -237,7 +237,12 @@ impl RpcService {
         }
         if !self
             .db
-            .delete_topology_binding(binding.id, input.baseline_resource_version)
+            .delete_topology_binding(
+                binding.id,
+                &input.stable_id,
+                &input.owner_scope_key,
+                input.baseline_resource_version,
+            )
             .await
             .map_err(RpcError::internal)?
         {

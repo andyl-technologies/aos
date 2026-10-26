@@ -300,10 +300,11 @@ impl RegistryDeletionController {
                 // Unexplained failures (provider I/O, a lost race) are retried
                 // by a later pass, but never indefinitely.
                 detail.transient_failures += 1;
-                detail.message = format!("retrying after: {error:#}");
+                let failure = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
+                detail.message = format!("retrying after: {failure}");
                 if detail.transient_failures >= MAX_TRANSIENT_FAILURES {
                     StepExit::Fail(format!(
-                        "registry deletion step failed repeatedly: {error:#}"
+                        "registry deletion step failed repeatedly: {failure}"
                     ))
                 } else {
                     StepExit::Yield {

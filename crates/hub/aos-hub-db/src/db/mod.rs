@@ -547,6 +547,7 @@ pub fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 15 | `migration-0015-oidc-browser-binding.sql` | Browser-bound OIDC login flows. |
 /// | 16 | `migration-0016-oidc-flow-retention.sql` | Bounded OIDC flow admission and indexed retention. |
 /// | 17 | `migration-0017-native-documentation-lookup.sql` | Indexed native documentation digest lookup. |
+/// | 18 | `migration-0018-binding-id-tombstones.sql` | Non-reusable topology binding ids. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
@@ -565,6 +566,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0015-oidc-browser-binding.sql"),
     include_str!("migration-0016-oidc-flow-retention.sql"),
     include_str!("migration-0017-native-documentation-lookup.sql"),
+    include_str!("migration-0018-binding-id-tombstones.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
