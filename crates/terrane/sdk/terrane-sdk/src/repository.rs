@@ -80,6 +80,8 @@ use crate::{
 pub struct Repository<S: Store, C: Clock, F: LocalFs> {
     coordinator: Coordinator<S, C, F>,
     local_backend_root: Option<std::path::PathBuf>,
+    #[cfg(all(feature = "tokio", unix))]
+    native_ref_authority: bool,
     object_presentation: Option<std::sync::Arc<dyn ObjectPresentation>>,
     #[cfg(unix)]
     local_retention: Option<local_authority::NativeRetention>,
@@ -118,6 +120,8 @@ impl<S: Store, C: Clock, F: LocalFs> Repository<S, C, F> {
         Self {
             coordinator,
             local_backend_root: None,
+            #[cfg(all(feature = "tokio", unix))]
+            native_ref_authority: false,
             object_presentation: None,
             #[cfg(unix)]
             local_retention: None,
@@ -154,6 +158,8 @@ where
         Repository {
             coordinator: self.coordinator.with_read_cache(local),
             local_backend_root: None,
+            #[cfg(all(feature = "tokio", unix))]
+            native_ref_authority: false,
             object_presentation: None,
             #[cfg(unix)]
             local_retention: None,
@@ -186,6 +192,8 @@ where
         Repository {
             coordinator: self.coordinator.with_read_driver(build),
             local_backend_root: None,
+            #[cfg(all(feature = "tokio", unix))]
+            native_ref_authority: false,
             object_presentation: None,
             #[cfg(unix)]
             local_retention: None,
@@ -197,11 +205,12 @@ where
         &self.coordinator
     }
 
-    // Only the native open/initialize factories retain this original route marker.
-    // Read-cache and driver composition deliberately clear it.
+    // Native reopen establishes this route independently of authoring permission.
+    // Read-cache and driver composition deliberately clear it. Each operation
+    // still requires its own current Guard decision.
     #[cfg(all(feature = "tokio", unix))]
     pub(crate) fn has_native_ref_authority(&self) -> bool {
-        self.local_backend_root.is_some()
+        self.native_ref_authority
     }
 
     /// Returns the profile used by directory import and object reconstruction.

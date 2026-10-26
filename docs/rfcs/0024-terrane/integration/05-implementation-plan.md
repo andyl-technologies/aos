@@ -91,6 +91,24 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+Configured read-only Serve repositories now retain a separate native ref-read
+route marker after protected reopening. Ref service construction no longer
+requires the unrelated authoring/audit/collection root binding. Generic and
+cache/driver-composed repositories still clear the route marker, and every
+operation still establishes its own current Guard decision. Read-only native
+backends retain their existing mutation refusal and no authoring retention.
+
+An eleventh native case opens the configured Serve path against genuine writable
+backing, requires refusal even for the independent writer's broad token, and
+serves whole heads through authenticated sockets before and after another writer
+publishes. It also requires new and historical immutable file bytes and exact
+backing bytes, inode metadata and non-access timestamps around the read-only
+operations. All ten prior selectors and thirty-second limits remain. Both
+native SDK profiles pass strict all-target Clippy; portable compilation, SDK
+formatting and PLAN-2 pass. Actual execution and mandatory application
+compilation of this extension remain pending. No deployed listener, complete
+role, task or milestone is accepted by these component checks.
+
 The corrected Ref service batch at `5e93bbf1f2` passes in 360.089 seconds
 in the AOS native builder: all nine service cases, 35 distribution socket cases
 and 22 portable wire cases pass under their original thirty-second limits.

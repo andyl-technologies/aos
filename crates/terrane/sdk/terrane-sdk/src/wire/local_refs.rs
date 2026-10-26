@@ -66,6 +66,9 @@ pub struct LocalRefLimits {
 /// staleness for every supported freshness mode; cache/remote composition cannot
 /// acquire this service binding. Successful rows grant no later authority. CAS
 /// publication, watch cursors and production listener deployment remain separate.
+///
+/// Configured read-only Serve repositories qualify through their original
+/// native binding without acquiring authoring, audit or collection authority.
 pub struct LocalRefService<S: Store, C: Clock, F: LocalFs> {
     repository: Arc<Repository<S, C, F>>,
     limits: LocalRefLimits,

@@ -154,6 +154,12 @@ where
         let root = guard.store().root().to_path_buf();
 
         let mut repository = Self::new(coordinator);
+        #[cfg(all(feature = "tokio", unix))]
+        {
+            // Existing read-only native binding is sufficient for guarded ref
+            // reads. Authoring and maintenance remain separately unavailable.
+            repository.native_ref_authority = true;
+        }
         if !read_only {
             repository.local_retention = Some(retention);
             repository.local_backend_root = Some(root);
