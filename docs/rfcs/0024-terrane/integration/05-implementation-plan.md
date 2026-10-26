@@ -91,6 +91,31 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+Actual configured CLI qualification at `221134c592` passes in 208.985 seconds.
+Independent review matches all 8,289 immutable source files, 5,510 bound inputs
+and four retained Cargo executables. All six separate setup actors and the
+original snapshot, CLI receipt and late-exposure-denial controls execute. The
+added public-reader actor serves genuine snapshots after all three private
+credential files are removed, with unchanged selected publication and
+capabilities. An invalid startup Read fails before any endpoint despite valid
+exposure and private instance tokens. No original deadline or control is removed.
+
+The same frozen launcher's maintained-cache and independent refusal VM checks
+pass in 428.685 and 307.684 seconds respectively, including image construction.
+Separate reviews each match 8,289 source files, both immutable images with
+5,510/5,516 bound inputs, five retained Cargo executables and fifteen original
+enrollment controls. The maintained guest verifies seven namespace observations,
+three owner-lock/SIGTERM lifecycles and the original population, offline-read,
+lower-deadline, circuit and fs-verity policy controls. The refusal guest verifies
+four read-only namespace observations and the original unenrolled, profile,
+lower-read and physical-owner controls. Actual derivation logs and image closures
+are retained. The aggregate `native-sdk-cache` check also passes; independent
+review binds its `native-proofs` entries to those two exact reviewed VM outputs.
+This aggregate introduces no additional native execution. Mandatory application
+compilation and the older-source feature matrix remain pending. These results
+qualify this configured public-reader/cache composition, not systemd deployment,
+restart recovery, all-filesystem confinement or a complete trunk task.
+
 The public-reader batch at `3041fd861b` passes in 367.133 seconds: all twelve
 local service/direct/read-only/public-trust cases, 35 socket cases and 22 portable
 cases execute under their original thirty-second limits. Four independent
