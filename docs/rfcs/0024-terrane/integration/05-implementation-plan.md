@@ -136,6 +136,21 @@ for isolated AOS execution with host-native fallback disabled; image constructio
 and actual failure-category diagnosis remain pending. Production CLI output and
 SDK destination semantics are unchanged.
 
+The first redacted-category diagnostic at that checkpoint fails in 181.253
+seconds. Its original managed proof and fourteen enrollment controls pass; the
+diagnostic actor preserves UID 840, empty capabilities, no-new-privileges and
+the original namespace checks. Both completed SDK snapshots retain identical
+bytes and inode metadata. The example reports `NativeCacheConfiguration` with
+`Unsupported`, before cache recovery: its build omits `surface-fuse`, which the
+production CLI enables and the configured surface index requires. This failed
+diagnostic does not explain the earlier CLI `NativeCacheOpen` failure.
+
+The proof image now requests native surface-index support for the SDK example,
+and both artifact selection and retained-image verification require that exact
+feature profile. Unit, GC and CLI feature requests remain unchanged. A separate
+identity field records the example's requested features. Renewed compilation
+and guest diagnosis remain pending; no production recovery behavior is changed.
+
 The actual service-manager fixture now declares the public issuer file and
 independent startup Read required by the configured SDK launcher. Its guest
 comparison also requires those rendered token settings to match the genuine

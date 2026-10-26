@@ -47,7 +47,7 @@
       cargo_json "$TMPDIR/configured-sdk-unit.jsonl" test --frozen --offline -p terrane-linux \
         --features tokio,terrane-sdk/surface-sdk --lib --no-run --message-format=json
       cargo_json "$TMPDIR/configured-sdk-example.jsonl" build --frozen --offline -p terrane-linux \
-        --features tokio,terrane-sdk/surface-sdk --example configured_sdk_fixture \
+        --features tokio,surface-fuse,terrane-sdk/surface-sdk --example configured_sdk_fixture \
         --message-format=json
       cargo_json "$TMPDIR/configured-sdk-gc.jsonl" build --frozen --offline -p terrane-linux \
         --features tokio,terrane-sdk/surface-sdk --example configured_gc_fixture \

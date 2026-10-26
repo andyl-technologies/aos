@@ -35,7 +35,14 @@ CASES = [
 PREFIX = "configured_sdk::tests::"
 FLAGS = ["--frozen", "--offline", "-p", "terrane-linux",
          "--features", "tokio,terrane-sdk/surface-sdk"]
-FS_FEATURES = ["tokio"]
+EXAMPLE_REQUESTED_FEATURES = ["tokio", "surface-fuse", "terrane-sdk/surface-sdk"]
+ARTIFACT_FEATURES = {
+    "unit": ["tokio"],
+    # Match the production CLI's native surface-index support during startup.
+    "example": ["surface-fuse", "tokio"],
+    "cli": [],
+    "gc": ["tokio"],
+}
 REPOSITORY_FEATURES = ["send", "std", "surface-sdk", "tokio"]
 KINDS = ["unit", "example", "cli", "gc"]
 PACKAGE_PATHS = {
@@ -98,7 +105,7 @@ def select_artifact(events, packages, workspace, target, kind):
             and artifact["target"]["kind"] == {"unit": ["lib"], "example": ["example"],
                                                "cli": ["bin"], "gc": ["example"]}[kind]
             and pathlib.Path(artifact["target"]["src_path"]) == workspace / source
-            and sorted(artifact["features"]) == ([] if kind == "cli" else FS_FEATURES)
+            and sorted(artifact["features"]) == ARTIFACT_FEATURES[kind]
             and profile["test"] is test and profile["debug_assertions"] is True
             and profile["overflow_checks"] is True
             and profile["opt_level"] == ("s" if test else "0")
@@ -147,7 +154,8 @@ def discover(artifact, executable, kind, workspace, target, temporary, target_li
     environment[f"CARGO_TARGET_{triple}_RUNNER"] = str(runner)
     command = {
         "unit": ["cargo", "test", *FLAGS, "--lib", "--", "--list"],
-        "example": ["cargo", "run", *FLAGS, "--example", "configured_sdk_fixture", "--", "--discover"],
+        "example": ["cargo", "run", *FLAGS, "--features", "surface-fuse",
+                    "--example", "configured_sdk_fixture", "--", "--discover"],
         "cli": ["cargo", "run", "--frozen", "--offline", "-p", "terrane-cli", "--bin", "terrane", "--", "--discover"],
         "gc": ["cargo", "run", *FLAGS, "--example", "configured_gc_fixture", "--", "--discover"],
     }[kind]
@@ -246,7 +254,8 @@ def _verify_payload(image, source):
     require(identity["schema_version"] == 1 and identity["source"] == str(source)
             and identity["target_platform"] == TARGET_PLATFORM
             and identity["cases"] == [PREFIX + case for case in CASES]
-            and identity["requested_features"] == ["tokio", "terrane-sdk/surface-sdk"],
+            and identity["requested_features"] == ["tokio", "terrane-sdk/surface-sdk"]
+            and identity["example_requested_features"] == EXAMPLE_REQUESTED_FEATURES,
             "configured SDK image source/feature/inventory mismatch")
     for name, expected in identity["input_sha256"].items():
         require(digest(source / "crates" / name) == expected,
@@ -254,7 +263,7 @@ def _verify_payload(image, source):
     for name in KINDS:
         item = identity["artifacts"][name]
         require(item["binary_sha256"] == digest(image / "libexec" / name)
-                and item["features"] == ([] if name == "cli" else FS_FEATURES)
+                and item["features"] == ARTIFACT_FEATURES[name]
                 and all(event["features"] == REPOSITORY_FEATURES
                         for event in item["repository_compiler_events"]),
                 "configured SDK retained artifact mismatch")
@@ -289,7 +298,8 @@ def install(helper_path):
     identity = {"schema_version": 1, "source": str(source), "input_sha256": hashes,
                 "target_platform": TARGET_PLATFORM,
                 "cases": [PREFIX + case for case in CASES],
-                "requested_features": ["tokio", "terrane-sdk/surface-sdk"], "artifacts": {}}
+                "requested_features": ["tokio", "terrane-sdk/surface-sdk"],
+                "example_requested_features": EXAMPLE_REQUESTED_FEATURES, "artifacts": {}}
     for kind in KINDS:
         event_path = temporary / f"configured-sdk-{kind}.jsonl"
         artifact, executable, dependencies = select_artifact(
