@@ -111,8 +111,12 @@ four read-only namespace observations and the original unenrolled, profile,
 lower-read and physical-owner controls. Actual derivation logs and image closures
 are retained. The aggregate `native-sdk-cache` check also passes; independent
 review binds its `native-proofs` entries to those two exact reviewed VM outputs.
-This aggregate introduces no additional native execution. Mandatory application
-compilation and the older-source feature matrix remain pending. These results
+This aggregate introduces no additional native execution. Required application
+compilation for `3041fd861b` and `221134c592` now passes in 1,447.989 and
+967.789 seconds respectively. Separate independent reviews each match all 8,289
+immutable source files and 190 test-executable records across 59 packages.
+These are compilation-only results, without retained executable bytes. The
+older-source feature matrix remains pending. These results
 qualify this configured public-reader/cache composition, not systemd deployment,
 restart recovery, all-filesystem confinement or a complete trunk task.
 
