@@ -10,6 +10,10 @@ use std::fs::File;
 use std::os::fd::AsFd as _;
 
 use aos_sandbox_linux::credential::FixedRoleCredentialReadV1;
+use aos_sandbox_protocol::method46_provisioning::{
+    Method46EndpointDataV1, Method46ProfileDataV1, Method46ProvisionDataErrorV1,
+    decode_provision_v1,
+};
 use rustix::fs::{Mode, OFlags, ResolveFlags};
 use zeroize::Zeroizing;
 
@@ -80,7 +84,7 @@ pub(super) const NAMES: [&str; 36] = [
 const MANIFEST_BYTES: usize =
     aos_sandbox_broker_session_protocol::manifest::BROKER_SESSION_MANIFEST_BYTES;
 const LENGTHS: [usize; NAMES.len()] = [
-    160,
+    aos_sandbox_protocol::method46_provisioning::PROVISION_BYTES,
     32,
     32,
     MANIFEST_BYTES,
@@ -178,6 +182,24 @@ pub(super) struct InitialCredentialsOriginalV1 {
 }
 
 impl InitialCredentialsOriginalV1 {
+    /// Decodes only the held public provisioning slot for a fixed helper role.
+    ///
+    /// # Errors
+    /// Refuses incomplete or ended credential custody, absent public bytes and
+    /// noncanonical or mismatched provisioning DATA. Private auth stays resident.
+    pub(in crate::method46_initial_startup) fn decode_helper_provision_data(
+        &self,
+        endpoint: Method46EndpointDataV1,
+    ) -> Result<(Method46ProfileDataV1, [u8; 34]), Method46ProvisionDataErrorV1> {
+        if !self.admitted_before_post() {
+            return Err(Method46ProvisionDataErrorV1::Provisioning);
+        }
+        let bytes = self.credentials[0].bytes[0]
+            .as_deref()
+            .ok_or(Method46ProvisionDataErrorV1::Provisioning)?;
+        decode_provision_v1(bytes, endpoint)
+    }
+
     pub(super) fn admitted_before_post(&self) -> bool {
         self.completed && !self.post_entered
     }

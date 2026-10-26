@@ -31,16 +31,17 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{StatVfsMountFlags, fstatvfs};
+#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use super::format::{FloorEndpointV1, PROFILE_BYTES};
+use super::format::FloorEndpointV1;
 use super::{FloorErrorV1, FloorProfileV1};
 use aos_sandbox_linux::credential::{
     CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
 };
 
-const PROVISION_BYTES: usize = 160;
+use aos_sandbox_protocol::method46_provisioning::PROVISION_BYTES;
 const PUBLIC_CREDENTIAL: &str = "broker-method46-tpm-provision-v1";
 const AUTH_CREDENTIAL: &str = "broker-method46-tpm-index-auth-v1";
 const LEGACY_MODE: &[u8] = b"legacy-closed-v1\n";
@@ -385,26 +386,9 @@ pub(crate) fn decode_provision(
     bytes: &[u8],
     endpoint: FloorEndpointV1,
 ) -> Result<(FloorProfileV1, [u8; 34]), FloorErrorV1> {
-    if bytes.len() != PROVISION_BYTES
-        || &bytes[..8] != b"AOSBTD01"
-        || bytes[8..10] != 1_u16.to_be_bytes()
-        || bytes[10..12] != [0; 2]
-        || bytes[158..160] != [0; 2]
-    {
-        return Err(FloorErrorV1::Encoding);
-    }
-    let profile = FloorProfileV1::decode(&bytes[12..12 + PROFILE_BYTES])?;
-    let salt_name: [u8; 34] = bytes[124..158]
-        .try_into()
-        .map_err(|_| FloorErrorV1::Encoding)?;
-    if profile.endpoint() != endpoint
-        || salt_name[..2] != 0x000b_u16.to_be_bytes()
-        || salt_name[2..] == [0; 32]
-        || Sha256::digest(salt_name).as_slice() != profile.salt_key_name_digest()
-    {
-        return Err(FloorErrorV1::Provisioning);
-    }
-    Ok((profile, salt_name))
+    aos_sandbox_protocol::method46_provisioning::decode_provision_v1(bytes, endpoint)
+        .map(|(profile, salt_name)| (FloorProfileV1::from_data(profile), salt_name))
+        .map_err(Into::into)
 }
 
 #[cfg(test)]

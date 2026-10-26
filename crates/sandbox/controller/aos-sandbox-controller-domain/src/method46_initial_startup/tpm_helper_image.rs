@@ -10,12 +10,18 @@ use aos_sandbox_broker::fixed_tpm_helper_image::{
     MeasuredHelperImageV1,
 };
 
+use aos_sandbox_protocol::method46_provisioning::{
+    Method46EndpointDataV1, Method46ProfileDataV1, Method46ProvisionDataErrorV1,
+};
+
 use super::*;
 
 pub(super) struct InitialTpmHelperImageOriginalV1 {
     acquisition: HelperImageAcquisitionOriginalV1,
     image: Option<MeasuredHelperImageV1>,
     capture: Option<Result<(), ImmutableImageErrorV1>>,
+    provision: Option<Result<(Method46ProfileDataV1, [u8; 34]), Method46ProvisionDataErrorV1>>,
+    node_matches: Option<bool>,
     post: HelperImageRevalidationOriginalV1,
     post_result: Option<Result<(), ImmutableImageErrorV1>>,
     entered: bool,
@@ -28,6 +34,8 @@ impl InitialTpmHelperImageOriginalV1 {
             acquisition: HelperImageAcquisitionOriginalV1::new(),
             image: None,
             capture: None,
+            provision: None,
+            node_matches: None,
             post: HelperImageRevalidationOriginalV1::new(),
             post_result: None,
             entered: false,
@@ -71,7 +79,11 @@ fn receiving_demand(purpose: FixedTpmHelperPurposeV1) -> Option<ResourceVector> 
     // owed terminal post may need both full bounded reads after any failure.
     let acquisition = HelperImageAcquisitionOriginalV1::receiving_with_input_demand_v1(purpose)?;
     let post = HelperImageRevalidationOriginalV1::maximum_with_input_receiving_demand_v1()?;
-    acquisition.checked_add(post).ok()
+    acquisition
+        .checked_add(post)
+        .ok()?
+        .checked_add(ResourceVector::ZERO.with(D::OutputBytes, 512))
+        .ok()
 }
 
 impl Method46InitialStartupOriginalV1 {
@@ -81,6 +93,10 @@ impl Method46InitialStartupOriginalV1 {
     /// this step. The same still-current Source pays all retained pin reads,
     /// measurements and independent terminal posts before native IO. No caller
     /// supplies a path, purpose, descriptor, secret or resource amount.
+    ///
+    /// The same captured public provisioning credential is decoded by the
+    /// shared canonical codec, with this role's fixed endpoint and the genuine
+    /// Source node. Its salt Name remains resident for the eventual HELLO.
     ///
     /// This establishes passive file custody only. It launches no child and
     /// cannot release private auth or authorize an initial TPM operation.
@@ -93,11 +109,12 @@ impl Method46InitialStartupOriginalV1 {
     pub fn capture_initial_tpm_helper_image_once_v1(
         &mut self,
     ) -> Result<(), Method46InitialStartupClosedV1> {
-        let role = self
+        let origin = self
             .origin
             .as_ref()
-            .map(|origin| origin.role)
             .ok_or_else(|| self.fail(First::Order))?;
+        let role = origin.role;
+        let node = origin.node;
         let body = self.body.as_ref().ok_or_else(|| self.fail(First::Order))?;
         let ready = body.unit.initial_admitted()
             && body
@@ -111,11 +128,37 @@ impl Method46InitialStartupOriginalV1 {
         if !ready {
             return Err(self.fail(First::Order));
         }
+        if !self
+            .source
+            .try_borrow()
+            .is_ok_and(|source| source.require_current_v1().is_ok())
+        {
+            return Err(self.fail(First::Source));
+        }
         let purpose = purpose(role);
         self.fund_additional(receiving_demand(purpose))?;
         let body = self.body.as_mut().ok_or(self.closed)?;
         let helper = body.tpm_helper_image.get_mut();
         helper.entered = true;
+        let endpoint = match role {
+            Method46InitialServiceRoleV1::ControllerStorageClient => {
+                Method46EndpointDataV1::ControllerStorageClient
+            }
+            Method46InitialServiceRoleV1::StorageBroker => Method46EndpointDataV1::StorageBroker,
+        };
+        helper.provision = Some(
+            body.credentials
+                .get_mut()
+                .decode_helper_provision_data(endpoint),
+        );
+        helper.node_matches = helper
+            .provision
+            .as_ref()
+            .and_then(|value| value.as_ref().ok())
+            .map(|(profile, _)| profile.node() == node);
+        if helper.node_matches != Some(true) {
+            return Err(self.fail(First::TpmHelperImage));
+        }
         helper.capture = Some(helper.acquisition.capture_once(purpose));
         if matches!(helper.capture, Some(Ok(()))) {
             helper.image = helper.acquisition.take_completed_once();

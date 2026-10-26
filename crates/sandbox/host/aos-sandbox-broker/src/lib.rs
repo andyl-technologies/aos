@@ -16,6 +16,9 @@ pub mod immutable_image;
 /// Measures closed compiled TPM-helper purposes without granting role authority.
 pub mod fixed_tpm_helper_image;
 
+/// Shares canonical fixed TPM-helper frame DATA without physical authority.
+pub mod fixed_tpm_helper_wire;
+
 /// Shares bounded nonzero kernel entropy DATA and retained partial fills.
 #[cfg(target_os = "linux")]
 pub mod bounded_entropy;

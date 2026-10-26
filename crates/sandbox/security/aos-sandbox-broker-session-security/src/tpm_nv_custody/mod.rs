@@ -47,26 +47,7 @@ pub(crate) use floor::{
 
 pub use floor::FloorErrorV1;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum NvCustodyEndpointV1 {
-    ControllerStorageClient,
-    StorageBroker,
-    RuntimeDeployment,
-    ControllerNix,
-    NixOwner,
-}
-
-impl NvCustodyEndpointV1 {
-    pub(crate) const fn nv_index(self) -> u32 {
-        match self {
-            Self::ControllerStorageClient => 0x0180_a046,
-            Self::StorageBroker => 0x0180_a047,
-            Self::RuntimeDeployment => 0x0180_a055,
-            Self::ControllerNix => 0x0180_a058,
-            Self::NixOwner => 0x0180_a059,
-        }
-    }
-}
+pub(crate) use aos_sandbox_broker::fixed_tpm_helper_wire::FixedTpmEndpointV2 as NvCustodyEndpointV1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum NvCustodyErrorV1 {

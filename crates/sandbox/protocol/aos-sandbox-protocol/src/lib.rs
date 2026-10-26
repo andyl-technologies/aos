@@ -45,6 +45,9 @@ pub mod cache_state;
 pub mod canonical_map;
 pub mod policy_data;
 pub mod nix_online_floor_profile;
+
+/// Shares canonical public METHOD46 profile and provisioning DATA.
+pub mod method46_provisioning;
 pub mod nix_online_floor_initialization;
 mod capture;
 pub mod domain_ledger;

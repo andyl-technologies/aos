@@ -21,7 +21,7 @@ use super::digest::{hash_parts, successor_sequence, transaction_digest_v1};
 use super::{FloorErrorV1, RecordPurposeDataV1};
 
 /// Retains the original fixed Broker profile width.
-pub(crate) const PROFILE_BYTES: usize = 112;
+pub(crate) use aos_sandbox_protocol::method46_provisioning::PROFILE_BYTES;
 // Canonical widths are shared with the Native captured-sidecar supplier.
 // The actual codecs below remain the sole purpose-specific format validators.
 pub(crate) use aos_sandbox_protocol::domain_ledger::floor_sidecar_geometry::{
@@ -32,43 +32,18 @@ pub(crate) const NV_ATTRIBUTES_DEFINED: u32 = 0x0004_0044;
 /// Fixes the original written SHA-256 extend public attributes.
 pub(crate) const NV_ATTRIBUTES_WRITTEN: u32 = NV_ATTRIBUTES_DEFINED | 0x2000_0000;
 
-const SCOPE_DOMAIN: &[u8] = b"aos.sandbox.broker-session.tpm-floor.scope.v1\0";
+pub(crate) use aos_sandbox_protocol::method46_provisioning::Method46EndpointDataV1 as FloorEndpointV1;
+use aos_sandbox_protocol::method46_provisioning::{
+    Method46ProfileDataV1, Method46ProvisionDataErrorV1,
+};
 
-/// Selects a fixed endpoint and a collision-checked local owner NV handle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum FloorEndpointV1 {
-    /// Selects the original Controller endpoint's local NV index.
-    ControllerStorageClient = 1,
-    /// Selects the original Storage endpoint's local NV index.
-    StorageBroker = 2,
-}
-
-impl FloorEndpointV1 {
-    /// These are local owner assignments, not globally registered TCG handles.
-    pub(crate) const fn nv_index(self) -> u32 {
-        match self {
-            Self::ControllerStorageClient => 0x0180_a046,
-            Self::StorageBroker => 0x0180_a047,
-        }
-    }
-}
-
-/// Pins one already provisioned deployment, endpoint, and TPM salt key.
+/// Adapts shared canonical profile DATA to the private floor error categories.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FloorProfileV1 {
-    endpoint: FloorEndpointV1,
-    node: [u8; 16],
-    deployment_epoch: [u8; 16],
-    stable_endpoint: [u8; 32],
-    salt_key_name_digest: [u8; 32],
+    data: Method46ProfileDataV1,
 }
 
 impl FloorProfileV1 {
-    /// Constructs shape-only provisioning claims; it installs no NV index.
-    ///
-    /// # Errors
-    ///
-    /// Rejects zero node, deployment, endpoint or salt commitments.
     pub(crate) fn new(
         endpoint: FloorEndpointV1,
         node: [u8; 16],
@@ -76,86 +51,62 @@ impl FloorProfileV1 {
         stable_endpoint: [u8; 32],
         salt_key_name_digest: [u8; 32],
     ) -> Result<Self, FloorErrorV1> {
-        if node == [0; 16]
-            || deployment_epoch == [0; 16]
-            || stable_endpoint == [0; 32]
-            || salt_key_name_digest == [0; 32]
-        {
-            return Err(FloorErrorV1::Encoding);
-        }
-        Ok(Self {
+        Method46ProfileDataV1::new(
             endpoint,
             node,
             deployment_epoch,
             stable_endpoint,
             salt_key_name_digest,
-        })
-    }
-
-    /// Returns the fixed Broker endpoint DATA.
-    pub(crate) const fn endpoint(self) -> FloorEndpointV1 {
-        self.endpoint
-    }
-
-    /// Returns the independently supplied stable endpoint claim.
-    pub(crate) const fn stable_endpoint(self) -> [u8; 32] {
-        self.stable_endpoint
-    }
-
-    /// Returns the provisioned node claim.
-    pub(crate) const fn node(self) -> [u8; 16] {
-        self.node
-    }
-
-    /// Returns the provisioned salt Name commitment.
-    pub(crate) const fn salt_key_name_digest(self) -> [u8; 32] {
-        self.salt_key_name_digest
-    }
-
-    /// Encodes the original fixed 112-byte Broker provisioning claim.
-    pub(crate) fn encode(self) -> [u8; PROFILE_BYTES] {
-        let mut bytes = [0; PROFILE_BYTES];
-        header(&mut bytes, b"AOSBTP01");
-        bytes[12] = self.endpoint as u8;
-        bytes[16..32].copy_from_slice(&self.node);
-        bytes[32..48].copy_from_slice(&self.deployment_epoch);
-        bytes[48..80].copy_from_slice(&self.stable_endpoint);
-        bytes[80..112].copy_from_slice(&self.salt_key_name_digest);
-        bytes
-    }
-
-    /// Decodes the original fixed Broker provisioning claim.
-    ///
-    /// # Errors
-    ///
-    /// Rejects noncanonical framing, reserved bytes, endpoint codes or sentinel fields.
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, FloorErrorV1> {
-        require_header(bytes, b"AOSBTP01", PROFILE_BYTES)?;
-        if bytes[13..16] != [0; 3] {
-            return Err(FloorErrorV1::Encoding);
-        }
-        let endpoint = match bytes[12] {
-            1 => FloorEndpointV1::ControllerStorageClient,
-            2 => FloorEndpointV1::StorageBroker,
-            _ => return Err(FloorErrorV1::Encoding),
-        };
-        Self::new(
-            endpoint,
-            array(bytes, 16)?,
-            array(bytes, 32)?,
-            array(bytes, 48)?,
-            array(bytes, 80)?,
         )
+        .map(Self::from_data)
+        .map_err(Into::into)
     }
 
-    /// Computes the original Broker scope DATA without admitting a provisioned owner.
+    pub(crate) fn from_data(data: Method46ProfileDataV1) -> Self {
+        Self { data }
+    }
+
+    pub(crate) const fn endpoint(self) -> FloorEndpointV1 {
+        self.data.endpoint()
+    }
+
+    pub(crate) const fn stable_endpoint(self) -> [u8; 32] {
+        self.data.stable_endpoint()
+    }
+
+    pub(crate) const fn node(self) -> [u8; 16] {
+        self.data.node()
+    }
+
+    pub(crate) const fn salt_key_name_digest(self) -> [u8; 32] {
+        self.data.salt_key_name_digest()
+    }
+
+    pub(crate) fn encode(self) -> [u8; PROFILE_BYTES] {
+        self.data.encode()
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, FloorErrorV1> {
+        Method46ProfileDataV1::decode(bytes)
+            .map(Self::from_data)
+            .map_err(Into::into)
+    }
+
     pub(crate) fn scope(self) -> [u8; 32] {
-        hash_parts(SCOPE_DOMAIN, &[&self.encode()])
+        self.data.scope()
     }
 
-    /// Computes the Name of the exact written TPMS_NV_PUBLIC, without a TPM2B prefix.
     pub(crate) fn nv_name(self) -> [u8; 34] {
-        written_nv_name(self.endpoint.nv_index())
+        written_nv_name(self.endpoint().nv_index())
+    }
+}
+
+impl From<Method46ProvisionDataErrorV1> for FloorErrorV1 {
+    fn from(cause: Method46ProvisionDataErrorV1) -> Self {
+        match cause {
+            Method46ProvisionDataErrorV1::Encoding => Self::Encoding,
+            Method46ProvisionDataErrorV1::Provisioning => Self::Provisioning,
+        }
     }
 }
 

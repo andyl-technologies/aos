@@ -31,6 +31,23 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Normal Security and the initial Source now use the same canonical public
+  METHOD46 profile/provisioning decoder. The initial Source reads its actual
+  captured public credential, retains its salt Name and checks the fixed role
+  and genuine Source node before helper-image IO. The existing version-two
+  HELLO/ACK/AUTH and request/response codec now lives below Security, whose
+  private adapters retain their native admission and effect decisions. The
+  wire format and scope digest stay unchanged; truncation, reserved-field,
+  crossed-role, salt-commitment and golden-scope cases pass. Private auth remains
+  resident and unexported. All 4 new Protocol, 426 shared Broker, 124 focused
+  initial-Source, 428 ordinary Security and 437 online-Nix Security tests pass;
+  one Broker and two cases in each Security suite remain ignored. Full
+  application target compilation is in progress on the audited source; its
+  833-derivation closure excludes production policy. This supplies shared DATA codecs,
+  not an authenticated helper carrier: child birth, private-auth handoff, TPM
+  initialization, checkpoint and installed lifecycle/recovery remain open.
+  Admission stays closed.
+
 - Closed compiled TPM-helper image measurement now lives in the shared Broker
   layer. Normal Broker, Host and online-Nix adapters keep their fixed purpose
   selection and Security error mapping; the initial Controller and Storage
