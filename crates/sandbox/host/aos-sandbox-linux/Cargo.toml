@@ -35,3 +35,9 @@ name = "network-namespace-bootstrap"
 path = "tests/network_namespace_bootstrap.rs"
 harness = false
 required-features = ["kernel-tests"]
+
+[[test]]
+name = "inherited-file-mount"
+path = "tests/inherited_file_mount.rs"
+harness = false
+required-features = ["kernel-tests"]

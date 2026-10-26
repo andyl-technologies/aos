@@ -22,8 +22,10 @@ use aos_linux_descriptors::Error;
 use aos_linux_descriptors::Result;
 
 mod read_only_directory;
+mod descriptor_mount;
 
 pub use read_only_directory::{ReadOnlyDirectorySnapshot, ReadOnlyDirectorySnapshotOriginalV1};
+pub use descriptor_mount::DescriptorMountObservation;
 
 const REQUEST_SIZE_CURRENT_NAMESPACE: u32 = 24;
 const REQUEST_SIZE_NAMESPACE_FD: u32 = 32;

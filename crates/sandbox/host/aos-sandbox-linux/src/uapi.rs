@@ -1490,6 +1490,8 @@ pub(crate) const STATMOUNT_MNT_UIDMAP: u64 = 0x0000_2000;
 pub(crate) const STATMOUNT_MNT_GIDMAP: u64 = 0x0000_4000;
 pub(crate) const LSMT_ROOT: u64 = u64::MAX;
 pub(crate) const LISTMOUNT_REVERSE: u32 = 1 << 0;
+// Selected Linux 7.2.3 include/uapi/linux/mount.h.
+const STATMOUNT_BY_FD: u32 = 1;
 
 const NSFS_MAGIC: libc::c_long = 0x6e73_6673;
 const NS_GET_NSTYPE: libc::c_ulong = 0xb703;
@@ -2100,6 +2102,33 @@ pub(crate) fn fsmount(context: BorrowedFd<'_>) -> Result<OwnedFd> {
     };
     // SAFETY: the preceding native call returned a fresh unowned FD.
     unsafe { fd_result(result, "fsmount") }
+}
+
+pub(crate) fn statmount_fd_basic(descriptor: BorrowedFd<'_>) -> Result<RawStatMount> {
+    let request = MountIdRequest {
+        size: size_of::<MountIdRequest>() as u32,
+        // Linux's second request field is a union: BY_FD selects mnt_fd.
+        mount_namespace_fd: u32::try_from(descriptor.as_raw_fd())
+            .map_err(|_| Error::invalid("mount descriptor", "descriptor is negative"))?,
+        parameter: STATMOUNT_MNT_BASIC,
+        ..MountIdRequest::default()
+    };
+    let mut output = RawStatMount::default();
+
+    // SAFETY: the borrowed FD and immutable fixed-size request remain live.
+    // Only non-string mount basics are requested, and the initialized output
+    // supplies exactly the writable byte count passed to the kernel.
+    let result = unsafe {
+        libc::syscall(
+            SYS_STATMOUNT,
+            &request,
+            &mut output,
+            size_of::<RawStatMount>(),
+            STATMOUNT_BY_FD,
+        )
+    };
+    unit_result(result, "statmount descriptor basics")?;
+    Ok(output)
 }
 
 pub(crate) fn statmount(request: &MountIdRequest) -> Result<Box<StatMountBuffer>> {

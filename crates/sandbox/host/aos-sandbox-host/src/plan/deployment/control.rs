@@ -57,7 +57,7 @@ use aos_linux_descriptors::boot::KernelBootId;
 use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use aos_sandbox_linux::inherited_fd::HostComponentInitialActivationTableV2;
 use aos_sandbox_linux::guest_confinement::CurrentThreadSubjectOriginalV1;
-use aos_sandbox_linux::inventory::{MountId, MountNamespace};
+use aos_sandbox_linux::inventory::DescriptorMountObservation;
 use aos_sandbox_linux::pidfd::CurrentSelfPidFdCustodyV1;
 use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
@@ -1110,10 +1110,12 @@ impl HostComponentControlStartupV2 {
     fn require_immutable_file(&self, slot: usize) -> std::result::Result<(), OriginErrorV2> {
         let file = self.file(slot)?;
         let stat = rustix::fs::fstat(file)?;
+        // PID 1's inherited mount need not exist in this service's private
+        // namespace. Query the mount held by this same descriptor directly.
         if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
             || stat.st_uid != 0 || stat.st_mode & 0o022 != 0
             || rustix::fs::fcntl_getfl(file)? & OFlags::ACCMODE != OFlags::RDONLY
-            || !MountNamespace::current().observe(MountId::from_fd(file.as_fd())?)?.is_read_only()
+            || !DescriptorMountObservation::capture(file.as_fd())?.is_read_only()
         {
             return Err(OriginErrorV2::Binding);
         }

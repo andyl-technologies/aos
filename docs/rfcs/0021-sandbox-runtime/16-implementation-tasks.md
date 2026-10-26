@@ -31,6 +31,23 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Host fixed-file admission now observes the mount held by the original file
+  with `statx(AT_EMPTY_PATH)` and `statmount(STATMOUNT_BY_FD)`. An inherited
+  PID1 file can refer to a mount outside the service's private mount namespace.
+  The fixed-width observation verifies the same unique mount identity and
+  requires the actual per-mount read-only flag; file type, root ownership,
+  mode, access flags and later identity/currentness comparisons still apply.
+  The decoder regression and all 410 runnable Host library tests pass, with
+  three ignored kernel cases. The raw parallel run failed one socket-retention
+  assertion; the exact case passes in isolation and the whole suite passes
+  serially. The repository's isolated nextest run is pending. A strict QEMU
+  regression using the installed Host kernel is also pending; it requires the
+  old namespace lookup to fail and checks both inherited read-only and writable
+  mounts. Its dependency closure excludes the pending production policy.
+  The enforcing combined Host candidate previously refused with retained Linux
+  error class 213; this result alone does not identify its syscall or errno.
+  A corrected enforcing run remains a separate gate, and admission stays closed.
+
 - `134477b00e` transfers the idmapped mount helper's namespace descriptor over
   its existing private child socket. The parent no longer needs to open another
   process's namespace through procfs. Source-built checks exercise successful
@@ -513,8 +530,11 @@ Recent committed startup fixes close narrower prerequisites:
   Journal remain parked; an independently prepaid final name observation and
   Source after stay owed on all failures. All 65 focused Broker, Domain and
   Security tests pass, including purpose/order and missing-Source refusal and
-  dispatch past a busy writer post. Exact-source complete Rust target
-  compilation is running. This is existing writer custody and replay only;
+  dispatch past a busy writer post. Complete Rust unit and integration targets
+  compile for the original existing-writer source
+  (`/nix/store/r0x9ww1r30c4a0164sgr64hi3nq2czmb-aos-test-targets-0.1.0`),
+  without running them and before the later map-cut, join and namespace changes.
+  This is existing writer custody and replay only;
   Session schema/current HEAD, independent public-key and endpoint provenance,
   job exclusion, approved-intent durability, physical TPM operations and
   installed producer qualification remain open.
@@ -531,7 +551,9 @@ Recent committed startup fixes close narrower prerequisites:
   admission remain separate. Cut DATA is returned only after its native after
   succeeds and the same actual Source is still current. All 67 focused initial
   producer tests and 27 existing canonical floor/hash regressions pass.
-  Exact-source complete Rust target compilation is running. This bridge supplies
+  Complete Rust unit and integration targets compile for the original map-cut
+  source (`/nix/store/a02fhqyr3cl7jz57zpyvjka2r80r1iza-aos-test-targets-0.1.0`),
+  without running them and before the later join and namespace changes. This bridge supplies
   no independent endpoint/key provenance, schema admission, job exclusion,
   approval, durable intent, physical TPM permit or installed qualification.
 
@@ -543,7 +565,9 @@ Recent committed startup fixes close narrower prerequisites:
   its native post, with no supplied profile, sequence or digest. Its return
   carriers fit the Source's prepaid decode bound. All 68 focused initial tests
   pass, including the simultaneous public borrowing contract and inert startup
-  refusal for both purposes. Complete Rust target compilation is running.
+  refusal for both purposes. Complete Rust unit and integration targets compile
+  for this join (`/nix/store/k1q5wjcc7bf5mx0j32cwdg1zlycyi220-aos-test-targets-0.1.0`),
+  without running them and before the later namespace and credential changes.
   Genuine installed positive admission, Session schema, independent public
   endpoint/key provenance, job exclusion, approved durable intent and physical
   TPM authority remain open. This request remains comparison DATA.
