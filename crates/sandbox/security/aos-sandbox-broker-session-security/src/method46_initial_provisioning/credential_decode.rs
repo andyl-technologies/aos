@@ -69,6 +69,10 @@ const _: () = assert!(
         + 64
         <= METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1
 );
+const _: () = assert!(
+    METHOD46_INITIAL_REQUEST_BYTES_V1
+        == aos_sandbox_linux::seqpacket::initial_approval::INITIAL_APPROVAL_REQUEST_BYTES_V1
+);
 
 impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
     /// Consumes the genuine sole readback loan and parks its canonical result.
@@ -213,6 +217,52 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             cut.sequence(),
             cut.head(),
         )
+    }
+
+    /// Exchanges and verifies approval through this startup's original listener.
+    ///
+    /// The exact canonical request is derived from the same held main cut, then
+    /// sent through the Source-prepaid one-shot native exchange. The returned
+    /// signature is verified using the captured public pin and the current
+    /// same-owner request. No request, signature, key, descriptor or deadline
+    /// enters from the caller. Fresh input, cold intents and this exchange share
+    /// the same strict verification attempt; its native originals remain with
+    /// the startup alongside the signature and canonical decode results here.
+    ///
+    /// This returns signed comparison DATA. Complete endpoint provenance,
+    /// Nix/Root key separation, Session schema, job exclusion, durable intent
+    /// and physical TPM custody remain required before publication or Extend.
+    ///
+    /// # Errors
+    /// Refuses failed/foreign/ended originals, prior approval, busy custody,
+    /// native transport failure or a strict signature/current-request mismatch.
+    /// Refusal fences this startup without suppressing its independent posts.
+    pub fn exchange_captured_approval_once_v1(
+        &self,
+        main: &Method46InitialMainCutOriginalV1<'_>,
+    ) -> Result<Method46InitialIntentDataV1, Method46InitialDataErrorV1> {
+        let result = (|| {
+            let mut approval = self
+                .approval
+                .try_borrow_mut()
+                .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+            approval.require_fresh()?;
+            let request = self.request_for_main_original_data_v1(main)?;
+            let signature = self
+                .readback
+                .exchange_approval_request_data_once_v1(request.encode())
+                .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+            approval.verify_once(
+                self.request_for_main_original_data_v1(main),
+                signature,
+                self.approval_pin
+                    .unwrap_or(Err(Method46InitialDataErrorV1::Approval)),
+            )
+        })();
+        if result.is_err() {
+            self.readback.refuse_decode_v1();
+        }
+        result
     }
 
     /// Verifies one signature using this original's held public credential.

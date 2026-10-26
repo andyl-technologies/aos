@@ -26,6 +26,14 @@ pub(super) struct ApprovalVerificationOriginal {
 }
 
 impl ApprovalVerificationOriginal {
+    pub(super) fn require_fresh(&self) -> Result<(), Method46InitialDataErrorV1> {
+        if self.entered || self.closed {
+            Err(Method46InitialDataErrorV1::Conflict)
+        } else {
+            Ok(())
+        }
+    }
+
     pub(super) fn new() -> Self {
         Self {
             request: None,
@@ -126,6 +134,7 @@ mod tests {
         let signature = key.sign(&request.encode()).to_bytes();
         let pin = key.verifying_key().to_bytes();
         let mut original = ApprovalVerificationOriginal::new();
+        assert!(original.require_fresh().is_ok());
 
         let intent = original
             .verify_once(Ok(request), signature, Ok(pin))
@@ -133,6 +142,7 @@ mod tests {
 
         assert_eq!(intent.request(), request);
         assert_eq!(original.verified, Some(Ok(intent)));
+        assert!(original.require_fresh().is_err());
         assert!(original.verify_once(Ok(request), [0; 64], Ok(pin)).is_err());
         assert!(
             matches!(original.input, Some(ApprovalInput::Signature(held)) if held == signature)

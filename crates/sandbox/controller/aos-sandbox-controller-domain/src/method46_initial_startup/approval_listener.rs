@@ -1,13 +1,18 @@
 //! Admits the same Source's fixed initial-approval listener and retains its post.
 //!
 //! Native listener admission checks type, inherited record-subject options and
-//! the purpose's exact pathname. It authenticates no approver or signature and
-//! accepts no connection. The admitted descriptor stays here through the owed
-//! post, including after an unrelated startup refusal.
+//! the purpose's exact pathname. A separately prepaid one-shot exchange sends
+//! public request DATA and retains its original signature record. It verifies
+//! no signature. The listener stays here through the independently owed post,
+//! including after an unrelated startup refusal.
 
 use std::os::fd::OwnedFd;
 use std::path::Path;
 
+use aos_sandbox_linux::seqpacket::initial_approval::{
+    INITIAL_APPROVAL_REQUEST_BYTES_V1, INITIAL_APPROVAL_SIGNATURE_BYTES_V1,
+    InitialApprovalExchangeOriginalV1,
+};
 use aos_sandbox_linux::seqpacket::{
     RecordSubjectListener, RecordSubjectListenerAdmissionAttemptV1, SeqpacketError,
 };
@@ -19,6 +24,10 @@ pub(super) struct InitialApprovalListenerOriginalV1 {
     listener: Option<RecordSubjectListener>,
     options_post: Option<Result<(), SeqpacketError>>,
     path_post: Option<Result<(), SeqpacketError>>,
+    exchange: InitialApprovalExchangeOriginalV1,
+    exchange_clock: Option<rustix::time::Timespec>,
+    exchange_deadline: Option<u64>,
+    exchange_entered: bool,
     paid: bool,
     entered: bool,
     post_entered: bool,
@@ -31,6 +40,10 @@ impl InitialApprovalListenerOriginalV1 {
             listener: None,
             options_post: None,
             path_post: None,
+            exchange: InitialApprovalExchangeOriginalV1::new(),
+            exchange_clock: None,
+            exchange_deadline: None,
+            exchange_entered: false,
             paid: false,
             entered: false,
             post_entered: false,
@@ -78,7 +91,10 @@ impl InitialApprovalListenerOriginalV1 {
         if let Some(role) = role {
             self.path_post = Some(listener.require_local_filesystem_path(fixed_path(role)));
         }
-        if matches!(self.options_post, Some(Ok(()))) && matches!(self.path_post, Some(Ok(()))) {
+        if matches!(self.options_post, Some(Ok(())))
+            && matches!(self.path_post, Some(Ok(())))
+            && (!self.exchange_entered || self.exchange.signature_data_v1().is_some())
+        {
             Ok(())
         } else {
             Err(Method46InitialStartupClosedV1)
@@ -101,7 +117,7 @@ impl Method46InitialStartupOriginalV1 {
     /// Admits this original's inherited fixed approval listener once.
     ///
     /// The same Source pays bounded native/pathname scratch before observation.
-    /// The original listener is never reopened, accepted from or repaired for
+    /// The original listener is never reopened or repaired for
     /// missing identity options. Its current options and pathname are checked
     /// again during the independently owed startup post.
     ///
@@ -137,6 +153,62 @@ impl Method46InitialStartupOriginalV1 {
             return Err(self.fail(First::ApprovalListener));
         }
         Ok(())
+    }
+
+    pub(in crate::method46_initial_startup) fn exchange_initial_approval_data_once(
+        &self,
+        request: [u8; INITIAL_APPROVAL_REQUEST_BYTES_V1],
+    ) -> Result<[u8; INITIAL_APPROVAL_SIGNATURE_BYTES_V1], Method46InitialStartupClosedV1> {
+        let ready = self.body.as_ref().is_some_and(|body| {
+            body.listener.try_borrow().is_ok_and(|listener| {
+                listener.listener.is_some() && !listener.post_entered && !listener.exchange_entered
+            })
+        });
+        if !ready {
+            return Err(self.fail(First::Order));
+        }
+
+        let demand = InitialApprovalExchangeOriginalV1::receiving_obligations_v1().and_then(
+            |(bytes, files)| {
+                Some(
+                    ResourceVector::ZERO
+                        .with(
+                            D::MemoryBytes,
+                            u64::try_from(bytes.checked_add(1024)?).ok()?,
+                        )
+                        .with(D::OpenFiles, u64::try_from(files).ok()?)
+                        .with(D::OutputBytes, 64 * 1024),
+                )
+            },
+        );
+        self.fund_additional(demand)?;
+        let result = (|| {
+            let body = self.body.as_ref().ok_or(self.closed)?;
+            let mut owner = body.listener.try_borrow_mut().map_err(|_| self.closed)?;
+            owner.exchange_entered = true;
+            owner.exchange_clock =
+                Some(rustix::time::clock_gettime(rustix::time::ClockId::Boottime));
+            let clock = owner.exchange_clock.ok_or(self.closed)?;
+            owner.exchange_deadline = u64::try_from(clock.tv_sec)
+                .ok()
+                .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+                .zip(
+                    u64::try_from(clock.tv_nsec)
+                        .ok()
+                        .filter(|nanos| *nanos < 1_000_000_000),
+                )
+                .and_then(|(seconds, nanos)| seconds.checked_add(nanos))
+                .and_then(|now| now.checked_add(60 * 1_000_000_000));
+            let deadline = owner.exchange_deadline.ok_or(self.closed)?;
+            let InitialApprovalListenerOriginalV1 {
+                listener, exchange, ..
+            } = &mut *owner;
+            exchange
+                .exchange_once_v1(listener.as_mut().ok_or(self.closed)?, request, deadline)
+                .map_err(|_| self.closed)?;
+            exchange.signature_data_v1().ok_or(self.closed)
+        })();
+        result.map_err(|_| self.fail(First::ApprovalListener))
     }
 }
 

@@ -37,6 +37,12 @@ harness = false
 required-features = ["kernel-tests"]
 
 [[test]]
+name = "initial-approval-exchange"
+path = "tests/initial_approval_exchange.rs"
+harness = false
+required-features = ["kernel-tests"]
+
+[[test]]
 name = "inherited-file-mount"
 path = "tests/inherited_file_mount.rs"
 harness = false

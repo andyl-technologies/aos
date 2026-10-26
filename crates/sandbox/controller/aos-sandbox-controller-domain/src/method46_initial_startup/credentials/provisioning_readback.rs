@@ -4,6 +4,9 @@
 //! sole readback loan. The loan neither extracts private index authentication
 //! nor grants writer, approval, physical TPM or publication authority.
 
+use aos_sandbox_linux::seqpacket::initial_approval::{
+    INITIAL_APPROVAL_REQUEST_BYTES_V1, INITIAL_APPROVAL_SIGNATURE_BYTES_V1,
+};
 use std::cell::Ref;
 
 use super::*;
@@ -94,6 +97,34 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
         &self,
     ) -> Result<Ref<'_, [u8]>, Method46InitialStartupClosedV1> {
         self.public_bytes(3)
+    }
+
+    /// Exchanges fixed public request DATA through the same original listener.
+    ///
+    /// This Source prepays native carriers and retained descriptor slots before
+    /// accepting one child, sending the request and receiving one signature.
+    /// All three stages share a sixty-second boot-time deadline. The original
+    /// child is shut down, with its descriptor retained, before success returns.
+    /// Source currentness is checked on both sides of the complete exchange.
+    ///
+    /// This does not decode the supplied request or verify the signature. The
+    /// canonical Security owner independently derives its request from the same
+    /// held main cut and verifies approval under the same captured public pin.
+    /// No descriptor, amount, path, public key or deadline comes from the caller.
+    ///
+    /// # Errors
+    /// Refuses ended Source custody, missing original listener admission,
+    /// reentry, exhausted prepayment, deadline expiry or native exchange failure.
+    /// Reached native originals and all independently owed posts stay resident.
+    pub fn exchange_approval_request_data_once_v1(
+        &self,
+        request: [u8; INITIAL_APPROVAL_REQUEST_BYTES_V1],
+    ) -> Result<[u8; INITIAL_APPROVAL_SIGNATURE_BYTES_V1], Method46InitialStartupClosedV1> {
+        self.require_current()?;
+        let signature = self.startup.exchange_initial_approval_data_once(request)?;
+        self.require_current()
+            .map_err(|_| self.startup.fail(First::ApprovalListener))?;
+        Ok(signature)
     }
 
     // Only the fixed public accessors above select slots. The private auth
@@ -221,6 +252,10 @@ mod tests {
         assert!(loan.provision_bytes_v1().is_err());
         assert!(loan.approval_public_key_bytes_v1().is_err());
         assert!(loan.normal_storage_manifest_bytes_v1().is_err());
+        assert!(
+            loan.exchange_approval_request_data_once_v1([0; INITIAL_APPROVAL_REQUEST_BYTES_V1])
+                .is_err()
+        );
         assert!(loan.origin_data_v1().is_err());
         loan.refuse_decode_v1();
 
@@ -229,5 +264,21 @@ mod tests {
         assert!(matches!(startup.first.get(), Some(First::Credentials)));
         assert!(startup.after_attempted.get());
         assert!(matches!(startup.after_result.get(), Some(Err(_))));
+    }
+
+    #[test]
+    fn original_approval_exchange_requires_a_current_source_before_funding() {
+        let mut startup = ManuallyDrop::new(Method46InitialStartupOriginalV1::new(
+            Method46InitialServiceRoleV1::StorageBroker,
+        ));
+        startup.body = Some(Box::new(StartupRolesOriginalV1::new()));
+        let loan = Method46InitialProvisionReadbackLoanV1 { startup: &startup };
+
+        assert!(
+            loan.exchange_approval_request_data_once_v1([0; INITIAL_APPROVAL_REQUEST_BYTES_V1])
+                .is_err()
+        );
+
+        assert_eq!(startup.receiving.get(), ResourceVector::ZERO);
     }
 }

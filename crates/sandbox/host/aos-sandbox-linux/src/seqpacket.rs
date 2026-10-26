@@ -36,6 +36,7 @@ use aos_linux_descriptors::pidfd::PidFdInfo;
 use crate::uapi::{self, RawAncillary};
 
 mod listener;
+pub mod initial_approval;
 pub use listener::{
     ListenerAdmissionFailureRefV1, RecordSubjectListener,
     RecordSubjectListenerAdmissionAttemptV1,

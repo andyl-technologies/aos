@@ -612,10 +612,29 @@ Recent committed startup fixes close narrower prerequisites:
   post cannot suppress Source after, including on busy or failed custody.
   All 80 focused initial tests pass, including four new admission-order,
   native-cause-retention and owed-post regressions. Complete Rust target
-  compilation is pending for this source. This accepts no connection and
-  verifies no signature. The actual bounded approval exchange, socket-unit
+  compilation is pending for this source. This admission step accepts no
+  connection and verifies no signature. The actual bounded approval exchange, socket-unit
   delivery, normal-key separation, durable intent, physical TPM operations and
   installed producer qualification remain incomplete.
+
+- The same genuine startup now prepays one initial-approval exchange through
+  its admitted original listener. Its three finite readiness/native stages
+  share a sixty-second boot-time deadline; child admission, zero-rights
+  restriction, send/receive results, exact records and local shutdown custody
+  remain resident on refusal. Queued data before request publication refuses,
+  and no late or repeated attempt exposes a signature. Security derives the
+  canonical request from its same held main cut and verifies the received
+  signature against the captured approval pin and current same-owner request.
+  Prior fresh/cold approval prevents another transport attempt; caller keys,
+  requests, signatures, descriptors and deadlines cannot enter this combined
+  verification API. Source currentness brackets the exchange, and listener
+  posts and Source after remain independently owed. All 92 focused provisioning
+  tests and three native clock/order/carrier regressions pass. The strict QEMU
+  transport fixture and complete application target compilation are pending.
+  This supplies signed comparison DATA, without full normal-image/kernel/device
+  admission, Nix/Root key separation, Session schema, job exclusion, durable
+  intent, authenticated TPM effects or installed producer qualification. Public
+  admission remains closed.
 
 - The existing stable-endpoint V2 identity equation now belongs to the
   canonical manifest-binding DATA type. Protected session history calls the
