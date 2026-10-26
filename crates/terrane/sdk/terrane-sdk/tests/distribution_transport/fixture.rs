@@ -20,6 +20,8 @@ pub(super) struct Services {
     pub(super) calls: AtomicUsize,
     pub(super) dropped_stream: Arc<AtomicBool>,
     pub(super) tokens: std::sync::Mutex<Vec<Vec<u8>>>,
+    pub(super) has_bitmap: Option<Vec<u8>>,
+    pub(super) has_delay: std::time::Duration,
 }
 
 fn unsupported() -> connectrpc::ConnectError {
@@ -69,6 +71,9 @@ impl ContentService for Services {
         request: ServiceRequest<'_, v1::HasRequest>,
     ) -> ServiceResult<v1::HasResponse> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if !self.has_delay.is_zero() {
+            tokio::time::sleep(self.has_delay).await;
+        }
         if let Some(token) = context
             .extensions()
             .get::<terrane_sdk::wire::authentication::RequestToken>()
@@ -86,7 +91,7 @@ impl ContentService for Services {
             }
         }
         Ok(Response::new(v1::HasResponse {
-            present_bitmap,
+            present_bitmap: self.has_bitmap.clone().unwrap_or(present_bitmap),
             ..Default::default()
         }))
     }

@@ -23,6 +23,11 @@ CASES = [
     "authentication::authenticates_server_and_client_streams_without_dispatching_invalid_calls",
     "authentication::anonymous_capabilities_is_explicit_and_never_hides_invalid_credentials",
     "authentication::preserves_attenuation_and_refuses_a_token_from_an_unconfigured_issuer",
+    "presence::preserves_order_duplicates_and_maximum_batch",
+    "presence::empty_and_refused_requests_never_connect",
+    "presence::refuses_missing_or_extra_bitmap_bytes_without_partial_hints",
+    "presence::ignores_unused_bits_but_preserves_each_requested_bit",
+    "presence::retains_transport_bounds_and_whole_call_deadline",
 ]
 
 
@@ -94,7 +99,7 @@ def main():
     (output / "source-review.json").write_text(json.dumps({
         "source": str(source), "input_sha256": inputs, "artifact": artifact, "executable_sha256": digest,
         "retained_executable": str(retained),
-        "executed_cases": CASES, "scope": "Native HTTP/TLS binding and optional capability-header authentication over real sockets; no repository authorization or durability claim",
+        "executed_cases": CASES, "scope": "Native HTTP/TLS binding, optional capability-header authentication and bounded membership reception over real sockets; no repository authorization or durability claim",
     }, indent=2) + "\n")
 
 

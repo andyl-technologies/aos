@@ -91,6 +91,40 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-25)
 
+The native Distribution client now receives bounded `Has` membership hints.
+It rejects more than 4,096 digests and invalid call bounds before connecting,
+handles empty input without network I/O, preserves request order and duplicates,
+and refuses missing or extra bitmap bytes before returning any hints. The
+absolute deadline covers complete reception and decoding. Unused final-byte
+bits are ignored; hints establish neither current disclosure permission nor
+server-side committed-index correctness. Five actual-socket scenarios extend
+the existing eleven-case transport and capability-header inventory without
+replacing any original selector or thirty-second bound. Native qualification
+and mandatory application-target compilation remain required. Strict SDK
+all-target Clippy, Rust formatting, proof parsing and plan coverage pass. The production
+Distribution backend, remote store and T-PROTO-1 acceptance remain open.
+
+The empty-reference copied collection fixture at `80cf0444bf` fails its focused
+qualification in 1,523.633 seconds. The first actual selector fails during
+positive fixture checkpoint encoding with `PublicationError::Contradiction`,
+before destination activation and collector startup. Source audit finds retained
+selected-history branches without their omitted reference rows. `fb11a58490`
+now clears those branch rows during untrusted copy assembly as well; production
+validation and the original reconciliation assertions are unchanged. Complete
+guest logs and configuration are preserved. Renewed native evidence is required.
+
+The publication mount correction at `244489fd6e` passes its isolated image
+prerequisites in 869.307 seconds. Review accounts for all 49 remote derivations,
+the fresh capability-free ext4 sandbox proof, twelve unchanged previously
+guest-qualified package checks, both imported outputs and clean shutdown.
+Its actual manager run fails in 212.209 seconds at the GC timestamp assertion.
+The original journal records both SDK snapshots completing, Serve becoming
+ready, and then GC starting and completing successfully. Actual publisher
+observations record one publication mount per domain, read-only private cache
+mounts, denied parent creation and denied private-state reads. These observations
+do not override the failed assertion: exact one-shot timestamp retention and
+the remaining original controls still require qualification. No task is accepted.
+
 The [common surface and SDK audit](acceptance/surface-interface.md) now maps
 all 38 T-SURF-1 requirement IDs to inspected source, reviewed owning-gate
 evidence and the remaining acceptance boundary. The shared feature matrix
