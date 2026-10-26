@@ -153,6 +153,25 @@ impl ServicePropertiesReadOriginalV2 {
         .await
     }
 
+    /// Observes an inactive, dead service through the original PID1 engine.
+    ///
+    /// Both complete unit tuples must agree and contain a zero main PID.
+    /// A never-started service may have systemd's empty invocation encoding.
+    /// The caller prepays the property roster and independently checks native
+    /// cgroup population and exclusive writer custody. This read grants neither.
+    ///
+    /// # Errors
+    /// Retains native failures, partial values and an independently owed after
+    /// bookend. Refuses a missing, active, failed, restarting or changed unit,
+    /// a nonzero main PID, malformed invocation or repeated observation.
+    pub async fn observe_stopped_once_v1(
+        &mut self, client: &SystemdClient, name: &str,
+        service: &[&str], unit: &[&str],
+    ) -> std::result::Result<(), ServicePropertiesReadClosedV2> {
+        self.observe_selected_once_v2(client, name, 0, service, unit,
+            ObservationPhase::StoppedNix).await
+    }
+
     /// Observes the completed successful invocation of a remain-after-exit oneshot.
     ///
     /// The supplied service roster must begin with Type, RemainAfterExit,
@@ -180,6 +199,17 @@ impl ServicePropertiesReadOriginalV2 {
     pub fn completed_invocation_data_v1(&self) -> Option<[u8;16]> {
         if !self.complete() { return None; }
         self.original.as_ref()?.before.3.as_slice().try_into().ok()
+    }
+
+    /// Borrows the fully bracketed invocation bytes as comparison DATA.
+    ///
+    /// An inactive, never-started unit can return an empty slice. This is not
+    /// an authenticated live invocation, manager grant or writer exclusion.
+    /// Retired aliases, incomplete observations and reentry return no bytes.
+    #[must_use]
+    pub fn completed_invocation_bytes_data_v1(&self) -> Option<&[u8]> {
+        if !self.complete() { return None; }
+        Some(self.original.as_ref()?.before.3.as_slice())
     }
 
     async fn observe_selected_once_v2(

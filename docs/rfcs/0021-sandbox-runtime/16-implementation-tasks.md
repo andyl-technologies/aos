@@ -390,8 +390,10 @@ Recent committed startup fixes close narrower prerequisites:
   label and read result remains resident. Held-file posts run independently of
   named replacements, and a credential refusal or busy post cannot suppress
   Source after. All 36 focused tests pass, including actual short-read custody
-  across a later successful read. Exact-source complete Rust target compilation
-  is running. This is file custody and comparison only: complete delivery
+  across a later successful read. Exact-source complete Rust targets compile
+  (`/nix/store/qz9y5k8mggdnpvcxc22v4s62iha2cvxm-aos-test-targets-0.1.0`),
+  without running the targets. That frozen source predates delivery, codec,
+  confinement and SDK additions. This is file custody and comparison only: complete delivery
   admission, independent key provenance, provisioning-codec admission, protected
   writer/TPM ownership and installed producers remain open. No new service or
   credential MAC role is selected by this change.
@@ -406,8 +408,10 @@ Recent committed startup fixes close narrower prerequisites:
   succeeds. The same Source pays both eighteen-property tables and the larger
   finite manager schedule: two 35-call samples, 96 outgoing and 112 incoming
   ceilings, and 7 MiB cumulative response materialization. All 39 focused tests
-  pass; exact-source complete Rust target compilation is running. Image
-  composition must still join these sources to the normal owners and establish
+  pass. Exact-source complete Rust targets compile
+  (`/nix/store/ym2big2ayk5c0pkm8fn0lxqvzra5kzvs-aos-test-targets-0.1.0`),
+  without running the targets. That frozen source predates the codec,
+  confinement and SDK additions. Image composition must still join these sources to the normal owners and establish
   independent approval-key provenance. Full hardening, protected writer/TPM
   ownership and installed production qualification remain open.
 
@@ -443,6 +447,24 @@ Recent committed startup fixes close narrower prerequisites:
   Rust target compilation is running. These are selected-unit comparisons,
   not live kernel/device proof, complete unit-input admission, installed
   production qualification or writer/TPM authority.
+
+- The initial startup now retains two stopped-unit samples for each fixed
+  Controller and Storage owner through the same Source-paid PID1 manager.
+  The canonical shared engine requires inactive/dead state, PID zero and exact
+  whole bookends, including systemd's null invocation representation. Typed
+  `LoadState=loaded` and fixed cgroup-coordinate comparisons reject missing,
+  masked, foreign and mistyped records. Storage's two supported layouts use
+  the existing canonical coordinates; the actual selected value is preserved
+  and compared again, with no alternative native probe on failure. Both final
+  samples remain independently owed after either initial read or the startup
+  property post refuses. All four retained tables and their traffic are paid
+  before manager construction: two 67-call startup samples, four 16-call
+  stopped samples, 224 outgoing/240 incoming ceilings and 15 MiB cumulative
+  response materialization. All 57 focused initial-producer tests and 15 shared
+  SDK bookend/property regressions pass. Exact-source complete Rust target
+  compilation is running. These are passive unit observations;
+  native empty/absent cgroups, exclusive protected writer custody, job exclusion,
+  installed producers and physical TPM operations remain unqualified.
 
 - The latest installed offline key-preparation candidate passes its service
   property stage, then exits with the stopped-runtime invalid-unit class 95.

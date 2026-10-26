@@ -15,6 +15,7 @@ use super::*;
 mod confinement;
 mod delivery;
 mod service;
+mod stopped;
 
 const UNIT_BYTES: usize = 64 * 1024;
 const PROPERTIES: &[&str] = &["FragmentPath", "DropInPaths", "Transient"];
@@ -27,6 +28,7 @@ pub(super) struct InitialUnitOriginalV1 {
     manager: Option<ReadonlyPropertyManagerOriginalV2>,
     connection: Option<aos_systemd_client::Result<()>>,
     properties: [RefCell<UnitPropertiesOriginalV1>; 2],
+    stopped: stopped::InitialStoppedOwnersOriginalV1,
     file: Option<File>,
     open: Option<std::io::Result<()>>,
     acquisition: ImmutableFileAcquisitionOriginalV1,
@@ -69,6 +71,7 @@ impl InitialUnitOriginalV1 {
             manager: None,
             connection: None,
             properties: std::array::from_fn(|_| RefCell::new(UnitPropertiesOriginalV1::new())),
+            stopped: stopped::InitialStoppedOwnersOriginalV1::new(),
             file: None,
             open: None,
             acquisition: ImmutableFileAcquisitionOriginalV1::new(),
@@ -276,6 +279,7 @@ impl InitialUnitOriginalV1 {
             return Ok(());
         }
         let properties = self.observe_properties(1, origin, profile);
+        let stopped = self.finish_stopped_post();
         let canonical = self.finish_canonical_post();
         let file = match self.file_post.try_borrow_mut() {
             Ok(mut post) => {
@@ -290,7 +294,7 @@ impl InitialUnitOriginalV1 {
             }
             Err(_) => Err(Method46InitialStartupClosedV1),
         };
-        properties.and(canonical).and(file)
+        properties.and(stopped).and(canonical).and(file)
     }
 }
 
@@ -351,9 +355,10 @@ fn normalize_fragment(
 }
 
 fn manager_schedule() -> Option<ReadonlyPropertyReceiveScheduleV2> {
-    // Two fixed 67-call PID1 samples, Hello and bounded signal/header carryover.
+    // Two 67-call startup samples and four 16-call stopped-owner samples,
+    // plus Hello and bounded signal/header carryover.
     // These are native-enforced ceilings, never an account or semantic claim.
-    ReadonlyPropertyReceiveScheduleV2::new(160, 176, 64 * 1024, 4096, 176 * 64 * 1024).ok()
+    ReadonlyPropertyReceiveScheduleV2::new(224, 240, 64 * 1024, 4096, 240 * 64 * 1024).ok()
 }
 
 fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVector> {
@@ -364,6 +369,7 @@ fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVe
     )?;
     let memory = manager
         .checked_add(properties.checked_mul(2)?)?
+        .checked_add(stopped::receiving_memory_bytes()?)?
         // Include the one permitted blocking worker even if it is never used.
         // The remaining MiB covers Runtime, task/driver and allocator scratch.
         .checked_add(WORKER_STACK_BYTES + 1024 * 1024)?
@@ -377,7 +383,7 @@ fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVe
         .with(D::MetadataEntries, 4 * PATH_BYTES as u64)
         .with(
             D::OutputBytes,
-            read.checked_add((176 * 64 * 1024 + 160 * 4096 + 4096) as u64)?,
+            read.checked_add((240 * 64 * 1024 + 224 * 4096 + 4096) as u64)?,
         )
         .checked_add(ImmutableFileAcquisitionOriginalV1::receiving_demand_v1(
             PATH_BYTES,

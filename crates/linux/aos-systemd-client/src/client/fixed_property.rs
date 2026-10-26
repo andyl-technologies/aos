@@ -126,7 +126,7 @@ impl PropertySchemaV1 {
 fn schema(interface: &str, name: &str) -> Result<PropertySchemaV1> {
     let schema = match (interface, name) {
         ("org.freedesktop.systemd1.Service", "Result" | "NotifyAccess" | "DelegateSubgroup" | "DevicePolicy" | "ProtectSystem" | "ControlGroup" | "ExitType" | "KillMode" | "Type" | "Restart" | "User" | "Group")
-        | ("org.freedesktop.systemd1.Unit", "FragmentPath") => PropertySchemaV1::String,
+        | ("org.freedesktop.systemd1.Unit", "FragmentPath" | "LoadState") => PropertySchemaV1::String,
         ("org.freedesktop.systemd1.Service", "SystemCallArchitectures" | "ExtraFileDescriptorNames" | "ImportCredential" | "StateDirectory" | "RuntimeDirectory")
         | ("org.freedesktop.systemd1.Unit", "DropInPaths" | "Requires" | "After") => PropertySchemaV1::Strings,
         ("org.freedesktop.systemd1.Service", "LoadCredential" | "LoadCredentialEncrypted"
@@ -312,7 +312,7 @@ mod tests {
             assert!(!signature.contains('h'), "{name}: {signature}");
             assert!(!signature.contains('v'), "{name}: {signature}");
         }
-        for name in ["FragmentPath", "DropInPaths", "Transient", "InvocationID"] {
+        for name in ["FragmentPath", "LoadState", "DropInPaths", "Transient", "InvocationID"] {
             let signature = expected_signature("org.freedesktop.systemd1.Unit", name)
                 .unwrap().to_string();
             assert!(!signature.contains('h'), "{name}: {signature}");
