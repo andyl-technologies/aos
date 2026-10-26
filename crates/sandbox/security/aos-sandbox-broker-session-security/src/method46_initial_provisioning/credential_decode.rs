@@ -4,6 +4,10 @@
 //! owner retains its actual result alongside the genuine readback loan and
 //! checks role/node against that same Source. It neither adopts the resource
 //! epoch as the deployment epoch nor creates a writer or physical TPM permit.
+//! The same owner also retains its public approval pin and one strict signature
+//! verification; normal-key separation and durable publication remain owed.
+
+use std::cell::RefCell;
 
 use aos_sandbox_broker::receiving::{
     Method46InitialOriginComparisonDataV1, Method46InitialServiceRoleV1,
@@ -13,9 +17,13 @@ use aos_sandbox_controller_domain::method46_initial_startup::{
     Method46InitialStartupClosedV1,
 };
 
+mod approval;
+use approval::ApprovalVerificationOriginal;
+
 use super::{
-    METHOD46_INITIAL_REQUEST_BYTES_V1, Method46InitialDataErrorV1,
-    Method46InitialMainCutOriginalV1, Method46InitialPurposeV1, Method46InitialRequestDataV1,
+    METHOD46_INITIAL_INTENT_BYTES_V1, METHOD46_INITIAL_REQUEST_BYTES_V1,
+    Method46InitialDataErrorV1, Method46InitialIntentDataV1, Method46InitialMainCutOriginalV1,
+    Method46InitialPurposeV1, Method46InitialRequestDataV1,
 };
 use crate::tpm_nv_custody::{FloorEndpointV1, FloorErrorV1, FloorProfileV1};
 
@@ -33,6 +41,9 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     read: Option<Result<(), Method46InitialStartupClosedV1>>,
     decoded: Option<Result<(FloorProfileV1, [u8; 34]), FloorErrorV1>>,
     node_matches: Option<bool>,
+    approval_read: Option<Result<(), Method46InitialStartupClosedV1>>,
+    approval_pin: Option<Result<[u8; 32], Method46InitialDataErrorV1>>,
+    approval: RefCell<ApprovalVerificationOriginal>,
 }
 
 // The same Source pays this fixed allowance before the result owner exists.
@@ -40,7 +51,11 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
 const _: () = assert!(
     2 * std::mem::size_of::<Method46InitialProvisionDecodeOriginalV1<'static>>()
         + 2 * std::mem::size_of::<Method46InitialRequestDataV1>()
+        + 2 * std::mem::size_of::<Method46InitialIntentDataV1>()
+        + std::mem::size_of::<ed25519_dalek::VerifyingKey>()
         + METHOD46_INITIAL_REQUEST_BYTES_V1
+        + METHOD46_INITIAL_INTENT_BYTES_V1
+        + 64
         <= METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1
 );
 
@@ -57,6 +72,9 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             read: None,
             decoded: None,
             node_matches: None,
+            approval_read: None,
+            approval_pin: None,
+            approval: RefCell::new(ApprovalVerificationOriginal::new()),
         };
         original.decode();
         if !original.admitted() {
@@ -94,6 +112,23 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             .as_ref()
             .and_then(|result| result.as_ref().ok())
             .map(|(profile, _)| profile.node() == origin.node);
+        drop(bytes);
+        if self.node_matches != Some(true) {
+            return;
+        }
+
+        let public = match self.readback.approval_public_key_bytes_v1() {
+            Ok(public) => {
+                self.approval_read = Some(Ok(()));
+                public
+            }
+            Err(error) => {
+                self.approval_read = Some(Err(error));
+                return;
+            }
+        };
+        self.approval_pin =
+            Some(<[u8; 32]>::try_from(&*public).map_err(|_| Method46InitialDataErrorV1::Approval));
     }
 
     fn admitted(&self) -> bool {
@@ -101,6 +136,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             && matches!(self.read, Some(Ok(())))
             && matches!(self.decoded, Some(Ok(_)))
             && self.node_matches == Some(true)
+            && matches!(self.approval_read, Some(Ok(())))
+            && matches!(self.approval_pin, Some(Ok(_)))
     }
 
     /// Derives initial request DATA from this credential and the same main owner.
@@ -142,6 +179,84 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             cut.sequence(),
             cut.head(),
         )
+    }
+
+    /// Verifies one signature using this original's held public credential.
+    ///
+    /// The canonical request is derived from the same original main and the
+    /// signature is checked by the sole initial-intent codec. No request, cut
+    /// or public key enters from the caller. The signature, request and actual
+    /// verification result remain resident, including after refusal or reentry.
+    /// Their bounded carriers were paid by this original's decode allowance.
+    ///
+    /// This returns comparison DATA only. In particular, native credential
+    /// provenance does not prove separation from endpoint, Nix or Root keys.
+    /// That separation, job exclusion, durable intent and physical TPM custody
+    /// remain required before any publication or Extend.
+    ///
+    /// # Errors
+    /// Refuses an ended/foreign main original, failed credential admission,
+    /// invalid strict signature, repeated attempt or busy verification owner.
+    /// Refusal fences this startup without suppressing its owed native posts.
+    pub fn verify_captured_pin_signature_once_v1(
+        &self,
+        main: &Method46InitialMainCutOriginalV1<'_>,
+        signature: [u8; 64],
+    ) -> Result<Method46InitialIntentDataV1, Method46InitialDataErrorV1> {
+        let result = (|| {
+            let mut approval = self
+                .approval
+                .try_borrow_mut()
+                .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+            approval.verify_once(
+                self.request_for_main_original_data_v1(main),
+                signature,
+                self.approval_pin
+                    .unwrap_or(Err(Method46InitialDataErrorV1::Approval)),
+            )
+        })();
+        if result.is_err() {
+            self.readback.refuse_decode_v1();
+        }
+        result
+    }
+
+    /// Revalidates one encoded initial intent under the original public pin.
+    ///
+    /// The sole canonical decoder reverifies the signature, then compares the
+    /// enclosed request with the current same-owner main cut. Fresh signatures
+    /// and cold intents share one attempt; neither route can heal the other.
+    /// The exact input and decoder result remain resident even when the current
+    /// request differs. No public key, request or digest enters from the caller.
+    ///
+    /// The fixed input is comparison DATA. This does not authenticate a durable
+    /// intent file or normal-key separation and grants no recovery operation.
+    ///
+    /// # Errors
+    /// Refuses a foreign/ended original, malformed framing, invalid signature,
+    /// changed current request, busy owner or repeated attempt. Refusal fences
+    /// this startup while its independent native posts remain owed.
+    pub fn decode_captured_pin_intent_once_v1(
+        &self,
+        main: &Method46InitialMainCutOriginalV1<'_>,
+        bytes: [u8; METHOD46_INITIAL_INTENT_BYTES_V1],
+    ) -> Result<Method46InitialIntentDataV1, Method46InitialDataErrorV1> {
+        let result = (|| {
+            let mut approval = self
+                .approval
+                .try_borrow_mut()
+                .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+            approval.decode_once(
+                self.request_for_main_original_data_v1(main),
+                bytes,
+                self.approval_pin
+                    .unwrap_or(Err(Method46InitialDataErrorV1::Approval)),
+            )
+        })();
+        if result.is_err() {
+            self.readback.refuse_decode_v1();
+        }
+        result
     }
 
     /// Returns the compared fixed purpose as DATA while the Source is current.

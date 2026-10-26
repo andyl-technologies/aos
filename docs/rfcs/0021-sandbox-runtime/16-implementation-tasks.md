@@ -49,6 +49,9 @@ Recent committed startup fixes close narrower prerequisites:
   retaining that input in the guest image corrects the test closure. This
   non-enforcing component test excludes the pending production policy and
   establishes no installed Host or TPM qualification.
+  Complete Rust unit and integration targets compile for the descriptor-mount
+  source (`/nix/store/9hjl2gqamzrw12da7g554jghynx4xbin-aos-test-targets-0.1.0`),
+  without running them and before the later canary and approval changes.
   The private Host startup-canary route uses the same held-descriptor check;
   its current-source isolated Host suite passes 409 tests, with four skipped.
   Complete current-source Rust target compilation remains pending.
@@ -579,6 +582,22 @@ Recent committed startup fixes close narrower prerequisites:
   Genuine installed positive admission, Session schema, independent public
   endpoint/key provenance, job exclusion, approved durable intent and physical
   TPM authority remain open. This request remains comparison DATA.
+
+- The genuine provisioning readback also lends its already held public
+  approval credential; private index authentication has no accessor. The same
+  decode owner retains that pin and verifies either one fresh signature or one
+  cold initial intent through the sole strict canonical codec. Its request is
+  derived from the same startup's actual main cut, with no supplied public key,
+  request or digest. Both routes share one attempt. Exact signature/intent input,
+  request and codec results remain resident after malformed input, a changed
+  current request or reentry. The same prepaid allowance covers the compiled
+  carriers and fixed wire representations; native credential posts and Source
+  after remain owed. All 76 focused initial tests pass, including six new
+  approval-retention regressions. Complete current Rust target compilation
+  remains pending. This establishes captured-key signature DATA,
+  not separation from normal endpoint/Nix/Root keys, durable-file custody,
+  Session schema, job exclusion, physical TPM operations or installed producer
+  qualification. Those gates and public admission remain closed.
 
 - Initial main capture now admits historical namespaces and legacy capacity
   ownership through the ordinary protected namespace engine. The read-only

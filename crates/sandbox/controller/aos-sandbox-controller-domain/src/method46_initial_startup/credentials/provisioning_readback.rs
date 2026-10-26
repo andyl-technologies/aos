@@ -8,9 +8,10 @@ use std::cell::Ref;
 
 use super::*;
 
-/// Bounds the co-live canonical provisioning decoder and result carriers.
+/// Bounds the co-live provisioning decoder and one approval verification.
 ///
-/// The Security codec checks its compiled layout against this prepaid bound.
+/// Security checks its compiled retained layouts and fixed wire carriers
+/// against this prepaid bound, including the signature and public pin.
 /// Actual credential buffers and original native observations are paid by the
 /// enclosing file owner separately. This size alone authenticates no payer.
 pub const METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1: usize = 8192;
@@ -58,6 +59,28 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
     /// Refuses a completed/failed Source, busy owner, missing original readback
     /// or already entered post. It never replaces or reopens a credential.
     pub fn provision_bytes_v1(&self) -> Result<Ref<'_, [u8]>, Method46InitialStartupClosedV1> {
+        self.public_bytes(0)
+    }
+
+    /// Borrows the public approval pin from the same admitted credential owner.
+    ///
+    /// The native capture already compared this public file with the measured
+    /// startup profile. This loan exposes neither private index authentication
+    /// nor a caller-selected credential. Separation from normal signing keys
+    /// remains a distinct admission requirement.
+    ///
+    /// # Errors
+    /// Refuses an ended Source, busy credential owner, missing original public
+    /// readback or entered post. No credential is reopened or copied.
+    pub fn approval_public_key_bytes_v1(
+        &self,
+    ) -> Result<Ref<'_, [u8]>, Method46InitialStartupClosedV1> {
+        self.public_bytes(2)
+    }
+
+    // Only the two fixed public accessors above select slots. The private auth
+    // credential has no readback accessor across this ownership boundary.
+    fn public_bytes(&self, slot: usize) -> Result<Ref<'_, [u8]>, Method46InitialStartupClosedV1> {
         self.require_current()?;
         let body = self.startup.body.as_ref().ok_or(self.startup.closed)?;
         let credentials = body
@@ -68,7 +91,7 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
             return Err(self.startup.closed);
         }
         Ref::filter_map(credentials, |credentials| {
-            credentials.credentials[0].bytes[0]
+            credentials.credentials[slot].bytes[0]
                 .as_deref()
                 .map(|bytes| bytes.as_slice())
         })
@@ -176,6 +199,7 @@ mod tests {
         // source or successful credential, and therefore cannot lend any bytes.
         let loan = Method46InitialProvisionReadbackLoanV1 { startup: &startup };
         assert!(loan.provision_bytes_v1().is_err());
+        assert!(loan.approval_public_key_bytes_v1().is_err());
         assert!(loan.origin_data_v1().is_err());
         loan.refuse_decode_v1();
 
