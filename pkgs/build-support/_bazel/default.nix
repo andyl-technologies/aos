@@ -87,6 +87,12 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    systemd-provider = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "systemd-provider";
+    };
+
     configuration-files = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;

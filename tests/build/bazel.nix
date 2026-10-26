@@ -183,6 +183,7 @@ in
     network-ruleset-provider-production = import ./_bazel-network-ruleset-provider-production.nix {inherit pkgs;};
     configuration-provider-production = import ./_bazel-configuration-provider-production.nix {inherit pkgs;};
     metadata-provider-production = import ./_bazel-metadata-provider-production.nix {inherit pkgs;};
+    systemd-provider-production = import ./_bazel-systemd-provider-production.nix {inherit pkgs;};
     filesystem-provider-production = import ./_bazel-filesystem-provider-production.nix {inherit pkgs;};
     static-storage-providers-production = import ./_bazel-static-storage-providers-production.nix {inherit pkgs;};
     preparation-provider-production = import ./_bazel-preparation-provider-production.nix {inherit pkgs;};
@@ -597,6 +598,7 @@ in
             network-ruleset-provider-production.all
             configuration-provider-production.all
             metadata-provider-production.all
+            systemd-provider-production.all
             filesystem-provider-production.all
             static-storage-providers-production.all
             preparation-provider-production.all

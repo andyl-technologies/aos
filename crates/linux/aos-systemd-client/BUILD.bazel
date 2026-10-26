@@ -46,7 +46,9 @@ aos_rust_test(
     package = RUST_PACKAGE,
     crate_name = "client",
     crate_root = "tests/client.rs",
-    srcs = glob(["tests/**/*.rs"]),
+    # Library-only workspaces omit integration sources; selected tests still
+    # require their explicit crate_root and retain their complete source tree.
+    srcs = glob(["tests/**/*.rs"], allow_empty = True),
     deps = [":lib"] + DEPENDENCIES,
 )
 
@@ -56,7 +58,9 @@ aos_rust_test(
     package = RUST_PACKAGE,
     crate_name = "pinned_bus",
     crate_root = "tests/pinned_bus.rs",
-    srcs = glob(["tests/**/*.rs"]),
+    # Library-only workspaces omit integration sources; selected tests still
+    # require their explicit crate_root and retain their complete source tree.
+    srcs = glob(["tests/**/*.rs"], allow_empty = True),
     deps = [":lib"] + DEPENDENCIES,
 )
 

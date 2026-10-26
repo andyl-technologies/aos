@@ -2274,6 +2274,44 @@ Dedicated service and assembled-system gates, foreign and Wasm execution,
 compiler invocation equivalence, numeric performance acceptance, production
 migration, and Cargo removal remain required separately.
 
+`pkgs.aos-systemd-provider.passthru.withBuildDriver "bazel"` selects the installed
+six-command package: native resources, credential encryption, boot platform,
+image staging, image evidence and initrd store restoration. Cargo remains the
+default and explicit rollback. Both package parts use one production compilation;
+installation preserves the original platform, runtime and qualification contracts.
+
+`checks.build.bazel.systemd-provider-production.all`, also exposed through
+`tools/bazel/tests/systemd-provider-production.nix`, requires exact installed ELF
+contracts, immutable library search paths, resolved libraries and runtime closures.
+Production and release tests match all thirteen first-party feature selections
+and 121 compiled third-party packages. The new `systemd-provider` SDK uses
+source-built static Zstd; all 73 previous SDK definitions and 16,528 generated
+files are unchanged.
+
+The qualification compares eighteen production Rust compilations, eight release
+test executables and fourteen execution procedural macros with Cargo. All 125
+unit cases pass, along with five empty command-test targets and the empty
+doctest target. Thirty-eight installed CLI comparisons include the 256 KiB
+native-resource document limit and one byte over it. The boot unit test's actual
+setup and wrapper input digests bind its source-built Nix tools to execution;
+altered setup or wrapper digests, cache hits and unsandboxed execution records
+must fail the verifier.
+
+Both installations execute eight matching filesystem checks: exact bootstrap
+slice publication, preservation of existing seeds, unknown-field rejection
+before effects, output-alias rejection, absent and empty retained snapshots,
+unknown snapshot schemas and aliased manifests. The release suite also retains
+its private Nix store transport tests. Production and release tests execute 351
+and 368 fresh Linux sandbox actions. Precise and conservative inventories agree
+on fifteen roots, 210 reports and 191 source files. Unselected integration globs
+permit omitted test directories; selecting those tests still requires their
+explicit crate roots and complete source trees. The retained receipt is
+`tests/evidence/systemd-provider-production-package.json`.
+
+Live DBus manager effects, TPM credential encryption, image staging, nonempty
+installed store restoration, foreign hosts, numeric performance acceptance,
+production default cutover and repository-wide Cargo removal remain separate gates.
+
 ## Storage/campaign compilation measurements
 
 `tests/evidence/store-performance-v3.json` identifies a frozen compilation trial

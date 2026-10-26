@@ -101,6 +101,7 @@ aos_dev_bazel() (
       $1 == package-manager-tests ||
       $1 == configuration-image ||
       $1 == configuration-image-tests ||
+      $1 == systemd-provider ||
       $1 == configuration-files ||
       $1 == configuration-files-tests ||
       $1 == kernel-tunable ||
@@ -116,7 +117,7 @@ aos_dev_bazel() (
       $1 == hub-client ||
       $1 == hub-model ||
       $1 == hub-model-tests
-    ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <aos-cli-tests|aos-cli-fleet-tests|aos-cli-production|core|device|store|guest|engine|quota|session|control|qemu-host|qemu-gpl-production|qemu-gpl-tests|qemu-gpl-plugin-tests|qemu-test-oracle-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-bindings|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client|release-preparation|registry-native|registry-native-tests|release-coordination|boot-preparation|boot-preparation-minimal|package-manager|package-manager-tests|configuration-image|configuration-image-tests|configuration-files|configuration-files-tests|kernel-tunable|kernel-tunable-tests|preparation-provider|preparation-provider-tests|hub-db|hub-db-tests|hub-db-all-features|hub-db-all-features-tests|accache|registry-web|registry-web-wasm|hub-console|hub-console-wasm|hub-service|hub-service-tests|hub-service-all-features|hub-service-all-features-tests|hub-native-postgres|hub-native-tests|hub-worker-tests|hub-worker-all-features-tests|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features>'
+    ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <aos-cli-tests|aos-cli-fleet-tests|aos-cli-production|core|device|store|guest|engine|quota|session|control|qemu-host|qemu-gpl-production|qemu-gpl-tests|qemu-gpl-plugin-tests|qemu-test-oracle-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-bindings|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client|release-preparation|registry-native|registry-native-tests|release-coordination|boot-preparation|boot-preparation-minimal|package-manager|package-manager-tests|configuration-image|configuration-image-tests|systemd-provider|configuration-files|configuration-files-tests|kernel-tunable|kernel-tunable-tests|preparation-provider|preparation-provider-tests|hub-db|hub-db-tests|hub-db-all-features|hub-db-all-features-tests|accache|registry-web|registry-web-wasm|hub-console|hub-console-wasm|hub-service|hub-service-tests|hub-service-all-features|hub-service-all-features-tests|hub-native-postgres|hub-native-tests|hub-worker-tests|hub-worker-all-features-tests|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features>'
     local updater specifications family=$1
     updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
     specifications=$(aos_dev_nix_build_ordinary -A "checks.build.bazel.dependencies.specification-packages.$family" --no-out-link)

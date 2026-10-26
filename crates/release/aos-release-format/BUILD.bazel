@@ -72,7 +72,9 @@ aos_rust_test(
     crate_root = "tests/qualification.rs",
     # The adversarial integration suite imports the same checked-in policy
     # fixture used by the library's tests through an explicit path module.
-    srcs = glob(["tests/*.rs", "src/test_support/qualification/**/*.rs"]),
+    # Library-only source selections omit the integration directory. The
+    # selected suite still requires its explicit crate_root.
+    srcs = glob(["tests/*.rs", "src/test_support/qualification/**/*.rs"], allow_empty = True),
     deps = [":lib"] + DEPENDENCIES + TEST_DEPENDENCIES,
 )
 

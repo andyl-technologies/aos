@@ -28,6 +28,7 @@
     "package-manager-tests"
     "configuration-image"
     "configuration-image-tests"
+    "systemd-provider"
     "configuration-files"
     "configuration-files-tests"
     "kernel-tunable"

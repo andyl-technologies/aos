@@ -534,3 +534,9 @@ config_setting(
     flag_values = {":dependency_profile": "configuration-files-tests"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "systemd_provider_dependencies",
+    flag_values = {":dependency_profile": "systemd-provider"},
+    visibility = ["//visibility:public"],
+)

@@ -6,6 +6,8 @@ load(":configuration-image-tests/aliases.bzl", CONFIGURATION_IMAGE_TESTS_CRATES 
 load(":kernel-tunable.bzl", "KERNEL_TUNABLE_PACKAGES", "KERNEL_TUNABLE_TESTS_PACKAGES", "KERNEL_TUNABLE_TESTS_FEATURE_VARIANTS")
 load(":kernel-tunable/aliases.bzl", KERNEL_TUNABLE_CRATES = "CRATES")
 load(":kernel-tunable-tests/aliases.bzl", KERNEL_TUNABLE_TESTS_CRATES = "CRATES")
+load(":systemd-provider.bzl", "SYSTEMD_PROVIDER_PACKAGES", "SYSTEMD_PROVIDER_FEATURE_VARIANTS")
+load(":systemd-provider/aliases.bzl", SYSTEMD_PROVIDER_CRATES = "CRATES")
 load(":configuration-files.bzl", "CONFIGURATION_FILES_PACKAGES", "CONFIGURATION_FILES_TESTS_PACKAGES", "CONFIGURATION_FILES_TESTS_FEATURE_VARIANTS")
 load(":configuration-files/aliases.bzl", CONFIGURATION_FILES_CRATES = "CRATES")
 load(":configuration-files-tests/aliases.bzl", CONFIGURATION_FILES_TESTS_CRATES = "CRATES")
@@ -132,6 +134,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
             "//tools/bazel/rules:configuration_image_tests_dependencies": CONFIGURATION_IMAGE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:kernel_tunable_dependencies": KERNEL_TUNABLE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:kernel_tunable_tests_dependencies": KERNEL_TUNABLE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:systemd_provider_dependencies": SYSTEMD_PROVIDER_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:configuration_files_dependencies": CONFIGURATION_FILES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:configuration_files_tests_dependencies": CONFIGURATION_FILES_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:preparation_provider_dependencies": PREPARATION_PROVIDER_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -205,6 +208,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         + CONFIGURATION_IMAGE_TESTS_CRATES.items()
         + KERNEL_TUNABLE_CRATES.items()
         + KERNEL_TUNABLE_TESTS_CRATES.items()
+        + SYSTEMD_PROVIDER_CRATES.items()
         + CONFIGURATION_FILES_CRATES.items()
         + CONFIGURATION_FILES_TESTS_CRATES.items()
         + PREPARATION_PROVIDER_CRATES.items()
@@ -1101,6 +1105,7 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "systemd-provider": SYSTEMD_PROVIDER_FEATURE_VARIANTS,
     "configuration-files-tests": CONFIGURATION_FILES_TESTS_FEATURE_VARIANTS,
     "kernel-tunable-tests": KERNEL_TUNABLE_TESTS_FEATURE_VARIANTS,
     "preparation-provider-tests": {
@@ -1954,6 +1959,7 @@ APPROVED_LICENSES = [
             "package-manager-tests": ["package-manager.bzl"],
             "kernel-tunable": ["kernel-tunable.bzl"],
             "kernel-tunable-tests": ["kernel-tunable.bzl"],
+            "systemd-provider": ["systemd-provider.bzl"],
             "configuration-files": ["configuration-files.bzl"],
             "configuration-files-tests": ["configuration-files.bzl"],
             "boot-preparation": ["boot-preparation.bzl"],
@@ -1988,6 +1994,7 @@ APPROVED_LICENSES = [
         ("configuration-image-tests", CONFIGURATION_IMAGE_TESTS_PACKAGES, {}, "apache-host"),
         ("kernel-tunable", KERNEL_TUNABLE_PACKAGES, {}, "apache-host"),
         ("kernel-tunable-tests", KERNEL_TUNABLE_TESTS_PACKAGES, {}, "apache-host"),
+        ("systemd-provider", SYSTEMD_PROVIDER_PACKAGES, {"zstd-sys": STORE_ANNOTATIONS["zstd-sys"]}, "apache-host"),
         ("configuration-files", CONFIGURATION_FILES_PACKAGES, {}, "apache-host"),
         ("configuration-files-tests", CONFIGURATION_FILES_TESTS_PACKAGES, {}, "apache-host"),
         ("preparation-provider", PREPARATION_PROVIDER_PACKAGES, {}, "apache-host"),
@@ -2099,6 +2106,7 @@ APPROVED_LICENSES = [
         "configuration-image-tests",
         "kernel-tunable",
         "kernel-tunable-tests",
+        "systemd-provider",
         "configuration-files",
         "configuration-files-tests",
         "preparation-provider",
