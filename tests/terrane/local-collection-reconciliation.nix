@@ -17,6 +17,7 @@ assert builtins.elem suite [
   "readonly-repository"
   "scoped-indexed-presence"
   "held-indexed-presence"
+  "dictionary-reachability"
 ]; let
   testing = import ../../lib/testing {inherit pkgs lib;};
 in
@@ -44,6 +45,8 @@ in
       then "terrane-scoped-indexed-presence"
       else if suite == "held-indexed-presence"
       then "terrane-held-indexed-presence"
+      else if suite == "dictionary-reachability"
+      then "terrane-dictionary-reachability"
       else "terrane-startup-restoration";
     memory = 1024;
     timeout =

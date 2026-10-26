@@ -13,6 +13,7 @@ use terrane_format::identity::{IdentityKind, TERRANE_V1};
 
 mod current_pair;
 mod current_roots;
+mod dictionary_reachability;
 mod inspection;
 mod local_deletion;
 mod local_ownership;

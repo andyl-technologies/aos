@@ -123,6 +123,11 @@ HELD_INDEX_CASES += [
     ]
 ]
 
+DICTIONARY_REACHABILITY_CASES = [
+    "gc::runner::tests::dictionary_reachability::"
+    "gc_native_marks_codec_dictionary_chain_without_data_body_reads",
+]
+
 
 def verify_image(source, image, variant="surface-sdk"):
     """Binds the actual retained Cargo test image to every immutable crate input."""
@@ -206,11 +211,14 @@ def main():
     elif suite == "held-indexed-presence":
         cases = HELD_INDEX_CASES
         case_timeout = 60
+    elif suite == "dictionary-reachability":
+        cases = DICTIONARY_REACHABILITY_CASES
+        case_timeout = 60
     else:
         raise ValueError("unknown native collection qualification suite")
 
     os.chdir(source / "crates")
-    variant = ("default-tokio" if suite in {"scoped-indexed-presence", "held-indexed-presence"}
+    variant = ("default-tokio" if suite in {"scoped-indexed-presence", "held-indexed-presence", "dictionary-reachability"}
                else "surface-sdk")
     binary_hash = verify_image(source, image, variant)
     binary = image / "bin/terrane-native-sdk-tests"
@@ -237,7 +245,7 @@ def main():
         "uid": os.getuid(), "capabilities": 0, "no_new_privileges": True,
         "binary_sha256": binary_hash, "configured_gc_runtime": False,
     }
-    if suite in {"scoped-indexed-presence", "held-indexed-presence"}:
+    if suite in {"scoped-indexed-presence", "held-indexed-presence", "dictionary-reachability"}:
         proof.update(suite=suite, case_timeout_seconds=case_timeout)
     print("LOCAL_COLLECTION_RECONCILIATION_PROOF " + json.dumps(proof, sort_keys=True), flush=True)
     if suite == "collection-reconciliation":
@@ -274,6 +282,9 @@ def main():
     elif suite == "held-indexed-presence":
         print(f"PASS {len(cases)} exact index cases preserve native exclusion, guarded file "
               "reachability and whole policy references without chunk body reads", flush=True)
+    elif suite == "dictionary-reachability":
+        print("PASS actual codec-only dictionary chains remain marked without data-body reads",
+              flush=True)
     else:
         print("PASS actual local-v1 intent discovery survives exact full-D deletion and durable Done",
               flush=True)

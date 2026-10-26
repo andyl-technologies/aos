@@ -91,6 +91,15 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+A new native dictionary-reachability regression proposes a two-level codec-only
+chain through genuine signed publication. It first requires an ordinary scoped
+read to decode the file successfully, then forbids every data-pack body read
+while the actual collector marks and completes its cycle. Independent decoding
+of durable mark shards must find the file and both dictionaries. No attribute
+record is invented to supply the missing codec edges. The focused guest retains
+the existing 60-second case and 240-second guest bounds. Runtime execution is
+pending; this source audit alone establishes neither a GC defect nor a fix.
+
 Root-scoped discovery now enumerates actual canonical root and graft paths
 through the repository Guard. Each occurrence receives its own current Read
 check, including distinct paths that share one root digest. Nested-only grants
@@ -99,9 +108,12 @@ paths do not become authorization roots. Identity checks cover absent refs,
 and a closing authorization pass and complete-reference comparison discard
 results after a policy change. Discovery grants no subsequent content authority.
 Two new native cases extend the existing six-case committed-index guest without
-changing its 60-second case or 240-second guest bounds. Native qualification and
-mandatory application-target compilation of this candidate remain pending.
-Full Content.Has and Negotiate remain unimplemented; acceptance stays 28/64.
+changing its 60-second case or 240-second guest bounds. Native qualification at
+`659e6144c0` passes in 1,293.832 seconds including compilation and image creation.
+Independent review verifies all eight exact cases in the confined UID-840 ext4
+AOS guest, 8,293 immutable source files and the retained Cargo executable.
+Required application-target compilation remains running. Full Content.Has and
+Negotiate remain unimplemented; acceptance stays 28/64.
 
 A separate restart diagnostic preserves the original successful managed startup
 and shutdown proof, then attempts a fresh publisher and Serve start while the

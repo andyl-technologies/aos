@@ -626,6 +626,11 @@ in {
     inherit pkgs lib;
     image = bucketSdkTestImage;
   };
+  integration.dictionary-reachability = import ./local-collection-reconciliation.nix {
+    inherit pkgs lib;
+    image = bucketSdkTestImage;
+    suite = "dictionary-reachability";
+  };
   integration.structural-index = import ./structural-index.nix {inherit pkgs sourceGateWithInputs;};
   integration.structural-mapping = (import ./structural-mapping.nix {inherit pkgs lib sourceGateWithInputs;}).native;
   integration.structural-mapping-image = (import ./structural-mapping.nix {inherit pkgs lib sourceGateWithInputs;}).image;
