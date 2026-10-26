@@ -36,6 +36,9 @@ pub mod negotiation;
 /// Receives bounded whole-ref observations before independent commit verification.
 pub mod references;
 
+/// Receives finite pattern-matched ref listings without partial results.
+pub mod listing;
+
 /// Receives bounded, ordered canonical reflogs before commit verification.
 pub mod reflog;
 

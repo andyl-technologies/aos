@@ -111,22 +111,7 @@ where
         {
             return Err(RefClientError::Freshness);
         }
-        let value = state
-            .value
-            .as_option()
-            .map(|value| codec.observe_value(value))
-            .transpose()
-            .map_err(RefClientError::Value)?;
-        if let (Some(value), Some(home)) = (&value, state.home.as_option()) {
-            value.check_home(home).map_err(RefClientError::Value)?;
-        }
-        Ok(ReceivedRef {
-            name: state.name,
-            value,
-            fenced: state.fenced,
-            staleness_ms: state.staleness_ms,
-            home: state.home.into_option(),
-        })
+        observe_state(state, codec).map_err(RefClientError::Value)
     };
     let result = tokio::time::timeout_at(deadline, receive)
         .await
@@ -135,6 +120,28 @@ where
         return Err(RefClientError::Deadline);
     }
     result
+}
+
+// Shared representation checks do not impose a freshness policy on listings.
+pub(super) fn observe_state(
+    state: v1::RefState,
+    codec: RefCodec,
+) -> Result<ReceivedRef, RefWireError> {
+    let value = state
+        .value
+        .as_option()
+        .map(|value| codec.observe_value(value))
+        .transpose()?;
+    if let (Some(value), Some(home)) = (&value, state.home.as_option()) {
+        value.check_home(home)?;
+    }
+    Ok(ReceivedRef {
+        name: state.name,
+        value,
+        fenced: state.fenced,
+        staleness_ms: state.staleness_ms,
+        home: state.home.into_option(),
+    })
 }
 
 /// Describes a refused whole-ref reception without exposing a partial record.

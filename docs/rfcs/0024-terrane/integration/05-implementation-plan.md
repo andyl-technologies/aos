@@ -91,6 +91,20 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The native client now receives finite `ListRefs` streams under explicit row,
+content, message, element-memory and whole-call bounds. It validates root-free
+ref patterns using the existing guarded-enumeration grammar, checks canonical
+matching distinct names, preserves peer delivery order and uses the shared
+whole-ref consistency checks. Values remain private pending independent
+commit/profile validation. It establishes no inventory completeness, atomic
+snapshot, current permission or freshness. Five new socket cases retain the
+original thirty-case inventory and thirty-second limits. Strict all-target
+Clippy passes for default Tokio and explicit `tokio,surface-sdk`; the portable
+library and wire-contract target compile with six existing Guard warning groups.
+SDK formatting, complete selector registration and PLAN-2 pass. Fresh AOS
+execution and required application compilation of this increment remain pending;
+no task is accepted.
+
 The native client now stages finite `GetRefLog` responses behind explicit
 entry/content bounds and a whole-call deadline through protocol termination.
 Canonical records and their complete predecessors remain private until each
@@ -104,8 +118,17 @@ portable case checks complete predecessor retention. Original socket and codec
 selectors keep their order and thirty-second bounds. Strict all-target Clippy
 passes for default Tokio and explicit `tokio,surface-sdk`; the no-default
 library and wire-contract target compile with the six existing Guard dead-code
-warning groups. Formatting, selector registration and PLAN-2 pass. Fresh AOS
-execution and required application compilation of this increment remain pending.
+warning groups. Formatting, selector registration and PLAN-2 pass.
+
+Fresh AOS qualification at `8c10438255` passes in 222.814 seconds: all 30 actual
+socket cases and all 22 portable wire cases execute with their original
+thirty-second limits. Independent review matches all 8,276 immutable source
+files and 5,499 bound inputs, actual Cargo artifacts, the retained socket ELF,
+and the portable executable hash (whose bytes are not retained). The fresh
+nonce-bound private-builder proof confirms ext4, a capability-free build user,
+AOS kernel 7.2.3 and exactly the three expected remote derivations. Raw controller
+records are preserved before removing owned terminal scratch. Required
+application compilation remains pending.
 Production Ref services, reflog retention/selection and gap-free watch recovery
 remain open.
 

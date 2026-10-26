@@ -32,6 +32,11 @@ pub(super) struct Services {
     pub(super) ref_log_pending: bool,
     pub(super) ref_log_delay: std::time::Duration,
     pub(super) ref_log_requests: std::sync::Mutex<Vec<v1::GetRefLogRequest>>,
+    pub(super) ref_list_entries: Option<Vec<v1::RefState>>,
+    pub(super) ref_list_error: bool,
+    pub(super) ref_list_pending: bool,
+    pub(super) ref_list_delay: std::time::Duration,
+    pub(super) ref_list_requests: std::sync::Mutex<Vec<v1::ListRefsRequest>>,
 }
 
 fn unsupported() -> connectrpc::ConnectError {
@@ -222,6 +227,7 @@ impl RefService for Services {
         v1::CompareAndSwapRefRequest,
         v1::RefState
     );
+
     async fn get_ref_log(
         &self,
         _context: RequestContext,
@@ -263,8 +269,50 @@ impl RefService for Services {
             Box::pin(stream) as ServiceStream<v1::RefLogEntry>
         ))
     }
+
     unavailable_stream!(watch_refs, v1::WatchRefsRequest, v1::RefEvent);
-    unavailable_stream!(list_refs, v1::ListRefsRequest, v1::RefState);
+
+    async fn list_refs(
+        &self,
+        _context: RequestContext,
+        request: ServiceRequest<'_, v1::ListRefsRequest>,
+    ) -> ServiceResult<ServiceStream<v1::RefState>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.ref_list_requests
+            .lock()
+            .map_err(|_| unsupported())?
+            .push(request.to_owned_message());
+        let entries = self.ref_list_entries.clone().ok_or_else(unsupported)?;
+        let state = (
+            entries.into_iter(),
+            self.ref_list_error,
+            self.ref_list_pending,
+            self.ref_list_delay,
+            StreamLifetime(self.dropped_stream.clone()),
+        );
+        let stream = futures_util::stream::unfold(
+            state,
+            |(mut entries, mut fail, pending, delay, lifetime)| async move {
+                let next = if let Some(entry) = entries.next() {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    Ok(entry)
+                } else if fail {
+                    fail = false;
+                    Err(unsupported())
+                } else if pending {
+                    return std::future::pending().await;
+                } else {
+                    return None;
+                };
+                Some((next, (entries, fail, pending, delay, lifetime)))
+            },
+        );
+        Ok(Response::new(
+            Box::pin(stream) as ServiceStream<v1::RefState>
+        ))
+    }
 }
 
 #[allow(refining_impl_trait)]

@@ -22,6 +22,9 @@ mod references;
 #[path = "distribution_transport/reflog.rs"]
 mod reflog;
 
+#[path = "distribution_transport/listing.rs"]
+mod listing;
+
 use buffa::Message;
 use fixture::{Services, limits};
 use std::{

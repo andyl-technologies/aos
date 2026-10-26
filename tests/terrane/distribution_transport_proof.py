@@ -42,6 +42,11 @@ CASES = [
     "reflog::enforces_aggregate_entry_content_and_individual_record_message_bounds",
     "reflog::terminal_failure_deadline_and_cancellation_never_deliver_partial_logs",
     "reflog::invalid_names_and_missing_call_limits_refuse_before_connecting",
+    "listing::preserves_matching_delivery_order_and_private_complete_records",
+    "listing::rejects_duplicate_nonmatching_malformed_names_and_inconsistent_records",
+    "listing::enforces_exact_aggregate_and_individual_record_message_bounds",
+    "listing::terminal_failure_deadline_and_cancellation_discard_private_listings",
+    "listing::invalid_patterns_and_missing_call_bounds_refuse_before_connecting",
 ]
 
 
