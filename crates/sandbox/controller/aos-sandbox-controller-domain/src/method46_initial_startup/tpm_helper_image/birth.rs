@@ -14,6 +14,7 @@ use aos_sandbox_broker::fixed_initial_tpm_helper_birth::{
     InitialTpmHelperDrivingLoanV1,
 };
 
+mod checkpoint;
 mod nv;
 
 use super::*;

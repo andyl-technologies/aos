@@ -14,7 +14,7 @@ use super::*;
 
 pub(super) struct InitialNvInitializationOriginalV1 {
     entered: bool,
-    setup: [Option<Result<(), Method46InitialStartupClosedV1>>; 3],
+    setup: [Option<Result<(), Method46InitialStartupClosedV1>>; 4],
     reads: [Option<Result<HelperObservationV1, Method46InitialStartupClosedV1>>; 3],
     decision: Option<Result<Method46InitialRecoveryDataV1, Method46InitialDataErrorV1>>,
     closed: Option<Result<(), Method46InitialStartupClosedV1>>,
@@ -25,7 +25,7 @@ impl InitialNvInitializationOriginalV1 {
     pub(super) fn new() -> Self {
         Self {
             entered: false,
-            setup: [None; 3],
+            setup: [None; 4],
             reads: std::array::from_fn(|_| None),
             decision: None,
             closed: None,
@@ -87,6 +87,14 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
                 require_native_step(nv.setup[1])?;
                 nv.setup[2] = Some(driver.authenticate_held_index_once_v1());
                 require_native_step(nv.setup[2])?;
+
+                let (current, _) = self.current_approved_initial_request(main)?;
+                if current != request {
+                    return Err(Method46InitialDataErrorV1::Conflict);
+                }
+                nv.setup[3] =
+                    Some(driver.capture_initial_checkpoint_stage_once_v1(current.checkpoint()));
+                require_native_step(nv.setup[3])?;
 
                 nv.reads[0] = Some(driver.read_initial_nv_once_v1());
                 let observed = classify_initial_observation(request, read_data(&nv.reads[0])?)?;

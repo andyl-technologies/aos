@@ -113,7 +113,11 @@ impl Method46InitialMainWriterOriginalV1 {
     }
 
     pub(crate) fn begin_initial_nv_main_once(&mut self) -> Result<(), JournalError> {
-        if self.failure().is_some() || self.post.is_some() || !self.tpm_locks.ready() {
+        if self.failure().is_some()
+            || self.post.is_some()
+            || !self.tpm_locks.ready()
+            || !self.checkpoint.ready()
+        {
             self.closed.get_or_insert(JournalError::ProtectedBoundary);
             return Err(JournalError::ProtectedBoundary);
         }

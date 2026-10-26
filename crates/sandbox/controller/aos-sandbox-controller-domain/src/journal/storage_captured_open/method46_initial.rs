@@ -11,6 +11,7 @@ use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector}
 use super::*;
 
 mod approval_currentness;
+mod checkpoint;
 mod floor_names;
 mod initial_floor;
 mod initial_intent;
@@ -57,6 +58,7 @@ pub(crate) struct Method46InitialMainWriterOriginalV1 {
     namespace: namespace::MainNamespaceOriginalV1,
     tpm_locks: tpm_locks::InitialTpmLocksOriginal,
     nv_currentness: nv_currentness::InitialNvMainCurrentnessOriginalV1,
+    checkpoint: checkpoint::InitialCheckpointOriginal,
 }
 
 impl Method46InitialMainWriterOriginalV1 {
@@ -80,6 +82,7 @@ impl Method46InitialMainWriterOriginalV1 {
             namespace: namespace::MainNamespaceOriginalV1::new(),
             tpm_locks: tpm_locks::InitialTpmLocksOriginal::new(),
             nv_currentness: nv_currentness::InitialNvMainCurrentnessOriginalV1::new(),
+            checkpoint: checkpoint::InitialCheckpointOriginal::new(),
         }
     }
 
@@ -224,6 +227,7 @@ impl Method46InitialMainWriterOriginalV1 {
         let _approval_after = self.finish_approval_currentness_after_owed();
         let _intent_after = self.finish_initial_intent_after_owed();
         let _nv_after = self.finish_initial_nv_main_after_owed();
+        let _checkpoint_after = self.finish_initial_checkpoint_after_owed();
         let _tpm_locks_after = self.finish_initial_tpm_locks_after_owed();
         let _floor_after = self.finish_initial_floor_after_owed();
         self.post = Some((|| {
@@ -282,6 +286,7 @@ impl Method46InitialMainWriterOriginalV1 {
             .or_else(|| self.initial_intent.failure())
             .or_else(|| self.tpm_locks.failure())
             .or_else(|| self.nv_currentness.failure())
+            .or_else(|| self.checkpoint.failure())
             .or_else(|| self.initial_floor.after_failure())
             .or_else(|| self.post_original.failure())
             .or_else(|| {

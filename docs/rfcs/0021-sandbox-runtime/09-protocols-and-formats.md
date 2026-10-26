@@ -46,6 +46,24 @@ changed request is a conflict. An already completed checkpoint must fence
 repeated provisioning. Normal daemon startup consumes completed provisioning;
 it cannot adopt this intent or perform initialization.
 
+The initial sidecar is a complete canonical journal transaction, not a raw
+156-byte checkpoint file. Its sole PUT is namespace 47 (`BrokerSessionTraffic`),
+key `checkpoint`, and the exact approved checkpoint value. The transaction ID
+is the first 16 bytes of SHA-256 over
+`aos.sandbox.broker-session.tpm-floor.initial-sidecar.v1\0` followed by those
+156 bytes; the domain terminator is one zero byte, and no UUID bits are changed.
+BEGIN, RECORD and COMMIT use native sequences 1, 2 and 3 and the existing journal
+codec/checksums. The complete initial encoding is 429 bytes.
+
+`session-floor.journal.initial.pending` is the separate fixed initial stage.
+Before any initial TPM request, the genuine Source must capture an existing
+stage and reject unsafe files or bytes that are not an exact bounded prefix of
+the approved canonical transaction. This capture creates and changes no file.
+A matching prefix is recovery DATA, not completed provisioning or permission to
+publish; original writer custody, fresh publication checks and durability are
+still required. Stages and conflicting files must never be silently truncated
+or removed.
+
 The canonical records, signature verification and recovery comparison are
 implemented as DATA operations. They do not establish original funding,
 independence of a supplied key pin, stopped owners, protected file custody,

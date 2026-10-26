@@ -31,6 +31,29 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Before any initial NV request, Security now derives the checkpoint from
+  its resident approved request and asks the same Source to prepay and capture
+  the fixed checkpoint stage. The sole native journal encoder produces the
+  complete 429-byte BEGIN/namespace-47 checkpoint PUT/COMMIT transaction, with
+  the documented deterministic initial transaction identity. Existing stages
+  must be safe, single-link, bounded files containing an exact prefix; capture
+  never creates, writes, truncates, renames or removes a file. Native main
+  bookends, original encoder failures, stage metadata and failed read prefixes
+  remain with Source. Every request's fresh main gate also requires this actual
+  completed capture. Five real-file/parser regressions cover payment, canonical
+  frames and independent transaction-ID bits, matching partial prefixes, unsafe
+  or conflicting stages, and changed main/reentry refusal with owed posts.
+  Non-test online Security compilation, 430 Broker, 134 focused Source, 431
+  ordinary Security and 440 online-Nix Security tests pass; one Broker and two
+  cases in each Security suite remain ignored. Full application target
+  compilation is running on the audited 79-source snapshot; both deleted modules
+  are absent and its 833-derivation closure excludes production policy. This is
+  pre-Extend stage capture, not checkpoint publication: atomic replacement of
+  the empty final inode, fresh publication currentness, durability and retained
+  interrupted-publication recovery remain open. Installed producer, journal-hook
+  and enforcing lifecycle/recovery qualification remain open; admission stays
+  closed.
+
 - Security now retains the approved initial NV workflow under one genuine
   Source/helper driving loan: measured birth, actual writer-lock handoff,
   private AUTH, initial Read, optional sole Extend, final target Read and orderly
@@ -89,8 +112,13 @@ Recent committed startup fixes close narrower prerequisites:
   and non-test online Security compilation plus 430 Broker, 125 focused Source,
   428 ordinary Security and 437 online-Nix Security tests pass. One Broker case
   and two cases in each Security suite remain ignored. The close component's
-  QEMU test and full application target compilation are running on audited
-  sources; their closures exclude production policy. Parent close/finish and
+  QEMU/vTPM test passes at
+  `/nix/store/2gz9niz64n8kbnvmb6jbwdwgm9cdyam6-aos-fleet-test-sandbox-method46-tpm-transport-0`,
+  with its exact audited derivation independently verified and production policy
+  excluded. It exercises closed-context/device disposition, retained lock custody,
+  exact finish, malformed/extra request refusal and the existing transport
+  restart/power-loss matrix. Full application target compilation is still
+  running on its audited source. Parent close/finish and
   original process cleanup now have the Source-owned mechanics above; their
   installed composition, Security's approved workflow and canonical checkpoint
   remain open. This does not qualify installed producer
