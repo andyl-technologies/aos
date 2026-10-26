@@ -14,6 +14,13 @@
     "member/src/target-specific"
   ];
   cachePermissions = import ./cache-permissions.nix {inherit pkgs;};
+  # This real module was previously mistaken for an output directory. Keep
+  # the packaged daemon source identical to the file compiled by Cargo.
+  workspaceSource = import ../../pkgs/tools/aos/_workspace-source.nix {
+    lib = pkgs.lib;
+    selectedCrates = ["crucible/crucible-daemon"];
+  };
+  resultModule = "crates/crucible/crucible-daemon/src/executor_worker/result/operations.rs";
   sourceA = builtins.path {
     path = ./source-a;
     name = "cargo-artifact-source-a";
@@ -67,6 +74,8 @@
 in
   assert builtins.all (relative: isCargoBuildDirectory "/workspace" "/workspace/${relative}") buildDirectories;
   assert builtins.all (relative: !isCargoBuildDirectory "/workspace" "/workspace/${relative}") sourceDirectories;
+  assert builtins.pathExists "${workspaceSource}/${resultModule}";
+  assert builtins.readFile "${workspaceSource}/${resultModule}" == builtins.readFile (../../. + "/${resultModule}");
   assert toString dummyA == toString dummyB;
   assert toString dummyA != toString dummyManifestChange;
     pkgs.mkDerivation {

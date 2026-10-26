@@ -53,11 +53,15 @@ in
           == ".git"
           || base == ".direnv"
           || base == ".worktrees"
-          || base == "result"
-          || lib.hasPrefix "result-" base
           || base == "__pycache__"
           || isCargoBuildDirectory repoRoot path
         );
+      # Nix out-links are symlinks. Ordinary Rust module directories may be
+      # named result; pruning them would silently remove package source.
+      generatedResult =
+        type
+        == "symlink"
+        && (base == "result" || lib.hasPrefix "result-" base);
       # Cargo builds need the workspace, JSON fixtures included by Rust tests,
       # and API manifests consumed by build scripts. Nix-only test edits must
       # not rebuild every Rust provider.
@@ -107,6 +111,7 @@ in
         || pathString == "${repoRootString}/justfile";
     in
       !generatedDir
+      && !generatedResult
       # Local Python bytecode depends on host tooling, not package source.
       && !lib.hasSuffix ".pyc" base
       && !lib.hasSuffix ".pyo" base
