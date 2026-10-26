@@ -294,15 +294,7 @@ impl CompactRuntimeController {
         witness: Option<&crate::connection::OriginalProtocolSupervisor>,
         observer: &mut crate::retained_metadata::MetadataObserver<'_>,
     ) -> Result<(), ProviderError> {
-        self.original.protocol_owner.ensure_current()?;
-        self.original
-            .session
-            .authenticate_original_retained_supervisor_data(owner)?;
-        if let Some(witness) = witness {
-            self.original
-                .session
-                .authenticate_original_protocol_supervisor_data(witness)?;
-        }
+        self.authenticate_retained_runtime_metadata_owners_data(owner, witness)?;
         self.original
             .observe_compact_runtime_legacy_metadata(observer)?;
         self.journal.observe_runtime_metadata(observer)?;
@@ -318,6 +310,24 @@ impl CompactRuntimeController {
             .session
             .authenticate_original_retained_supervisor_data(owner)?;
         self.original.protocol_owner.ensure_current()?;
+        Ok(())
+    }
+
+    /// Checks the original owners before a recording observer clears its bank.
+    pub(super) fn authenticate_retained_runtime_metadata_owners_data(
+        &self,
+        owner: &crate::connection::OriginalRetainedSupervisor,
+        witness: Option<&crate::connection::OriginalProtocolSupervisor>,
+    ) -> Result<(), ProviderError> {
+        self.original.protocol_owner.ensure_current()?;
+        self.original
+            .session
+            .authenticate_original_retained_supervisor_data(owner)?;
+        if let Some(witness) = witness {
+            self.original
+                .session
+                .authenticate_original_protocol_supervisor_data(witness)?;
+        }
         Ok(())
     }
 

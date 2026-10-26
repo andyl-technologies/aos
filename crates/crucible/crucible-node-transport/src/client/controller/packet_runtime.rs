@@ -9,6 +9,7 @@ use super::*;
 
 mod funding;
 mod identity;
+mod records;
 mod storage;
 
 pub use crate::bodies::PacketRuntimeRequest;

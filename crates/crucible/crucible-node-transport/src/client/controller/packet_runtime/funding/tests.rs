@@ -424,6 +424,13 @@ fn full_row_covers_actual_retained_fault_under_a_wider_enclosing_source() -> Tes
         &source,
         usize::MAX,
     )?;
+    let mut records =
+        crate::retained_metadata::records::PacketRuntimeMetadataRecordBank::unallocated(&row)?;
+    assert_eq!(
+        crate::retained_metadata::records::PacketRuntimeMetadataRecordBank::reservation_requested_bytes_data(&row)?,
+        row.metadata_capacity_rows_data() * std::mem::size_of::<MetadataCapacityRecord>()
+    );
+    records.reserve_retained_data()?;
     let mut peer = fixture.peer.try_clone()?;
     let server = std::thread::spawn(move || {
         let mut reader = FrameReader::new(peer.try_clone().unwrap(), 65_536).unwrap();
@@ -467,6 +474,30 @@ fn full_row_covers_actual_retained_fault_under_a_wider_enclosing_source() -> Tes
     fixture.handshake.contain();
     let mut after = runtime
         .retained_metadata_facts_with_retained_supervisor(&fixture.owner, Some(&fixture.witness))?;
+
+    let recorded = runtime.retained_metadata_records_with_retained_supervisor(
+        &fixture.owner,
+        Some(&fixture.witness),
+        &mut records,
+    )?;
+    assert_eq!(recorded, after);
+    assert_eq!(records.rows().len(), after.capacity_records);
+    let encoded = serde_json::to_vec(&records)?;
+    let decoded =
+        crate::retained_metadata::records::ValidatedPacketRuntimeMetadataRecords::validate(
+            &encoded,
+            row.metadata_capacity_rows_data(),
+            records.allocated_bytes(),
+            after.string_capacity_bytes + after.vector_capacity_bytes,
+        )?;
+    assert_eq!(
+        decoded.rows().collect::<Result<Vec<_>, _>>()?,
+        records.rows()
+    );
+    assert_eq!(
+        decoded.observed_backing_capacity_bytes_data(),
+        after.string_capacity_bytes + after.vector_capacity_bytes
+    );
 
     assert_eq!(runtime.unexpected_frame().unwrap().envelope, event);
     assert!(after.tree_containers > current.tree_containers + 40_000);
@@ -535,5 +566,70 @@ fn erased_schema_callback_cannot_supply_an_installed_codec_funding_row() -> Test
     assert_eq!(calls.get(), 0);
     assert!(owner.is_empty_data()?);
     assert!(!controller.fenced);
+    Ok(())
+}
+
+#[test]
+fn physical_recording_checks_original_supervisors_before_clearing_history() -> TestResult {
+    use crate::retained_metadata::records::PacketRuntimeMetadataRecordBank;
+
+    let mut fixture = fixture(8, 262_144, 8);
+    let row = quote(&fixture)?;
+    let mut records = PacketRuntimeMetadataRecordBank::unallocated(&row)?;
+    let mut output = None;
+    PacketRuntimeController::retain_into(&mut fixture.original, &mut output)?;
+    let runtime = output.as_ref().unwrap();
+    assert!(
+        runtime
+            .retained_metadata_records_with_retained_supervisor(
+                &fixture.owner,
+                Some(&fixture.witness),
+                &mut records,
+            )
+            .is_err()
+    );
+    assert_eq!(records.capacity_rows(), 0);
+
+    records.reserve_retained_data()?;
+    let facts = runtime.retained_metadata_records_with_retained_supervisor(
+        &fixture.owner,
+        Some(&fixture.witness),
+        &mut records,
+    )?;
+    assert_eq!(facts.capacity_records, records.rows().len());
+    assert!(!records.rows().is_empty());
+    let before = serde_json::to_vec(&records)?;
+    let (_handshake, _session, foreign_owner, foreign_witness, _peer) =
+        ClientSession::restoration_retained_fixture();
+
+    assert!(
+        runtime
+            .retained_metadata_records_with_retained_supervisor(
+                &foreign_owner,
+                Some(&fixture.witness),
+                &mut records,
+            )
+            .is_err()
+    );
+    assert_eq!(serde_json::to_vec(&records)?, before);
+    assert!(
+        runtime
+            .retained_metadata_records_with_retained_supervisor(
+                &fixture.owner,
+                Some(&foreign_witness),
+                &mut records,
+            )
+            .is_err()
+    );
+    assert_eq!(serde_json::to_vec(&records)?, before);
+    assert_eq!(
+        runtime.retained_metadata_records_with_retained_supervisor(
+            &fixture.owner,
+            Some(&fixture.witness),
+            &mut records,
+        )?,
+        facts
+    );
+    assert_eq!(serde_json::to_vec(&records)?, before);
     Ok(())
 }

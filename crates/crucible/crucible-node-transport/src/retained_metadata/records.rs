@@ -12,6 +12,12 @@
 use crate::ProviderError;
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 
+mod packet_runtime;
+pub use packet_runtime::{
+    PACKET_RUNTIME_METADATA_RECORD_FORMAT, PacketRuntimeMetadataRecordBank,
+    PacketRuntimeMetadataReservationData, ValidatedPacketRuntimeMetadataRecords,
+};
+
 const MAXIMUM_ROWS: usize = 131_072;
 
 /// Names the explicit four-field capacity roster required by current whole11.
@@ -252,35 +258,8 @@ impl<'a> ValidatedMetadataRecords<'a> {
             return Err(credit());
         }
         let mut cursor = Cursor::new(input);
-        let mut rows = 0usize;
-        let mut backing_capacity_bytes = 0usize;
-        cursor.literal(b"[")?;
-        while cursor.peek() != Some(b']') {
-            if rows != 0 {
-                cursor.literal(b",")?;
-            }
-            let row = cursor.row()?;
-            rows = rows.checked_add(1).ok_or_else(credit)?;
-            if rows > maximum_rows {
-                return Err(credit());
-            }
-            if matches!(
-                row.kind,
-                MetadataRecordKind::String | MetadataRecordKind::Vector
-            ) {
-                backing_capacity_bytes = backing_capacity_bytes
-                    .checked_add(
-                        row.extent
-                            .checked_mul(row.element_bytes)
-                            .ok_or_else(credit)?,
-                    )
-                    .ok_or_else(credit)?;
-                if backing_capacity_bytes > maximum_backing_capacity_bytes {
-                    return Err(credit());
-                }
-            }
-        }
-        cursor.literal(b"]")?;
+        let (rows, backing_capacity_bytes) =
+            cursor.records(maximum_rows, maximum_backing_capacity_bytes)?;
         if cursor.position != input.len() {
             return Err(invalid());
         }
@@ -407,6 +386,43 @@ impl<'a> Cursor<'a> {
             self.position += 1;
         }
         Ok(value)
+    }
+
+    fn records(
+        &mut self,
+        maximum_rows: usize,
+        maximum_backing_capacity_bytes: usize,
+    ) -> Result<(usize, usize), ProviderError> {
+        let mut rows = 0usize;
+        let mut backing_capacity_bytes = 0usize;
+        self.literal(b"[")?;
+        while self.peek() != Some(b']') {
+            if rows != 0 {
+                self.literal(b",")?;
+            }
+            let row = self.row()?;
+            rows = rows.checked_add(1).ok_or_else(credit)?;
+            if rows > maximum_rows {
+                return Err(credit());
+            }
+            if matches!(
+                row.kind,
+                MetadataRecordKind::String | MetadataRecordKind::Vector
+            ) {
+                backing_capacity_bytes = backing_capacity_bytes
+                    .checked_add(
+                        row.extent
+                            .checked_mul(row.element_bytes)
+                            .ok_or_else(credit)?,
+                    )
+                    .ok_or_else(credit)?;
+                if backing_capacity_bytes > maximum_backing_capacity_bytes {
+                    return Err(credit());
+                }
+            }
+        }
+        self.literal(b"]")?;
+        Ok((rows, backing_capacity_bytes))
     }
 
     fn row(&mut self) -> Result<MetadataCapacityRecord, ProviderError> {

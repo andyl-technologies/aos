@@ -12,8 +12,8 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Packet runtime funding and handoff
 
-The original Controller now quotes one complete retained/transient/control row
-for SDK-created packet runtime storage. The readonly DATA query uses the same
+The original Controller quotes one complete retained/transient/control row for
+SDK-created packet runtime storage. The readonly DATA query uses the same
 immutable handoff preflight as the ownership move, the original lifetime limits
 and remaining journal credit, actual content ceilings, largest historical Provider
 response, installed concrete codec and live idle supervised connection. One
@@ -32,29 +32,50 @@ Reporting combines supplied enclosing-Source metadata DATA with a census of the
 actual SDK and its empty suffix. It reprices every current and future tree using
 the widest combined layout and separately prices a complete new record bank.
 Future tree populations follow JSON occurrences rather than treating all metadata
-work visits as maps. This does not allocate that bank or enlarge the existing
-131,072-row constructor. The runtime's private traversal scopes still preserve
-partial facts, original journals and retained literal/typed failure owners after
-fencing or revocation; legacy walks retain their ordinary allowance.
+work visits as maps. Legacy record constructors and readers retain their
+131,072-row restriction.
 
-Eight actual SDK funding controls cover the exact whole row and one-byte-short
+A separate packet runtime bank now takes its population from that opaque funding
+DATA and retains its installed header, one-use reservation state, actual backing
+and refused traversal prefix. Its transparent header matches the layout already
+priced by the quote. Recording authenticates the original controller, retained supervisor and any
+supplied protocol witness before clearing previous rows, then uses the same private
+runtime observer profile. The complete funding counter includes the bank and
+recording controls. Encoding and enclosing serializer allocations remain separate.
+
+The physical bank has a distinct edition-eighteen header and the original strict
+four-field rows. Its borrowed reader checks the selected population, actual slot
+capacity, reachable allocation history, complete canonical grammar and independent
+record-slot and observed String/Vec backing restrictions. It allocates no live
+owner and reconstructs no authority. Backing readiness does not assert traversal
+completion; the enclosing Source must authenticate its complete history and record
+failed attempts. Full Source18/Node18 root writing and reading remain separate work.
+
+Nine actual SDK funding controls include exact whole-row and one-byte-short
 refusal, request/content/object limits, independent Provider replay, foreign or
-revoked owners, erased callback refusal and a retained ProviderFault under a
-wider enclosing-Source layout. A nested Input control verifies typed/literal
-depth accounting and preserves reserved-looking JSON keys under `raw_value`.
+revoked owners, erased callback refusal, recording a retained ProviderFault under
+a wider enclosing-Source layout and preserving history under foreign supervisors.
+Six physical bank controls cover populations above the legacy limit, ordered rows,
+independent backing credit, sticky failed reservations, retained allocator
+overshoot history and strict rejection of malformed, truncated or impossible history.
+A nested Input control preserves reserved-looking JSON keys under `raw_value`.
 
-Both codec configurations pass 97 focused controls and complete Transport suites
-of 2,308 passing tests with twenty ignored. Five-package all-feature/all-target
-checks, sixteen-file scoped formatting, all six architecture gates and the RFC
-requirement-map gate pass. Required application test-target compilation passes
-with 185 artifacts across 58 packages and 76 integration targets; all 778 selected
-frozen Rust/Cargo inputs match current and captured source. User-owned changes
-are preserved. These are component results; the requirement map records planning
-coverage, and no latest-source strict lint or native lifecycle result is claimed.
+Both codec configurations pass 104 focused controls. Complete Transport suites
+pass 2,315 tests each with twenty ignored; those runs preceded removal of two
+redundant parentheses in one test, with production inputs unchanged. Both focused
+configurations and five-package all-feature/all-target checks were rerun after
+that cleanup. Eight-file scoped formatting, all six architecture gates and the
+RFC requirement-map gate pass. Required final application test-target compilation
+passes with 185 artifacts across 58 packages and 76 integration targets; all 782
+selected frozen Rust/Cargo inputs match current and captured source. User-owned
+changes are preserved. These are component results; the requirement map records
+planning coverage, and no latest-source strict lint or native lifecycle result
+is claimed.
 
 The genuine same-Source one-use admission and funded move, completed Initial and
-address-bound claim retirement checks, physical Source18 record bank and readers,
-Native18 production selection and the remaining full RFC work are unfinished.
+address-bound claim retirement checks, integration of the physical bank into
+complete Source18/Node18 objects, Native18 production selection and the remaining
+full RFC work are unfinished.
 
 ## Baseline decoder and codec funding inputs
 

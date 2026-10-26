@@ -164,7 +164,7 @@ impl CnpController {
             + Self::original_restoration_host_metadata_counter_scratch_data()
             + ClientSession::packet_runtime_connection_counter_scratch_data()
             + ClientSession::packet_runtime_codec_counter_scratch_data()
-            + PacketRuntimeController::retained_metadata_counter_scratch_data()
+            + PacketRuntimeController::retained_metadata_record_counter_scratch_data()
             + operation::counter_scratch_data()
             + metadata::counter_scratch_data()
             + size_of::<crate::client::session::CompactClientJournal>()
