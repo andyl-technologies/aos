@@ -397,11 +397,11 @@
       }
       {
         label = "live idle callback arms the exact pending target and timer witness";
-        needle = ''          let generation = match self.arm_idle_advance(
+        needle = ''          let generation = match self.arm_idle_advance_observed(
                       raw_icount_at_request,
                       target_icount,
                       pending,
-                      timer_deadline_ns,'';
+                      timer_deadline_ps,'';
       }
       {
         label = "busy queued advance re-arms the all-halted edge";
