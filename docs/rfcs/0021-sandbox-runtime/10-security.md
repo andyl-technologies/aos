@@ -89,6 +89,53 @@ kernel/MAC/expiry protections remain mandatory under sections
   host-owned namespace before nspawn exec, and nspawn private-user setup cannot
   reorder or replace it.
 
+## METHOD46 initialization and anti-rollback boundary
+
+The Controller Storage-client and Storage broker use distinct fixed TPM NV
+indices and independently pinned salt-key identities. A floor commits the scoped
+canonical main-journal HEAD, including the complete Broker map, rather than
+merely comparing a sequence number. Historical namespace admission must also
+reject deleted foreign traffic; an empty current map does not erase committed
+history. Normal Session-schema and qualified-current-HEAD validation remain
+separate from native journal framing and canonical map hashing.
+
+Initial provisioning is a separately confined manual purpose. Its approval key
+must be independent of normal endpoint, Nix and Root keys. A signature covers
+all canonical `AOSBIP01` bytes, including both fixed handles, deployment identity,
+salt Name and generation-one checkpoint. Reading the configured public approval
+credential and verifying that signature does not by itself prove key separation.
+The actual normal public pins and their delivery provenance must be compared
+before admitting initialization. Neither endpoint private signing keys nor
+private index authentication may be exported to establish that comparison.
+
+The producer must retain one genuine PID1-funded Source, stopped-owner and
+native-cgroup observations, exclusive main-writer custody, and job/migration
+exclusion throughout the effect. Copied resource vectors, signed approval DATA,
+canonical cut DATA and a declared role cannot substitute for those owners.
+Independent native posts stay owed after any failure; a successful later
+observation cannot erase an earlier failed prefix.
+
+| Threat or interrupted state | Required protection |
+| --- | --- |
+| Approval reused for another role, epoch, salt, endpoint or main cut | Strict verification over the entire canonical request and comparison with the same held current main. |
+| Disk history rolled back while the TPM retains a later value | Authenticated NV reconciliation refuses the stale cut instead of resetting the floor. |
+| Crash before or after the first Extend | A separately fsynced initial intent; exact Unwritten recovery or matching Written checkpoint completion, with no repeated Extend. |
+| Old signed initial intent presented after completion | Fence repeated initialization; normal startup cannot adopt the initial intent. |
+| Replaced, cleared, unavailable or unauthenticated TPM state | Refuse admission; ordinary restart cannot redefine an index or substitute a salt key. |
+| Failed credential, signature or currentness check followed by a valid retry | Retain the reached original and refuse reentry within that startup. |
+
+The TPM boundary does not make caller-supplied observations authentic, preserve
+state through arbitrary host-kernel compromise, or turn an older disk backup
+into a valid restore. Physical observations, protected durable state and live
+financial/currentness owners must agree. The
+[operations contract](12-observability-and-operations.md#method46-floor-initialization-and-recovery)
+defines the corresponding recovery constraints.
+
+Installed initial producers, both normal journal hooks and connected enforcing
+QEMU/vTPM crash/restart tests remain unqualified. Public METHOD46 and lifecycle
+admission stay closed until those gates pass. A transport-only VM or a pure
+record/signature regression cannot qualify this composition.
+
 ## Path and descriptor safety
 
 Public APIs identify logical resources. A privileged broker maps them through a
