@@ -4,9 +4,9 @@
 //! effects. [`run`] then installs the irreversible kernel boundary before Tokio,
 //! credential reads, repository reopening or filesystem presentation. It prepares
 //! every exposure before starting any endpoint, using only each exposure's file
-//! capability. Repository reopening temporarily reads private authority records,
-//! including signing seeds, then drops the returned signing handle. Exposure
-//! preparation never substitutes that authority's token for an exposure capability.
+//! capability. Repository reopening uses explicit public issuer keys and a
+//! separately configured startup Read, without loading private signing state.
+//! Exposure preparation never substitutes that startup Read for an exposure capability.
 //!
 //! This component supports only the exact local file-bucket leaf, explicit local
 //! trust and compiled read-only pinned SDK surface. An explicit native host tier
@@ -46,7 +46,7 @@ use terrane_sdk::{
     repository::Repository,
     role::Role,
     store::{Store, TokioClock, TokioLocalFs},
-    surface::{ExposureStatus, PreparedExposures, ServingHandle},
+    surface::{ExposureStatus, PreparedExposures, ServingHandle, TokenResolver},
 };
 
 use crate::{
@@ -61,6 +61,7 @@ use crate::{
 /// credentials, opening repository state or starting any executor.
 pub struct ValidatedSdk<'config> {
     config: &'config Config,
+    startup_token: &'config str,
     #[cfg(feature = "surface-fuse")]
     maintenance: Option<crate::configured_maintenance::Plan>,
     cache: Option<(
@@ -108,6 +109,7 @@ impl ValidatedSdk<'_> {
             .map_err(|error| Error::io(FailureKind::Runtime, error))?;
         let outcome = runtime.block_on(start_exposures(
             self.config,
+            self.startup_token,
             &installed,
             self.cache,
             notification,
@@ -245,6 +247,7 @@ impl fmt::Debug for CompletedSnapshot {
 
 async fn start_exposures(
     config: &Config,
+    startup_token: &str,
     installed: &Arc<Installed>,
     cache: Option<(
         NativeCachePlan,
@@ -257,10 +260,16 @@ async fn start_exposures(
     installed
         .check_current()
         .map_err(|error| Error::io(FailureKind::ConfinementChanged, error))?;
+    let resolver = tokens::FileTokens { installed };
+    let token = resolver
+        .resolve(startup_token)
+        .await
+        .map_err(|error| Error::repository(FailureKind::RepositoryOpen, error))?;
     let repository = config
-        .open_local_repository(Role::Serve, TokioLocalFs, TokioClock)
+        .open_local_reader(Role::Serve, &token, TokioLocalFs, TokioClock)
         .await
         .map_err(Error::local)?;
+    drop(token);
     if let Some((plan, policy, mode)) = cache {
         let domain = &config
             .local_repository()

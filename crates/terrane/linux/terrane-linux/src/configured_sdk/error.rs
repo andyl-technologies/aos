@@ -27,7 +27,7 @@ pub enum FailureKind {
     MissingLocalTrust,
     /// No SDK snapshot was requested.
     EmptyExposures,
-    /// Instance credentials require a different role composition.
+    /// Explicit public trust or a separate native startup Read is missing.
     InstanceCredentialsUnavailable,
     /// An exposure is not the compiled SDK surface.
     UnavailableSurface,
@@ -163,7 +163,7 @@ impl fmt::Display for Error {
             }
             FailureKind::EmptyExposures => "configured SDK startup requires at least one exposure",
             FailureKind::InstanceCredentialsUnavailable => {
-                "configured SDK startup does not resolve instance credentials"
+                "configured SDK startup requires public issuer keys and a startup Read"
             }
             FailureKind::UnavailableSurface => "configured SDK surface is unavailable",
             FailureKind::UnsupportedPresentation => "configured SDK presentation is unsupported",

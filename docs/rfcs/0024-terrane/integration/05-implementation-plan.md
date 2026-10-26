@@ -91,6 +91,34 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+Configured SDK startup now uses the public-reader factory after installing its
+existing irreversible confinement. Pure preflight requires explicit public
+issuer locators and a separate file-backed `tokens.host_token` startup Read,
+rejects unsupported providers, and prevents presentation endpoints from
+overlapping any credential path. The confined resolver loads the startup Read
+before native reopening; exposure preparation still resolves every exposure's
+own capability and never substitutes that startup Read. No private signing
+factory is invoked by this production launcher. This does not establish denial
+of all filesystem access to private files or complete deployed role confinement.
+
+The separate setup fixture supplies public trust and a dedicated startup Read.
+All twelve configured unit selectors and their original bounds remain, with
+additional missing-trust, missing-Read, provider and credential-overlap controls.
+The original example/CLI success and late-exposure-denial controls remain.
+Two additional actual CLI actors require successful snapshots after all three
+private credential files are removed, unchanged selected publication and
+capabilities, and refusal of an invalid startup Read despite available exposure
+and private instance tokens. Both Linux native profiles pass strict all-target
+Clippy; changed Rust formatting, Nix formatting and PLAN-2 pass. Fresh configured
+guest execution, native-cache regression and required application compilation
+remain pending; no task or milestone is newly accepted.
+
+Required application compilation for `5a8beaee9a` and `638698fefc` passes in
+1,480.564 and 961.110 seconds respectively. Separate independent reviews each
+match all 8,287 immutable source files and 190 test-executable records across
+59 packages. These are compilation-only results without retained executable
+bytes; the earlier `5a8beaee9a` runtime failure remains a failure.
+
 The corrected configured read-only Serve batch at `638698fefc` passes in
 376.160 seconds: all eleven local service/direct/read-only cases, 35 socket
 cases and 22 portable wire cases pass under their original thirty-second limits.

@@ -16,7 +16,8 @@ use super::{Error, FailureKind, ValidatedSdk, tokens};
 /// Routed and remote compositions are unavailable here. A native cache must
 /// bind the trusted repository domain and remain disjoint from original state.
 /// Object policy selects actual native chunked reads or sealed publication.
-/// Instance credentials and non-file exposure providers are not silently ignored. The
+/// Public trust and a separate startup Read require explicit native file locators.
+/// Non-file credential providers are refused before any native effect. The
 /// returned plan still has no repository authority or kernel receipt.
 ///
 /// # Errors
@@ -133,8 +134,28 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
         return Err(Error::refused(FailureKind::NativeCacheConfiguration));
     }
 
-    if config.tokens().host_token.is_some() || !config.tokens().issuer_public_keys.is_empty() {
+    let tokens = config.tokens();
+    let Some(startup_token) = tokens.host_token.as_deref() else {
         return Err(Error::refused(FailureKind::InstanceCredentialsUnavailable));
+    };
+    if tokens.issuer_public_keys.is_empty() || tokens.issuer_public_keys.len() > 256 {
+        return Err(Error::refused(FailureKind::InstanceCredentialsUnavailable));
+    }
+    let mut credential_paths = vec![
+        tokens::credential_path(startup_token)
+            .map_err(|_| Error::refused(FailureKind::UnsupportedCredentialReference))?,
+    ];
+    for locator in &tokens.issuer_public_keys {
+        credential_paths.push(
+            tokens::credential_path(locator)
+                .map_err(|_| Error::refused(FailureKind::UnsupportedCredentialReference))?,
+        );
+    }
+    for exposure in config.exposures() {
+        credential_paths.push(
+            tokens::credential_path(&exposure.token)
+                .map_err(|_| Error::refused(FailureKind::UnsupportedCredentialReference))?,
+        );
     }
     if config.exposures().is_empty() {
         return Err(Error::refused(FailureKind::EmptyExposures));
@@ -163,6 +184,7 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
         }
         if overlaps(endpoint, &location.bucket)
             || overlaps(endpoint, &location.authority)
+            || credential_paths.iter().any(|path| overlaps(endpoint, path))
             || endpoints.iter().any(|other| overlaps(endpoint, other))
             || maintenance_paths
                 .iter()
@@ -177,12 +199,11 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
         {
             return Err(Error::refused(FailureKind::OverlappingEndpoint));
         }
-        tokens::credential_path(&exposure.token)
-            .map_err(|_| Error::refused(FailureKind::UnsupportedCredentialReference))?;
         endpoints.push(endpoint);
     }
     Ok(ValidatedSdk {
         config,
+        startup_token,
         cache,
         #[cfg(feature = "surface-fuse")]
         maintenance,

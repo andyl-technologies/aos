@@ -134,6 +134,20 @@
       cli_actor "$container/cli-success" \
         > "$container/cli-success.stdout" 2> "$container/cli-success.stderr"
       actor verify-cli "$container/cli-success" 840
+      actor setup "$container/cli-public-reader" 840
+      rm -- "$container/cli-public-reader/authority/issuer.seed" \
+        "$container/cli-public-reader/authority/terminal.seed" \
+        "$container/cli-public-reader/authority/token.cbor"
+      cli_actor "$container/cli-public-reader" \
+        > "$container/cli-public-reader.stdout" 2> "$container/cli-public-reader.stderr"
+      actor verify-public-reader-cli "$container/cli-public-reader" 840
+      actor setup "$container/cli-startup-deny" 840
+      printf '%s' 'invalid-startup-capability' > "$container/cli-startup-deny/startup.cap"
+      startup_result=0
+      cli_actor "$container/cli-startup-deny" \
+        > "$container/cli-startup-deny.stdout" 2> "$container/cli-startup-deny.stderr" || startup_result=$?
+      [ "$startup_result" -eq 1 ]
+      actor verify-cli-startup-denial "$container/cli-startup-deny" 840
       actor setup "$container/cli-deny" 840
       rm -- "$container/cli-deny/second.cap"
       cli_result=0

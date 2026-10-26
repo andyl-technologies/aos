@@ -137,6 +137,43 @@ fn dispatch() -> FixtureResult<&'static str> {
             verify_cli(root, owner)?;
             Ok("PASS: actual CLI receipts match the setup commit and durable SDK payloads")
         }
+        "verify-public-reader-cli" => {
+            verify_cli(root, owner)?;
+            for name in ["issuer.seed", "terminal.seed", "token.cbor"] {
+                if !absent(&root.join("authority").join(name))? {
+                    return Err("public reader retained a private credential file".into());
+                }
+            }
+            for (source, expected) in [
+                ("publication/PORTABLE", "expected.portable"),
+                ("CAPABILITIES", "expected.capabilities"),
+            ] {
+                if fs::read(root.join("bucket").join(source))? != fs::read(root.join(expected))? {
+                    return Err("public reader changed original publication".into());
+                }
+            }
+            Ok("PASS: actual CLI serves without private credentials or publication writes")
+        }
+        "verify-cli-startup-denial" => {
+            check_owner(root, owner)?;
+            if !fs::read(root.with_extension("stdout"))?.is_empty()
+                || fs::read(root.with_extension("stderr"))?
+                    != b"terrane: configured SDK repository reopening failed\n"
+            {
+                return Err("invalid startup Read did not fail at repository opening".into());
+            }
+            for name in ["first.cap", "second.cap", "authority/token.cbor"] {
+                if fs::metadata(root.join(name))?.len() == 0 {
+                    return Err("startup denial lost its fallback witness".into());
+                }
+            }
+            for id in ["first", "second"] {
+                if !absent(&root.join(format!("snapshot-{id}")))? {
+                    return Err("invalid startup Read started an endpoint".into());
+                }
+            }
+            Ok("PASS: invalid startup Read uses neither exposure nor private token fallback")
+        }
         "read-cache-offline" => {
             offline::run(root, owner)?;
             Ok(
@@ -240,9 +277,8 @@ async fn setup_payload(
         .await?
         .commit;
 
-    // Setup creates explicit read-only exposure capabilities. Runtime reopening
-    // temporarily reads private authority state, then drops its signing handle;
-    // exposure preparation uses these files without an instance-token fallback.
+    // Setup alone handles private authority. Startup and each exposure receive
+    // separate Read files so a missing exposure cannot use startup as a fallback.
     let secret: [u8; 32] = fs::read(location.authority.join("terminal.seed"))?
         .try_into()
         .map_err(|_| "unexpected fixture terminal seed length")?;
@@ -258,6 +294,20 @@ async fn setup_payload(
         .encode();
     write_private(&root.join("first.cap"), &token)?;
     write_private(&root.join("second.cap"), &token)?;
+    write_private(&root.join("startup.cap"), &token)?;
+    let public_key: String = authority
+        .issuer_key()
+        .public_key
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    write_private(
+        &root.join("issuer-public.toml"),
+        format!(
+            "version=1\nissuer=\"configured-sdk-fixture\"\nkey_id=\"initial\"\npublic_key=\"{public_key}\"\n"
+        )
+        .as_bytes(),
+    )?;
     write_private(&root.join("expected.commit"), &commit)?;
     write_private(
         &root.join("config.toml"),
@@ -302,6 +352,9 @@ acl = [{{ principal = "fixture-owner", verbs = ["read", "fork", "commit", "tag",
 maximum_ms = 30000
 grace_ms = 60000
 margin_ms = 10000
+[tokens]
+issuer_public_keys = ["file:{root}/issuer-public.toml"]
+host_token = "file:{root}/startup.cap"
 "#
     )
 }

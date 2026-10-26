@@ -39,12 +39,21 @@ grace_ms = 60000
 margin_ms = 10000
 "#;
 
+const READER_CREDENTIALS: &str = "[tokens]\nhost_token='file:/missing-startup-read'\nissuer_public_keys=['file:/missing-public-issuer']\n";
+
 fn configuration(
     store: &str,
     exposure: &str,
     extra: &str,
 ) -> Result<Config, terrane_sdk::config::ConfigError> {
-    Config::parse(&format!("store = '{store}'\n{exposure}\n{TRUST}\n{extra}"))
+    let credentials = if extra.contains("[tokens]") {
+        ""
+    } else {
+        READER_CREDENTIALS
+    };
+    Config::parse(&format!(
+        "store = '{store}'\n{exposure}\n{TRUST}\n{extra}\n{credentials}"
+    ))
 }
 
 fn exposure(id: &str, endpoint: &str, token: &str) -> String {
@@ -133,13 +142,27 @@ fn role_selection_and_instance_credentials_fail_before_any_repository_open() -> 
     assert_eq!(error.kind(), FailureKind::RoleSelection);
     assert!(!error.requires_process_exit());
 
+    for credentials in [
+        "[tokens]\n",
+        "[tokens]\nhost_token='file:/missing-startup-read'\n",
+        "[tokens]\nissuer_public_keys=['file:/missing-public-issuer']\n",
+    ] {
+        let config = configuration(
+            "bucket(file:///missing-configured-sdk-bucket)",
+            "",
+            credentials,
+        )?;
+        let error = preflight(&config, Role::Serve).expect_err("explicit reader trust and Read");
+        assert_eq!(error.kind(), FailureKind::InstanceCredentialsUnavailable);
+        assert!(!error.requires_process_exit());
+    }
     let config = configuration(
         "bucket(file:///missing-configured-sdk-bucket)",
         "",
-        "[tokens]\nhost_token='file:/missing-instance-capability'\n",
+        "[tokens]\nhost_token='secret:unsupported'\nissuer_public_keys=['file:/missing-public-issuer']\n",
     )?;
-    let error = preflight(&config, Role::Serve).expect_err("no implicit instance token use");
-    assert_eq!(error.kind(), FailureKind::InstanceCredentialsUnavailable);
+    let error = preflight(&config, Role::Serve).expect_err("no startup provider fallback");
+    assert_eq!(error.kind(), FailureKind::UnsupportedCredentialReference);
     assert!(!error.requires_process_exit());
     Ok(())
 }
@@ -217,28 +240,31 @@ fn complete_exposure_list_rejects_late_unsupported_credentials_without_effects()
 
 #[test]
 fn preflight_rejects_endpoints_overlapping_repository_state() -> TestResult {
-    let parsed = configuration(
-        "bucket(file:///missing-configured-sdk-bucket)",
-        &exposure(
-            "snapshot",
-            "/missing-configured-sdk-bucket/output",
-            "file:/missing-capability",
-        ),
-        "",
-    );
-    if terrane_sdk::surface::registration("sdk").is_none() {
-        assert!(
-            matches!(parsed, Err(terrane_sdk::config::ConfigError::UnavailableSurface(name)) if name == "sdk")
+    for endpoint in [
+        "/missing-configured-sdk-bucket/output",
+        "/missing-startup-read",
+        "/missing-public-issuer",
+        "/missing-capability",
+    ] {
+        let parsed = configuration(
+            "bucket(file:///missing-configured-sdk-bucket)",
+            &exposure("snapshot", endpoint, "file:/missing-capability"),
+            "",
         );
-        return Ok(());
+        if terrane_sdk::surface::registration("sdk").is_none() {
+            assert!(
+                matches!(parsed, Err(terrane_sdk::config::ConfigError::UnavailableSurface(name)) if name == "sdk")
+            );
+            continue;
+        }
+        let config = parsed?;
+        assert_eq!(
+            preflight(&config, Role::Serve)
+                .expect_err("repository or credential overlap")
+                .kind(),
+            FailureKind::OverlappingEndpoint
+        );
     }
-    let config = parsed?;
-    assert_eq!(
-        preflight(&config, Role::Serve)
-            .expect_err("repository overlap")
-            .kind(),
-        FailureKind::OverlappingEndpoint
-    );
     Ok(())
 }
 
