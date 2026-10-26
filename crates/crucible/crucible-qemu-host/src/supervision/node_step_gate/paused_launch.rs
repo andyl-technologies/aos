@@ -73,13 +73,12 @@ impl PausedLiveNodeLaunch<'_> {
 
     /// Starts the admitted guest and completes the existing node bring-up.
     pub(super) fn prime_and_build(self) -> Result<QemuNode, QemuLiveNodeStepGateError> {
-        self.prime_and_build_issued()?
-            .into_node()
-            .map_err(
-                |_retained| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                    reason: String::from("issued Node was not assembled before handoff"),
-                },
-            )
+        let mut owner = self.prime_and_build_issued()?;
+        owner.take_assembled_node().ok_or_else(|| {
+            QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: String::from("issued Node was not assembled before handoff"),
+            }
+        })
     }
 
     /// Keeps the prebirth return route through any deferred exact resume.

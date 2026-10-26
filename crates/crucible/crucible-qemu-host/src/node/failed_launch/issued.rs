@@ -234,13 +234,21 @@ impl IssuedLaunchOwner {
         self.receiver.clone()
     }
 
-    /// Moves only the successfully assembled Node to its next actual owner.
-    pub(crate) fn into_node(mut self) -> Result<QemuNode, Self> {
+    /// Takes the assembled Node and completes its existing child loan.
+    ///
+    /// An incomplete body remains in this same guard, so the caller can return
+    /// dependent artifacts before returning the child to its prebirth receiver.
+    /// Successful extraction closes that loan before the Node leaves the guard.
+    pub(crate) fn take_assembled_node(&mut self) -> Option<QemuNode> {
         match self.body.take() {
-            Some(FailedBody::Node(node)) => Ok(node),
+            Some(FailedBody::Node(node)) => {
+                self.return_to_receiver();
+                drop(self.lender.take());
+                Some(node)
+            }
             body => {
                 self.body = body;
-                Err(self)
+                None
             }
         }
     }

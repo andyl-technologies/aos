@@ -132,9 +132,9 @@ impl IssuedExactRestoreArtifacts {
 
         // The child remains borrowed until this final pure phase conversion.
         // No callback or fallible effect separates the two actual handoffs.
-        match owner.into_node() {
-            Ok(node) => Ok((node, artifacts.run_directory, target)),
-            Err(owner) => {
+        match owner.take_assembled_node() {
+            Some(node) => Ok((node, artifacts.run_directory, target)),
+            None => {
                 artifacts.target = Some(target);
                 self.artifacts = Some(artifacts);
                 drop(self);

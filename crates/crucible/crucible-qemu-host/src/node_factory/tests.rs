@@ -13,6 +13,7 @@ use crucible_engine::{
     Backend, Checkpoint, CheckpointKind, ContentHash, NodeId, SchedulerError, SchedulerNodeId,
     SchedulerSendAuthorization, SchedulerSendAuthorizer,
 };
+use crucible_host_resources::test_support::TestAllocationObserver;
 use crucible_qemu_protocol::{
     CONTROL_PROTOCOL_VERSION, ControlLifecycleStream, PluginHandshakeConfig,
 };
@@ -112,9 +113,11 @@ fn factory_assembles_node_with_exact_snapshot_qmp_control() -> Result<(), Box<dy
 
     let mut owner = crate::node::IssuedLaunchOwner::component(QemuNodeChild::new(child), None);
     build_qemu_node_from_completed_setup(&mut owner, setup, qmp, node_factory_runtime())?;
-    let mut node = owner
-        .into_node()
-        .map_err(|_| "factory did not assemble its retained Node")?;
+    let (node, allocations) = TestAllocationObserver::count(|| owner.take_assembled_node());
+    assert_eq!(allocations.allocations, 0);
+    assert_eq!(allocations.reallocations, 0);
+    assert!(!allocations.overflow);
+    let mut node = node.ok_or("factory did not assemble its retained Node")?;
 
     assert_eq!(
         node.channel_roles(),

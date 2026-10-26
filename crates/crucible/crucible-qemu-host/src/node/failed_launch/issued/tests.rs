@@ -6,6 +6,7 @@
 
 use super::*;
 use crucible_host_resources::host_supervision::{HostOperationBudgets, HostOperationClass};
+use crucible_host_resources::test_support::TestAllocationObserver;
 
 fn component_owner(
     supervisor: &HostOperationSupervisor,
@@ -46,6 +47,44 @@ fn close_component_child(
     owner.source_cleanup = FailedSourceCleanup::Existing;
     owner.retry_cleanup()?;
     assert!(owner.child_reaped());
+    Ok(())
+}
+
+#[test]
+fn incomplete_node_handoff_keeps_the_actual_child_in_the_same_guard()
+-> Result<(), Box<dyn std::error::Error>> {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let (mut owner, receiver, process_id) = component_owner(&supervisor)?;
+    let before = supervisor.operation_statuses()?.len();
+
+    let (node, allocations) = TestAllocationObserver::count(|| owner.take_assembled_node());
+
+    assert!(node.is_none());
+    assert_eq!(allocations.allocations, 0);
+    assert_eq!(allocations.reallocations, 0);
+    assert!(!allocations.overflow);
+    assert_eq!(owner.process_id(), process_id);
+    assert_eq!(owner.child_mut()?.process_id(), process_id);
+    assert!(
+        owner
+            .retained_receiver()
+            .is_some_and(|actual| actual.same_owner(&receiver))
+    );
+    assert!(receiver.take_component_returned_owner().is_none());
+    assert_eq!(supervisor.operation_statuses()?.len(), before);
+
+    // The caller still chooses when to return the child after its dependent
+    // artifacts; failed extraction has not published it to the receiver early.
+    let error = owner.retain_cleanup_failure(crate::QemuLiveNodeStepGateError::Step {
+        operation: const { &crate::QemuNodeStepOperation::new("component incomplete Node handoff") },
+        source: QemuNodeError::RamCleanupPending,
+    });
+    assert!(matches!(
+        error,
+        crate::QemuLiveNodeStepGateError::OriginalNativeLaunch { source }
+            if source.same_owner(&receiver)
+    ));
+    close_component_child(&receiver, process_id)?;
     Ok(())
 }
 
