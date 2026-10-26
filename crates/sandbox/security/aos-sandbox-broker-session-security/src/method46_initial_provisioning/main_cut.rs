@@ -1,8 +1,9 @@
-//! Hashes the actual Source-paid main map through the canonical retained engine.
+//! Hashes and validates the actual Source-paid main through canonical engines.
 //!
 //! This owner consumes the genuine original readback loan. Native files and
 //! writer custody remain in Domain; the exact map hash and reached predecessor
-//! key remain here. Cut DATA supplies no schema, endpoint, approval or TPM grant.
+//! key remain here. Initial approval requires the same main's complete Session
+//! schema before its native after; no cut or schema DATA supplies a TPM grant.
 
 use aos_sandbox_broker::receiving::Method46InitialOriginComparisonDataV1;
 use aos_sandbox_controller_domain::{
@@ -14,7 +15,8 @@ use aos_sandbox_controller_domain::{
 };
 use aos_sandbox_model::{ResourceDimension, ResourceVector};
 
-use super::Method46InitialDataErrorV1;
+use super::{Method46InitialDataErrorV1, Method46InitialProvisionDecodeOriginalV1};
+use crate::recovery::StorageFloorSchemaOriginalV3;
 use crate::tpm_nv_custody::{FloorCutV1, FloorErrorV1, FloorHeadCutOriginalV3};
 
 /// Retains the canonical cut of the same Source-funded original main map.
@@ -23,8 +25,9 @@ use crate::tpm_nv_custody::{FloorCutV1, FloorErrorV1, FloorHeadCutOriginalV3};
 /// canonical engine hashes every Broker row, including archives. Native
 /// before/after observations remain bound to the original protected opening.
 /// The native owner has admitted historical namespaces and legacy capacity
-/// ownership. Session schema, independent endpoint/key provenance and physical
-/// TPM custody remain separate gates.
+/// ownership. The combined constructor additionally validates complete Session
+/// schema before the same native after. Full endpoint/key provenance and
+/// physical TPM custody remain separate gates.
 #[must_use = "retain the canonical hash result beside its genuine readback loan"]
 pub struct Method46InitialMainCutOriginalV1<'owner> {
     readback: Method46InitialMainReadbackLoanV1<'owner>,
@@ -35,6 +38,8 @@ pub struct Method46InitialMainCutOriginalV1<'owner> {
     hash: FloorHeadCutOriginalV3,
     cut: Option<Result<FloorCutV1, FloorErrorV1>>,
     after: Option<Result<(), Method46InitialStartupClosedV1>>,
+    schema_admission: Option<Result<(), Method46InitialDataErrorV1>>,
+    schema: Option<Box<StorageFloorSchemaOriginalV3>>,
 }
 
 const _: () = assert!(
@@ -48,8 +53,49 @@ impl<'owner> Method46InitialMainCutOriginalV1<'owner> {
     /// Every reached refusal remains resident. The independently prepaid
     /// native after is attempted after the temporary map borrow drops, even
     /// on a failed hash or layout/namespace comparison. No native IO is retried.
+    /// This hash-only DATA route cannot derive an initial approval request.
     pub fn hash_captured_v1(readback: Method46InitialMainReadbackLoanV1<'owner>) -> Self {
-        let mut original = Self {
+        let mut original = Self::new(readback);
+        original.hash();
+        original.finish(false);
+        original
+    }
+
+    /// Hashes and validates the same genuine initial main before its native after.
+    ///
+    /// The captured provisioning owner must belong to the exact same current
+    /// Source. Its admitted public manifest supplies the normal role and pins.
+    /// The ordinary complete Session schema engine retains every reached failure.
+    /// All read borrows end before the independently prepaid native after runs,
+    /// including on hash, schema or same-owner refusal. No effect is authorized.
+    pub fn hash_and_validate_captured_v1(
+        readback: Method46InitialMainReadbackLoanV1<'owner>,
+        provision: &Method46InitialProvisionDecodeOriginalV1<'_>,
+    ) -> Self {
+        let mut original = Self::new(readback);
+        original.hash();
+        if original.hash_completed() {
+            original.schema_admission = Some(
+                provision
+                    .schema_manifest_for_main_v1(&original.readback)
+                    .map(|_| ()),
+            );
+            if matches!(original.schema_admission, Some(Ok(()))) {
+                // The actual same-payer/currentness gate precedes this first
+                // heap allocation; an ended or foreign loan allocates nothing.
+                original.schema = Some(Box::new(StorageFloorSchemaOriginalV3::new()));
+                if let Some(schema) = original.schema.as_mut() {
+                    let _schema_result =
+                        schema.validate_initial_captured_v1(&original.readback, provision);
+                }
+            }
+        }
+        original.finish(true);
+        original
+    }
+
+    fn new(readback: Method46InitialMainReadbackLoanV1<'owner>) -> Self {
+        Self {
             readback,
             origin: None,
             read: None,
@@ -58,16 +104,27 @@ impl<'owner> Method46InitialMainCutOriginalV1<'owner> {
             hash: FloorHeadCutOriginalV3::new(),
             cut: None,
             after: None,
-        };
-        original.hash();
-        if !original.hash_completed() {
-            original.readback.refuse_readback_v1();
+            schema_admission: None,
+            schema: None,
         }
-        original.after = Some(original.readback.finish_readback_after_owed_once_v1());
-        if !matches!(original.after, Some(Ok(()))) {
-            original.readback.refuse_readback_v1();
+    }
+
+    fn schema_completed(&self) -> bool {
+        matches!(self.schema_admission, Some(Ok(())))
+            && self
+                .schema
+                .as_ref()
+                .is_some_and(|schema| schema.initial_schema_completed_data_v1())
+    }
+
+    fn finish(&mut self, require_schema: bool) {
+        if !self.hash_completed() || require_schema && !self.schema_completed() {
+            self.readback.refuse_readback_v1();
         }
-        original
+        self.after = Some(self.readback.finish_readback_after_owed_once_v1());
+        if !matches!(self.after, Some(Ok(()))) {
+            self.readback.refuse_readback_v1();
+        }
     }
 
     fn hash(&mut self) {
@@ -135,6 +192,9 @@ impl<'owner> Method46InitialMainCutOriginalV1<'owner> {
         self.readback
             .require_same_provisioning_original_v1(provision)
             .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+        if !self.schema_completed() {
+            return Err(Method46InitialDataErrorV1::Conflict);
+        }
         self.cut_data_v1()
     }
 

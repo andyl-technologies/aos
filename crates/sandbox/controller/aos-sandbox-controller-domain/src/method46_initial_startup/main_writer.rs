@@ -8,7 +8,8 @@ use super::*;
 
 mod readback;
 pub use readback::{
-    METHOD46_INITIAL_MAIN_CUT_BYTES_V1, Method46InitialMainMapReadbackV1,
+    METHOD46_INITIAL_MAIN_CUT_BYTES_V1, METHOD46_INITIAL_SESSION_SCHEMA_BYTES_V1,
+    METHOD46_INITIAL_SESSION_SCHEMA_CELLS_V1, Method46InitialMainMapReadbackV1,
     Method46InitialMainReadbackLoanV1,
 };
 

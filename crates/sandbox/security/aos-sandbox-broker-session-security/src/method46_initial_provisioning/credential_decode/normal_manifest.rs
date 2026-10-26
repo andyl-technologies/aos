@@ -92,6 +92,12 @@ impl NormalManifestOriginal {
         self.closed = !self.admitted();
     }
 
+    pub(super) fn manifest(&self) -> Option<&BrokerSessionManifestV1> {
+        self.admitted()
+            .then(|| self.decoded.as_ref()?.as_ref().ok())
+            .flatten()
+    }
+
     pub(super) fn admitted(&self) -> bool {
         !self.closed
             && matches!(self.decoded, Some(Ok(_)))

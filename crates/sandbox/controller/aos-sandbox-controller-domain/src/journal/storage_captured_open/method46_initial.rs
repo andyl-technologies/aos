@@ -19,6 +19,8 @@ enum ReplayDemandError {
     Accounting(#[from] AccountingError),
     #[error(transparent)]
     Journal(#[from] JournalError),
+    #[error(transparent)]
+    Schema(#[from] super::super::broker_session_receiving::StorageSessionGeometryRefusalV1),
 }
 
 pub(super) const fn directory(role: Method46InitialServiceRoleV1) -> &'static str {
@@ -127,9 +129,24 @@ impl Method46InitialMainWriterOriginalV1 {
             .inner
             .captured_extent()
             .ok_or(JournalError::ProtectedBoundary)?;
+        let schema = super::super::broker_session_receiving::schema_demand(extent)?;
+        let retained = ResourceVector::ZERO
+            .with(
+                D::MemoryBytes,
+                crate::method46_initial_startup::METHOD46_INITIAL_SESSION_SCHEMA_BYTES_V1 as u64,
+            )
+            .with(
+                D::MetadataEntries,
+                crate::method46_initial_startup::METHOD46_INITIAL_SESSION_SCHEMA_CELLS_V1 as u64,
+            );
+        // The real Source pays before replay consumes this native extent. The
+        // second recipe covers retained codec originals beside comparison DATA.
         Ok(extent
             .dominant_native_receiving_demand_v1()?
-            .checked_add(extent.dominant_semantic_receiving_demand_v1()?)?)
+            .checked_add(extent.dominant_semantic_receiving_demand_v1()?)?
+            .checked_add(schema)?
+            .checked_add(schema)?
+            .checked_add(retained)?)
     }
 
     pub(crate) fn quote_replay_once(&mut self) -> Option<ResourceVector> {

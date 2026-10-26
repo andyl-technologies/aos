@@ -31,6 +31,7 @@ const MAGIC: &[u8; 8] = aos_sandbox_protocol::authenticated_session::history_arc
 const DOMAIN: &[u8] = aos_sandbox_protocol::authenticated_session::history_archive::HOST_TERMINAL_ARCHIVE_DOMAIN_V1;
 
 mod closed;
+pub(super) use closed::closed_host_prepared_request_id_data_v2;
 
 #[cfg(test)]
 mod signed_tests;

@@ -169,7 +169,6 @@ const HOST_ORIGINAL_SESSION_KEY_MAGIC: &[u8; 8] = aos_sandbox_protocol::authenti
 const HOST_TERMINAL_SESSION_KEY_MAGIC: &[u8; 8] = aos_sandbox_protocol::authenticated_session::history_archive::HOST_TERMINAL_SESSION_KEY_MAGIC_V1;
 const VALUE_DOMAIN_V2: &[u8] = b"aos.sandbox.broker-session.protected-history.v2\0";
 const VALUE_DOMAIN_V3: &[u8] = b"aos.sandbox.broker-session.protected-history.v3\0";
-const ENDPOINT_PUBLICATION_DOMAIN: &[u8] = b"aos.sandbox.broker-session.endpoint-publication.v1\0";
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.broker-session.journal-transaction.v2\0";
 const STORAGE_GROUP_ARCHIVE_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.broker-session.storage-group-archive.v1\0";
@@ -5643,15 +5642,10 @@ impl ProtectedBrokerSessionJournalV1 {
         self.endpoint.revalidate()?;
         let manifest = self.endpoint.manifest_binding()?;
         let process = self.endpoint.process_execution_id();
-        let role = endpoint_code(self.endpoint.role());
+        let role = self.endpoint.role();
         self.endpoint.revalidate()?;
 
-        let mut digest = Sha256::new();
-        digest.update(ENDPOINT_PUBLICATION_DOMAIN);
-        digest.update([protocol_code(protocol), role]);
-        digest.update(manifest.as_bytes());
-        digest.update(process);
-        Ok(digest.finalize().into())
+        Ok(manifest.endpoint_publication_data_v1(protocol, role, process))
     }
 
     fn historical_endpoint_publication(
@@ -5665,16 +5659,10 @@ impl ProtectedBrokerSessionJournalV1 {
             BrokerSessionDurableEndpointV1::Client => transcript.client_process(),
             BrokerSessionDurableEndpointV1::Broker => transcript.broker_process(),
         };
-        let role = endpoint_code(self.endpoint.role());
+        let role = self.endpoint.role();
         self.endpoint.revalidate()?;
 
-        Ok(Sha256::new()
-            .chain_update(ENDPOINT_PUBLICATION_DOMAIN)
-            .chain_update([protocol_code(protocol), role])
-            .chain_update(manifest.as_bytes())
-            .chain_update(process)
-            .finalize()
-            .into())
+        Ok(manifest.endpoint_publication_data_v1(protocol, role, process))
     }
 
     fn stable_endpoint_identity(

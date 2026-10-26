@@ -60,6 +60,8 @@ const MANIFEST_PREFIX_BYTES: usize = 184;
 const KEY_PIN_BYTES: usize = 184;
 const KEY_COUNT: usize = 4;
 const MANIFEST_BINDING_DOMAIN: &[u8] = b"aos-sandbox-broker-session-manifest-v1\0";
+const ENDPOINT_PUBLICATION_DOMAIN: &[u8] =
+    b"aos.sandbox.broker-session.endpoint-publication.v1\0";
 const STABLE_ENDPOINT_IDENTITY_DOMAIN: &[u8] =
     b"aos.sandbox.broker-session.stable-endpoint-identity.v2\0";
 
@@ -145,6 +147,32 @@ impl BrokerSessionManifestBindingV1 {
         digest.update([protocol.code(), role]);
         digest.update(self.as_bytes());
         digest.finalize().into()
+    }
+
+    /// Computes the existing endpoint publication digest as comparison DATA.
+    ///
+    /// The process identifier comes from the selected current owner or verified
+    /// historical transcript. A digest alone establishes no endpoint custody,
+    /// freshness, Session schema or authority. Native callers retain their
+    /// original revalidation bookends around this pure equation.
+    #[must_use]
+    pub fn endpoint_publication_data_v1(
+        &self,
+        protocol: BrokerSessionProtocolV1,
+        endpoint: BrokerSessionDurableEndpointV1,
+        process: [u8; 16],
+    ) -> [u8; 32] {
+        let role = match endpoint {
+            BrokerSessionDurableEndpointV1::Client => 1,
+            BrokerSessionDurableEndpointV1::Broker => 2,
+        };
+        Sha256::new()
+            .chain_update(ENDPOINT_PUBLICATION_DOMAIN)
+            .chain_update([protocol.code(), role])
+            .chain_update(self.as_bytes())
+            .chain_update(process)
+            .finalize()
+            .into()
     }
 }
 

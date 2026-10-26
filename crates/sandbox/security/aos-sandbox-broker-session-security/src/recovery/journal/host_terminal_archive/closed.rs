@@ -57,40 +57,7 @@ impl ProtectedBrokerSessionJournalV1 {
         &self,
         stored: &StoredProtocolHistoryV1,
     ) -> Result<Option<[u8; 16]>, BrokerSessionSecurityError> {
-        if stored.protocol != BrokerSessionProtocolV1::Host
-            || stored.endpoint != BrokerSessionDurableEndpointV1::Client
-        {
-            return Ok(None);
-        }
-        let history = stored.history_model()?;
-        let head = history
-            .head()
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        if head.phase() != BrokerSessionDurablePhaseV1::RequestPrepared {
-            return Ok(None);
-        }
-        if !matches!(
-            head.method(),
-            BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2
-                | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
-                | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
-                | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
-        ) {
-            return Ok(None);
-        }
-        let checkpoint = stored
-            .checkpoint
-            .as_ref()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let transcript = checkpoint.verify()?;
-        let index = history
-            .records()
-            .len()
-            .checked_sub(1)
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let (request, _) =
-            historical_client_request(history.records(), index, checkpoint, &transcript)?;
-        Ok(is_closed_request(&request)?.then(|| request.request_id()))
+        closed_host_prepared_request_id_data_v2(stored)
     }
 
 
@@ -387,4 +354,43 @@ impl<C: crate::recovery::journal::schema_read::SessionSchemaContextV1>
             self.schema_decode_stored_v3(&protocol_key(BrokerSessionProtocolV1::Host), bytes)?;
         Ok(Some(stored))
     }
+}
+
+pub(in crate::recovery::journal) fn closed_host_prepared_request_id_data_v2(
+    stored: &StoredProtocolHistoryV1,
+) -> Result<Option<[u8; 16]>, BrokerSessionSecurityError> {
+    if stored.protocol != BrokerSessionProtocolV1::Host
+        || stored.endpoint != BrokerSessionDurableEndpointV1::Client
+    {
+        return Ok(None);
+    }
+    let history = stored.history_model()?;
+    let head = history
+        .head()
+        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    if head.phase() != BrokerSessionDurablePhaseV1::RequestPrepared {
+        return Ok(None);
+    }
+    if !matches!(
+        head.method(),
+        BrokerMethod::BROKER_METHOD_HOST_PREPARE_EXECUTION_AVAILABILITY_V2
+            | BrokerMethod::BROKER_METHOD_HOST_TERMINAL_NO_APPLY
+            | BrokerMethod::BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2
+            | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
+    ) {
+        return Ok(None);
+    }
+    let checkpoint = stored
+        .checkpoint
+        .as_ref()
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+    let transcript = checkpoint.verify()?;
+    let index = history
+        .records()
+        .len()
+        .checked_sub(1)
+        .ok_or(BrokerSessionSecurityError::Currentness)?;
+    let (request, _) =
+        historical_client_request(history.records(), index, checkpoint, &transcript)?;
+    Ok(is_closed_request(&request)?.then(|| request.request_id()))
 }

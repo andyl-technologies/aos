@@ -17,6 +17,9 @@ use aos_sandbox_protocol::domain_ledger::capacity_family::family::CanonicalCapac
 
 use super::*;
 
+mod initial;
+use aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestContextOriginalsV1;
+
 // The existing recursive inventory validator is bounded by sixteen archives.
 // Four retained read/model destinations per level and sixteen fixed lanes
 // cover that stack without growing a capture index after entry.
@@ -47,6 +50,7 @@ impl SchemaClaimOriginalV3 {
 pub(crate) struct StorageFloorSchemaOriginalV3 {
     traffic: Vec<StoredReadOriginalsV1>,
     codecs: Vec<StoredBrokerSessionHistoryDecodeCaptureV1>,
+    contexts: Vec<BrokerSessionManifestContextOriginalsV1>,
     values: Vec<Vec<u8>>,
     entries: Vec<Vec<(Vec<u8>, Vec<u8>)>>,
     ids: Vec<Vec<[u8; 16]>>,
@@ -87,6 +91,9 @@ impl StorageFloorSchemaOriginalV3 {
             .ok_or_else(invalid)?;
         let slots = size_of::<StoredReadOriginalsV1>()
             .checked_add(size_of::<StoredBrokerSessionHistoryDecodeCaptureV1>())
+            .and_then(|bytes| {
+                bytes.checked_add(size_of::<BrokerSessionManifestContextOriginalsV1>())
+            })
             .and_then(|bytes| bytes.checked_add(size_of::<Vec<u8>>()))
             .and_then(|bytes| bytes.checked_add(size_of::<Vec<(Vec<u8>, Vec<u8>)>>()))
             .and_then(|bytes| bytes.checked_add(size_of::<Vec<[u8; 16]>>()))
@@ -108,6 +115,13 @@ impl StorageFloorSchemaOriginalV3 {
             .checked_mul(2)
             .and_then(|bytes| bytes.checked_add(slots))
             .and_then(|bytes| bytes.checked_add(engine))
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    BrokerSessionManifestContextOriginalsV1::receiving_footprint_v1()
+                        .0
+                        .checked_mul(SLOTS)?,
+                )
+            })
             .and_then(|bytes| bytes.checked_add(size_of::<SchemaClaimOriginalV3>()))
             .and_then(|bytes| bytes.checked_add(capacity.checked_mul(2)?))
             .ok_or_else(invalid)?;
@@ -120,7 +134,17 @@ impl StorageFloorSchemaOriginalV3 {
             .with(D::MemoryBytes, u64::try_from(fixed).map_err(|_| invalid())?)
             .with(
                 D::MetadataEntries,
-                u64::try_from(names).map_err(|_| invalid())?,
+                u64::try_from(
+                    names
+                        .checked_add(
+                            BrokerSessionManifestContextOriginalsV1::receiving_footprint_v1()
+                                .1
+                                .checked_mul(SLOTS)
+                                .ok_or_else(invalid)?,
+                        )
+                        .ok_or_else(invalid)?,
+                )
+                .map_err(|_| invalid())?,
             );
         schema
             .checked_add(schema)
@@ -135,6 +159,11 @@ impl StorageFloorSchemaOriginalV3 {
             .as_ref()
             .and_then(SchemaClaimOriginalV3::failure)
             .or_else(|| self.traffic.iter().find_map(StoredReadOriginalsV1::failure))
+            .or_else(|| {
+                self.contexts
+                    .iter()
+                    .find_map(BrokerSessionManifestContextOriginalsV1::failure)
+            })
             .or_else(|| {
                 self.codecs
                     .iter()
@@ -168,6 +197,7 @@ impl StorageFloorSchemaOriginalV3 {
         }
         reserve!(traffic);
         reserve!(codecs);
+        reserve!(contexts);
         reserve!(values);
         reserve!(entries);
         reserve!(ids);
@@ -179,6 +209,7 @@ impl StorageFloorSchemaOriginalV3 {
 pub(super) struct SchemaScopeV3 {
     traffic: usize,
     codecs: usize,
+    contexts: usize,
     values: usize,
     entries: usize,
     ids: usize,
@@ -253,13 +284,7 @@ impl ProtectedBrokerSessionJournalV1 {
     }
 
     pub(super) fn schema_scope_v3(&self) -> Option<SchemaScopeV3> {
-        self.schema_original.as_ref().map(|original| SchemaScopeV3 {
-            traffic: original.traffic.len(),
-            codecs: original.codecs.len(),
-            values: original.values.len(),
-            entries: original.entries.len(),
-            ids: original.ids.len(),
-        })
+        StorageFloorSchemaOriginalV3::schema_scope_v3(self.schema_original.as_ref())
     }
 
     pub(super) fn schema_complete_scope_v3<T>(
@@ -267,18 +292,11 @@ impl ProtectedBrokerSessionJournalV1 {
         scope: Option<SchemaScopeV3>,
         result: &Result<T, BrokerSessionSecurityError>,
     ) {
-        if result.is_err() {
-            return;
-        }
-        if let (Some(original), Some(scope)) = (self.schema_original.as_mut(), scope) {
-            // The complete canonical archive comparison has no remaining pure
-            // borrower. Native Journal/endpoint custody and charged F stay held.
-            original.traffic.truncate(scope.traffic);
-            original.codecs.truncate(scope.codecs);
-            original.values.truncate(scope.values);
-            original.entries.truncate(scope.entries);
-            original.ids.truncate(scope.ids);
-        }
+        StorageFloorSchemaOriginalV3::schema_complete_scope_v3(
+            self.schema_original.as_mut(),
+            scope,
+            result,
+        )
     }
 
     pub(super) fn schema_authority_v3(
@@ -361,54 +379,18 @@ impl ProtectedBrokerSessionJournalV1 {
         key: &[u8],
         value: &[u8],
     ) -> Result<StoredProtocolHistoryV1, BrokerSessionSecurityError> {
-        let Some(original) = self.schema_original.as_mut() else {
-            return StoredProtocolHistoryV1::decode(key, value);
-        };
-        if original.codecs.len() == SLOTS {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        original
-            .codecs
-            .push(StoredBrokerSessionHistoryDecodeCaptureV1::new());
-        let capture = original
-            .codecs
-            .last_mut()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        CanonicalStoredHistoryV1::decode_retaining(key, value, capture)
-            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let stored = capture
-            .stored()
-            .cloned()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        StoredProtocolHistoryV1::from_canonical_for_key_v2(stored, key)
+        StorageFloorSchemaOriginalV3::schema_decode_stored_v3(
+            self.schema_original.as_mut(),
+            key,
+            value,
+        )
     }
 
     pub(super) fn schema_retain_value_v3(
         &mut self,
         value: Option<Vec<u8>>,
     ) -> Result<Option<Vec<u8>>, BrokerSessionSecurityError> {
-        let Some(original) = self.schema_original.as_mut() else {
-            return Ok(value);
-        };
-        let Some(value) = value else {
-            return Ok(None);
-        };
-        if original.values.len() == SLOTS {
-            original.overflow_value = Some(value);
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        original.values.push(value);
-        let value = original
-            .values
-            .last()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let mut copy = Vec::new();
-        if let Err(cause) = copy.try_reserve_exact(value.len()) {
-            original.allocation.get_or_insert(cause);
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        copy.extend_from_slice(value);
-        Ok(Some(copy))
+        StorageFloorSchemaOriginalV3::schema_retain_value_v3(self.schema_original.as_mut(), value)
     }
 
     pub(super) fn schema_retain_entries_v3(
@@ -416,21 +398,11 @@ impl ProtectedBrokerSessionJournalV1 {
         entries: Vec<(Vec<u8>, Vec<u8>)>,
         result: Result<(), BrokerSessionSecurityError>,
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BrokerSessionSecurityError> {
-        let Some(original) = self.schema_original.as_mut() else {
-            result?;
-            return Ok(entries);
-        };
-        if original.entries.len() == SLOTS {
-            original.overflow_entries = Some(entries);
-            return result.and(Err(BrokerSessionSecurityError::Currentness));
-        }
-        original.entries.push(entries);
-        result?;
-        Ok(original
-            .entries
-            .last()
-            .ok_or(BrokerSessionSecurityError::Currentness)?
-            .clone())
+        StorageFloorSchemaOriginalV3::schema_retain_entries_v3(
+            self.schema_original.as_mut(),
+            entries,
+            result,
+        )
     }
 
     pub(super) fn schema_retain_ids_v3(
@@ -438,21 +410,11 @@ impl ProtectedBrokerSessionJournalV1 {
         ids: Vec<[u8; 16]>,
         result: Result<(), BrokerSessionSecurityError>,
     ) -> Result<Vec<[u8; 16]>, BrokerSessionSecurityError> {
-        let Some(original) = self.schema_original.as_mut() else {
-            result?;
-            return Ok(ids);
-        };
-        if original.ids.len() == SLOTS {
-            original.overflow_ids = Some(ids);
-            return result.and(Err(BrokerSessionSecurityError::Currentness));
-        }
-        original.ids.push(ids);
-        result?;
-        Ok(original
-            .ids
-            .last()
-            .ok_or(BrokerSessionSecurityError::Currentness)?
-            .clone())
+        StorageFloorSchemaOriginalV3::schema_retain_ids_v3(
+            self.schema_original.as_mut(),
+            ids,
+            result,
+        )
     }
 }
 
@@ -573,5 +535,137 @@ mod tests {
             assert!(original.failure().is_some());
             assert!(fixture.journal.schema_original.is_none());
         }
+    }
+}
+
+impl StorageFloorSchemaOriginalV3 {
+    pub(super) fn schema_scope_v3(original: Option<&Self>) -> Option<SchemaScopeV3> {
+        original.map(|original| SchemaScopeV3 {
+            traffic: original.traffic.len(),
+            codecs: original.codecs.len(),
+            contexts: original.contexts.len(),
+            values: original.values.len(),
+            entries: original.entries.len(),
+            ids: original.ids.len(),
+        })
+    }
+
+    pub(super) fn schema_complete_scope_v3<T>(
+        original: Option<&mut Self>,
+        scope: Option<SchemaScopeV3>,
+        result: &Result<T, BrokerSessionSecurityError>,
+    ) {
+        if result.is_err() {
+            return;
+        }
+        if let (Some(original), Some(scope)) = (original, scope) {
+            // The complete canonical archive comparison has no remaining pure
+            // borrower. Native Journal/endpoint custody and charged F stay held.
+            original.traffic.truncate(scope.traffic);
+            original.codecs.truncate(scope.codecs);
+            original.contexts.truncate(scope.contexts);
+            original.values.truncate(scope.values);
+            original.entries.truncate(scope.entries);
+            original.ids.truncate(scope.ids);
+        }
+    }
+
+    pub(super) fn schema_decode_stored_v3(
+        original: Option<&mut Self>,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<StoredProtocolHistoryV1, BrokerSessionSecurityError> {
+        let Some(original) = original else {
+            return StoredProtocolHistoryV1::decode(key, value);
+        };
+        if original.codecs.len() == SLOTS {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        original
+            .codecs
+            .push(StoredBrokerSessionHistoryDecodeCaptureV1::new());
+        let capture = original
+            .codecs
+            .last_mut()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        CanonicalStoredHistoryV1::decode_retaining(key, value, capture)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let stored = capture
+            .stored()
+            .cloned()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        StoredProtocolHistoryV1::from_canonical_for_key_v2(stored, key)
+    }
+
+    pub(super) fn schema_retain_value_v3(
+        original: Option<&mut Self>,
+        value: Option<Vec<u8>>,
+    ) -> Result<Option<Vec<u8>>, BrokerSessionSecurityError> {
+        let Some(original) = original else {
+            return Ok(value);
+        };
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        if original.values.len() == SLOTS {
+            original.overflow_value = Some(value);
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        original.values.push(value);
+        let value = original
+            .values
+            .last()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let mut copy = Vec::new();
+        if let Err(cause) = copy.try_reserve_exact(value.len()) {
+            original.allocation.get_or_insert(cause);
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        copy.extend_from_slice(value);
+        Ok(Some(copy))
+    }
+
+    pub(super) fn schema_retain_entries_v3(
+        original: Option<&mut Self>,
+        entries: Vec<(Vec<u8>, Vec<u8>)>,
+        result: Result<(), BrokerSessionSecurityError>,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BrokerSessionSecurityError> {
+        let Some(original) = original else {
+            result?;
+            return Ok(entries);
+        };
+        if original.entries.len() == SLOTS {
+            original.overflow_entries = Some(entries);
+            return result.and(Err(BrokerSessionSecurityError::Currentness));
+        }
+        original.entries.push(entries);
+        result?;
+        Ok(original
+            .entries
+            .last()
+            .ok_or(BrokerSessionSecurityError::Currentness)?
+            .clone())
+    }
+
+    pub(super) fn schema_retain_ids_v3(
+        original: Option<&mut Self>,
+        ids: Vec<[u8; 16]>,
+        result: Result<(), BrokerSessionSecurityError>,
+    ) -> Result<Vec<[u8; 16]>, BrokerSessionSecurityError> {
+        let Some(original) = original else {
+            result?;
+            return Ok(ids);
+        };
+        if original.ids.len() == SLOTS {
+            original.overflow_ids = Some(ids);
+            return result.and(Err(BrokerSessionSecurityError::Currentness));
+        }
+        original.ids.push(ids);
+        result?;
+        Ok(original
+            .ids
+            .last()
+            .ok_or(BrokerSessionSecurityError::Currentness)?
+            .clone())
     }
 }

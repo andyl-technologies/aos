@@ -31,21 +31,37 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
-- The complete read-only Session schema recipe now runs through a borrowed
-  context engine. The ordinary adapter keeps the same native namespace claims,
-  endpoint revalidation bookends, canonical traffic decoder, six archive-family
-  checks, recursive inventory and abandonment checks, and retained failure
-  destinations. Archive decoders receive only their codec/retention hook.
-  Bounded adapter/read headers are included in the existing receiving demand;
-  no writer, floor, descriptor or effect authority is created. Signed native
-  fixtures reject malformed data in every archive family and retain its actual
-  failed value or entry collection. All 409 runnable ordinary Security library
-  tests pass; the online-Nix configuration passes 418, with two existing ignored
-  cases in each. Complete Rust unit and integration target compilation is
-  running for this source. The initializer's actual held-map adapter and its
-  combined hash/schema read before the independently owed native after remain
-  unimplemented; this extraction does not qualify initial provisioning, installed
-  startup or public readiness.
+- The complete read-only Session schema recipe runs through a borrowed context
+  engine. The ordinary adapter keeps its native namespace claims, endpoint
+  revalidation bookends, canonical traffic decoder, six archive-family checks,
+  recursive inventory/abandonment checks and actual retained failure destinations.
+  Archive decoding accepts only its codec/retention hook. The same passive sinks
+  serve the initializer's genuine main and provisioning readback loans; no Journal,
+  native endpoint, private key or namespace authority is fabricated. Their exact
+  startup association and current Source are checked before allocating schema
+  storage. Source prepayment covers two shared schema recipes priced from the
+  original pre-replay file extent, plus bounded private backing and metadata;
+  compiled layout checks refuse an insufficient allowance without raising any
+  resource capacity. Manifest-context constructor failures remain in the actual
+  schema scope. A complete pure archive comparison may retire only its successful
+  scratch. The existing endpoint-publication equation is shared with ordinary
+  owners, whose native revalidation order is preserved.
+
+  The combined initial main constructor hashes and validates that same held map
+  before its one independently owed native readback-after. Failure cannot suppress
+  that after. Approval requests now require the complete original schema result
+  and successful native after; the hash-only DATA route cannot derive one.
+  Signed native fixtures reject malformed data in every archive family while
+  retaining its failed value or entry collection. All 75 protocol tests, 411
+  ordinary Security tests, 420 online-Nix Security tests and 74 focused initializer
+  tests pass; the two Security configurations each have two existing ignored
+  cases. New regressions pin twelve independently computed publication digests
+  and retained failed/retired successful manifest-context scopes. Complete
+  application unit/integration target compilation is running for the sixteen
+  Rust inputs. This implements the held-map/schema DATA join, without qualifying
+  installed positive admission, full endpoint/key provenance and Nix/Root key
+  separation, job exclusion, durable approved intent, physical TPM operations,
+  the installed producer or public readiness.
 
 - Host fixed-file admission now observes the mount held by the original file
   with `statx(AT_EMPTY_PATH)` and `statmount(STATMOUNT_BY_FD)`. An inherited
@@ -736,8 +752,11 @@ Recent committed startup fixes close narrower prerequisites:
   cannot suppress another file or Source after. Provisioning readback lending now
   requires these actual normal-runtime measurements too. All 105 focused initial
   tests pass, including eight new schema, command, allocation-order and owed-post
-  regressions. Complete application target compilation is running for the twelve
-  functional Rust inputs; two later Rustdoc clarifications change no code.
+  regressions. Complete application unit and integration targets compile for
+  the frozen V3 command/runtime source
+  (`/nix/store/ky3dhwd6jx8vjibp2x0g5jv2z0b0zk0n-aos-test-targets-0.1.0`),
+  without executing them and before the shared Session schema engine or initial
+  held-map adapter. Two later Rustdoc clarifications change no code.
   This proves configured-file comparisons, without qualifying a future loaded
   process, complete native unit configuration, job exclusion, Nix/Root key
   separation, Session schema, durable intent, physical TPM effects or installed

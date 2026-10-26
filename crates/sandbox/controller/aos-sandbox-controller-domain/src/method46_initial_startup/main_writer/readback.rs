@@ -13,6 +13,17 @@ use super::*;
 /// actual opened key limit against this separately prepaid allowance.
 pub const METHOD46_INITIAL_MAIN_CUT_BYTES_V1: usize = 8192;
 
+/// Bounds private retained schema carriers before their actual owner exists.
+///
+/// The genuine initial Source pays this allowance with two shared schema
+/// recipes priced from the original pre-replay file extent. Security checks
+/// every private fixed layout against this bound before compiling its reader.
+/// This allowance supplies no writer, endpoint, approval or TPM authority.
+pub const METHOD46_INITIAL_SESSION_SCHEMA_BYTES_V1: usize = 8 * 1024 * 1024;
+
+/// Bounds retained schema constructor destinations before their first allocation.
+pub const METHOD46_INITIAL_SESSION_SCHEMA_CELLS_V1: usize = 2048;
+
 /// Borrows DATA from the same Source-funded protected main opening.
 ///
 /// Only the actual startup constructs this loan after native admission and
@@ -47,6 +58,14 @@ impl Method46InitialMainMapReadbackV1<'_> {
         &self,
     ) -> impl Iterator<Item = (crate::RecordNamespace, &[u8], &[u8])> {
         self.journal.all_records()
+    }
+
+    /// Borrows one Broker value from the same immutable original main map.
+    ///
+    /// The result is readback DATA and grants no namespace or writer authority.
+    pub fn broker_value_data_v1(&self, key: &[u8]) -> Option<&[u8]> {
+        self.journal
+            .get(crate::RecordNamespace::BrokerSessionTraffic, key)
     }
 
     /// Iterates every current Broker row in the original bytewise order.

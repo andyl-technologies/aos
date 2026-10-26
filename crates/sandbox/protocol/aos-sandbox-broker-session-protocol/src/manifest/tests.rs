@@ -485,3 +485,60 @@ fn every_protocol_has_only_its_exact_supported_version() {
         assert!(wrong.is_err());
     }
 }
+
+#[test]
+fn endpoint_publication_preserves_protocol_role_and_process_golden_vectors() {
+    use crate::BrokerSessionDurableEndpointV1::{Broker, Client};
+
+    // Independently computed from the existing domain, protocol/role bytes,
+    // binding [7; 32], and process [9; 16]. These are comparison DATA only.
+    let vectors = [
+        (
+            BrokerSessionProtocolV1::Host,
+            "eedaa44701191e02030755a124e3dd99bfbf0d46b6c3b4186ef552bd00f2b060",
+            "0f99f27a0614870180240954e30eebe7cf07007946600e673286fe2ee91394d8",
+        ),
+        (
+            BrokerSessionProtocolV1::Storage,
+            "f0245651ec92a43fa1f683e68c28317449f1a7a550e6ba5980fb32c741141de2",
+            "b62d62b50afffc9f239b63c4104942f0742632bf25d3d26a6aafd8fdd9c5f1c1",
+        ),
+        (
+            BrokerSessionProtocolV1::Mount,
+            "eb3ac2d3c9aaf5934cd979018612ae9190fbf7e6ade443d63a70da156f5fed4e",
+            "7e08116f7bd65b34d04b3a659729592443e8bab7a1117009e68a615ddf8affdb",
+        ),
+        (
+            BrokerSessionProtocolV1::Network,
+            "23223cc9adfce2c06e4a3dabaf3915a7957126d5ddbc93f900404e23ac02e6b8",
+            "067c4eef879356827c65f96f3c81a988b97072bacd9ee9d7eb9b3370c26bd68d",
+        ),
+        (
+            BrokerSessionProtocolV1::MountFuse,
+            "049d6aaa2559f9c82ce3d3a673b2be49f2520174fa9bcd9ae8b4a58fa6578af2",
+            "becee2cf38152c96edbd9abae72d78283043f656622ac36b42dedcd323fe6c44",
+        ),
+        (
+            BrokerSessionProtocolV1::Nix,
+            "dd0d7ae30d5b4ceebfd76ad37f27cb557b233a9ade25651aa3f8632e9b19fb6e",
+            "db92e48dc99306cbe9353329def2585e7c89d3b1e5d77b43c0f73ca7a9f6d9d1",
+        ),
+    ];
+    let binding = BrokerSessionManifestBindingV1([7; 32]);
+
+    for (protocol, client, broker) in vectors {
+        for (role, expected) in [(Client, client), (Broker, broker)] {
+            let observed = binding.endpoint_publication_data_v1(protocol, role, [9; 16]);
+
+            assert_eq!(hex::encode(observed), expected);
+            assert_ne!(
+                binding.endpoint_publication_data_v1(protocol, role, [10; 16]),
+                observed
+            );
+            assert_ne!(
+                binding.stable_endpoint_identity_data_v2(protocol, role),
+                observed
+            );
+        }
+    }
+}

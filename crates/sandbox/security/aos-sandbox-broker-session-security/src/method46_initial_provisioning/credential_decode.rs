@@ -178,15 +178,64 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             && self.normal.admitted()
     }
 
+    /// Borrows the original admitted manifest only for this startup's held main.
+    ///
+    /// # Errors
+    /// Refuses foreign or ended genuine loans and any failed credential decode.
+    pub(crate) fn schema_manifest_for_main_v1(
+        &self,
+        main: &aos_sandbox_controller_domain::method46_initial_startup::Method46InitialMainReadbackLoanV1<'_>,
+    ) -> Result<
+        &aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestV1,
+        Method46InitialDataErrorV1,
+    > {
+        main.require_same_provisioning_original_v1(&self.readback)
+            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+        if !self.admitted() {
+            return Err(Method46InitialDataErrorV1::Encoding);
+        }
+        self.normal
+            .manifest()
+            .ok_or(Method46InitialDataErrorV1::Encoding)
+    }
+
+    /// Copies the same admitted original's fixed endpoint role for schema DATA.
+    ///
+    /// # Errors
+    /// Refuses foreign/ended loans or an incomplete original canonical decode.
+    pub(crate) fn schema_endpoint_for_main_v1(
+        &self,
+        main: &aos_sandbox_controller_domain::method46_initial_startup::Method46InitialMainReadbackLoanV1<'_>,
+    ) -> Result<
+        aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1,
+        Method46InitialDataErrorV1,
+    > {
+        self.schema_manifest_for_main_v1(main)?;
+        match self
+            .readback
+            .origin_data_v1()
+            .map_err(|_| Method46InitialDataErrorV1::Conflict)?
+            .role
+        {
+            Method46InitialServiceRoleV1::ControllerStorageClient => {
+                Ok(aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Client)
+            }
+            Method46InitialServiceRoleV1::StorageBroker => {
+                Ok(aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Broker)
+            }
+        }
+    }
+
     /// Derives initial request DATA from this credential and the same main owner.
     ///
     /// Both genuine loans must continuously borrow the exact same startup.
     /// The provisioning profile and salt come from the retained canonical
-    /// decoder, and the cut comes from the original canonical hash and native
-    /// after. No profile, sequence, digest or amount enters from the caller.
+    /// decoder, and the cut comes from the original canonical hash, complete
+    /// Session schema comparison and native after. No profile, sequence, digest
+    /// or amount enters from the caller.
     ///
     /// This supplies the exact preimage for independent approval, without
-    /// establishing endpoint/key independence, Session schema, job exclusion,
+    /// establishing complete endpoint/key independence, job exclusion,
     /// durable intent or physical TPM authority. Its finite return carriers
     /// were paid with this original's decode allowance before construction.
     ///

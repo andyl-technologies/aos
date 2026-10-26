@@ -8,19 +8,34 @@ use super::storage_floor_schema::{SchemaAuthorityV3, SchemaScopeV3};
 use super::*;
 
 /// Borrows the actual namespace read guard without exposing its native authority.
-pub(super) struct SchemaReadDataV1<'a> {
-    native: SchemaAuthorityV3<'a>,
+pub(super) enum SchemaReadDataV1<'a> {
+    Native(SchemaAuthorityV3<'a>),
+    Initial(
+        aos_sandbox_controller_domain::method46_initial_startup::Method46InitialMainMapReadbackV1<
+            'a,
+        >,
+    ),
 }
 
 impl SchemaReadDataV1<'_> {
     pub(super) fn get(&mut self, key: &[u8]) -> Result<Option<&[u8]>, BrokerSessionSecurityError> {
-        self.native.get(key)
+        match self {
+            Self::Native(native) => native.get(key),
+            Self::Initial(map) => Ok(map.broker_value_data_v1(key)),
+        }
     }
 
     pub(super) fn records(
         &mut self,
     ) -> Result<impl Iterator<Item = (&[u8], &[u8])>, BrokerSessionSecurityError> {
-        self.native.records()
+        let (native, initial) = match self {
+            Self::Native(native) => (Some(native.records()?), None),
+            Self::Initial(map) => (None, Some(map.broker_records_data_v1())),
+        };
+        Ok(native
+            .into_iter()
+            .flatten()
+            .chain(initial.into_iter().flatten()))
     }
 }
 
@@ -99,7 +114,7 @@ impl SessionSchemaContextV1 for NativeSessionSchemaContextV1<'_> {
     fn read_data(&mut self) -> Result<SchemaReadDataV1<'_>, BrokerSessionSecurityError> {
         self.journal
             .schema_authority_v3()
-            .map(|native| SchemaReadDataV1 { native })
+            .map(SchemaReadDataV1::Native)
     }
 
     fn endpoint_role(&self) -> BrokerSessionDurableEndpointV1 {
