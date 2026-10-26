@@ -2221,10 +2221,18 @@ impl QemuNodeSet {
             {
                 return Ok(observation);
             }
+            // The hot path caps a quantum at the delivery tick of the earliest
+            // staged inbound frame, a fact of the host's own delivery ledger.
+            // A park reported under that cap attests nothing beyond it, even
+            // when the plugin published it before observing the frame, so it
+            // never settles the node through the scheduler ceiling.
+            let quantum_covers_ceiling =
+                effective_ceiling.is_none_or(|effective| effective.retired >= ceiling.ticks);
             if let crucible::AdvanceOutcome::Paused { at } = observation.outcome
                 && let Some(deadline) = final_state.and_then(|state| state.next_deadline)
                 && deadline.retired > ceiling.ticks
                 && stop == crucible::RunCeilingStop::Bound
+                && quantum_covers_ceiling
             {
                 // The idle node parks at its physical point; its next wake is
                 // beyond the ceiling, so it is settled through the ceiling

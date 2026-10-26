@@ -130,3 +130,56 @@ fn an_exact_event_ceiling_refuses_a_settlement_a_whole_retirement_below_it() {
         "{result:?}"
     );
 }
+
+#[test]
+fn an_idle_park_never_settles_past_a_staged_inbound_frame() -> Result<(), Box<dyn Error>> {
+    const DELIVERY: u64 = 700;
+    let node = scripted_node_with_options(
+        shared_log(),
+        ScriptedNodeOptions {
+            // The halted guest first republishes its idle park without having
+            // observed the frame, then wakes at the delivery and consumes it.
+            network_output: Some(ScriptedNetworkOutput {
+                emit_tick: 0,
+                stopped_tick: 400,
+                outcome: AdvanceOutcome::Paused {
+                    at: Icount { retired: 400 },
+                },
+                next_deadline: Some(crucible_shmem::IDLE_WAKE_NONE),
+                frames: 0,
+            }),
+            later_network_outputs: vec![ScriptedNetworkOutput {
+                emit_tick: 0,
+                stopped_tick: DELIVERY,
+                outcome: AdvanceOutcome::Paused {
+                    at: Icount { retired: DELIVERY },
+                },
+                next_deadline: None,
+                frames: 0,
+            }],
+            cap_quanta_at_staged_inbound: true,
+            ..ScriptedNodeOptions::default()
+        },
+        [QemuAsyncWaitOutcome::Completed; 4],
+    )?;
+    let mut nodes = QemuNodeSet::new();
+    nodes.insert(node_id("vm-a"), node);
+    nodes.apply_to_node(
+        &node_id("vm-a"),
+        &BackendEffect::DeliverInput(BackendInput {
+            node: node_id("vm-a"),
+            payload: vec![1],
+        }),
+        VirtualTime { ticks: DELIVERY },
+    )?;
+
+    let step = nodes.step_node_to(&node_id("vm-a"), VirtualTime { ticks: CEILING })?;
+
+    // The staged frame's delivery tick is a wake inside the ceiling. A park
+    // reported before the guest took it attests nothing past that tick, so
+    // the step must carry the node through the delivery, not settle past it.
+    assert_ne!(step.physical_stop, BackendPhysicalStop::Idle, "{step:?}");
+    assert!(step.reached.ticks >= DELIVERY, "{step:?}");
+    nodes.shutdown()?;
+    Ok(())
+}
