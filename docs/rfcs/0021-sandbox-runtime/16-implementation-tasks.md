@@ -370,7 +370,10 @@ Recent committed startup fixes close narrower prerequisites:
   timeout are fixed. The same Source prepays both larger property tables; the
   two 29-call samples fit the existing finite manager schedule. All 29 focused
   tests pass, including changed controls, substituted purposes/PIDs, malformed
-  types and altered commands. Complete Rust target compilation is running.
+  types and altered commands. Exact-source complete Rust targets compile
+  (`/nix/store/2yp75hvqwmk9g12mvzgkdqryy43a3hz5-aos-test-targets-0.1.0`),
+  without running the targets. This frozen receipt predates credential custody,
+  delivery, canonical decode and confinement additions.
   These are native property comparisons with DATA regressions; remaining
   hardening, actual credential admission, installed producers, journal writer
   custody and floor publication remain unqualified.
@@ -418,10 +421,28 @@ Recent committed startup fixes close narrower prerequisites:
   keeping Source after owed. The resource-policy epoch is never substituted for
   the provisioning deployment epoch. All 48 focused Broker, Domain and Security
   tests pass, including refusal before credential admission/payment and negative
-  dispatch through Source after. The separate normal-owner codec regression
-  and exact-source complete Rust target compilation are running. No positive
+  dispatch through Source after. The separate normal-owner canonical role/salt
+  regression also passes. Exact-source complete Rust target compilation is
+  running. No positive
   installed initial producer, independent key/endpoint provenance, protected
   writer, signed-intent durability or physical TPM authority is qualified.
+
+- Both initial-job samples now also compare 32 selected confinement properties
+  against the packaged systemd 261.2 types. They require strict system and home
+  protection, private network/tmp, kernel/control-group protections, fixed root
+  identity without dynamic users or user namespaces, denied namespace creation,
+  only AF_UNIX, locked personality, MemoryDenyWriteExecute, no core dumps and a
+  private umask. The
+  closed device policy permits only `/dev/tpmrm0 rw`; writable paths name only
+  that purpose's fixed Controller or Storage broker-session directory. Alternate
+  roots, another purpose's directory, added devices/address families, changed
+  settings and wrong native types refuse. The same Source prepays both full
+  fifty-property tables and the finite expanded schedule: two 67-call samples,
+  160 outgoing/176 incoming ceilings and 11 MiB cumulative materialization.
+  All 51 focused Broker, Domain and Security tests pass. Exact-source complete
+  Rust target compilation is running. These are selected-unit comparisons,
+  not live kernel/device proof, complete unit-input admission, installed
+  production qualification or writer/TPM authority.
 
 - The isolated manager candidate gives initrd SwitchRoot its own appended
   `system:aos_switch_root` permission. Production grants only `init_t` to itself;

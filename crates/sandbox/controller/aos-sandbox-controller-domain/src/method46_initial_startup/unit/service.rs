@@ -29,6 +29,38 @@ pub(super) const PROPERTIES: &[&str] = &[
     "SetCredentialEncrypted",
     "ImportCredential",
     "ImportCredentialEx",
+    "ProtectSystem",
+    "ProtectHome",
+    "PrivateNetwork",
+    "PrivateDevices",
+    "PrivateTmp",
+    "PrivateTmpEx",
+    "ProtectKernelTunables",
+    "ProtectKernelModules",
+    "ProtectKernelLogs",
+    "ProtectControlGroups",
+    "ProtectControlGroupsEx",
+    "ProtectClock",
+    "ProtectProc",
+    "ProcSubset",
+    "RestrictNamespaces",
+    "RestrictAddressFamilies",
+    "RestrictRealtime",
+    "RestrictSUIDSGID",
+    "LockPersonality",
+    "MemoryDenyWriteExecute",
+    "LimitCORE",
+    "LimitCORESoft",
+    "UMask",
+    "DynamicUser",
+    "PrivateUsers",
+    "User",
+    "Group",
+    "DevicePolicy",
+    "DeviceAllow",
+    "ReadWritePaths",
+    "RootDirectory",
+    "RootImage",
 ];
 
 pub(super) fn require_service(
@@ -99,7 +131,7 @@ pub(super) fn require_service(
         }
     }
 
-    Ok(())
+    super::confinement::require_confinement(values, unit)
 }
 
 #[cfg(test)]
@@ -120,7 +152,7 @@ mod tests {
     }
 
     fn properties() -> Vec<OwnedValue> {
-        vec![
+        let mut values = vec![
             value(format!("/aoscomponents.slice/{UNIT}")),
             value((false, CONTEXT)),
             3_u64.into(),
@@ -139,7 +171,9 @@ mod tests {
             value(Vec::<(String, Vec<u8>)>::new()),
             value(Vec::<String>::new()),
             value(Vec::<(String, String)>::new()),
-        ]
+        ];
+        values.extend(super::super::confinement::test_properties());
+        values
     }
 
     #[test]

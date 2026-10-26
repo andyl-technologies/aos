@@ -84,7 +84,7 @@ pub(super) fn require_delivery(
     if service_values.len() != super::service::PROPERTIES.len() {
         return Err(Method46InitialStartupClosedV1);
     }
-    let values = &service_values[12..];
+    let values = &service_values[12..18];
     let sources = selected_sources(fragment)?;
     let mut found = [false; 3];
 
@@ -167,6 +167,7 @@ mod tests {
             value(Vec::<String>::new()),
             value(Vec::<(String, String)>::new()),
         ]);
+        values.extend(super::super::confinement::test_properties());
         values
     }
 

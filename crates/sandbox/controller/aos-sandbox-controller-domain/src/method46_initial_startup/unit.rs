@@ -12,6 +12,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::*;
 
+mod confinement;
 mod delivery;
 mod service;
 
@@ -350,9 +351,9 @@ fn normalize_fragment(
 }
 
 fn manager_schedule() -> Option<ReadonlyPropertyReceiveScheduleV2> {
-    // Two fixed 35-call PID1 samples, Hello and bounded signal/header carryover.
+    // Two fixed 67-call PID1 samples, Hello and bounded signal/header carryover.
     // These are native-enforced ceilings, never an account or semantic claim.
-    ReadonlyPropertyReceiveScheduleV2::new(96, 112, 64 * 1024, 4096, 112 * 64 * 1024).ok()
+    ReadonlyPropertyReceiveScheduleV2::new(160, 176, 64 * 1024, 4096, 176 * 64 * 1024).ok()
 }
 
 fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVector> {
@@ -376,7 +377,7 @@ fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVe
         .with(D::MetadataEntries, 4 * PATH_BYTES as u64)
         .with(
             D::OutputBytes,
-            read.checked_add((112 * 64 * 1024 + 96 * 4096 + 4096) as u64)?,
+            read.checked_add((176 * 64 * 1024 + 160 * 4096 + 4096) as u64)?,
         )
         .checked_add(ImmutableFileAcquisitionOriginalV1::receiving_demand_v1(
             PATH_BYTES,
