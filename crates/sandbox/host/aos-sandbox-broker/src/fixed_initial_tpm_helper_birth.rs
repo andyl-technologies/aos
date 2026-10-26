@@ -9,7 +9,8 @@
 //! its native originals and cleanup debt in this owner.
 //!
 //! The handoff sends public HELLO and validates the retained child ACK. It
-//! reads no private credential and performs no TPM command.
+//! receives no credential path or exported key. A private Source borrow sends
+//! AUTH only after the actual child ACK; no TPM request is issued here.
 //! Child identity and MAC comparisons are prerequisites for a future private
 //! carrier, not Source, approval, NV or checkpoint authority.
 

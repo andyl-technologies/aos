@@ -13,6 +13,9 @@ use aos_sandbox_linux::seqpacket::{
 use rustix::event::PollFlags;
 use zeroize::Zeroizing;
 
+mod auth;
+use auth::InitialHelperAuthOriginalV1;
+
 use super::*;
 use crate::bounded_entropy::RetainedKernelNonceOriginalV1;
 use crate::fixed_tpm_helper_wire::{
@@ -31,10 +34,22 @@ enum Phase {
     AckReady,
     Receiving,
     Acknowledged,
+    AuthPreparing,
+    AuthReady,
+    Authenticating,
+    Authenticated,
+}
+
+enum ChildPostV1 {
+    BeforeHello,
+    AfterAck,
+    BeforeAuth,
+    AfterAuth,
 }
 
 pub(super) struct InitialHelperHandoffOriginalV1 {
     phase: Phase,
+    auth: InitialHelperAuthOriginalV1,
     entropy: [RetainedKernelNonceOriginalV1; 2],
     nonce: Option<[u8; 32]>,
     hello: Option<Result<Zeroizing<[u8; HELLO_BYTES]>, TpmHelperFrameErrorV2>>,
@@ -54,6 +69,7 @@ impl InitialHelperHandoffOriginalV1 {
     pub(super) fn new() -> Self {
         Self {
             phase: Phase::Fresh,
+            auth: InitialHelperAuthOriginalV1::new(),
             entropy: std::array::from_fn(|_| RetainedKernelNonceOriginalV1::new()),
             nonce: None,
             hello: None,
@@ -75,7 +91,8 @@ impl InitialHelperHandoffOriginalV1 {
             SeqpacketSocket::closed_zero_rights_receive_obligations_v1(LOCK_ACK_BYTES)?;
         receive
             .checked_add(PidFdProcOriginalsV1::receiving_bytes_v1()?.checked_mul(4)?)?
-            .checked_add(8192)
+            .checked_add(8192)?
+            .checked_add(InitialHelperAuthOriginalV1::receiving_bytes_v1()?)
     }
 
     pub(super) fn receiving_files_v1() -> Option<usize> {
@@ -95,7 +112,8 @@ impl InitialHelperHandoffOriginalV1 {
             .checked_mul(2)?
             .checked_add(9 * 32)?
             .checked_add(HELLO_BYTES)?
-            .checked_add(LOCK_ACK_BYTES.checked_mul(2)?)
+            .checked_add(LOCK_ACK_BYTES.checked_mul(2)?)?
+            .checked_add(InitialHelperAuthOriginalV1::traffic_bytes_v1()?)
     }
 
     fn sample(&mut self, index: usize, cut: FixedProcessBoottimeCutV1) -> bool {
@@ -137,7 +155,7 @@ impl InitialTpmHelperDrivingLoanV1<'_> {
             ) {
                 return Err(InitialTpmHelperBirthClosedV1);
             }
-            self.observe_child(0)?;
+            self.observe_child(ChildPostV1::BeforeHello)?;
             let mut nonce = [0; 32];
             nonce[..16].copy_from_slice(
                 &self.handoff.entropy[0]
@@ -314,7 +332,7 @@ impl InitialTpmHelperDrivingLoanV1<'_> {
             if !matches!(self.handoff.ack, Some(Ok(()))) {
                 return Err(InitialTpmHelperBirthClosedV1);
             }
-            self.observe_child(2)?;
+            self.observe_child(ChildPostV1::AfterAck)?;
             if !self.handoff.sample(4, self.cut) {
                 return Err(InitialTpmHelperBirthClosedV1);
             }
@@ -332,7 +350,13 @@ impl InitialTpmHelperDrivingLoanV1<'_> {
         }
     }
 
-    fn observe_child(&mut self, offset: usize) -> Result<(), InitialTpmHelperBirthClosedV1> {
+    fn observe_child(&mut self, phase: ChildPostV1) -> Result<(), InitialTpmHelperBirthClosedV1> {
+        let (originals, offset) = match phase {
+            ChildPostV1::BeforeHello => (&mut self.handoff.proc_posts, 0),
+            ChildPostV1::AfterAck => (&mut self.handoff.proc_posts, 2),
+            ChildPostV1::BeforeAuth => (&mut self.handoff.auth.child_posts, 0),
+            ChildPostV1::AfterAuth => (&mut self.handoff.auth.child_posts, 2),
+        };
         let (child, _) = self
             .driving
             .original_child()
@@ -342,10 +366,10 @@ impl InitialTpmHelperDrivingLoanV1<'_> {
             .as_mut()
             .ok_or(InitialTpmHelperBirthClosedV1)?;
         let identity = observations
-            .observe_identity_retaining_v1(child, &mut self.handoff.proc_posts[offset])
+            .observe_identity_retaining_v1(child, &mut originals[offset])
             .map_err(|_| InitialTpmHelperBirthClosedV1)?;
         let context = observations
-            .observe_context_retaining_v1(child, &mut self.handoff.proc_posts[offset + 1])
+            .observe_context_retaining_v1(child, &mut originals[offset + 1])
             .map_err(|_| InitialTpmHelperBirthClosedV1)?;
         if Some(identity) != *self.identity
             || !context_matches(

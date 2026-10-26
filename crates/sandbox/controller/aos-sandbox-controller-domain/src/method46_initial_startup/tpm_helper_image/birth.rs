@@ -178,6 +178,41 @@ impl Method46InitialTpmHelperBirthLoanV1<'_> {
 }
 
 impl Method46InitialTpmHelperDrivingLoanV1<'_> {
+    /// Sends this Source's held private index auth to its acknowledged helper once.
+    ///
+    /// The same native driver must already have measured the fixed child and
+    /// admitted its nonce-bound lock ACK. A bounded send wait and original child
+    /// post precede the independent Source check; only then can the private
+    /// credential owner borrow its original zeroizing bytes for the actual send.
+    /// This exposes no secret, caller buffer or selectable native destination.
+    ///
+    /// # Errors
+    /// Refuses failed/ended Source, missing original ACK, reentry, timeout,
+    /// missing/ended/busy credential custody or failed native send/posts. The
+    /// original Source is observed independently after a reached failed action.
+    /// Successful transmission authorizes no TPM observation or checkpoint.
+    pub fn authenticate_held_index_once_v1(
+        &mut self,
+    ) -> Result<(), Method46InitialStartupClosedV1> {
+        require_current(self.startup)?;
+        let action = self.native.wait_auth_once_v1();
+        observe_after(self.startup, action)?;
+
+        let action = (|| {
+            let body = self
+                .startup
+                .body
+                .as_ref()
+                .ok_or(InitialTpmHelperBirthClosedV1)?;
+            let mut credentials = body
+                .credentials
+                .try_borrow_mut()
+                .map_err(|_| InitialTpmHelperBirthClosedV1)?;
+            credentials.transmit_held_helper_auth_once(&mut self.native)
+        })();
+        observe_after(self.startup, action)
+    }
+
     /// Hands both original writer lock descriptions to the same measured helper.
     ///
     /// The public HELLO uses this Source's captured canonical provisioning and

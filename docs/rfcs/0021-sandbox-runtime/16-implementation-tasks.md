@@ -31,6 +31,26 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The initial Source can now lend its already-held private index auth only
+  into the same acknowledged helper's native sender. A bounded AUTH send wait
+  and held-child observation precede an independent Source currentness check;
+  the private credential adapter accepts no caller buffer, callback or channel.
+  Its one-shot borrow keeps the original zeroizing credential and terminal
+  readbacks resident. The Source-owned native helper retains the zeroizing
+  AUTH frame, actual send error, same-socket post, held-child post and original
+  finite deadline. HELLO, ACK and AUTH share one held-child observation recipe;
+  no executable maps are reread after nondumpability. Construction and bounded
+  native work are prepaid using the same existing helper runtime calculation.
+  Non-test Security library compilation, the nine existing native transport
+  regressions, 427 Broker, 125 focused Source, 428 ordinary Security and 437
+  online-Nix Security tests pass. One Broker case and two cases in each Security
+  suite remain ignored. Full application compilation is running on the audited
+  68-source snapshot, with both deleted-module absences checked and production
+  policy excluded from its 833-derivation closure. This still supplies no TPM
+  request or observation API. Security's complete approved initial NV workflow,
+  positive installed Source/helper AUTH, canonical checkpoint and lifecycle and
+  recovery qualification remain open. Admission stays closed.
+
 - The initial Source's measured-child driving loan now supplies a bounded
   public HELLO and lock-ACK handoff. Its captured canonical provisioning selects
   the endpoint and salt Name; its actual writer loan supplies both original

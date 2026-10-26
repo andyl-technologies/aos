@@ -19,6 +19,7 @@ use zeroize::Zeroizing;
 
 use super::*;
 
+mod helper_auth;
 mod entries;
 mod genesis_public;
 mod observation;
@@ -179,6 +180,7 @@ pub(super) struct InitialCredentialsOriginalV1 {
     completed: bool,
     post_entered: bool,
     decode_loan_issued: bool,
+    helper_auth_attempted: bool,
 }
 
 impl InitialCredentialsOriginalV1 {
@@ -220,6 +222,7 @@ impl InitialCredentialsOriginalV1 {
             completed: false,
             post_entered: false,
             decode_loan_issued: false,
+            helper_auth_attempted: false,
         }
     }
 
