@@ -530,6 +530,7 @@ impl LiveVcpuTimeCallbackState {
                 .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?
             };
             self.zero_length_idle_answer.set(zero_length_idle_advance);
+            self.claim_zero_length_advance_answered_at_control_boundary(current_icount)?;
             if let Some((captured, capture_request)) = private_capture {
                 self.submit_fingerprint_sample(captured, capture_request)?;
             }

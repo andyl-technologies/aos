@@ -171,6 +171,42 @@ impl LiveVcpuTimeCallbackState {
         published.map(|_published| ())
     }
 
+    /// Claims the live zero-length advance as answered by a control boundary.
+    ///
+    /// The host's post-quantum clamp is a zero-length advance that carries a
+    /// control request, and the clamp completes on that request's ACK. Once
+    /// the control-boundary writer has published at the clamp's coordinate,
+    /// a later budget-query answer to the same advance would only republish
+    /// the marker, and it could land after the host published the next RUN
+    /// and be read as that RUN's report. Claiming the advance here makes that
+    /// query find it already answered. An advance that ends past the current
+    /// coordinate is not zero-length and is left alone.
+    ///
+    /// This also covers the RUN-start case the control-boundary record for
+    /// zero-length idles assumed: a console RUN carries no control request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LiveVcpuTimeCallbackError::IdleHotLoop`] when the published
+    /// advance cannot be read.
+    pub(super) fn claim_zero_length_advance_answered_at_control_boundary(
+        &self,
+        current_icount: u64,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let advance = self
+            .slot
+            .get()
+            .load_scheduler_advance_publication()
+            .map_err(|source| LiveVcpuTimeCallbackError::IdleHotLoop {
+                source: IdleHotLoopError::AdvanceStopCondition { source },
+            })?;
+        if advance.sequence() != 0 && advance.ceiling() == current_icount {
+            self.answered_zero_length_advance
+                .store(advance.sequence().wrapping_add(1), Ordering::Release);
+        }
+        Ok(())
+    }
+
     /// Notes a budget query that met a zero-length advance, when traced.
     fn note_zero_length_query(&self, reason: zero_length_trace::ZeroLengthQuery, raw_icount: u64) {
         if !zero_length_trace::enabled() {
