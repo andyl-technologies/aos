@@ -61,6 +61,10 @@ pub enum RetainedCaptureProtocolData<'a> {
     ///
     /// Actual typed fields and extensions retain their independent backing.
     RestoredSuffixBody(crate::client::OriginalRestoredSuffixBody<'a>),
+    /// Borrows a separately retained Input terminal, including rejected DATA.
+    ///
+    /// The enclosing Source checks its creator. No input custody is authenticated.
+    RestoredInputResult(&'a InputResult),
     /// Borrows independent restored receipt and underlying model partials.
     ///
     /// Missing or inconsistent partners remain DATA without acquiring native
@@ -124,6 +128,8 @@ impl RetainedCaptureProtocolData<'_> {
             + crate::reference_packet::service::restored_input_reactive17::PacketRestoredInputReactive17RetainedData::capacity_counter_scratch_data()
             + crate::reference_packet::service::complete_restore::producer_progress::PacketRestoredProducerTypedOwnerData::capacity_counter_scratch_data()
             + crate::client::OriginalRestoredSuffixBody::capacity_counter_scratch_data()
+            + size_of::<(&IdSet, &U64, &ContentRef, &HashRef)>()
+            + size_of::<&InputResult>()
             + size_of::<Self>()
             + size_of::<&Self>()
             + size_of::<MetadataObserver<'static>>()
@@ -151,7 +157,8 @@ impl RetainedCaptureProtocolData<'_> {
             | Self::RestorationObservation(_)
             | Self::RestoredInputReactive17(_)
             | Self::RestoredProducerTyped(_)
-            | Self::RestoredSuffixBody(_) => Ok(()),
+            | Self::RestoredSuffixBody(_)
+            | Self::RestoredInputResult(_) => Ok(()),
             Self::SnapshotReservation(value) => value.check_capacity_creator_data(),
             Self::Snapshot(value) => value.check_capacity_creator_data(),
             Self::PayloadOwner(value) => value.check_capacity_creator_data(),
@@ -179,6 +186,7 @@ impl RetainedCaptureProtocolData<'_> {
             Self::RestoredInputReactive17(value) => value.observe_capacity_data(observer),
             Self::RestoredProducerTyped(value) => value.observe_capacity_data(observer),
             Self::RestoredSuffixBody(value) => value.observe_capacity_data(observer),
+            Self::RestoredInputResult(value) => observer.observe(*value),
             Self::RestorationNativeEvidence(record, underlying) => {
                 crate::reference_packet::service::complete_restore::activation::observe_restoration_native_capacity_data(
                     *record, *underlying, observer,
@@ -481,3 +489,7 @@ mod tests {
         assert!(facts.string_capacity_bytes >= expected);
     }
 }
+
+#[cfg(test)]
+#[path = "capture_data/input_result_tests.rs"]
+mod input_result_tests;

@@ -37,6 +37,9 @@ use std::{
     thread::ThreadId,
 };
 
+#[path = "restored_input_reactive17/capacities.rs"]
+mod capacities;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Stage {
     Assigned,

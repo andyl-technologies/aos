@@ -10,7 +10,9 @@ use crate::node_admission::{
     OriginalInstalledRestorationObservationSigningInputs, OriginalRestoredSuffixCheckpointData,
     OriginalRestoredSuffixConstructionData, OriginalRestoredSuffixSeedClaim,
 };
-use crate::node_contract::RuntimeError;
+use crate::node_contract::{
+    RuntimeError, restored_owner_history::OriginalOwnerCapacityMetadataData,
+};
 use crate::node_scheduling::NativeSchedulingObservation;
 use crucible_node_format::{ContentRef, Position};
 use crucible_node_transport::reference_packet::{
@@ -76,6 +78,57 @@ impl OriginalRestoredSuffixSeed {
 
     pub(super) fn retained_counter_scratch_data() -> usize {
         size_of::<FixedSeedFields<'static>>() + size_of::<&Self>() + size_of::<usize>()
+    }
+
+    /// Checks the fixed seed's original creator and actual containing Source.
+    ///
+    /// # Errors
+    /// Refuses foreign creators or a seed retained for another Source allocation.
+    pub(super) fn check_capacity_creator_data(
+        &self,
+        source: &PacketCompleteSemanticSource,
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_origin_data(source)
+    }
+
+    /// Keeps every fixed seed field inline without validating its checkpoint.
+    ///
+    /// # Errors
+    /// Refuses foreign creators or a seed retained for another Source allocation.
+    pub(super) fn record_capacity_data(
+        &self,
+        source: &PacketCompleteSemanticSource,
+        census: &mut OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        self.check_capacity_creator_data(source)?;
+
+        let Self {
+            process,
+            thread,
+            source: original,
+            controller,
+            checkpoint,
+            signature,
+            stage,
+        } = self;
+        census.observe_inline_data(process);
+        census.observe_inline_data(thread);
+        census.observe_inline_data(original);
+        census.observe_inline_data(controller);
+        census.observe_inline_data(checkpoint);
+        census.observe_inline_data(signature);
+        census.observe_inline_data(stage);
+
+        self.check_capacity_creator_data(source)
+    }
+
+    /// Names the exact inline seed fields and their borrowed census controls.
+    pub(super) fn capacity_counter_scratch_data() -> usize {
+        size_of::<FixedSeedFields<'_>>()
+            + size_of::<&Self>()
+            + size_of::<&PacketCompleteSemanticSource>()
+            + size_of::<&mut OriginalOwnerCapacityMetadataData<'_>>()
+            + size_of::<Result<(), RuntimeError>>()
     }
 
     fn authenticate_origin_data(
@@ -853,3 +906,7 @@ pub(super) fn historical_checkpoint17_data(
 ) -> Result<OriginalRestoredSuffixCheckpointData, RuntimeError> {
     checkpoint_data(restoration_proof, record, underlying, scheduling)
 }
+
+#[cfg(test)]
+#[path = "restoration_continuation/capacity_tests.rs"]
+mod capacity_tests;
