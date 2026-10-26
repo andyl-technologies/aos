@@ -26,6 +26,10 @@
       after = ["${hold}.service"];
     };
   migrationOwner = {
+    # Ordering references keep both stopped owners loaded while these fixture
+    # services run. Stopping a standalone inactive unit lets PID1 collect it;
+    # the production exclusion guard deliberately refuses a missing owner.
+    after = map (name: "${name}.service") normal;
     serviceConfig = {
       Type = "simple";
       ExecStart = "${pkgs.coreutils}/bin/sleep infinity";
@@ -89,6 +93,9 @@ in {
 
     vm.succeed("systemctl stop " + " ".join(normal))
     vm.succeed(f"systemctl start {target} {victim}")
+    for owner in normal:
+        assert vm.succeed(f"systemctl show --value --property=LoadState {owner}").strip() == "loaded"
+        assert vm.succeed(f"systemctl show --value --property=ActiveState {owner}").strip() == "inactive"
     pid = int(vm.succeed(f"systemctl show --value --property=MainPID {victim}"))
     assert pid > 1
     original_group = vm.succeed(f"cat /proc/{pid}/cgroup")
@@ -101,7 +108,7 @@ in {
         assert vm.succeed(f"systemctl show --value --property=MainPID {unit}").strip() == "0"
 
         for owner in normal + [other for other in initial if other != unit]:
-            output = vm.fail(f"systemctl --no-block start {owner}")
+            output = vm.fail(f"systemctl --no-block start {owner} 2>&1")
             assert "manual METHOD46 initialization interval" in output, output
         vm.fail(attach(target, pid))
         assert vm.succeed(f"cat /proc/{pid}/cgroup") == original_group

@@ -38,8 +38,8 @@ Recent committed startup fixes close narrower prerequisites:
   normal unit fragment/argv, and joins canonical-policy provenance to a fresh
   effective-policy check. Public approval bytes and Controller UID/GID are
   bounded configuration inputs; no secret or TPM state enters the derivation.
-  Seven source-only producer tests pass, including both generated purposes,
-  exact UTF-8 argument bounds, unit self-reference and conflicting policy
+  Seven source-only producer tests and core evaluation pass. Regressions cover
+  both generated purposes, exact UTF-8 argument bounds, unit self-reference and conflicting policy
   provenance. The package factory instantiates. A real selected-image build
   still requires the initializer binaries, installed units and approved policy;
   this producer supplies comparison DATA and does not qualify startup or effects.
@@ -78,7 +78,11 @@ Recent committed startup fixes close narrower prerequisites:
   active fixture ordering references that retain the stopped owners. The first
   fixture refused its initial start before establishing an exclusion interval;
   standalone inactive owner definitions could be garbage-collected. The production
-  guard remains unchanged. The test queues each manual job before producer birth,
+  guard remains unchanged. The next run established the queued Controller job
+  with zero MainPID and observed PID1 reject a competing Controller start; its
+  assertion missed the diagnostic because the driver returns stdout separately
+  from stderr. The current test captures both streams and retains that assertion.
+  It queues each manual job before producer birth,
   checks conflicting starts and process migration, and checks migration after
   cancellation. Its closure contains no production policy. It supplies no
   installed producer, Source admission, durable intent or TPM qualification.
