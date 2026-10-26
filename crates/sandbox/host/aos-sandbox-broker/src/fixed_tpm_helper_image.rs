@@ -104,6 +104,7 @@ impl FixedTpmHelperPurposeV1 {
 /// The owner must independently admit its Source, process, channel and effect.
 #[must_use = "retain both measured originals through their owed comparisons"]
 pub struct MeasuredHelperImageV1 {
+    purpose: FixedTpmHelperPurposeV1,
     executable: MeasuredFileV1,
     loader: MeasuredFileV1,
 }
@@ -207,7 +208,11 @@ impl MeasuredHelperImageV1 {
                 original.loader = original.files[1].take_completed_measurement_once();
                 match (original.executable.take(), original.loader.take()) {
                     (Some(executable), Some(loader)) => {
-                        original.image = Some(Self { executable, loader });
+                        original.image = Some(Self {
+                            purpose,
+                            executable,
+                            loader,
+                        });
                     }
                     (executable, loader) => {
                         original.executable = executable;
@@ -232,6 +237,7 @@ impl MeasuredHelperImageV1 {
             }
             None => {
                 let mut image = Self {
+                    purpose,
                     executable: MeasuredFileV1::open(path, executable_digest)?,
                     loader: MeasuredFileV1::open(loader_path, loader_digest)?,
                 };
@@ -239,6 +245,21 @@ impl MeasuredHelperImageV1 {
                 Ok(image)
             }
         }
+    }
+
+    /// Returns the closed purpose whose compiled image and pins were measured.
+    ///
+    /// This immutable selector authenticates no Source, process or TPM effect.
+    pub const fn purpose_data_v1(&self) -> FixedTpmHelperPurposeV1 {
+        self.purpose
+    }
+
+    /// Borrows the measured executable description for fixed native setup.
+    ///
+    /// The owner must fund a duplicate before native handoff. This read-only
+    /// borrow is comparison custody, not process or effect authorization.
+    pub fn executable_description_v1(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.executable.original_descriptor_v1()
     }
 
     /// Borrows the original compiled executable path as comparison DATA.

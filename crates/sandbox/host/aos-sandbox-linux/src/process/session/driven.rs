@@ -332,6 +332,7 @@ pub struct FixedProcessDrivenSessionV1 {
     outcome: Option<FixedProcessRetainedSessionOutcome<()>>,
     invocation_disposition: InvocationDisposition,
     spawn_original: Option<Box<super::super::FixedProcessSpawnFailureV2>>,
+    reaping_original: Option<Box<super::super::run_original::ReapingOriginalV3>>,
     single_thread: PhantomData<Rc<()>>,
 }
 
@@ -360,6 +361,7 @@ impl FixedProcessDrivenSessionV1 {
             outcome: None,
             invocation_disposition: InvocationDisposition::Descriptor,
             spawn_original: None,
+            reaping_original: None,
             single_thread: PhantomData,
         }
     }
@@ -393,7 +395,8 @@ impl FixedProcessDrivenSessionV1 {
     /// This mechanical alternative retains failed setup descriptors and the
     /// exact native cause. It grants no execution, image, F or role authority.
     /// The caller must fund the compiled prefix before this allocation and
-    /// separately retain its reaping/proc-task and raw exec-helper providers.
+    /// retain the raw exec-helper provider separately. The selected owner also
+    /// retains the actual failed reaping/task-directory prefix.
     #[must_use]
     pub fn park_path_retaining_spawn_v2(
         prepared: FixedProcessPreparedInvocationV1,
@@ -402,23 +405,33 @@ impl FixedProcessDrivenSessionV1 {
     ) -> Self {
         let mut owner = Self::park_path(prepared, inputs, cut);
         owner.spawn_original = Some(Box::new(super::super::FixedProcessSpawnFailureV2::new()));
+        owner.reaping_original = Some(Box::new(
+            super::super::run_original::ReapingOriginalV3::new(),
+        ));
         owner
     }
 
     /// Returns compiled prefix bytes and its complete setup descriptor bound.
     ///
     /// This passive DATA covers the selected PATH setup only. Existing child,
-    /// timer, capture, actual inputs and reaping validation remain separate.
+    /// timer, capture and actual inputs remain separate. The task-directory
+    /// representation and its one actual reader are included.
     #[must_use]
     pub fn path_spawn_receiving_demand_v2() -> Option<(usize, usize)> {
         let bytes = std::mem::size_of::<super::super::FixedProcessSpawnFailureV2>()
             .checked_mul(3)?
+            .checked_add(
+                std::mem::size_of::<super::super::run_original::ReapingOriginalV3>().checked_mul(3)?,
+            )?
+            .checked_add(
+                super::super::FixedProcessRunOriginalV3::task_directory_transient_bytes_data_v3()?,
+            )?
             .checked_add(4usize.checked_mul(std::mem::size_of::<OwnedFd>())?)?
             .checked_add(8usize.checked_mul(std::mem::size_of::<BorrowedFd<'_>>())?)?
             .checked_add(2048)?;
         // /dev/null + two pipe pairs + three high aliases + supplied stdin
-        // + the existing four inherited roles + the actual typed pidfd.
-        Some((bytes, 14))
+        // + four inherited roles + the typed pidfd + retained task reader.
+        Some((bytes, 15))
     }
 
     /// Arms a borrowing closure guard synchronously, including unpolled use.
@@ -500,7 +513,12 @@ impl FixedProcessDrivenSessionV1 {
         )?;
         validate_executable_descriptor(executable.as_fd())
             .map_err(FixedProcessDrivenCauseV1::Process)?;
-        validate_exclusive_reaping_owner().map_err(FixedProcessDrivenCauseV1::Process)?;
+        if let Some(original) = self.reaping_original.as_mut() {
+            super::super::validate_exclusive_reaping_owner_into(original)
+                .map_err(FixedProcessDrivenCauseV1::Process)?;
+        } else {
+            validate_exclusive_reaping_owner().map_err(FixedProcessDrivenCauseV1::Process)?;
+        }
 
         self.capture.prepare_limits::<Infallible>(
             self.prepared.maximum_stdout_bytes,
@@ -950,6 +968,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retaining_path_keeps_actual_task_directory_after_refusal_and_unwind() {
+        std::thread::scope(|scope| {
+            let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
+            let (release_sender, release_receiver) = std::sync::mpsc::channel::<()>();
+            scope.spawn(move || {
+                ready_sender.send(()).unwrap();
+                let _released = release_receiver.recv();
+            });
+            ready_receiver.recv().unwrap();
+
+            use std::os::unix::fs::PermissionsExt as _;
+
+            // Only the mechanical immutable-mode check precedes reaping. This
+            // real temporary file is not an admitted image and is never exec'd.
+            let fixture = tempfile::NamedTempFile::new().unwrap();
+            fixture
+                .as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o555))
+                .unwrap();
+            let path = fixture.path();
+            let executable = std::fs::File::open(path).unwrap();
+            let prepared = prepare_fixed_process_driven_invocation_v1(FixedProcessRequest {
+                executable: path,
+                arguments: &[],
+                timeout: Duration::from_secs(1),
+                maximum_stdout_bytes: 32,
+                maximum_stderr_bytes: 32,
+            })
+            .unwrap();
+            let now = crate::uapi::boottime_nanoseconds().unwrap();
+            let cut = FixedProcessBoottimeCutV1::new(now.checked_add(60_000_000_000).unwrap()).unwrap();
+            let mut owner = FixedProcessDrivenSessionV1::park_path_retaining_spawn_v2(
+                prepared,
+                FixedProcessDrivenInputsV1 {
+                    executable: executable.into(),
+                    stdin: None,
+                    inherited: Vec::new(),
+                    capture: FixedProcessCaptureV1::new(),
+                },
+                cut,
+            );
+
+            let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut driving = owner.drive();
+                driving.advance_once();
+                // The two real threads force refusal before any fork. Catching
+                // a later interruption must retain that same native prefix.
+                panic!("interrupt after actual exclusive-reaping refusal");
+            }));
+
+            assert!(interrupted.is_err());
+            let reaping = owner.reaping_original.as_ref().unwrap();
+            assert!(reaping.tasks.is_some());
+            assert!(reaping.first.is_some());
+            assert!(reaping.second.is_some());
+            assert!(owner.run.is_none());
+            assert!(owner.timer.is_none());
+            match owner.cause().unwrap() {
+                FixedProcessDrivenCauseV1::Process(cause) => {
+                    assert!(cause.to_string().contains("exactly single-threaded"));
+                }
+                cause => panic!("lost original reaping refusal: {cause}"),
+            }
+            drop(release_sender);
+        });
+    }
+
+    #[test]
     fn numeric_cut_rejects_unbounded_values_without_sampling() {
         assert!(FixedProcessBoottimeCutV1::new(0).is_err());
         assert!(FixedProcessBoottimeCutV1::new(u64::MAX).is_err());
@@ -974,6 +1060,7 @@ mod tests {
             finish: None, cause: None, debt: None, outcome: None,
             invocation_disposition: InvocationDisposition::Path,
             spawn_original: None,
+            reaping_original: None,
             single_thread: PhantomData,
         };
 

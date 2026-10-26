@@ -31,6 +31,34 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The genuine initial Source's durable-intent lock loan now prepays and lends
+  a fixed helper child reservoir. Construction precedes allocation; the actual
+  finite inherited stack and shared helper runtime calculation precede native
+  pair, process, proc and image work. The measured image retains its compiled
+  purpose, and the initial purpose selects a fixed root-helper MAC context.
+  The existing native process supervisor retains spawn setup, exec confirmation,
+  pidfd, bounded output and cleanup debt; its retaining path also preserves the
+  actual failed single-thread task-directory reader. Opaque Source/child loans
+  span original stat/context and executable/loader-map comparisons, and the
+  terminal image post follows the same original after its custody transfer.
+  Non-test Security library compilation and the real two-thread/caught-unwind
+  native reaping regression pass. All 427 shared Broker, 125 focused initial
+  Source, 428 ordinary Security and 437 online-Nix Security tests pass on the
+  final composition. Security retains this preparation loan only
+  after rederiving the same verified approval, completed durable intent and
+  actual lock custody; refusal releases its temporary helper borrow before
+  independent native posts. One Broker case and two cases in each Security
+  suite remain ignored. Full application target compilation is running on the
+  audited snapshot: its
+  833-derivation closure excludes production policy and matches all 62 changed
+  Rust sources plus both deleted-module absences. The retirement regression now
+  checks a unique private ancestor with metadata only, allowing legitimate
+  numeric FD reuse without opening a reused target.
+  There is no HELLO, record-subject ACK, private-auth transfer or TPM operation
+  API in this birth loan. No installed positive Source or confined helper birth
+  is yet qualified. Initialization, checkpoint and installed lifecycle/recovery
+  remain open; admission stays closed.
+
 - Normal Security and the initial Source now use the same canonical public
   METHOD46 profile/provisioning decoder. The initial Source reads its actual
   captured public credential, retains its salt Name and checks the fixed role
@@ -42,8 +70,10 @@ Recent committed startup fixes close narrower prerequisites:
   resident and unexported. All 4 new Protocol, 426 shared Broker, 124 focused
   initial-Source, 428 ordinary Security and 437 online-Nix Security tests pass;
   one Broker and two cases in each Security suite remain ignored. Full
-  application target compilation is in progress on the audited source; its
-  833-derivation closure excludes production policy. This supplies shared DATA codecs,
+  application compilation exposed a non-test digest import used by two child
+  credential modules. The import is restored, and an explicit non-test library
+  check passes. Full compilation is running with the child-custody batch; its
+  closure excludes production policy. This supplies shared DATA codecs,
   not an authenticated helper carrier: child birth, private-auth handoff, TPM
   initialization, checkpoint and installed lifecycle/recovery remain open.
   Admission stays closed.
@@ -59,9 +89,10 @@ Recent committed startup fixes close narrower prerequisites:
   pair; a refused or busy helper post cannot suppress the original Source after.
   All 422 shared Broker, 124 focused initial-Source, 432 ordinary Security and
   441 online-Nix Security tests pass; one Broker and two cases in each Security
-  suite remain ignored. Full application unit/integration compilation is in
-  progress on the audited final source; its 833-derivation closure excludes
-  production policy. This is passive file
+  suite remain ignored. Full application unit/integration compilation passed
+  on that audited final snapshot (`h9hjyin0lq6yfh72q8l9vdw1rrj3gpk2`); its
+  833-derivation closure excludes production policy. This result precedes the
+  shared-codec and child-custody changes. This is passive file
   custody: no helper child starts, private auth remains unexported and no TPM
   observation or effect occurs. Normal packages do not select the initial helper
   compile variables. A positive installed Source, measured child/carrier auth

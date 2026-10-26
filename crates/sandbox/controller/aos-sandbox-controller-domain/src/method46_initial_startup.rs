@@ -39,6 +39,9 @@ pub use credentials::{
 mod images;
 mod main_writer;
 mod tpm_helper_image;
+pub use tpm_helper_image::{
+    Method46InitialTpmHelperBirthLoanV1, Method46InitialTpmHelperDrivingLoanV1,
+};
 pub use main_writer::{
     METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1, METHOD46_INITIAL_MAIN_CUT_BYTES_V1,
     METHOD46_INITIAL_SESSION_SCHEMA_BYTES_V1, METHOD46_INITIAL_SESSION_SCHEMA_CELLS_V1,
@@ -65,6 +68,7 @@ enum First {
     StoppedOwners,
     MainWriter,
     TpmHelperImage,
+    TpmHelperBirth,
     Order,
 }
 

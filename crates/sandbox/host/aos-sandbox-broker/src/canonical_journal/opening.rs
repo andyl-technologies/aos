@@ -916,24 +916,59 @@ mod tests {
         // /tmp's shared writable ancestry intentionally fails protected
         // traversal. Use a private leaf beside this actual test executable.
         let executable = std::env::current_exe().unwrap();
-        let directory = tempfile::Builder::new().prefix("writer-traversal-")
-            .tempdir_in(executable.parent().unwrap()).unwrap();
+        let directory = tempfile::Builder::new()
+            .prefix("writer-traversal-")
+            .tempdir_in(executable.parent().unwrap())
+            .unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Keep one uniquely owned ancestor above the actual journal leaf.
+        // Other test threads may immediately reuse any retired FD number.
+        let journal_directory = directory.path().join("journal");
+        std::fs::create_dir(&journal_directory).unwrap();
+        std::fs::set_permissions(&journal_directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let private_identity = std::fs::metadata(directory.path()).unwrap();
         let uid = rustix::process::geteuid().as_raw();
         let mut opening = CanonicalWriterOpeningOriginalsV1::new();
         // This fixture begins empty: the genuine creation path must create
         // both private native files before replay and positive handoff.
-        opening.prepare_once(directory.path(), "history", JournalLimits::default(), uid, true)
-            .unwrap_or_else(|cause| panic!("native preparation: {cause}; original: {:?}", opening.failure()));
+        opening
+            .prepare_once(
+                &journal_directory,
+                "history",
+                JournalLimits::default(),
+                uid,
+                true,
+            )
+            .unwrap_or_else(|cause| {
+                panic!(
+                    "native preparation: {cause}; original: {:?}",
+                    opening.failure()
+                )
+            });
         opening.prepare_selected_parser_identity_once().unwrap();
         {
             let mut cursor = opening.begin_semantic_replay_once().unwrap();
             assert!(!cursor.advance_once().unwrap());
             assert!(cursor.completed_prefix().is_some());
         }
-        opening.finish_replayed_tail_once(RecoveryTailMode::RejectIncomplete).unwrap();
-        let ancestors: Vec<_> = opening.ancestors.iter().map(|file| file.as_raw_fd()).collect();
+        opening
+            .finish_replayed_tail_once(RecoveryTailMode::RejectIncomplete)
+            .unwrap();
+        let ancestors: Vec<_> = opening
+            .ancestors
+            .iter()
+            .map(|file| file.as_raw_fd())
+            .collect();
         assert!(!ancestors.is_empty());
+        let private_ancestor_fd = opening
+            .ancestors
+            .iter()
+            .find_map(|file| {
+                let metadata = file.metadata().unwrap();
+                ((metadata.dev(), metadata.ino()) == (private_identity.dev(), private_identity.ino()))
+                    .then(|| file.as_raw_fd())
+            })
+            .unwrap();
         assert!(opening.retire_completed_traversal_once_v1().is_err());
         assert_eq!(opening.ancestors.len(), ancestors.len());
 
@@ -944,16 +979,27 @@ mod tests {
         opening.retire_completed_traversal_once_v1().unwrap();
 
         assert!(opening.ancestors.is_empty());
-        for fd in ancestors {
-            assert_eq!(std::fs::symlink_metadata(format!("/proc/self/fd/{fd}"))
-                .unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        // An absent number or a reused number naming another description both
+        // prove this private ancestor retired. A still-open original fails.
+        match std::fs::metadata(format!("/proc/self/fd/{private_ancestor_fd}")) {
+            Ok(actual) => {
+                assert_ne!(
+                    (actual.dev(), actual.ino()),
+                    (private_identity.dev(), private_identity.ino())
+                );
+            }
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
         }
         for (file, expected) in [
-            (&opened.directory, directory_identity), (&opened.file, journal_identity),
+            (&opened.directory, directory_identity),
+            (&opened.file, journal_identity),
             (&opened.lock, lock_identity),
         ] {
             let actual = file.metadata().unwrap();
-            assert_eq!((actual.dev(), actual.ino()), (expected.dev(), expected.ino()));
+            assert_eq!(
+                (actual.dev(), actual.ino()),
+                (expected.dev(), expected.ino())
+            );
         }
         assert!(opening.retire_completed_traversal_once_v1().is_err());
         assert!(opening.failure().is_none());

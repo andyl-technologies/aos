@@ -6,10 +6,12 @@
 
 use aos_sandbox_controller_domain::method46_initial_startup::{
     METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1, Method46InitialIntentFileLoanV1,
-    Method46InitialTpmLockLoanV1,
+    Method46InitialTpmHelperBirthLoanV1, Method46InitialTpmLockLoanV1,
 };
 
 use super::*;
+
+mod helper_birth;
 
 pub(super) struct InitialIntentPublicationOriginal<'owner> {
     entered: bool,
@@ -26,6 +28,9 @@ pub(super) struct InitialIntentPublicationOriginal<'owner> {
     locks: Option<Method46InitialTpmLockLoanV1<'owner>>,
     locks_result: Option<Result<(), Method46InitialDataErrorV1>>,
     locks_after: Option<Result<(), Method46InitialStartupClosedV1>>,
+    helper_entered: bool,
+    helper: Option<Method46InitialTpmHelperBirthLoanV1<'owner>>,
+    helper_result: Option<Result<(), Method46InitialDataErrorV1>>,
 }
 
 const _: () = assert!(METHOD46_INITIAL_INTENT_BYTES_V1 == METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1);
@@ -45,10 +50,16 @@ impl<'owner> InitialIntentPublicationOriginal<'owner> {
             locks: None,
             locks_result: None,
             locks_after: None,
+            helper_entered: false,
+            helper: None,
+            helper_result: None,
         }
     }
 
     fn finish_after_owed(&mut self) {
+        // Release the temporary borrow before native posts; the actual helper
+        // and any failed process prefixes remain in the original Source body.
+        self.helper.take();
         if self.locks_after.is_none() {
             if let Some(locks) = self.locks.as_ref() {
                 self.locks_after = Some(locks.finish_after_owed_v1());

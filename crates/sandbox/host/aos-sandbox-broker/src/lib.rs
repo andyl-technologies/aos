@@ -16,8 +16,14 @@ pub mod immutable_image;
 /// Measures closed compiled TPM-helper purposes without granting role authority.
 pub mod fixed_tpm_helper_image;
 
+/// Retains native child birth for the closed initial TPM helper purposes.
+pub mod fixed_initial_tpm_helper_birth;
+
 /// Shares canonical fixed TPM-helper frame DATA without physical authority.
 pub mod fixed_tpm_helper_wire;
+
+/// Shares the fixed source-built TPM helper runtime representation.
+pub mod fixed_tpm_helper_runtime;
 
 /// Shares bounded nonzero kernel entropy DATA and retained partial fills.
 #[cfg(target_os = "linux")]

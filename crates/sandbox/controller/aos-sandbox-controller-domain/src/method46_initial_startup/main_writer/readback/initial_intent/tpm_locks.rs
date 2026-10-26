@@ -13,7 +13,7 @@ use super::*;
 /// descriptions can unlock them and must be independently trusted and confined.
 #[must_use = "retain the actual lock owner until the helper and both posts finish"]
 pub struct Method46InitialTpmLockLoanV1<'owner> {
-    startup: &'owner Method46InitialStartupOriginalV1,
+    pub(in crate::method46_initial_startup) startup: &'owner Method46InitialStartupOriginalV1,
 }
 
 /// Holds an immutable borrow of the actual retained pair of lock descriptions.

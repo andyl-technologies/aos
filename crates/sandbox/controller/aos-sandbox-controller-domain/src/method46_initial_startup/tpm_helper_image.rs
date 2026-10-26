@@ -16,9 +16,14 @@ use aos_sandbox_protocol::method46_provisioning::{
 
 use super::*;
 
+mod birth;
+use aos_sandbox_broker::fixed_initial_tpm_helper_birth::FixedInitialTpmHelperBirthOriginalV1;
+pub use birth::{Method46InitialTpmHelperBirthLoanV1, Method46InitialTpmHelperDrivingLoanV1};
+
 pub(super) struct InitialTpmHelperImageOriginalV1 {
     acquisition: HelperImageAcquisitionOriginalV1,
     image: Option<MeasuredHelperImageV1>,
+    birth: Option<Box<FixedInitialTpmHelperBirthOriginalV1>>,
     capture: Option<Result<(), ImmutableImageErrorV1>>,
     provision: Option<Result<(Method46ProfileDataV1, [u8; 34]), Method46ProvisionDataErrorV1>>,
     node_matches: Option<bool>,
@@ -33,6 +38,7 @@ impl InitialTpmHelperImageOriginalV1 {
         Self {
             acquisition: HelperImageAcquisitionOriginalV1::new(),
             image: None,
+            birth: None,
             capture: None,
             provision: None,
             node_matches: None,
@@ -51,12 +57,18 @@ impl InitialTpmHelperImageOriginalV1 {
             return Err(Method46InitialStartupClosedV1);
         }
         self.posted = true;
-        self.post_result = Some(match self.image.as_ref() {
-            Some(image) => image.revalidate_owed_retaining_v1(&mut self.post),
-            None => self
-                .acquisition
-                .observe_available_held_once_v1(&mut self.post),
-        });
+        self.post_result = Some(
+            match self
+                .image
+                .as_ref()
+                .or_else(|| self.birth.as_ref().map(|birth| birth.image_original_v1()))
+            {
+                Some(image) => image.revalidate_owed_retaining_v1(&mut self.post),
+                None => self
+                    .acquisition
+                    .observe_available_held_once_v1(&mut self.post),
+            },
+        );
         if matches!(self.post_result, Some(Ok(()))) {
             Ok(())
         } else {
