@@ -373,13 +373,30 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         "decision=admitted reason=anchor-admitted",
     )?;
 
-    // A guest-choice boundary is never retained, so the completion forks
-    // from the follow-up anchor and replays the suffix to its parent.
-    let completion = choose(
+    // RFC-0020 05 / RFC-0010 ADV-12: an exact capture at the pending guest
+    // choice refuses, because no checkpoint carries the held guest stop and
+    // its peers' RUN plans. The refusal must leave the choice untouched.
+    let followup_pending = guest_choice::wait_for_choice(
+        &fixture,
+        "recovery.response",
+        &progress.parent,
+        &progress.configuration,
+    )?;
+    prove_pending_recovery_refuses_exact_capture(
+        &fixture,
+        &mut service,
+        &followup_disruption,
+        &followup_pending,
+    )?;
+
+    // HFORK-26: a guest-choice boundary is never retained, so the completion
+    // forks from the follow-up anchor, replays the recorded suffix to the
+    // identical pending request, and applies the selected reply there.
+    let completion = choose_known(
         &fixture,
         &mut service,
         &mut progress,
-        "recovery.response",
+        &followup_pending,
         &followup_recovery,
         "boundary:campaign.complete",
         0x76,
@@ -405,7 +422,6 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     println!("envoy_five_node_anchor_and_ancestor_hot_forks_authenticated=true");
     println!("envoy_five_node_completion={completion}");
 
-    prove_pending_recovery_exact_replay(&fixture, &mut service, &disruption, &requeried_recovery)?;
     println!("envoy_five_node_thin_replay_authenticated=true");
     println!("envoy_five_node_failover_and_recovery_authenticated=true");
 
@@ -605,7 +621,12 @@ fn require_bounded_primary_reached(attempt: &Value, primary: &str) -> Result<(),
     Ok(())
 }
 
-fn prove_pending_recovery_exact_replay(
+/// Proves an exact capture at a pending guest choice refuses and changes nothing.
+///
+/// The public capture status reports only `failed` by design today; it
+/// carries no reason. The named readiness reason is asserted through the
+/// service's refusal diagnostic row instead.
+fn prove_pending_recovery_refuses_exact_capture(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     disruption: &Value,
@@ -641,53 +662,55 @@ fn prove_pending_recovery_exact_replay(
     assert_eq!(capture["schema"], "crucible.cli.campaign-savepoint.v1");
     assert_eq!(capture["operation"], "capture-attempt");
     let request = json_string(&capture, "request")?;
-    let ready = wait_for_capture_ready(fixture, service, &request)?;
-    assert_eq!(ready["attempt"], attempt);
-    assert_eq!(ready["source_observation"], source_observation);
-    assert_eq!(ready["reached_configuration"], source_configuration);
-    let checkpoint = json_string(&ready, "checkpoint")?;
+    let resolved = wait_for_capture_resolution(fixture, service, &request)?;
+    assert_eq!(
+        resolved["outcome"], "failed",
+        "capture was not refused: {resolved}"
+    );
+    assert_eq!(resolved["attempt"], attempt);
+    assert_eq!(resolved["source_observation"], source_observation);
+    assert_eq!(resolved["reached_configuration"], source_configuration);
+    assert!(
+        resolved["checkpoint"].is_null(),
+        "refused capture published a checkpoint: {resolved}"
+    );
 
-    let head = campaign_status(fixture)?;
-    let selected = run_json(
-        connected_campaign(fixture)
-            .args([
-                "select-capture",
-                CAMPAIGN,
-                "--snapshot",
-                &json_string(&head, "snapshot")?,
-                "--request",
-                &request,
-                "--command",
-            ])
-            .arg("78".repeat(32))
-            .args(["--stop", "boundary:campaign.complete"]),
-        "select exact Envoy pending-choice continuation",
+    let refusal = format!(
+        "{SAVEPOINT_REFUSAL_DIAGNOSTIC_PREFIX}attempt={attempt} \
+         reason=unsettled-host-continuation node=none \
+         detail=physical checkpoint cannot retain held or unpublished host RUN outcomes"
+    );
+    let rows = service.stderr_lines_with_prefix(SAVEPOINT_REFUSAL_DIAGNOSTIC_PREFIX, 257, 512)?;
+    if !rows.iter().any(|row| row == &refusal) {
+        return Err(format!("campaign service did not report {refusal}; rows={rows:?}").into());
+    }
+
+    // The refusal is operational: the semantic campaign, its materialized
+    // checkpoints and retained roots, and the pending choice are unchanged.
+    let after = campaign_status(fixture)?;
+    assert_eq!(after["state"], head["state"]);
+    assert_eq!(after["semantic"], head["semantic"]);
+    for counter in ["materialized_checkpoints", "retained_checkpoint_roots"] {
+        assert_eq!(
+            after["operational"][counter], head["operational"][counter],
+            "refused capture changed {counter}"
+        );
+    }
+    let requeried = guest_choice::wait_for_choice(
+        fixture,
+        "recovery.response",
+        &source_parent,
+        &source_configuration,
     )?;
-    assert_eq!(selected["schema"], "crucible.cli.campaign-savepoint.v1");
-    assert_eq!(selected["operation"], "select-capture");
-    assert_eq!(selected["request"], request);
-    let continuation = AttemptId::parse(&json_string(&selected, "attempt")?)?;
-    let continuation_id = continuation.to_string();
-    let restored = wait_for_public_completed_attempt(fixture, service, continuation)?;
-    assert_eq!(restored["attempt"]["start"], "after-attempt");
-    assert_eq!(restored["attempt"]["origin"], attempt);
-    assert_eq!(restored["attempt"]["reached"], source_parent);
-    require_bounded_primary_reached(&restored, "boundary:campaign.complete")?;
-    assert_eq!(restored["runtime"]["phase"], "completed");
-    assert_eq!(restored["runtime"]["origin"], "selected-savepoint");
-    assert_eq!(restored["runtime"]["origin_checkpoint"], checkpoint);
-    assert_eq!(restored["runtime"]["source_request"], request);
-    require_semantic_marker(&restored, "fault.transport.primary-probed", "router-a")?;
-    require_semantic_marker(&restored, "fault.transport.signaled", "router-a")?;
-    require_semantic_marker(&restored, "campaign.complete", "traffic-west")?;
-    let materialization = guest_choice::capture_materialization_events(service)?;
-    guest_choice::assert_materialization_tier(&materialization, continuation_id, "ExactRestore")?;
-    println!("envoy_five_node_exact_restore_authenticated=true");
-    println!("envoy_five_node_pending_choice_exact_replay={restored}");
+    assert_eq!(&requeried, pending_recovery);
+    println!("envoy_five_node_exact_capture_refusal_authenticated=true");
     Ok(())
 }
 
-fn wait_for_capture_ready(
+const SAVEPOINT_REFUSAL_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-SAVEPOINT-CAPTURE-REFUSAL-V1 ";
+
+/// Waits for a capture request to reach a terminal outcome and returns it.
+fn wait_for_capture_resolution(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     request: &str,
@@ -697,7 +720,7 @@ fn wait_for_capture_ready(
         service.child.id(),
         envoy_attempt_limits(),
     );
-    let ready = wait_for_long_process_observation(watch.deadline(), || {
+    let resolved = wait_for_long_process_observation(watch.deadline(), || {
         if let Some(status) = service.child.try_wait()? {
             return Err(format!(
                 "Envoy campaign service exited before capture {request}: {status}"
@@ -729,51 +752,12 @@ fn wait_for_capture_ready(
         assert_eq!(report["operation"], "capture-status");
         assert_eq!(report["request"], request);
         match report["outcome"].as_str() {
-            Some("ready") => Ok(Some(report)),
+            Some("ready" | "failed" | "canceled") => Ok(Some(report)),
             Some("pending") => Ok(None),
-            Some("failed" | "canceled") => {
-                Err(format!("Envoy capture {request} failed: {report}").into())
-            }
             _ => Err(format!("Envoy capture {request} has invalid outcome: {report}").into()),
         }
     })?;
-    ready.ok_or_else(|| watch.safety_cap_expired().into())
-}
-
-fn wait_for_public_completed_attempt(
-    fixture: &FlightFixture,
-    service: &mut CampaignServiceChild,
-    attempt: AttemptId,
-) -> Result<Value, Box<dyn Error>> {
-    let mut watch = AttemptProgressWatch::new(
-        format!("exact continuation {attempt}"),
-        service.child.id(),
-        envoy_attempt_limits(),
-    );
-    let completed = wait_for_long_process_observation(watch.deadline(), || {
-        if let Some(status) = service.child.try_wait()? {
-            return Err(format!(
-                "Envoy campaign service exited before exact continuation {attempt}: {status}"
-            )
-            .into());
-        }
-        let head = campaign_status(fixture)?;
-        let snapshot = json_string(&head, "snapshot")?;
-        watch.sample_guest_progress(|| service_guest_progress(service));
-        let Some(explanation) = explain_public_attempt(fixture, &snapshot, &attempt.to_string())?
-        else {
-            watch.observe(&format!("snapshot={snapshot}"))?;
-            return Ok(None);
-        };
-        watch.observe(&format!(
-            "snapshot={snapshot} phase={}",
-            explanation["runtime"]["phase"]
-        ))?;
-        Ok((!explanation["observation"].is_null()
-            && explanation["runtime"]["phase"] == "completed")
-            .then_some(explanation))
-    })?;
-    completed.ok_or_else(|| watch.safety_cap_expired().into())
+    resolved.ok_or_else(|| watch.safety_cap_expired().into())
 }
 
 pub(super) fn initial_discovery_attempt(

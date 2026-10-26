@@ -478,7 +478,7 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
                     "envoy_five_node_hot_fork_resource_isolation_authenticated=true",
                     "envoy_five_node_hot_fork_resource_rejection_authenticated=true",
                     "envoy_five_node_thin_replay_authenticated=true",
-                    "envoy_five_node_exact_restore_authenticated=true",
+                    "envoy_five_node_exact_capture_refusal_authenticated=true",
                     "envoy_five_node_retention_authenticated=true",
                     "envoy_five_node_graceful_completion_authenticated=true",
                 ],
