@@ -31,6 +31,27 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The initial Source now also prepays actual normal Host configuration samples
+  before and after its interval. Each native sample must match the NoApply public
+  source selected by the initial job and Root, or its configured absence. Both
+  samples retain the same complete unique-PID1 service tuple, immutable fragment
+  path and six credential-property tables. Duplicate, substituted or alternative
+  delivery refuses. An earlier Controller, Storage, Root or Nix failure cannot
+  suppress Host's independently owed final observation. The existing fixed
+  configuration engine now covers all three public owners; the genuine Source
+  prepays all six observations, 412 outgoing and 428 incoming native-call slots,
+  receive reservoirs and bytes before construction. Resource-bank capacities and
+  the credential decoder's 36 KiB invoice remain unchanged. All 89 focused
+  initializer and 433 Security tests pass, with two existing ignored Security
+  cases. Complete application unit/integration target compilation is running
+  against the current combined source. Its frozen source includes all seventeen
+  Rust inputs changed since the policy-pin checkpoint. The older genesis and
+  Root key-pair builds were cancelled after proving none of their pending
+  derivations was needed by this build; the preceding build remains live because
+  it owns shared prerequisites. These observations establish public configuration
+  provenance, while complete endpoint/loader proof, offline Nix approval,
+  installed initial effects and public lifecycle qualification remain open.
+
 - Initial approval exclusion now includes Root's separately delivered NoApply
   public credential. Both retained native Root samples must match its public
   source and a distinct, canonically named private source, or agree that both
@@ -65,8 +86,8 @@ Recent committed startup fixes close narrower prerequisites:
   the four focused Root signer DATA tests pass. The privileged fixed-path
   fixture now covers the public copy's unsafe/replaced-file cases, but has not
   been executed. All 418 broker library tests pass, with the privileged case
-  ignored. Complete application unit/integration target compilation is running
-  for the three final Rust inputs. Initializer exclusion of this public pin,
+  ignored. The current combined application unit/integration target build
+  supersedes the cancelled three-file snapshot. Initializer exclusion of this public pin,
   complete actual Host delivery provenance and installed signing/effect
   qualification remain open.
 
@@ -89,8 +110,8 @@ Recent committed startup fixes close narrower prerequisites:
   All 87 focused initializer, 430 ordinary Security and 439 online-Nix Security
   tests pass, with two existing ignored cases per Security suite. The final
   weak-key test extension also passes all three focused genesis tests in the
-  ordinary configuration. Complete application unit/integration target compilation is
-  running for the ten final Rust files. Root NoApply signer provenance, offline
+  ordinary configuration. The current combined application unit/integration
+  target build supersedes the cancelled ten-file snapshot. Root NoApply signer provenance, offline
   Nix approval, complete endpoint provenance, durable approved intent, installed
   TPM effects and public lifecycle qualification remain open.
 

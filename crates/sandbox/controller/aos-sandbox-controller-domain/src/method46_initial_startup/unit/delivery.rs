@@ -286,6 +286,21 @@ pub(super) fn require_normal_root_public_sources(
     Ok(())
 }
 
+pub(super) fn require_normal_host_noapply_source(
+    values: &[OwnedValue],
+    fragment: &[u8],
+) -> Result<(), Method46InitialStartupClosedV1> {
+    // Root receives this public source from the existing Host credential option.
+    // The native Host sample must agree independently; Nix evaluation alone
+    // cannot establish the live manager's actual credential configuration.
+    let expected = selected_sources(fragment)?[31];
+    require_source(
+        values,
+        ROOT_NOAPPLY_PUBLIC,
+        (!expected.is_empty()).then_some(expected),
+    )
+}
+
 pub(super) fn nix_owner_selected(fragment: &[u8]) -> Result<bool, Method46InitialStartupClosedV1> {
     Ok(!selected_sources(fragment)?[15].is_empty())
 }
@@ -804,6 +819,56 @@ mod tests {
             let mut values = normal_properties(rows.clone());
             values[index] = changed;
             assert!(require_normal_root_public_sources(&values, fragment.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn host_noapply_pin_requires_exact_source_or_compared_absence() {
+        let fragment = fragment();
+        let without_pin = fragment
+            .lines()
+            .filter(|line| !line.starts_with(&format!("LoadCredential={}:", NAMES[31])))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let row = (
+            ROOT_NOAPPLY_PUBLIC.to_owned(),
+            "/run/credentials/@system/external-31".to_owned(),
+        );
+
+        for present in [false, true] {
+            let selected = if present { &fragment } else { &without_pin };
+            for delivered in [false, true] {
+                let rows = if delivered { vec![row.clone()] } else { vec![] };
+                assert_eq!(
+                    require_normal_host_noapply_source(
+                        &normal_properties(rows),
+                        selected.as_bytes(),
+                    )
+                    .is_ok(),
+                    present == delivered
+                );
+            }
+            let duplicate = normal_properties(vec![row.clone(), row.clone()]);
+            assert!(require_normal_host_noapply_source(&duplicate, selected.as_bytes()).is_err());
+            let substituted = normal_properties(vec![(
+                ROOT_NOAPPLY_PUBLIC.to_owned(),
+                "/run/credentials/@system/foreign-pin".to_owned(),
+            )]);
+            assert!(require_normal_host_noapply_source(&substituted, selected.as_bytes()).is_err());
+            for (index, alternate) in [
+                (1, value(vec![row.clone()])),
+                (2, value(vec![(ROOT_NOAPPLY_PUBLIC.to_owned(), vec![1_u8])])),
+                (3, value(vec![(ROOT_NOAPPLY_PUBLIC.to_owned(), vec![1_u8])])),
+                (4, value(vec!["*".to_owned()])),
+                (5, value(vec![("*".to_owned(), "*".to_owned())])),
+            ] {
+                let mut properties =
+                    normal_properties(if present { vec![row.clone()] } else { vec![] });
+                properties[index] = alternate;
+                assert!(
+                    require_normal_host_noapply_source(&properties, selected.as_bytes()).is_err()
+                );
+            }
         }
     }
 

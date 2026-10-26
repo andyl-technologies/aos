@@ -48,6 +48,7 @@ pub(super) struct InitialStoppedOwnersOriginalV1 {
     fragment: RefCell<normal_fragment::NormalFragmentOriginalV1>,
     root_public: public_delivery::PublicDeliveryOriginal,
     nix_public: public_delivery::PublicDeliveryOriginal,
+    host_public: public_delivery::PublicDeliveryOriginal,
 }
 
 impl InitialStoppedOwnersOriginalV1 {
@@ -66,6 +67,9 @@ impl InitialStoppedOwnersOriginalV1 {
             ),
             nix_public: public_delivery::PublicDeliveryOriginal::new(
                 public_delivery::PublicOwner::Nix,
+            ),
+            host_public: public_delivery::PublicDeliveryOriginal::new(
+                public_delivery::PublicOwner::Host,
             ),
         }
     }
@@ -208,6 +212,10 @@ impl InitialStoppedOwnersOriginalV1 {
             .nix_public
             .observe(round, runtime, manager, fragment)
             .is_err();
+        refused |= self
+            .host_public
+            .observe(round, runtime, manager, fragment)
+            .is_err();
         if refused {
             Err(Method46InitialStartupClosedV1)
         } else {
@@ -273,6 +281,7 @@ impl InitialUnitOriginalV1 {
         self.stopped.before_completed.get()
             && self.stopped.root_public.admitted_before_post()
             && self.stopped.nix_public.admitted_before_post()
+            && self.stopped.host_public.admitted_before_post()
             && self
                 .stopped
                 .fragment
@@ -436,6 +445,7 @@ mod tests {
 
         assert!(original.root_public.samples_entered_for_test());
         assert!(original.nix_public.selections_entered_for_test());
+        assert!(original.host_public.samples_entered_for_test());
         for round in original.samples {
             for sample in round {
                 let sample = sample.into_inner();

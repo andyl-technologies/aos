@@ -1,4 +1,4 @@
-//! Retains Source-paid normal Root and Nix public delivery observations.
+//! Retains Source-paid normal Root, Nix and Host public delivery observations.
 //!
 //! The same startup manager reads only fixed configuration properties. Each
 //! observation has its own unique-PID1 native bookends; both interval samples
@@ -11,6 +11,7 @@ use super::*;
 
 const ROOT: &str = "aos-sandbox-policy-authorityd.service";
 const NIX: &str = "aos-sandbox-nixd.service";
+const HOST: &str = "aos-sandbox-hostd.service";
 const SERVICE: &[&str] = &[
     "LoadCredential",
     "LoadCredentialEncrypted",
@@ -25,6 +26,7 @@ const UNIT: &[&str] = &["LoadState", "FragmentPath", "DropInPaths", "Transient"]
 pub(super) enum PublicOwner {
     Root,
     Nix,
+    Host,
 }
 
 pub(super) struct PublicDeliveryOriginal {
@@ -80,7 +82,7 @@ impl PublicDeliveryOriginal {
             return Err(Method46InitialStartupClosedV1);
         }
         let selected = match self.owner {
-            PublicOwner::Root => Ok(true),
+            PublicOwner::Root | PublicOwner::Host => Ok(true),
             PublicOwner::Nix => delivery::nix_owner_selected(fragment),
         };
         self.selected[round].set(Some(selected));
@@ -99,6 +101,7 @@ impl PublicDeliveryOriginal {
         let unit = match self.owner {
             PublicOwner::Root => ROOT,
             PublicOwner::Nix => NIX,
+            PublicOwner::Host => HOST,
         };
         let mut sample = self.samples[round]
             .try_borrow_mut()
@@ -140,6 +143,7 @@ impl PublicDeliveryOriginal {
         match self.owner {
             PublicOwner::Root => delivery::require_normal_root_public_sources(values, fragment)?,
             PublicOwner::Nix => delivery::require_normal_nix_owner_source(values, fragment)?,
+            PublicOwner::Host => delivery::require_normal_host_noapply_source(values, fragment)?,
         }
 
         if round == 1 {
@@ -163,7 +167,7 @@ impl PublicDeliveryOriginal {
 
 pub(super) fn receiving_memory_bytes() -> Option<usize> {
     ServicePropertiesReadOriginalV2::receiving_memory_bytes_v2(SERVICE.len(), UNIT.len())?
-        .checked_mul(4)
+        .checked_mul(6)
 }
 
 #[cfg(test)]
@@ -172,9 +176,11 @@ mod tests {
 
     #[test]
     fn copied_completion_cannot_replace_the_actual_root_configuration_sample() {
-        let original = PublicDeliveryOriginal::new(PublicOwner::Root);
-        original.before_complete.set(true);
-        assert!(!original.admitted_before_post());
+        for owner in [PublicOwner::Root, PublicOwner::Nix, PublicOwner::Host] {
+            let original = PublicDeliveryOriginal::new(owner);
+            original.before_complete.set(true);
+            assert!(!original.admitted_before_post());
+        }
     }
 
     #[test]
@@ -188,7 +194,7 @@ mod tests {
                 ));
                 text
             });
-        for owner in [PublicOwner::Root, PublicOwner::Nix] {
+        for owner in [PublicOwner::Root, PublicOwner::Nix, PublicOwner::Host] {
             let original = PublicDeliveryOriginal::new(owner);
 
             assert!(

@@ -382,10 +382,10 @@ fn normalize_fragment(
 
 fn manager_schedule() -> Option<ReadonlyPropertyReceiveScheduleV2> {
     // Two 67-call startup samples, four 27-call stopped-owner samples and
-    // four 24-call normal Root/Nix configuration samples,
+    // six 24-call normal Root/Nix/Host configuration samples,
     // plus Hello and bounded signal/header carryover.
     // These are native-enforced ceilings, never an account or semantic claim.
-    ReadonlyPropertyReceiveScheduleV2::new(364, 380, 64 * 1024, 4096, 380 * 64 * 1024).ok()
+    ReadonlyPropertyReceiveScheduleV2::new(412, 428, 64 * 1024, 4096, 428 * 64 * 1024).ok()
 }
 
 fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVector> {
@@ -410,7 +410,7 @@ fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVe
         .with(D::MetadataEntries, 4 * PATH_BYTES as u64)
         .with(
             D::OutputBytes,
-            read.checked_add((380 * 64 * 1024 + 364 * 4096 + 4096) as u64)?,
+            read.checked_add((428 * 64 * 1024 + 412 * 4096 + 4096) as u64)?,
         )
         .checked_add(ImmutableFileAcquisitionOriginalV1::receiving_demand_v1(
             PATH_BYTES,
