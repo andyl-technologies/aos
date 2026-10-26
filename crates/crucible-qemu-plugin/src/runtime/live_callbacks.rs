@@ -74,6 +74,7 @@ mod inbound_stall_trace;
 mod logical_restore;
 mod network_inbound;
 mod network_output_stop;
+mod network_tx_path_trace;
 mod preemption;
 mod resume;
 mod settlement;
@@ -2149,6 +2150,17 @@ impl LiveVcpuTimeCallbackState {
                         &pending.buffered_tx_payloads,
                     )
                     .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
+                if emitted_network_output {
+                    // The clock still reads the advance's start here; the
+                    // offset that moves it to the target is stored below.
+                    network_tx_path_trace::note(network_tx_path_trace::TxPathSample {
+                        path: network_tx_path_trace::TxPath::IdleCompletion,
+                        start_icount: self.last_icount.load(Ordering::Acquire),
+                        target_icount,
+                        raw_icount: self.last_raw_icount.load(Ordering::Acquire),
+                        buffered: pending.buffered_tx_payloads.len(),
+                    });
+                }
             }
 
             self.logical_icount_offset
@@ -2263,6 +2275,13 @@ impl LiveVcpuTimeCallbackState {
                 .preflight_guest_frame_batch(&outbound, batch_len)
                 .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
             pending.buffered_tx_payloads.push(payload.to_vec());
+            network_tx_path_trace::note(network_tx_path_trace::TxPathSample {
+                path: network_tx_path_trace::TxPath::Pending,
+                start_icount: self.last_icount.load(Ordering::Acquire),
+                target_icount: pending.target_icount,
+                raw_icount: raw_emit_icount,
+                buffered: pending.buffered_tx_payloads.len(),
+            });
             return Ok(());
         }
         drop(pending_slot);
