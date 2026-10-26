@@ -99,8 +99,13 @@ absolute deadline covers complete reception and decoding. Unused final-byte
 bits are ignored; hints establish neither current disclosure permission nor
 server-side committed-index correctness. Five actual-socket scenarios extend
 the existing eleven-case transport and capability-header inventory without
-replacing any original selector or thirty-second bound. Native qualification
-and mandatory application-target compilation remain required. Strict SDK
+replacing any original selector or thirty-second bound. The frozen
+`6019bb2d19` transport check passes in 171.048 seconds. Complete review matches
+8,266 immutable source files, the actual retained Cargo test executable and
+all sixteen socket selectors. Both missing derivations execute on the isolated
+AOS builder with host builds disabled; its fresh nonce-bound, capability-free
+ext4 sandbox proof, imported outputs and clean shutdown pass review. Mandatory
+application-target compilation remains live. Strict SDK
 all-target Clippy, Rust formatting, proof parsing and plan coverage pass. The production
 Distribution backend, remote store and T-PROTO-1 acceptance remain open.
 
@@ -151,10 +156,18 @@ allocation-mount controls preserve original inodes; the original recovery,
 finite-consumer expiry, eviction and measured charge-release witnesses pass.
 This qualifies that recorded revision, preceding the managed setgid correction.
 
+Renewal at the managed setgid correction, `31aa0ae05f`, passes in 3,235.284
+seconds. Complete independent reviews match all 8,263 immutable source files,
+four retained Cargo executables and three original guests per profile. The
+130/258 ordinary cases, five creator cases, all five allocation-mount controls
+and finite-expiry through measured physical charge-release witnesses pass.
+These remain component results; complete role and task acceptance stay open.
+
 Mandatory application-target compilation at `80cf0444bf` passes in 697.001
 seconds. Complete review matches all 8,263 immutable source files and 190
 test-executable build records across 59 packages. This is compilation only,
-without retained executable bytes. Its focused collection guest remains live.
+without retained executable bytes. Its focused collection guest later fails
+as recorded above; renewed qualification at `6019bb2d19` remains live.
 
 The managed setgid correction at `31aa0ae05f` passes mandatory
 application-target compilation in 722.560 seconds. Review matches all 8,263
