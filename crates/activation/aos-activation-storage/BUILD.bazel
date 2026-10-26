@@ -1,5 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
@@ -259,6 +260,73 @@ aos_license_check(
         ":aos-boot-transaction-storage-provider",
     ],
     license_domain = RUST_PACKAGE.license_domain,
+)
+
+# The early-boot journal handler keeps a static runtime independently of the
+# ordinary activation commands above.
+rust_library(
+    name = "lib_boot_transaction",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_activation_storage",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    deps = DEPENDENCIES,
+    link_deps = ["@aos_native//:static_runtime"],
+)
+
+rust_binary(
+    name = "static_boot_transaction_storage_provider",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_boot_transaction_storage_provider",
+    crate_root = "src/bin/boot_transaction_storage.rs",
+    srcs = ["src/bin/boot_transaction_storage.rs"],
+    deps = [":lib_boot_transaction"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "boot_transaction_unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib_boot_transaction",
+    deps = DEVELOPMENT_DEPENDENCIES,
+    tags = ["manual"],
+)
+
+aos_rust_test(
+    name = "boot_transaction_bin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":static_boot_transaction_storage_provider",
+    allow_empty = True,
+    tags = ["manual"],
+)
+
+rust_doc_test(name = "doc_boot_transaction", crate = ":lib_boot_transaction", tags = ["manual"])
+
+aos_license_check(
+    name = "boot_transaction_production_license_closure",
+    roots = [":lib_boot_transaction", ":static_boot_transaction_storage_provider"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "boot_transaction_license_closure",
+    testonly = True,
+    roots = [":boot_transaction_unit_binary", ":boot_transaction_bin_binary"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_package(
+    name = "boot_transaction_package",
+    package_name = "aos-boot-transaction-storage-provider",
+    version = RUST_PACKAGE.version,
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {":static_boot_transaction_storage_provider": "bin/aos-boot-transaction-storage-provider"},
+    executables = ["bin/aos-boot-transaction-storage-provider"],
+    visibility = ["//visibility:public"],
 )
 
 aos_source_package(

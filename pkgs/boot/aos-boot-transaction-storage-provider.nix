@@ -7,8 +7,11 @@
   mkCargoDummySource,
   aosWorkspaceVendor,
   patchelf,
+  callPackage,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-boot-transaction-storage-provider.nix {buildDriver = selected;};
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -51,8 +54,7 @@
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
   };
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -84,6 +86,10 @@ in
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [];
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
     module = ./_aos-boot-transaction-storage-provider;
     preBuild = staticBuildSetup;
 
@@ -103,4 +109,14 @@ in
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-boot-transaction-storage-provider-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

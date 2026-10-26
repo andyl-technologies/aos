@@ -176,6 +176,7 @@ in
     package-manager = import ./_bazel-package-manager.nix {inherit pkgs;};
     boot-preparation = import ./_bazel-boot-preparation.nix {inherit pkgs;};
     configuration-production = import ./_bazel-configuration-production.nix {inherit pkgs;};
+    transaction-storage-provider-production = import ./_bazel-transaction-storage-provider-production.nix {inherit pkgs;};
     preparation-provider-production = import ./_bazel-preparation-provider-production.nix {inherit pkgs;};
     release-coordination = import ./_bazel-release-coordination.nix {inherit pkgs;};
     registry-native = import ./_bazel-registry-native.nix {inherit pkgs;};
@@ -581,6 +582,7 @@ in
             package-manager.all
             boot-preparation.all
             configuration-production.all
+            transaction-storage-provider-production.all
             preparation-provider-production.all
             release-coordination.all
             registry-native.all

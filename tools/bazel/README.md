@@ -2973,6 +2973,26 @@ input-rejection comparisons. It does not exercise live authenticated dispatch.
 Precise and conservative source inventories agree; foreign hosts, performance
 acceptance and default cutover remain separate gates.
 
+`pkgs.aos-boot-transaction-storage-provider.withBuildDriver "bazel"` selects the
+static journal-view command, with Cargo as the default and explicit rollback.
+Its independently compared production and release-test compiler features reuse
+the preparation provider's SDKs without changing those profiles.
+`checks.build.bazel.transaction-storage-provider-production.all`, also exposed
+through `tools/bazel/tests/transaction-storage-provider-production.nix`, requires
+the original installed layout, static ELF contract, runtime closure, module and
+qualification declarations, and optimized test and unoptimized macro profiles.
+
+The retained qualification in
+`tests/evidence/transaction-storage-provider-production-package.json` compares
+42 library cases, the empty installed-command test target and empty doctest
+target. Eight installed input-rejection comparisons and six successful checked
+directory-view comparisons preserve response bytes and recovery journal data.
+The view fixtures cover apply, observe, removal, absent storage and symlink
+substitution without mounting an ESP. Precise and conservative source selections
+agree on six roots, 145 configured reports and 66 source files. Live ESP and VM
+execution, foreign hosts, performance acceptance and default cutover remain
+separate gates.
+
 Host deadline and observation timestamp exceptions are function-scoped. Two
 metadata fixture maps use ordered lookup maps; EFI decoding retains its checked
 even-length bound. Conditional and alignment expressions have equivalent
