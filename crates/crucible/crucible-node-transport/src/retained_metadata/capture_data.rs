@@ -35,6 +35,15 @@ pub enum RetainedCaptureProtocolData<'a> {
     HelloJournal(&'a crate::client::OriginalHelloJournal),
     /// Borrows every retained archived mapping owner, including revoked custody.
     ArchivedMapping(&'a crate::protocol_snapshot::PreparedArchivedProtocolMapping),
+    /// Borrows a retained ordinary suffix attempt, including failed partials.
+    RestoredSuffixAttempt(&'a crate::client::OriginalRestoredSuffixHostAttempt),
+    /// Borrows a closed observation body, request, proof, context or terminal.
+    ///
+    /// These DTOs carry no creator. The owning Source checks its original
+    /// process/thread before lending capacity rows.
+    RestorationObservation(
+        crate::reference_packet::service::complete_restore::restoration_observe::RetainedRestorationObservationData<'a>,
+    ),
     /// Borrows independent restored receipt and underlying model partials.
     ///
     /// Missing or inconsistent partners remain DATA without acquiring native
@@ -93,6 +102,8 @@ impl RetainedCaptureProtocolData<'_> {
             + crate::client::OriginalHelloJournal::capacity_counter_scratch_data()
             + crate::reference_packet::service::complete_restore::activation::restoration_native_capacity_counter_scratch_data()
             + crate::protocol_snapshot::PreparedArchivedProtocolMapping::capacity_counter_scratch_data()
+            + crate::client::OriginalRestoredSuffixHostAttempt::capacity_counter_scratch_data()
+            + crate::reference_packet::service::complete_restore::restoration_observe::RetainedRestorationObservationData::capacity_counter_scratch_data()
             + size_of::<Self>()
             + size_of::<&Self>()
             + size_of::<MetadataObserver<'static>>()
@@ -116,7 +127,8 @@ impl RetainedCaptureProtocolData<'_> {
         match self {
             Self::Response(_)
             | Self::AfterConfirmation(_)
-            | Self::RestorationNativeEvidence(_, _) => Ok(()),
+            | Self::RestorationNativeEvidence(_, _)
+            | Self::RestorationObservation(_) => Ok(()),
             Self::SnapshotReservation(value) => value.check_capacity_creator_data(),
             Self::Snapshot(value) => value.check_capacity_creator_data(),
             Self::PayloadOwner(value) => value.check_capacity_creator_data(),
@@ -124,6 +136,7 @@ impl RetainedCaptureProtocolData<'_> {
             Self::RestoreInputEmitter(value) => value.check_capacity_creator_data(),
             Self::HelloJournal(value) => value.check_capacity_creator_data(),
             Self::ArchivedMapping(value) => value.check_capacity_creator_data(),
+            Self::RestoredSuffixAttempt(value) => value.check_capacity_creator_data(),
         }
     }
 
@@ -138,6 +151,8 @@ impl RetainedCaptureProtocolData<'_> {
             Self::RestoreInputEmitter(value) => value.observe_capacity_data(observer),
             Self::HelloJournal(value) => value.observe_capacity_data(observer),
             Self::ArchivedMapping(value) => value.observe_capacity_data(observer),
+            Self::RestoredSuffixAttempt(value) => value.observe_capacity_data(observer),
+            Self::RestorationObservation(value) => value.observe_owned_metadata_data(observer),
             Self::RestorationNativeEvidence(record, underlying) => {
                 crate::reference_packet::service::complete_restore::activation::observe_restoration_native_capacity_data(
                     *record, *underlying, observer,

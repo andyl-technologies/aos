@@ -6,6 +6,9 @@ use super::*;
 mod checkpoint_cache17;
 use std::io;
 
+#[path = "owner/capacities.rs"]
+mod capacities;
+
 const BANKS: usize = 4;
 
 pub(in super::super) struct OriginalSourceRestorationObservationAttempt {

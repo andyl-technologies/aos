@@ -31,6 +31,9 @@ mod effect;
 #[path = "current/validation.rs"]
 mod validation;
 
+#[path = "current/capacities.rs"]
+mod capacities;
+
 pub(crate) use validation::OriginalSourceRestoredObservationCompletion;
 
 const REQUEST_PREFIX: &str = "cnp-restored-current-";

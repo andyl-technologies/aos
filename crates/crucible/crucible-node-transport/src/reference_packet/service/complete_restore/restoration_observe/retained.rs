@@ -20,6 +20,11 @@ pub enum RetainedRestorationObservationData<'a> {
 }
 
 impl RetainedRestorationObservationData<'_> {
+    /// Names the defining borrowed observation DTO controls.
+    pub(crate) fn capacity_counter_scratch_data() -> usize {
+        counter_scratch_data()
+    }
+
     /// Counts real nested capacities without serializing or accepting authority.
     ///
     /// # Errors

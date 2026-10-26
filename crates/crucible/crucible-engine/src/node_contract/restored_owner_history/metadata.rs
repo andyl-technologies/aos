@@ -105,6 +105,25 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
     /// row; borrowed references and external resources remain separate owners.
     pub(crate) const fn observe_inline_data<T: Copy>(&self, _value: &T) {}
 
+    /// Records the actual Vec allocation before its initialized child owners.
+    ///
+    /// Spare slots keep the compiled element size and alignment. Nested fields
+    /// need their own walk; repeated views receive no sharing discount.
+    ///
+    /// # Errors
+    /// Refuses invalid geometry, exhausted rows or unavailable physical backing.
+    pub(crate) fn observe_vector_allocation_data<T>(
+        &mut self,
+        owner: &Vec<T>,
+    ) -> Result<(), RuntimeError> {
+        self.record(MetadataCapacityRecord {
+            kind: MetadataRecordKind::Vector,
+            extent: owner.capacity(),
+            element_bytes: size_of::<T>(),
+            alignment: align_of::<T>(),
+        })
+    }
+
     /// Records the real enclosing allocation of one borrowed strong Rc view.
     ///
     /// Nested payload owners require their own defining walk. Repeated views

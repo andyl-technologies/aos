@@ -9,6 +9,9 @@ use super::*;
 use crate::operational_time::OperationalDeadline;
 use std::mem::size_of;
 
+#[path = "restored_suffix_host/capacities.rs"]
+mod capacities;
+
 #[path = "restored_suffix_host/input_reactive17.rs"]
 mod input_reactive17;
 pub use input_reactive17::{

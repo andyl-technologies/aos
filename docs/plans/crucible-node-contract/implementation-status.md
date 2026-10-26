@@ -223,11 +223,12 @@ Box geometry even when the matching receipt is absent; failed partials remain
 DATA without passing the existing native-history eligibility checks. Creator
 checks precede the component bank loan. Non-owning source/controller pointers
 stay outside capacity rows, and phase/upload flags remain inline Copy fields.
-The Core ticket's shared archive Source graph and the observation, producer,
-Capture, input and suffix histories still need their own complete census. All
-eight new controls pass in both codec configurations. Native model DTOs and deliberately unreserved failed
-activation partials establish retained backing only; they issue no restoration
-claim, private Source/native owner or publication permission.
+The Core ticket's shared archive Source graph and the restored Observation17,
+producer, Capture, input and suffix histories still need their own complete
+census. All eight new controls pass in both codec configurations. Native model
+DTOs and deliberately unreserved failed activation partials establish retained
+backing only; they issue no restoration claim, private Source/native owner or
+publication permission.
 
 Legacy restoration body capacity DATA now keeps all six raw banks, independent
 normalized copies, typed journal/request/context partials and the complete SDK
@@ -241,6 +242,24 @@ All seven new controls pass in both codec configurations. The mapping fixtures
 retain a real registrar and installed immutable codec under modeled Hello; their
 unverified archive commitments issue no Core ticket or native restoration right.
 
+First and current observation capacity DATA now keeps the first attempt's four
+raw banks, independent normalized values, retained native receipt/model
+partials and scheduling observation. Current history retains its actual Vec
+geometry, including uninitialized spare attempt slots, and each initialized
+attempt's IDs, Observe body, SDK suffix original, measurement, native partials
+and scheduling. The SDK separately visits full raw envelopes, boxed typed
+responses and content roots without requiring a correlated terminal. Creator
+checks and actual history loans precede physical rows. Failed/unreserved states
+retain their backing and non-owning correspondence pointers remain inline
+labels. Populated current attempts under genuinely issued construction rows
+still need native lifecycle qualification; DATA-only slots and spare histories
+issue no claims or authority. The Core ticket graph, restored Observation17,
+producer, Capture, input and suffix owners still need their own complete
+census. All thirteen new controls pass in both codec configurations. Their
+unreserved first-observation partials, uninitialized current-history spares and
+incomplete SDK slots establish capacity DATA only; no current claim or native
+restoration is issued or qualified by these controls.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its twelve
@@ -250,16 +269,16 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 91 Engine census/installation/holder/startup
+Both codec configurations pass 100 Engine census/installation/holder/startup
 controls, eight execution reservation controls and four Import18 bank constructor
-controls. Complete Engine suites pass 2,162 tests each with thirty-four ignored,
+controls. Complete Engine suites pass 2,171 tests each with thirty-four ignored,
 using matching source-built installed packet fixtures. Current Transport suites
-pass 2,340 tests and 140 focused controls each, with twenty ignored; HostResources
+pass 2,344 tests and 144 focused controls each, with twenty ignored; HostResources
 suites pass all 37 tests each, including both descriptor capacity controls.
-Six-package all-feature/all-target checks, nine-file scoped Rust formatting,
+Six-package all-feature/all-target checks, fifteen-file scoped Rust formatting,
 all six architecture gates and the RFC requirement-map gate pass. Required
 application test-target compilation passes with 185 artifacts across 58 packages
-and 76 integration targets; all 4,941 selected frozen Rust/Cargo inputs match
+and 76 integration targets; all 4,949 selected frozen Rust/Cargo inputs match
 current and captured source. User-owned changes are preserved. These are component
 results; the requirement map records planning coverage, and no latest-source
 strict lint or native lifecycle qualification is claimed. Native executable
