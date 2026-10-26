@@ -8,10 +8,14 @@
 #[path = "retained_values/edition18_tokens.rs"]
 pub(crate) mod edition18_tokens;
 
+#[path = "retained_values/metadata.rs"]
+mod metadata;
+pub(super) use metadata::value_capacity_counter_scratch_data;
+pub(in crate::node_adapters::cnp::semantic) use metadata::value_capacity_data_with_error;
+
 use super::*;
 use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use serde_json::Value;
-use std::mem::{align_of, size_of};
 
 impl PacketCompleteSemanticSource {
     /// Counts original private boot and post-Hello association heap storage.
@@ -114,51 +118,10 @@ pub(in crate::node_adapters::cnp::semantic) fn value_storage_with_error<E: Stora
     depth: usize,
     maximum: usize,
 ) -> Result<usize, E> {
-    if depth > 64 {
-        return Err(E::refused("retained private JSON depth unsupported"));
-    }
-    match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(0),
-        Value::String(value) => sum_with_error::<E, _>([value.capacity()], maximum),
-        Value::Array(values) => {
-            let slots = values
-                .capacity()
-                .checked_mul(size_of::<Value>())
-                .ok_or_else(|| E::refused("retained private JSON array overflow"))?;
-            let mut bytes = sum_with_error::<E, _>([slots], maximum)?;
-            for value in values {
-                bytes = sum_with_error::<E, _>(
-                    [
-                        bytes,
-                        value_storage_with_error::<E>(value, depth + 1, maximum)?,
-                    ],
-                    maximum,
-                )?;
-            }
-            Ok(bytes)
-        }
-        Value::Object(values) => {
-            let mut bytes = NodeRuntime::capture_protocol_tree_storage(
-                1,
-                values.len(),
-                size_of::<String>() + size_of::<Value>(),
-                align_of::<String>().max(align_of::<Value>()),
-                maximum,
-            )
-            .map_err(E::runtime)?;
-            for (key, value) in values {
-                bytes = sum_with_error::<E, _>(
-                    [
-                        bytes,
-                        key.capacity(),
-                        value_storage_with_error::<E>(value, depth + 1, maximum)?,
-                    ],
-                    maximum,
-                )?;
-            }
-            Ok(bytes)
-        }
-    }
+    let facts = value_capacity_data_with_error::<E>(value, depth, None)?;
+    PacketCompleteSemanticSource::complete_retained_metadata_storage_with_error::<E>(
+        &facts, maximum,
+    )
 }
 
 pub(super) fn sum<const N: usize>(
@@ -183,6 +146,7 @@ pub(in crate::node_adapters::cnp::semantic) fn sum_with_error<E: StorageError, c
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::mem::size_of;
 
     #[test]
     fn private_normalization_counts_spare_string_and_array_backing() {

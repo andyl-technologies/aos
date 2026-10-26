@@ -96,6 +96,17 @@ aligned and zero-sized payloads, exact and short credit, and busy or foreign
 Source custody. Marker flags and launch permissions remain independent. Other
 birth/finalization owners still require their own complete census.
 
+The private JSON capacity walk now preserves spare String/Vec backing and each
+object's actual compiled key/value layout, including empty objects. Its existing
+production byte query consumes those same facts; the walk can also append to the
+admitted packet bank without replacing the retained body. Independent views keep
+all their rows. Selected-row and depth refusal preserve the recorded prefix, and
+the original depth limit remains 64. The Source observation demand includes the
+bounded cursor/iterator controls and the first refused child cursor. Five controls
+compare against the independent original byte walk, exact and short credit,
+empty-object layout, refused prefixes and repeated views. These capacity facts
+do not establish scalar traversal work or finalization eligibility.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its ten
@@ -105,15 +116,15 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 120 focused Transport controls and 34 Engine
+Both codec configurations pass 120 focused Transport controls and 39 Engine
 census/installation/holder/startup controls. Complete Transport suites pass 2,320 tests each
 with twenty ignored; all 646 selected SDK/dependency inputs match the tested
-Transport snapshot. Complete Engine suites pass 2,105 tests each with thirty-four
+Transport snapshot. Complete Engine suites pass 2,110 tests each with thirty-four
 ignored, using matching source-built installed packet fixtures. Five-package
-all-feature/all-target checks, seven-file scoped formatting, all six architecture
+all-feature/all-target checks, four-file scoped formatting, all six architecture
 gates and the RFC requirement-map gate pass. Required application test-target
 compilation passes with 185 artifacts across 58 packages and 76 integration targets;
-all 805 selected frozen Rust/Cargo inputs match current and captured source. User-owned
+all 808 selected frozen Rust/Cargo inputs match current and captured source. User-owned
 changes are preserved. These are component results; the requirement map records
 planning coverage, and no latest-source strict lint or native lifecycle result
 is claimed.
