@@ -89,7 +89,33 @@ T0 foundations · T1 local repository · T2 host tier · T3 wire and buckets
 T4 CI caches · T5 sandboxes · T6 hardened MVP
 ```
 
-## Implementation checkpoint (2026-10-25)
+## Implementation checkpoint (2026-10-26)
+
+The copied retirement fixture now forwards ordinary native read recipes to its
+existing inner binding, including the physical closing recipe required by
+candidate-history completion. It previously retained the trait's unsupported
+result despite forwarding effects and ranged reads. The renewed `6019bb2d19`
+collection guest passes checkpoint encoding and destination activation, then
+fails its genuine destination commit with `Unsupported` in 1,563.380 seconds
+(the first selector takes 2.62 seconds). The original positive publication,
+source-Original refusal, collector assertions and time limits remain unchanged.
+Complete failed-guest logs and configuration are retained. This forwarding
+correction still requires native qualification; no collector success is claimed.
+
+The original shared feature matrix at `4914e8a0dc` finishes unsuccessfully in
+10,962.091 seconds. Both 656-case format profiles and the 89-case SDK minimal
+profile pass. Its aggregate native SDK profile reports 1,283 passed, two failed
+and one ignored in 9,464.30 seconds. The failures are the older copied-root
+collection setup and a read-only coordination test whose denied write actually
+succeeds inside the user-namespace-root builder. The matrix now removes
+DAC-override and DAC-read-search capabilities across SDK test exec, preserving
+the protected namespace-root layout and all original
+selectors. The denial assertion remains; native qualification is pending.
+Later matrix profiles were not reached. These partial results do not qualify
+the matrix or change trunk acceptance. Scoped SDK formatting and strict
+all-target Clippy with `tokio,surface-sdk`, Nix parsing, PLAN-2 and diff checks
+pass. The workspace-wide formatting check encounters existing unrelated
+formatting differences and a missing Crucible module; those files are unchanged.
 
 The native Distribution client now receives bounded `Negotiate` hints across
 any combination of ancestry, tree roots and hashes. It checks hash widths and
@@ -120,7 +146,9 @@ replacing any original selector or thirty-second bound. The frozen
 all sixteen socket selectors. Both missing derivations execute on the isolated
 AOS builder with host builds disabled; its fresh nonce-bound, capability-free
 ext4 sandbox proof, imported outputs and clean shutdown pass review. Mandatory
-application-target compilation remains live. Strict SDK
+application-target compilation passes in 1,603.188 seconds; independent review
+matches all 8,266 immutable source files and 190 test-executable build records
+across 59 packages. This is compilation only, without retained executable bytes. Strict SDK
 all-target Clippy, Rust formatting, proof parsing and plan coverage pass. The production
 Distribution backend, remote store and T-PROTO-1 acceptance remain open.
 
@@ -194,7 +222,8 @@ Mandatory application-target compilation at `80cf0444bf` passes in 697.001
 seconds. Complete review matches all 8,263 immutable source files and 190
 test-executable build records across 59 packages. This is compilation only,
 without retained executable bytes. Its focused collection guest later fails
-as recorded above; renewed qualification at `6019bb2d19` remains live.
+as recorded above; the renewed `6019bb2d19` failure is recorded at the start
+of this checkpoint.
 
 The managed setgid correction at `31aa0ae05f` passes mandatory
 application-target compilation in 722.560 seconds. Review matches all 8,263

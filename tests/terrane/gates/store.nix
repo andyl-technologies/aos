@@ -173,7 +173,11 @@ in {
           elif [ "$package_name" = terrane-sdk ]; then
             # Independent native fixtures have real operation deadlines. Bound
             # their fanout; each fixture still runs its own competing writers.
-            cargo test --frozen --offline -p "$package_name" --lib "$@" -- --test-threads=1
+            # The protected wrapper maps the build user to namespace root.
+            # Remove DAC bypass across exec so permission-denial fixtures still
+            # exercise the file mode while retaining the protected root layout.
+            setpriv --bounding-set=-dac_override,-dac_read_search \
+              cargo test --frozen --offline -p "$package_name" --lib "$@" -- --test-threads=1
           else
             cargo test --frozen --offline -p "$package_name" --lib "$@"
           fi

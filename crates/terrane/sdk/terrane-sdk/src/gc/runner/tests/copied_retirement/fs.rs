@@ -484,6 +484,15 @@ impl LocalFs for CopiedFs {
         self.inner.read_range(path, range).await
     }
 
+    async fn read_ordinary_record(
+        &self,
+        request: crate::store::NativeOrdinaryRead,
+    ) -> std::io::Result<Option<crate::store::NativeOrdinaryRecord>> {
+        // Candidate history closes its original physical inputs through this
+        // read-only recipe. Preserve the inner body traps and closing worker.
+        self.inner.read_ordinary_record(request).await
+    }
+
     async fn read_payload_ranges(
         &self,
         request: crate::store::NativePayloadRangeRead,
