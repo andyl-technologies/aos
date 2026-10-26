@@ -40,6 +40,28 @@
     destination = "/fixture";
     text = ''
       set -eu
+      if [ "$#" -eq 2 ]; then
+        # Host runs as root with empty capability sets. Verify that the real
+        # inherited-mount observation needs no administrative capability.
+        checked=0
+        while read -r name value rest; do
+          case "$name" in
+            CapInh:|CapPrm:|CapEff:|CapBnd:|CapAmb:)
+              test "$value" = 0000000000000000
+              checked=$((checked + 1))
+              ;;
+            NoNewPrivs:)
+              test "$value" = 1
+              checked=$((checked + 1))
+              ;;
+          esac
+        done < /proc/self/status
+        test "$checked" -eq 6
+        test "$(${pkgs.coreutils}/bin/id -u)" -eq 0
+        exec ${probe}/bin/inherited-file-mount "$@"
+      fi
+      test "$#" -eq 0
+
       fixture_root=$(mktemp -d /var/lib/aos-inherited-file-mount.XXXXXX)
       fixture_mounted=0
       cleanup() {
@@ -63,7 +85,9 @@
       # Cloning changes namespace mount IDs, but the open files keep their
       # original mounts. Writable originals must continue to fail the guard.
       ${pkgs.util-linux}/bin/unshare --mount --propagation private \
-        ${probe}/bin/inherited-file-mount \
+        ${pkgs.util-linux}/bin/setpriv \
+        --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs \
+        ${pkgs.bash}/bin/bash "$0" \
         "$fixture_root/read-only" "$fixture_root/writable"
       exec 3<&-
       exec 4<&-

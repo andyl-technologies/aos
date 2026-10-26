@@ -43,9 +43,12 @@ Recent committed startup fixes close narrower prerequisites:
   serially. The repository's isolated nextest run passes all 409 selected tests,
   with four skipped by the existing profile and kernel annotations. The strict
   QEMU regression passes using the installed Host kernel
-  (`/nix/store/xja9drn7qwb3dl4d0n5fv6inwi0s7qdq-aos-fleet-test-sandbox-inherited-file-mount-0`).
+  (`/nix/store/cx4rh6zj3bqawhfhl8i9lzvq6s9sh860-aos-fleet-test-sandbox-inherited-file-mount-0`).
   It requires the old namespace lookup to fail and checks both inherited
-  read-only and writable mounts. The first boot found the fixture script absent;
+  read-only and writable mounts. Before executing the native probe, it checks
+  UID zero, all five capability sets empty and `NoNewPrivileges=1`, matching
+  the Host's capability and privilege-escalation restrictions. The first boot
+  found the fixture script absent;
   retaining that input in the guest image corrects the test closure. This
   non-enforcing component test excludes the pending production policy and
   establishes no installed Host or TPM qualification.
