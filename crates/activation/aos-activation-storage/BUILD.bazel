@@ -329,6 +329,83 @@ aos_package(
     visibility = ["//visibility:public"],
 )
 
+# These commands share the already qualified static storage library; the
+# compatibility name does not select different library features.
+alias(name = "lib_static_storage", actual = ":lib_boot_transaction")
+
+rust_binary(
+    name = "static_cryptsetup",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_cryptsetup_provider",
+    crate_root = "src/bin/cryptsetup.rs",
+    srcs = ["src/bin/cryptsetup.rs"],
+    deps = [":lib_static_storage"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "static_cryptsetup_bin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":static_cryptsetup",
+    allow_empty = True,
+    tags = ["manual"],
+)
+
+aos_package(
+    name = "static_cryptsetup_package",
+    package_name = "aos-cryptsetup-provider",
+    version = RUST_PACKAGE.version,
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {":static_cryptsetup": "bin/aos-cryptsetup-provider"},
+    executables = ["bin/aos-cryptsetup-provider"],
+    visibility = ["//visibility:public"],
+)
+
+rust_binary(
+    name = "static_storage_format",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_storage_format_provider",
+    crate_root = "src/bin/storage_format.rs",
+    srcs = ["src/bin/storage_format.rs"],
+    deps = [":lib_static_storage"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "static_storage_format_bin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":static_storage_format",
+    allow_empty = True,
+    tags = ["manual"],
+)
+
+aos_package(
+    name = "static_storage_format_package",
+    package_name = "aos-storage-format-provider",
+    version = RUST_PACKAGE.version,
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {":static_storage_format": "bin/aos-storage-format-provider"},
+    executables = ["bin/aos-storage-format-provider"],
+    visibility = ["//visibility:public"],
+)
+
+aos_license_check(
+    name = "static_storage_production_license_closure",
+    roots = [":static_cryptsetup", ":static_storage_format"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "static_storage_license_closure",
+    testonly = True,
+    roots = [":boot_transaction_unit_binary", ":static_cryptsetup_bin_binary", ":static_storage_format_bin_binary"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
 aos_source_package(
     name = "source_package",
     package = RUST_PACKAGE,

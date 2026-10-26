@@ -7,9 +7,12 @@
   mkCargoDummySource,
   aosWorkspaceVendor,
   patchelf,
+  callPackage,
+  buildDriver ? "cargo",
   util-linux,
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-storage-format-provider.nix {buildDriver = selected;};
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -52,8 +55,7 @@
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
   };
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -86,6 +88,11 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [util-linux];
 
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+
     module = ./_aos-storage-format-provider;
 
     preBuild = staticBuildSetup;
@@ -106,4 +113,16 @@ in
       license = "Apache-2.0";
       mainProgram = "aos-storage-format-provider";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ../build-support/_bazel/static-storage-provider.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+        programName = "aos-storage-format-provider";
+        packageLabel = "//crates/activation/aos-activation-storage:static_storage_format_package";
+      }
+    else cargoPackage

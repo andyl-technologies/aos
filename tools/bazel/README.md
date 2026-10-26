@@ -2993,6 +2993,26 @@ agree on six roots, 145 configured reports and 66 source files. Live ESP and VM
 execution, foreign hosts, performance acceptance and default cutover remain
 separate gates.
 
+`pkgs.aos-cryptsetup-provider.withBuildDriver "bazel"` and
+`pkgs.aos-storage-format-provider.withBuildDriver "bazel"` select their original
+static commands. Cargo remains the default and explicit rollback for each.
+The selectors share the static storage library, release tests and existing
+preparation-provider dependency profiles. Each installed package retains its
+own module, qualification probe and runtime dependencies.
+
+`checks.build.bazel.static-storage-providers-production.all`, also exposed through
+`tools/bazel/tests/static-storage-providers-production.nix`, compares each actual
+Cargo package's compiled features, installed layout, static inputs, ELF contract
+and runtime closure. The retained
+`tests/evidence/static-storage-providers-production-package.json` also checks
+42 library cases, two empty command-test targets, the empty doctest target,
+three optimized test binaries and four unoptimized procedural macros.
+Sixteen installed rejection comparisons include both commands' 32 MiB document
+bound. Production and release tests execute 117 and 144 fresh Linux sandbox
+actions. Precise and conservative inventories agree on eight roots, 150
+configured reports and 66 source files. Real encrypted mappings, swap formatting,
+foreign hosts, performance acceptance and default cutover remain separate gates.
+
 Host deadline and observation timestamp exceptions are function-scoped. Two
 metadata fixture maps use ordered lookup maps; EFI decoding retains its checked
 even-length bound. Conditional and alignment expressions have equivalent
