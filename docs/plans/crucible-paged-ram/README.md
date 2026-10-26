@@ -10,6 +10,7 @@ logical format, custody, timing, capture, and release requirements.
 | [Source inventory](current-state.md) | Historical integration analysis at the explicitly identified source baseline; source paths are not implementation evidence. |
 | [Initial implementation sequence](phased-implementation.md) | QEMU-SIM work packages, dependencies, and stop/go evidence. |
 | [Profile roadmap](profile-roadmap.md) | Shared foundations, initial QEMU-SIM delivery, and separately gated future gem5/KVM implementations. |
+| [Containing process lifetime](process-lifetime-profile.md) | Proposed prepaid birth-attempt handover and its separate local Cleanup-entry obligations; no enabled profile. |
 | [Qualification plan](qualification-plan.md) | Profile-specific positive and causal negative cases, ownership, and unavailable evidence. |
 | [Requirement inventory](requirement-map.tsv) | Complete unique requirement/owner/profile/case allocation; design references, not executable certification. |
 | [Historical validation](historical-design-validation.md) | Original dated document/build results, including failures; no current-source qualification claim. |
