@@ -481,10 +481,15 @@ Recent committed startup fixes close narrower prerequisites:
   final cuts cannot heal an incomplete or failed initial cut. All 60 focused
   Broker, Domain and Security tests plus four native cgroup-reader regressions
   pass. Complete Rust target compilation is running for the runtime changes.
-  A dedicated AOS Nix QEMU test now selects the exact feature-gated kernel
+  A dedicated AOS Nix kernel VM now selects the exact feature-gated kernel
   fixture; it checks absence, emptiness, recursive population, immutable failure
   and fresh observations at all three coordinates, and is running. The broader
-  local-identity VM also selects it. Neither test supplies a genuine installed
+  local-identity VM also selects it. Its first build-time check used plain
+  Cargo and hit existing cgroup/process-isolation cases; the corrected fixture
+  uses the established `nix-sandbox` nextest profile, where 537 tests pass and
+  11 are skipped. The kernel fixture runs through AOS's existing headless
+  Firecracker runner; installed TPM qualification remains QEMU/vTPM. Neither
+  test supplies a genuine installed
   manual producer, prevents later jobs/migrations, or grants protected writer
   or physical TPM custody. Those gates remain closed.
 

@@ -17,6 +17,10 @@
     # Ordinary tests run without the feature inside the build sandbox. The
     # fixed-name mutation fixture runs only in this dedicated disposable VM.
     doCheck = true;
+    # Match the existing Linux fixture runner: isolate descriptor tests and
+    # use its exact exclusions for real cgroups absent in a Nix sandbox.
+    cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     cargoTestFlags = "-p aos-sandbox-linux --lib";
     installBins = false;
     buildDeps = [pkgs.jq];
