@@ -206,9 +206,52 @@ extended complete-source-chain redaction case passes; its selector and the
 other eleven selectors are unchanged. A fresh capability-free AOS ext4 sandbox,
 both remotely dispatched native derivations, disabled host-native fallback and
 clean shutdown are independently reviewed. Seven raw controller records are
-preserved and owned scratch is removed. These are unit results: renewed managed
-restart-stage diagnosis and mandatory application-target compilation remain
-pending, no recovery fix is claimed, and trunk acceptance remains 27/64.
+preserved and owned scratch is removed. These are unit results, with no new
+complete-task acceptance.
+
+Mandatory application-target compilation at the same `67f207bc11` checkpoint
+passes in 1,488.744 seconds. Independent review matches all 8,295 immutable
+source files and 190 test-executable records across 59 packages. These records
+prove compilation only. The separately audited managed-image prerequisite
+controller passes in 1,342.733 seconds: 96 of its 99 audited inputs are dispatched
+in the isolated AOS guest, while three compile/package inputs are shared with
+the concurrent application build. Their exact build events, output derivers and
+unchanged scripts are verified; they supply no native qualification. The fresh
+capability-free ext4 probe, disabled host-native fallback for the controller and
+clean shutdown are reviewed. Seven raw controller records are preserved and
+owned scratch is removed. Both image manifests bind the same 8,295 source files,
+5,516/5,522 inputs and five actual retained Cargo executables.
+
+The source-bound startup-stage diagnostic passes its observation assertions in
+189.298 seconds. Fifteen enrollment controls and the original managed
+startup/shutdown proof pass before renewed startup reports `NativeCacheOpen`,
+I/O category `Other`, at `PublisherConnect`. This failure precedes cache recovery
+and SDK presentation. Original UID, capabilities, namespace and no-new-privileges
+checks remain enforced; both snapshots retain identical bytes and inode metadata,
+and configuration is unchanged. Independent review verifies the original driver
+completion and complete manager proof. Raw runtime records are preserved and
+owned scratch is removed. A separate source comparison verifies that all three
+public native openers retain their signatures and original operation sequences;
+closed stage assignments and forwarding add no recovery decision.
+
+The rendered publisher uses `Type=simple`; Serve has no publisher readiness
+dependency. The original first-start fixture explicitly waits for the publisher
+socket, while the failed restart diagnostic did not. A separate fresh-guest
+diagnostic tests that existing listener barrier before renewed Serve with the
+original runtime bounds. It fails in 181.985 seconds at the same
+`PublisherConnect` stage: the socket already exists, but the restarted publisher
+exits with `EADDRINUSE` (98). PID 1 records the earlier publisher's successful
+stop before the new process fails. Ordinary publisher shutdown leaves its
+socket pathname behind; a pathname-existence wait cannot establish readiness.
+Fourteen enrollment controls and the original managed proof pass before the
+diagnostic assertion; the final `verify-positive` control is not reached.
+Independent review preserves that failure, the distinct publisher processes,
+unchanged snapshots and original confined role checks. Raw records are
+preserved and owned scratch is removed. A production correction must stop new
+requests, finish accepted physical work and explicitly retire the retained
+original listener inode; startup must continue refusing existing names.
+Managed restart remains unaccepted, no recovery fix is claimed, and trunk
+acceptance remains 27/64.
 
 The actual service-manager fixture now declares the public issuer file and
 independent startup Read required by the configured SDK launcher. Its guest
