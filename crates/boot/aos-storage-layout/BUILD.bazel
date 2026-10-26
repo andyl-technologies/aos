@@ -52,6 +52,18 @@ rust_doc_test(
     crate = ":lib",
 )
 
+# The provisioning package runs this library's tests with its static release
+# flags. Keep the native archive inputs explicit without changing ordinary tests.
+aos_rust_test(
+    name = "static_provisioning_unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib",
+    deps = TEST_DEPENDENCIES,
+    link_deps = ["@aos_native//:static_runtime"],
+    tags = ["manual"],
+)
+
 DEVELOPER_ARTIFACTS = [
     ":lib",
     ":unit_binary",

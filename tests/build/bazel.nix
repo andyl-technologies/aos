@@ -178,6 +178,7 @@ in
     configuration-production = import ./_bazel-configuration-production.nix {inherit pkgs;};
     transaction-storage-provider-production = import ./_bazel-transaction-storage-provider-production.nix {inherit pkgs;};
     zfs-provider-production = import ./_bazel-zfs-provider-production.nix {inherit pkgs;};
+    storage-provisioning-provider-production = import ./_bazel-storage-provisioning-provider-production.nix {inherit pkgs;};
     static-storage-providers-production = import ./_bazel-static-storage-providers-production.nix {inherit pkgs;};
     preparation-provider-production = import ./_bazel-preparation-provider-production.nix {inherit pkgs;};
     release-coordination = import ./_bazel-release-coordination.nix {inherit pkgs;};
@@ -586,6 +587,7 @@ in
             configuration-production.all
             transaction-storage-provider-production.all
             zfs-provider-production.all
+            storage-provisioning-provider-production.all
             static-storage-providers-production.all
             preparation-provider-production.all
             release-coordination.all

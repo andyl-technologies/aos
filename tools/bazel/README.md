@@ -3040,6 +3040,34 @@ nine roots, 157 configured reports and 66 source files. Real pool operations,
 module loading, sysfs writes, foreign hosts, performance acceptance and default
 cutover remain separate gates.
 
+`pkgs.aos-storage-provisioning-provider.withBuildDriver "bazel"` selects both
+static provisioning commands and preserves the installed repart/topology
+helpers, module dependencies and runtime declarations. Cargo remains the default
+and explicit rollback. The existing preparation-provider profiles are reused.
+The storage-layout release test declares its static archives through `link_deps`;
+ordinary development tests retain their existing configuration.
+
+`checks.build.bazel.storage-provisioning-provider-production.all`, also exposed
+through `tools/bazel/tests/storage-provisioning-provider-production.nix`, compares
+the actual ordinary package, independent release oracle, exact compiled features,
+installed helper bytes and modes, ELF contracts and runtime closure. The retained
+`tests/evidence/storage-provisioning-provider-production-package.json` records
+42 activation-storage cases, 12 storage-layout cases, both empty command-test
+targets and both empty doctest targets. Sixteen installed rejection comparisons
+include the commands' document bounds; three successful marker-dispatch cases
+require no device inspection. Both package builders retain the original helper
+checks against disposable swap/ext4/XFS/VFAT and GPT regular-file images.
+Production and tests execute 117 and 149 fresh Linux sandbox actions. The layout
+test's actual compiler inputs include the exact static archive digests and flags.
+Precise and conservative inventories agree on nine roots, 152 configured reports
+and 66 source files. Real block devices, MD assembly, VM boot, foreign hosts,
+performance acceptance and default cutover remain separate gates.
+
+The broader [native evaluation gate](tests/evidence/static-storage-core-evaluation.json)
+passes for the static storage checkpoint. Reinstantiation after the OpenZFS and
+provisioning selector changes yields the identical completed root derivation;
+package-specific Bazel execution remains qualified separately above.
+
 Host deadline and observation timestamp exceptions are function-scoped. Two
 metadata fixture maps use ordered lookup maps; EFI decoding retains its checked
 even-length bound. Conditional and alignment expressions have equivalent

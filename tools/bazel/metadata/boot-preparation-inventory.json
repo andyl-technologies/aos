@@ -82090,7 +82090,7 @@
     "crates/boot/aos-boot-runtime/BUILD.bazel": "899a93c7891c7607772065d48a5088b271a200d8db8419f38fef4cc6a6130646",
     "crates/boot/aos-configuration-image/BUILD.bazel": "a678f4cb6778d2da2f949b408a90ac8e8ae881acef5520943e46e62a60126ada",
     "crates/boot/aos-platform-metadata/BUILD.bazel": "bcdb1d15ab641430d2d753ae7ae048b6e9ef39884ad2c2bf71d03f194f157c3b",
-    "crates/boot/aos-storage-layout/BUILD.bazel": "51064f394744fc0042cc29715da0a3e436455168131ae89c275e6de88dae8e7e",
+    "crates/boot/aos-storage-layout/BUILD.bazel": "ef8c71bff08018e608afac4729049224766e18c24f6df51cab8e4b6e1ddae542",
     "crates/core/aos-core/BUILD.bazel": "a49b29a61592b961c92007a1fa773a08b486c461b30ffa698d42c79f946d6bd4",
     "crates/modules/aos-module-format/BUILD.bazel": "6223e7d4abeb1fa7db3c3289bce9a379822b544cf395f7103a80ec67f9dd92d4",
     "crates/nix/aos-nix/BUILD.bazel": "5eb7afc72d8d58c027cae94a2bf91422a02f2610798318b466152bbb129043de",

@@ -7,6 +7,8 @@
   mkCargoDummySource,
   aosWorkspaceVendor,
   patchelf,
+  callPackage,
+  buildDriver ? "cargo",
   systemd,
   util-linux,
   mdadm,
@@ -24,6 +26,7 @@
   aos-boot-storage,
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-storage-provisioning-provider.nix {buildDriver = selected;};
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -66,8 +69,7 @@
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
   };
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -99,6 +101,11 @@ in
     doCheck = true;
     buildDeps = [patchelf];
     runtimeDeps = [systemd util-linux mdadm e2fsprogs xfsprogs dosfstools bash coreutils jq aos];
+
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
 
     module = ./_aos-storage-provisioning-provider;
     moduleDeps = [aos-metadata-provider aos-nix-store-provider service-management storage-interface aos-boot-storage];
@@ -148,4 +155,14 @@ in
       license = "Apache-2.0";
       mainProgram = "aos-storage-provisioning-provider";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-storage-provisioning-provider-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

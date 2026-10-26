@@ -104237,7 +104237,7 @@
     "crates/artifacts/aos-oci/BUILD.bazel": "115b603872291ecd0178ca2afd91beba44d566e4eaea50e64f4da0248c9eafec",
     "crates/bindings/libssh2-sys/BUILD.bazel": "ba83f6b00081832d375024dbe84faaa154c741a632e99dfa950df2c507060785",
     "crates/boot/aos-platform-metadata/BUILD.bazel": "bcdb1d15ab641430d2d753ae7ae048b6e9ef39884ad2c2bf71d03f194f157c3b",
-    "crates/boot/aos-storage-layout/BUILD.bazel": "51064f394744fc0042cc29715da0a3e436455168131ae89c275e6de88dae8e7e",
+    "crates/boot/aos-storage-layout/BUILD.bazel": "ef8c71bff08018e608afac4729049224766e18c24f6df51cab8e4b6e1ddae542",
     "crates/cli/aos-cli-ui/BUILD.bazel": "de108242bc226870b5202d67b7d662dd6f55c810b1dba0766a05b8de6d0fbcc5",
     "crates/core/aos-core/BUILD.bazel": "a49b29a61592b961c92007a1fa773a08b486c461b30ffa698d42c79f946d6bd4",
     "crates/hub/aos-hub-api/BUILD.bazel": "4c50befe92642cc15aa9c4e23100ac1bfee440500a5dbb2a03218f0b859a1dd2",

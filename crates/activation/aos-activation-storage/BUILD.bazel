@@ -512,6 +512,71 @@ aos_package(
     visibility = ["//visibility:public"],
 )
 
+rust_binary(
+    name = "static_provisioning",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_storage_provisioning_provider",
+    crate_root = "src/bin/storage_provisioning.rs",
+    srcs = ["src/bin/storage_provisioning.rs"],
+    deps = [":lib_static_storage"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "static_provisioning_bin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":static_provisioning",
+    allow_empty = True,
+    tags = ["manual"],
+)
+
+rust_binary(
+    name = "static_provisioning_marker",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_storage_provisioning_marker_observer",
+    crate_root = "src/bin/storage_provisioning_marker.rs",
+    srcs = ["src/bin/storage_provisioning_marker.rs"],
+    deps = [":lib_static_storage"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "static_provisioning_marker_bin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":static_provisioning_marker",
+    allow_empty = True,
+    tags = ["manual"],
+)
+
+aos_license_check(
+    name = "static_provisioning_production_license_closure",
+    roots = [":static_provisioning", ":static_provisioning_marker"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "static_provisioning_license_closure",
+    testonly = True,
+    roots = [":boot_transaction_unit_binary", ":static_provisioning_bin_binary", ":static_provisioning_marker_bin_binary", "//crates/boot/aos-storage-layout:static_provisioning_unit_binary"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_package(
+    name = "static_provisioning_package",
+    package_name = "aos-storage-provisioning-provider",
+    version = RUST_PACKAGE.version,
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {
+        ":static_provisioning": "bin/aos-storage-provisioning-provider",
+        ":static_provisioning_marker": "bin/aos-storage-provisioning-marker-observer",
+    },
+    executables = ["bin/aos-storage-provisioning-provider", "bin/aos-storage-provisioning-marker-observer"],
+    visibility = ["//visibility:public"],
+)
+
 aos_source_package(
     name = "source_package",
     package = RUST_PACKAGE,
