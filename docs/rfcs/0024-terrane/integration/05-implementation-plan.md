@@ -91,14 +91,32 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
-A new native dictionary-reachability regression proposes a two-level codec-only
-chain through genuine signed publication. It first requires an ordinary scoped
-read to decode the file successfully, then forbids every data-pack body read
-while the actual collector marks and completes its cycle. Independent decoding
-of durable mark shards must find the file and both dictionaries. No attribute
-record is invented to supply the missing codec edges. The focused guest retains
-the existing 60-second case and 240-second guest bounds. Runtime execution is
-pending; this source audit alone establishes neither a GC defect nor a fix.
+Native dictionary-reachability qualification at `5b117a70e2` fails in
+1,275.025 seconds including compilation and image creation. Genuine signed
+publication and the ordinary scoped decoded read succeed. With every data-pack
+body read forbidden, the actual collector completes marking, but independent
+decoding of durable mark shards finds only the file: the intermediate and base
+codec dictionaries are absent. The exact case reaches its final mark assertion
+and fails in 3.59 seconds under the original 60-second case/240-second guest
+bounds. Complete review binds all 8,294 immutable source files, 5,515 image
+inputs and the actual retained test executable. Raw serial, Firecracker and VM
+configuration records are preserved; owned failed-build scratch is removed.
+This proves a marking defect, not physical data loss: the chunks may share a
+pack, and this scenario performs no physical deletion.
+
+T-GC-1 is reopened pending a qualified dictionary-dependency fix; current trunk
+acceptance is **27/64**. Version-one indexes record the codec but omit its
+dictionary digest, while GC-9 forbids obtaining that edge from data bodies.
+A proposed explicit trunk format revision would add dictionary metadata to
+version-two per-pack indexes, preserve ordinary version-one reads and fail
+closed on legacy codec-2 metadata-only traversal until protected migration.
+The proposal awaits a decision; no normative encoding or production recovery
+behavior has been changed to bypass the failure.
+
+Mandatory application-target compilation at the same `5b117a70e2` checkpoint
+passes in 1,471.693 seconds. Independent review matches all 8,294 immutable
+source files and 190 test-executable records across 59 packages. This is
+compilation evidence and does not turn the failed native regression green.
 
 Root-scoped discovery now enumerates actual canonical root and graft paths
 through the repository Guard. Each occurrence receives its own current Read
@@ -983,7 +1001,9 @@ actual manager scenario will run only after those prerequisites pass review;
 the known-failing earlier journal comparison is not run for qualification.
 Native-cache, owning-gate and feature-matrix runs remain pending.
 
-Trunk acceptance is **28/64**. Completed component checks do not establish
+Trunk acceptance is **27/64** after reopening T-GC-1 for the codec dictionary
+marking defect recorded in the current checkpoint. Completed component checks do
+not establish
 production worker, mount-broker or full RFC conformance. Pack compaction
 (GC-18 to GC-21) is explicitly deferred from T-GC-1 to T-GC-2 on B-jobs;
 that optional workline is outside this agreed trunk completion scope. Full
@@ -10175,10 +10195,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   capture-only log-path error from successful test execution. The exact
   fixture correction is preserved at `3c3d51b5b5` and locally composed for
   future trunk qualification. No task or full-floor result is inferred.
-- [x] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
+- [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
   `ttl`, `forever`, and ordinary reflog duration/count selection.
-  Current release checkpoint: the private ordered history and recipe lookups
+  Reopened after the independently reviewed `5b117a70e2` native regression:
+  a successfully decoded two-level codec dictionary chain is omitted from
+  completed durable marks when data-body reads are forbidden. A qualified
+  dependency-metadata fix and owning gate renewal are required; the regression
+  does not establish physical deletion. Earlier successful results remain
+  scoped to their recorded source and assertions.
+  Earlier release checkpoint: the private ordered history and recipe lookups
   pass their production builds and eight focused regressions. Their composed
   source passes strict Clippy and private rustdoc for all three supported
   profiles, plus compilation of all application test targets. A complete
