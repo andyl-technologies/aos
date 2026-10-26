@@ -48,6 +48,17 @@ impl ClientContent {
         &self,
         observer: &mut crate::retained_metadata::MetadataObserver,
     ) -> Result<(), ProviderError> {
+        observer.with_packet_runtime_population_data(
+            crate::retained_metadata::PacketRuntimeMetadataPopulation::Content,
+            |observer| self.observe_content_population_metadata(observer),
+        )
+    }
+
+    /// Observes both original content maps under one selected population.
+    fn observe_content_population_metadata(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
         // Content eight owns byte aliases and their capacities. This walk counts
         // each backing view conservatively; it does not mint deduplication credit.
         let Self {

@@ -52,6 +52,7 @@ impl PacketRuntimeRequest<'_> {
 /// then fund the complete future R/T/S row before moving the original owner.
 pub struct PacketRuntimeController {
     runtime: CompactRuntimeController,
+    metadata_profile: crate::retained_metadata::PacketRuntimeMetadataProfileData,
 }
 
 impl PacketRuntimeController {
@@ -73,10 +74,17 @@ impl PacketRuntimeController {
         if output.is_some() {
             return Err(ProviderError::Conflict("packet runtime output occupied"));
         }
+        let metadata_profile = original
+            .as_ref()
+            .ok_or(ProviderError::Conflict("packet runtime original absent"))?
+            .original_packet_runtime_metadata_profile_data()?;
         let runtime = CompactRuntimeController::retain_original(original)?;
 
         // Only the inline slot move follows successful original retention.
-        *output = Some(Self { runtime });
+        *output = Some(Self {
+            runtime,
+            metadata_profile,
+        });
         Ok(())
     }
 
@@ -203,18 +211,38 @@ impl PacketRuntimeController {
         owner: &crate::connection::OriginalRetainedSupervisor,
         witness: Option<&crate::connection::OriginalProtocolSupervisor>,
     ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
-        self.runtime
-            .retained_metadata_facts_with_retained_supervisor(owner, witness)
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        observer.with_packet_runtime_owner_data(self.metadata_profile, |observer| {
+            self.runtime
+                .observe_retained_runtime_metadata_data(owner, witness, observer)
+        })?;
+        Ok(observer.finish())
     }
 
     /// Names the defining observer and additional borrowed owner/result controls.
     pub fn retained_metadata_counter_scratch_data() -> usize {
         CompactRuntimeController::retained_metadata_counter_scratch_data()
+            + crate::retained_metadata::MetadataObserver::packet_runtime_metadata_profile_counter_scratch_data()
             + std::mem::size_of::<&Self>()
     }
 
     /// Fences the same stream while preserving every retained original owner.
     pub fn fence(&mut self) {
         self.runtime.fence();
+    }
+}
+
+impl CnpController {
+    /// Borrows the immutable limits of the actual owner before its move.
+    pub(super) fn original_packet_runtime_metadata_profile_data(
+        &self,
+    ) -> Result<crate::retained_metadata::PacketRuntimeMetadataProfileData, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        let [requests, _, _] = self.custody.compact_runtime_journal_limits_data()?;
+        crate::retained_metadata::PacketRuntimeMetadataProfileData::from_original_limits_data(
+            self.maximum_frame()?,
+            requests,
+            self.custody.content().packet_runtime_object_ceiling_data(),
+        )
     }
 }

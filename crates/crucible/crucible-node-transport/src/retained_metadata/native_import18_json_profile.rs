@@ -282,7 +282,8 @@ struct PopulationControls {
 impl MetadataObserver<'_> {
     /// Names actual borrowed scope/profile/closure-result controls.
     pub(crate) fn native_import18_json_profile_counter_scratch_data() -> usize {
-        size_of::<NativeImport18JsonMetadataProfileData>()
+        Self::scoped_population_metadata_counter_scratch_data()
+            + size_of::<NativeImport18JsonMetadataProfileData>()
             + size_of::<Result<NativeImport18JsonMetadataProfileData, ProviderError>>()
             + size_of::<PreviousProfile>()
             + size_of::<Option<&crate::client::OriginalNativeImport18Assignment>>()
@@ -377,7 +378,32 @@ impl MetadataObserver<'_> {
         profile: NativeImport18JsonMetadataProfileData,
         observe: impl FnOnce(&mut Self) -> Result<(), ProviderError>,
     ) -> Result<(), ProviderError> {
-        let maximum = profile.maximum_work_data()?;
+        self.with_scoped_population_metadata_data(
+            profile.maximum_depth,
+            profile.maximum_work_data()?,
+            observe,
+        )
+    }
+
+    /// Names the common scope save/restore and checked work-accounting controls.
+    pub(super) fn scoped_population_metadata_counter_scratch_data() -> usize {
+        size_of::<PreviousProfile>()
+            + size_of::<WorkCounts>()
+            + size_of::<ActiveWork>()
+            + size_of::<Option<ActiveWork>>()
+            + size_of::<&mut Self>()
+            + size_of::<Result<(), ProviderError>>()
+            + size_of::<Option<usize>>()
+            + 2 * size_of::<usize>()
+    }
+
+    /// Delegates a private owner's separately bounded visits without refunds.
+    pub(super) fn with_scoped_population_metadata_data(
+        &mut self,
+        maximum_depth: usize,
+        maximum: usize,
+        observe: impl FnOnce(&mut Self) -> Result<(), ProviderError>,
+    ) -> Result<(), ProviderError> {
         self.scoped_work.announced = self
             .scoped_work
             .announced
@@ -389,7 +415,7 @@ impl MetadataObserver<'_> {
             active: self.scoped_work.active,
         };
         self.json_depth = 0;
-        self.json_depth_limit = profile.maximum_depth;
+        self.json_depth_limit = maximum_depth;
         self.scoped_work.active = Some(ActiveWork {
             counts: WorkCounts::default(),
             maximum,

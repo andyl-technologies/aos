@@ -8,6 +8,95 @@ use crate::retained_metadata::{MetadataObserver, requested_metadata_backing_stor
 mod provider_replay;
 
 #[test]
+fn handoff_preflight_preserves_actual_history_content_and_unconsumed_credit() -> TestResult {
+    let (_handshake, mut original, mut peer, reference) = fixture(8);
+    let server = std::thread::spawn(move || {
+        let mut reader = FrameReader::new(peer.try_clone().unwrap(), 65_536).unwrap();
+        let request = read(&mut reader);
+        write(&mut peer, &refusal(&request, 2));
+    });
+    let controller = original.as_mut().unwrap();
+    controller.call(id("legacy"), None, Method::Discover, false, discover())?;
+    server.join().unwrap();
+    let before = prefix(controller);
+    let quotas = controller.custody.runtime_journal_bytes_data();
+    let content_address = controller.content(&reference)?.as_ptr();
+    let journal_quote =
+        controller.original_compact_runtime_journal_retained_storage_data(usize::MAX)?;
+
+    // A funding caller holds only an immutable original. Repeated inspection
+    // must neither spend its remaining credit nor register a suffix original.
+    let controller = original.as_ref().unwrap();
+    for _ in 0..2 {
+        let suffix = controller.prepare_compact_runtime_handoff_data()?;
+
+        assert_eq!(suffix.runtime_retained_bytes(), 0);
+        assert_eq!(
+            suffix.runtime_originals(RequestOrigin::Controller).count(),
+            0
+        );
+        assert_eq!(suffix.runtime_originals(RequestOrigin::Provider).count(), 0);
+        assert_eq!(suffix.retained_storage_data(usize::MAX)?, journal_quote);
+        assert_eq!(controller.custody.runtime_journal_bytes_data(), quotas);
+        assert_eq!(prefix(controller), before);
+        assert_eq!(controller.content(&reference)?.as_ptr(), content_address);
+    }
+
+    let mut output = None;
+    CompactRuntimeController::retain_into(&mut original, &mut output)?;
+    let runtime = output.as_ref().unwrap();
+
+    assert!(original.is_none());
+    assert_eq!(
+        runtime.journal_byte_reservations_data(),
+        [quotas[0], quotas[1], 0]
+    );
+    assert_eq!(prefix(&runtime.original), before);
+    assert_eq!(runtime.content(&reference)?.as_ptr(), content_address);
+    Ok(())
+}
+
+#[test]
+fn revoked_handoff_preflight_and_move_preserve_original_without_containment() -> TestResult {
+    let (mut handshake, session, owner, _witness, _peer) =
+        ClientSession::restoration_retained_fixture();
+    let content = ClientContent::new(262_144, 8, 4096)?;
+    let custody = ClientCustody::new(8, content)?;
+    let mut original = Some(CnpController::new(
+        session,
+        custody,
+        ControllerRoute {
+            node: id("node"),
+            execution_owner: id("owner"),
+        },
+        Duration::from_secs(2),
+    )?);
+    let controller = original.as_ref().unwrap();
+    controller.prepare_compact_runtime_handoff_data()?;
+    let before = prefix(controller);
+    let quotas = controller.custody.runtime_journal_bytes_data();
+    assert!(owner.is_empty_data()?);
+
+    handshake.contain();
+    let controller = original.as_ref().unwrap();
+    assert!(controller.prepare_compact_runtime_handoff_data().is_err());
+    assert!(!controller.fenced);
+    assert_eq!(prefix(controller), before);
+    assert_eq!(controller.custody.runtime_journal_bytes_data(), quotas);
+    assert!(owner.is_empty_data()?);
+
+    let mut output = None;
+    assert!(CompactRuntimeController::retain_into(&mut original, &mut output).is_err());
+    assert!(output.is_none());
+    let controller = original.as_ref().unwrap();
+    assert!(!controller.fenced);
+    assert_eq!(prefix(controller), before);
+    assert_eq!(controller.custody.runtime_journal_bytes_data(), quotas);
+    assert!(owner.is_empty_data()?);
+    Ok(())
+}
+
+#[test]
 fn runtime_identity_query_preserves_original_history_and_survives_fencing() -> TestResult {
     let (mut handshake, mut original, mut peer, _) = fixture(256);
     let controller = original.as_mut().unwrap();

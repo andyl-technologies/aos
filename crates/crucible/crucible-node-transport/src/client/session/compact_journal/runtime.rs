@@ -12,8 +12,13 @@ impl CompactClientJournal {
         &self,
         observer: &mut crate::retained_metadata::MetadataObserver<'_>,
     ) -> Result<(), ProviderError> {
-        self.observe_originals_metadata(observer)?;
-        self.observe_pending_metadata(observer)
+        observer.with_packet_runtime_population_data(
+            crate::retained_metadata::PacketRuntimeMetadataPopulation::Journal,
+            |observer| {
+                self.observe_originals_metadata(observer)?;
+                self.observe_pending_metadata(observer)
+            },
+        )
     }
 
     pub(in crate::client) fn runtime_originals(
@@ -82,15 +87,23 @@ impl ClientSession {
             + size_of::<usize>() * 4
     }
 
+    /// Prepares an empty suffix at the original immutable handoff boundary.
+    ///
+    /// This DATA check invokes no containment or schema callback. The actual
+    /// handoff and its funding query share the same checks and journal limits.
+    ///
+    /// # Errors
+    /// Refuses revoked, fenced or unresolved connection ownership, a response
+    /// loss callback, unsupported credit or an unsettled original prefix.
     pub(in crate::client) fn prepare_compact_runtime_journal(
-        &mut self,
+        &self,
         legacy: &ClientCustody,
     ) -> Result<CompactClientJournal, ProviderError> {
         self.authority.ensure_live()?;
         if self.original_response_loss.is_some() {
             return Err(changed());
         }
-        self.connection.authenticate_compact_exchange_idle()?;
+        self.connection.authenticate_compact_exchange_idle_data()?;
 
         let [requests, remaining, bank] = legacy.compact_runtime_journal_limits_data()?;
         let suffix = CompactClientJournal::new(requests, remaining, bank)?;

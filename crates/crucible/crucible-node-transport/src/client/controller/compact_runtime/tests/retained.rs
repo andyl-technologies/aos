@@ -284,3 +284,88 @@ fn matching_supervisor_does_not_cover_an_unknown_codec() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn packet_runtime_censuses_dense_failure_without_spending_legacy_traversal_credit() -> TestResult {
+    use crate::client::{PacketRuntimeController, PacketRuntimeRequest};
+
+    let (mut handshake, mut original, owner, witness, mut peer) = retained_fixture(8);
+    let server = std::thread::spawn(move || {
+        let mut reader = FrameReader::new(peer.try_clone().unwrap(), 65_536).unwrap();
+        for sequence in [2, 3] {
+            let request = read(&mut reader);
+            let mut reply = refusal(&request, sequence);
+            reply.body["error"]["details"] = json!({"dense": vec![json!([0]); 10_000]});
+            write(&mut peer, &reply);
+        }
+        let mut event = read(&mut reader);
+        event.message = MessageKind::Event;
+        event.method = Method::ProviderFault;
+        event.request_id = Nullable(None);
+        event.sequence = U64::new(4);
+        event.body = body(NotificationBody {
+            operation_state: OperationState::NotStarted,
+            last_observation_sequence: U64::new(0),
+            details: json!({"dense": vec![json!([0]); 15_800]})
+                .as_object()
+                .unwrap()
+                .clone(),
+            extensions: Extensions::new(),
+        });
+        write(&mut peer, &event);
+        event
+    });
+    for request in ["legacy-one", "legacy-two"] {
+        original
+            .as_mut()
+            .unwrap()
+            .call(id(request), None, Method::Discover, false, discover())?;
+    }
+    let legacy = prefix(original.as_ref().unwrap());
+    let mut output = None;
+    PacketRuntimeController::retain_into(&mut original, &mut output)?;
+    let runtime = output.as_mut().unwrap();
+    let before =
+        runtime.retained_metadata_facts_with_retained_supervisor(&owner, Some(&witness))?;
+    let request = BlobFinishRequest {
+        transfer_id: id("unfinished"),
+        extensions: Extensions::new(),
+    };
+
+    assert!(
+        runtime
+            .call(
+                id("runtime"),
+                None,
+                None,
+                PacketRuntimeRequest::BlobFinish(&request),
+                &Extensions::new()
+            )
+            .is_err()
+    );
+    let event = server.join().unwrap();
+    handshake.contain();
+    let after = runtime.retained_metadata_facts_with_retained_supervisor(&owner, Some(&witness))?;
+
+    assert!(before.observed_nodes < 131_072);
+    assert!(after.observed_nodes > 131_072);
+    assert!(after.capacity_records > before.capacity_records);
+    assert_eq!(runtime.unexpected_frame().unwrap().envelope, event);
+    assert_eq!(
+        runtime.legacy_originals(RequestOrigin::Controller).count(),
+        2
+    );
+    assert_eq!(
+        serde_json::to_vec(
+            &runtime
+                .legacy_originals(RequestOrigin::Controller)
+                .collect::<Vec<_>>()
+        )?,
+        legacy
+    );
+    assert_eq!(
+        runtime.retained_metadata_facts_with_retained_supervisor(&owner, Some(&witness))?,
+        after
+    );
+    Ok(())
+}

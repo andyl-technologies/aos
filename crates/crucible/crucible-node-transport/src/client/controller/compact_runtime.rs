@@ -61,34 +61,8 @@ impl CompactRuntimeController {
     pub(super) fn retain_original(
         original: &mut Option<CnpController>,
     ) -> Result<Self, ProviderError> {
-        let controller = original.as_mut().ok_or_else(changed)?;
-        controller.protocol_owner.ensure_current()?;
-        if controller.fenced
-            || controller.original_complete_restore.is_some()
-            || controller.original_complete_restore_prepare.is_some()
-            || controller.original_complete_restore_commit.is_some()
-            || controller.installed_complete_restore.is_some()
-            || controller
-                .original_installed_restoration_activation
-                .iter()
-                .any(Option::is_some)
-            || controller
-                .original_installed_restoration_upload
-                .iter()
-                .any(Option::is_some)
-            || controller
-                .original_installed_restoration_observation
-                .is_some()
-            || controller.original_restored_settled_capture.is_some()
-        {
-            return Err(changed());
-        }
-        if let Some(assigned) = &controller.original_ack_admit {
-            assigned.validate_owned_snapshot()?;
-        }
-        let journal = controller
-            .session
-            .prepare_compact_runtime_journal(&controller.custody)?;
+        let controller = original.as_ref().ok_or_else(changed)?;
+        let journal = controller.prepare_compact_runtime_handoff_data()?;
 
         let controller = original.take().ok_or_else(changed)?;
         Ok(Self {
@@ -308,6 +282,18 @@ impl CompactRuntimeController {
         owner: &crate::connection::OriginalRetainedSupervisor,
         witness: Option<&crate::connection::OriginalProtocolSupervisor>,
     ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        self.observe_retained_runtime_metadata_data(owner, witness, &mut observer)?;
+        Ok(observer.finish())
+    }
+
+    /// Walks the original owners under the caller's private observer profile.
+    pub(super) fn observe_retained_runtime_metadata_data(
+        &self,
+        owner: &crate::connection::OriginalRetainedSupervisor,
+        witness: Option<&crate::connection::OriginalProtocolSupervisor>,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
         self.original.protocol_owner.ensure_current()?;
         self.original
             .session
@@ -317,23 +303,22 @@ impl CompactRuntimeController {
                 .session
                 .authenticate_original_protocol_supervisor_data(witness)?;
         }
-        let mut observer = crate::retained_metadata::MetadataObserver::new();
         self.original
-            .observe_compact_runtime_legacy_metadata(&mut observer)?;
-        self.journal.observe_runtime_metadata(&mut observer)?;
+            .observe_compact_runtime_legacy_metadata(observer)?;
+        self.journal.observe_runtime_metadata(observer)?;
         self.original
             .session
-            .observe_original_restoration_metadata_extras(&mut observer)?;
-        owner.observe_retained_metadata(&mut observer)?;
+            .observe_original_restoration_metadata_extras(observer)?;
+        owner.observe_retained_metadata(observer)?;
         if let Some(witness) = witness {
-            witness.observe_original_header(&mut observer)?;
-            witness.observe_original_actor(&mut observer)?;
+            witness.observe_original_header(observer)?;
+            witness.observe_original_actor(observer)?;
         }
         self.original
             .session
             .authenticate_original_retained_supervisor_data(owner)?;
         self.original.protocol_owner.ensure_current()?;
-        Ok(observer.finish())
+        Ok(())
     }
 
     /// Names the original observer and new borrowed journal/result controls.
@@ -366,6 +351,46 @@ impl CompactRuntimeController {
     /// Fences the same original stream while retaining all journal and content owners.
     pub fn fence(&mut self) {
         self.original.fence();
+    }
+}
+
+impl CnpController {
+    /// Checks the original handoff boundary without effects or ownership moves.
+    ///
+    /// The later move uses this same predicate. Empty suffix construction owns
+    /// only inline headers; it changes no debit, ID namespace or content owner.
+    /// Funding can therefore inspect the complete boundary before admitting
+    /// incident allocation or consuming a Source action.
+    ///
+    /// # Errors
+    /// Refuses foreign, fenced, revoked or unresolved ownership, outstanding
+    /// future assignments, response-loss callbacks or unsupported journal credit.
+    pub(super) fn prepare_compact_runtime_handoff_data(
+        &self,
+    ) -> Result<CompactClientJournal, ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        if self.fenced
+            || self.original_complete_restore.is_some()
+            || self.original_complete_restore_prepare.is_some()
+            || self.original_complete_restore_commit.is_some()
+            || self.installed_complete_restore.is_some()
+            || self
+                .original_installed_restoration_activation
+                .iter()
+                .any(Option::is_some)
+            || self
+                .original_installed_restoration_upload
+                .iter()
+                .any(Option::is_some)
+            || self.original_installed_restoration_observation.is_some()
+            || self.original_restored_settled_capture.is_some()
+        {
+            return Err(changed());
+        }
+        if let Some(assigned) = &self.original_ack_admit {
+            assigned.validate_owned_snapshot()?;
+        }
+        self.session.prepare_compact_runtime_journal(&self.custody)
     }
 }
 

@@ -51,6 +51,11 @@ impl OriginalClientContentGrowthStorageData {
 }
 
 impl ClientContent {
+    /// Borrows the actual object ceiling for the closed runtime metadata walk.
+    pub(in crate::client) fn packet_runtime_object_ceiling_data(&self) -> usize {
+        self.maximum_objects
+    }
+
     /// Bounds future internal allocations under the same byte and object caps.
     ///
     /// The retained row covers borrowed installation, mutable incoming transfers,

@@ -139,25 +139,30 @@ impl OriginalSupervisorProtocolView<'_> {
         observer: &mut crate::retained_metadata::MetadataObserver,
     ) -> Result<(), ProviderError> {
         self.authenticate()?;
-        observer.vector::<ConnectionIncident>(self.incidents.capacity())?;
-        for incident in self.incidents {
-            let ConnectionIncident {
-                session,
-                incarnation,
-                connection,
-                failure: _,
-                transport_fenced,
-                outgoing,
-                incoming,
-            } = incident;
-            observer.observe(session)?;
-            observer.observe(incarnation)?;
-            observer.observe(connection)?;
-            observer.observe(transport_fenced)?;
-            observer.observe(outgoing)?;
-            observer.observe(incoming)?;
-        }
-        Ok(())
+        observer.with_packet_runtime_population_data(
+            crate::retained_metadata::PacketRuntimeMetadataPopulation::Incident,
+            |observer| {
+                observer.vector::<ConnectionIncident>(self.incidents.capacity())?;
+                for incident in self.incidents {
+                    let ConnectionIncident {
+                        session,
+                        incarnation,
+                        connection,
+                        failure: _,
+                        transport_fenced,
+                        outgoing,
+                        incoming,
+                    } = incident;
+                    observer.observe(session)?;
+                    observer.observe(incarnation)?;
+                    observer.observe(connection)?;
+                    observer.observe(transport_fenced)?;
+                    observer.observe(outgoing)?;
+                    observer.observe(incoming)?;
+                }
+                Ok(())
+            },
+        )
     }
 }
 

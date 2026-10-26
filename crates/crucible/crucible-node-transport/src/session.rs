@@ -52,9 +52,14 @@ impl CorrelationGuard {
         observer.observe(next_received)?;
         observer.observe(next_sent)?;
         observer.observe(maximum_requests)?;
-        observer.observe(pending)?;
-        observer.observe(received_requests)?;
-        observer.observe(writing_responses)?;
+        observer.with_packet_runtime_population_data(
+            crate::retained_metadata::PacketRuntimeMetadataPopulation::Correlation,
+            |observer| {
+                observer.observe(pending)?;
+                observer.observe(received_requests)?;
+                observer.observe(writing_responses)
+            },
+        )?;
         observer.observe(extensions)?;
         observer.observe(failed)?;
         observer.observe(continuation_installed)

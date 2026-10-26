@@ -10,7 +10,43 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
-## Packet runtime funding inputs
+## Packet runtime handoff and metadata
+
+Compact ownership transfer and future funding inspection now share one immutable
+handoff preflight. It checks the same original assignments, completed ACK
+snapshot, live idle connection and unchanged journal credit before moving the
+owner. Refusal preserves both caller slots and does not invoke containment.
+
+The opaque packet runtime retains a private metadata profile derived from the
+original frame, lifetime request and content-object ceilings. Only the mutable
+content store, three correlation maps, compact suffix and authenticated retained
+incidents use their own bounded traversal scopes. Legacy journals keep the
+ordinary traversal allowance. Refused child walks preserve partial facts and
+restore the previous scope without refunding visits. Native18 and packet runtime
+retain distinct profile DATA while sharing checked scope accounting.
+
+A real socket control combines dense legacy responses with a retained runtime
+ProviderFault. Its fenced and revoked owner remains inspectable when the complete
+census exceeds the ordinary traversal limit, preserving original journals and
+both literal and typed failure owners. Separate controls verify that installing
+a runtime profile cannot enlarge a precharged record bank or its existing
+131,072-row ceiling.
+
+Both codec configurations pass eighty focused handoff, journal and metadata
+controls. Both complete Transport suites pass 2,299 tests with twenty ignored.
+Five-package all-feature/all-target checks, twelve-file scoped formatting and all
+six architecture gates pass. Required application test-target compilation passes
+with 185 artifacts across 58 packages and 76 integration targets; all 774 selected
+frozen Rust/Cargo inputs match current and captured source. User-owned changes
+are preserved. This is component qualification; no latest-source strict lint,
+native inactive-lifecycle or complete RFC qualification is claimed.
+
+Complete SDK R/T/S still needs the enclosing Source's widest tree layout and
+future reporting storage. Same-Source one-use admission, funded handoff and the
+physical Source18 record bank and readers remain unfinished, along with the
+remaining full RFC implementation.
+
+## Baseline decoder and codec funding inputs
 
 The baseline body quote follows the same closed method and Begin rosters as
 serialization and typed-vector sizing. Every concrete root requires its own
@@ -65,9 +101,9 @@ source. User-owned changes are preserved; this is not clean whole-PR or full
 RFC qualification. No latest-source strict lint or native inactive-lifecycle
 qualification is claimed here.
 
-These are component inputs. Complete SDK R/T/S, its dedicated metadata
-population profile, same-Source one-use admission and funded handoff remain
-unfinished, along with the remaining full RFC implementation.
+These are component inputs. Complete SDK R/T/S, physical runtime metadata
+storage, same-Source one-use admission and funded handoff remain unfinished,
+along with the remaining full RFC implementation.
 
 ## Object-only baseline records and provider replay
 

@@ -31,6 +31,7 @@ pub(crate) struct MetadataObserver<'a> {
     json_depth: usize,
     json_depth_limit: usize,
     scoped_work: native_import18_json_profile::ScopedWorkAccounting,
+    packet_runtime: Option<PacketRuntimeMetadataProfileData>,
     native_import18_capsule: Option<&'a crate::client::OriginalNativeImport18Assignment>,
     ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData,
     records: Option<&'a mut MetadataRecordBank>,
@@ -44,6 +45,7 @@ impl<'a> MetadataObserver<'a> {
             json_depth: 0,
             json_depth_limit: 64,
             scoped_work: native_import18_json_profile::ScopedWorkAccounting::new(),
+            packet_runtime: None,
             native_import18_capsule: None,
             ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData::default(),
             records: None,
@@ -58,6 +60,7 @@ impl<'a> MetadataObserver<'a> {
             json_depth: 0,
             json_depth_limit: 64,
             scoped_work: native_import18_json_profile::ScopedWorkAccounting::new(),
+            packet_runtime: None,
             native_import18_capsule: None,
             ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData::default(),
             records: Some(records),
@@ -76,6 +79,7 @@ impl<'a> MetadataObserver<'a> {
             json_depth: 0,
             json_depth_limit: 64,
             scoped_work: native_import18_json_profile::ScopedWorkAccounting::new(),
+            packet_runtime: None,
             native_import18_capsule: None,
             ordinary_bytes_formatter: OrdinaryBytesFormatterDemandData::default(),
             records: Some(records),
@@ -869,3 +873,8 @@ pub(crate) use native_import18_json_profile::NativeImport18JsonMetadataProfileDa
 
 mod original_launch;
 pub use original_launch::OriginalLaunchMetadataObservation;
+
+mod packet_runtime_profile;
+pub(crate) use packet_runtime_profile::{
+    PacketRuntimeMetadataPopulation, PacketRuntimeMetadataProfileData,
+};
