@@ -40,10 +40,15 @@ Recent committed startup fixes close narrower prerequisites:
   The decoder regression and all 410 runnable Host library tests pass, with
   three ignored kernel cases. The raw parallel run failed one socket-retention
   assertion; the exact case passes in isolation and the whole suite passes
-  serially. The repository's isolated nextest run is pending. A strict QEMU
-  regression using the installed Host kernel is also pending; it requires the
-  old namespace lookup to fail and checks both inherited read-only and writable
-  mounts. Its dependency closure excludes the pending production policy.
+  serially. The repository's isolated nextest run passes all 409 selected tests,
+  with four skipped by the existing profile and kernel annotations. The strict
+  QEMU regression passes using the installed Host kernel
+  (`/nix/store/xja9drn7qwb3dl4d0n5fv6inwi0s7qdq-aos-fleet-test-sandbox-inherited-file-mount-0`).
+  It requires the old namespace lookup to fail and checks both inherited
+  read-only and writable mounts. The first boot found the fixture script absent;
+  retaining that input in the guest image corrects the test closure. This
+  non-enforcing component test excludes the pending production policy and
+  establishes no installed Host or TPM qualification.
   The enforcing combined Host candidate previously refused with retained Linux
   error class 213; this result alone does not identify its syscall or errno.
   A corrected enforcing run remains a separate gate, and admission stays closed.
@@ -582,8 +587,10 @@ Recent committed startup fixes close narrower prerequisites:
   Replay and admission must succeed before main-map lending. All 70 focused
   initial tests and 72 shared Journal regressions pass, including a real
   protected reopen with deleted foreign history and an empty valid Broker map.
-  All three portable retained capacity regressions also pass. Full Rust
-  target compilation is running against the final source.
+  All three portable retained capacity regressions also pass. Complete Rust
+  unit and integration targets compile for the final namespace/credential source
+  (`/nix/store/mpq9llkhz92ii965ghaid63fsa56ibpx-aos-test-targets-0.1.0`),
+  without running the targets and before the later descriptor-mount change.
   Session schema, independent endpoint/key provenance, job exclusion, approved
   durable intent, physical TPM operations and installed producers remain open.
 

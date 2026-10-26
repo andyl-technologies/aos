@@ -73,7 +73,7 @@
   fixtureSystem = mkSystem [
     ../../systems/server-test.nix
     {
-      environment.systemPackages = [probe pkgs.util-linux];
+      environment.systemPackages = [probe script pkgs.util-linux];
       aos.kernel._extraConfigFragments = lib.mkForce installedSystem.config.aos.kernel._extraConfigFragments;
     }
   ];
