@@ -363,15 +363,21 @@ impl OfflinePrepareCredentialsV3 {
                 .map_err(std::io::Error::other)?;
         }
 
-        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        self.ancestors.push(File::from(open("/", flags, Mode::empty())?));
-        for name in ["run", "credentials", "aos-sandbox-nix-floor-provision.service"] {
+        // Ancestors provide lookup and metadata only. Reading their entries
+        // would unnecessarily require access to the private root's tmpfs label.
+        let flags = OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        self.ancestors.push(File::from(open("/", OFFLINE_ANCESTOR_FLAGS, Mode::empty())?));
+        for (name, access) in [
+            ("run", OFlags::PATH),
+            ("credentials", OFlags::PATH),
+            ("aos-sandbox-nix-floor-provision.service", OFlags::RDONLY),
+        ] {
             let parent = self.ancestors.last().ok_or_else(offline_credential_rejected)?;
             let metadata = parent.metadata()?;
             if metadata.uid() != 0 || metadata.gid() != 0 || metadata.mode() & 0o022 != 0 {
                 return Err(offline_credential_rejected());
             }
-            let next = openat(parent, name, flags, Mode::empty())?;
+            let next = openat(parent, name, flags | access, Mode::empty())?;
             self.ancestors.push(File::from(next));
         }
 
@@ -671,6 +677,11 @@ impl OfflinePrepareCredentialsV3 {
     }
 }
 
+const OFFLINE_ANCESTOR_FLAGS: OFlags = OFlags::PATH
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+
 const OFFLINE_PREPARE_DIRECTORY: &str = "/run/credentials/aos-sandbox-nix-floor-provision.service";
 const OFFLINE_PREPARE_NAMES: [&str; 2] = ["node-id", "nix-floor-provision-approval-public-key-v3"];
 const OFFLINE_PREPARE_LENGTHS: [u64; 2] = [16, 48];
@@ -812,6 +823,28 @@ mod tests {
                 .require_length(1, 304)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn offline_credential_ancestor_supports_lookup_without_directory_reads() {
+        use std::mem::MaybeUninit;
+        use std::os::fd::AsFd as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("credential"), b"public original").unwrap();
+        let ancestor = File::from(open(
+            directory.path(), OFFLINE_ANCESTOR_FLAGS, Mode::empty(),
+        ).unwrap());
+
+        assert!(ancestor.metadata().unwrap().is_dir());
+        let child = File::from(openat(
+            &ancestor, "credential", OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ).unwrap());
+        assert_eq!(child.metadata().unwrap().len(), 15);
+        let mut buffer = [MaybeUninit::<u8>::uninit(); 4096];
+        let mut entries = rustix::fs::RawDir::new(ancestor.as_fd(), &mut buffer);
+        assert!(matches!(entries.next(), Some(Err(rustix::io::Errno::BADF))));
     }
 
     #[test]

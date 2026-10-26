@@ -558,7 +558,8 @@ Recent committed startup fixes close narrower prerequisites:
   Replay and admission must succeed before main-map lending. All 70 focused
   initial tests and 72 shared Journal regressions pass, including a real
   protected reopen with deleted foreign history and an empty valid Broker map.
-  Portable retained capacity regressions and full Rust targets are running.
+  All three portable retained capacity regressions also pass. Full Rust
+  target compilation is running against the final source.
   Session schema, independent endpoint/key provenance, job exclusion, approved
   durable intent, physical TPM operations and installed producers remain open.
 
@@ -581,8 +582,10 @@ Recent committed startup fixes close narrower prerequisites:
   stage, then refuses credential acquisition with class 90. Its audit denies
   a read of the private tmpfs root directory. The reader used ordinary readable
   descriptors for ancestors that only need lookup and metadata. An `O_PATH`
-  correction is prepared, with a native kernel regression running; the actual
-  delivered directory retains its readable descriptor, labels, exact-entry,
+  correction now uses traversal-only ancestor descriptors. Its native kernel
+  regression passes: metadata and child lookup succeed while directory entry
+  reads return `EBADF`. The actual delivered directory retains its readable
+  descriptor, labels, exact-entry,
   ownership, read-only mount and held/named content checks. No production
   permission is added. A corrected installed retry remains pending. The failed
   frozen candidate
