@@ -8,7 +8,7 @@ use crate::store::{Clock, RefStore};
 use terrane_format::gc::retirement::{
     ObservationState, PassCoverage, PassPhase, PermanentDeleteAuthorization,
 };
-use terrane_format::gc::{GcLease, Windows};
+use terrane_format::gc::{GcLease, Tombstone, Windows};
 
 #[path = "recovery/renewal.rs"]
 mod renewal;
@@ -63,8 +63,22 @@ async fn permanent_local_collection_reconciles_with_its_original_live_session() 
     cleanup(copied);
 
     let (fixture, local_root) = CopiedFixture::with_local_root(Residue::Pack).await;
-    fixture.own().await;
+    let operation = fixture.own().await;
+    let PermanentDeleteAuthorization::Copied(authorization) = &operation.authorization else {
+        panic!("genuine copied retirement owner expected");
+    };
+    let tombstone = Tombstone::decode(&authorization.tombstone).unwrap();
+    assert_eq!(tombstone.pack, *fixture.pack.as_bytes());
+    let root = fixture.guard().store().root();
+    // First ownership publishes its own real Trash record beside the copied
+    // pack. Reconciliation counts physical requests, rather than pack families.
+    let expected_residues = vec![
+        root.join(fixture.pack.pack_key()),
+        root.join(format!("trash/{}/{}", tombstone.cycle, fixture.pack)),
+    ];
+    assert_eq!(residue_paths(&fixture).await, expected_residues);
     let before = image(&fixture).await;
+    assert_eq!(before.operation.as_ref(), Some(&operation));
     let key = before.owner_key.as_deref().unwrap();
     let previous = GcLease::decode(before.logical["gc/lease"].as_deref().unwrap()).unwrap();
     let ticks = fixture
@@ -104,8 +118,9 @@ async fn permanent_local_collection_reconciles_with_its_original_live_session() 
 
     let report = collection.reconcile_permanent(key, 8).await.unwrap();
 
-    assert_eq!(report.reclaimed, 1);
+    assert_eq!(report.reclaimed, expected_residues.len());
     assert!(report.selected_events > report.reclaimed);
+    assert!(expected_residues.iter().all(|path| !path.exists()));
     assert!(
         !fixture
             .guard()
