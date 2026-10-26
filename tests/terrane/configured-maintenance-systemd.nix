@@ -117,6 +117,10 @@
             };
           };
           sdkOutputRoots = [sdkOutput];
+          tokens = {
+            issuerPublicKeys = ["file:${repository}/issuer-public.toml"];
+            hostToken = "file:${repository}/startup.cap";
+          };
           exposures = map (id: {
             inherit id;
             view = "refs/heads/_/main";

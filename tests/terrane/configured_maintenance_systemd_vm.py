@@ -233,6 +233,8 @@ def configuration(driver, common, repository):
     driver.require(actual["store"] == portable["store"]
                    and actual["local_repository"] == portable["local_repository"],
                    "managed configuration changed the original repository authority")
+    driver.require(actual["tokens"] == portable["tokens"],
+                   "managed configuration changed explicit public trust or startup Read")
     normalize = lambda rows: [{**row, "options": row.get("options", {})} for row in rows]
     # Only the independently declared destination moves. Authority, selected
     # views, capabilities and modes must still equal the original signed setup.

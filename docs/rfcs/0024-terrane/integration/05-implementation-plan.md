@@ -91,6 +91,12 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The actual service-manager fixture now declares the public issuer file and
+independent startup Read required by the configured SDK launcher. Its guest
+comparison also requires those rendered token settings to match the genuine
+repository setup exactly. This closes a stale fixture configuration left by the
+public-reader transition; renewed managed-role execution remains required.
+
 File-scoped committed-index membership now has a repository entry point on
 `PreparedFileRead`. It retains authenticated file selection, permits only the
 inline chunk or a verified manifest's directly listed chunks, filters all other
