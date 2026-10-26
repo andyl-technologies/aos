@@ -32,6 +32,15 @@ impl OriginalNativeImport18BootstrapConstructionData {
     /// # Errors
     /// Refuses a foreign creator or metadata accounting exhaustion.
     pub fn retained_metadata_data(&self) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer = MetadataObserver::new();
+        self.observe_source_metadata_data(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    pub(in crate::client::controller::native_import18) fn observe_source_metadata_data(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
         let Self {
             controller,
             frontier: _,
@@ -42,9 +51,8 @@ impl OriginalNativeImport18BootstrapConstructionData {
             axes: _,
         } = self;
         controller.ensure_current()?;
-        let mut observer = MetadataObserver::new();
         observer.shared_original(MetadataSharedKind::ProtocolOwner, controller.as_ref())?;
-        Ok(observer.finish())
+        Ok(())
     }
 
     pub(super) fn retaining_data(&self) -> Self {

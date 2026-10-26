@@ -130,11 +130,11 @@ pub use controller::{
 };
 
 pub use controller::{
-    OriginalNativeImport18Assignment, OriginalNativeImport18AssignmentHistoryView,
-    OriginalNativeImport18AssignmentStorageData, OriginalNativeImport18Bootstrap,
-    OriginalNativeImport18BootstrapBirthInputs, OriginalNativeImport18BootstrapConstructionData,
-    OriginalNativeImport18BootstrapHistoryData, OriginalNativeImport18BootstrapRowHistoryData,
-    OriginalNativeImport18HostRegistrationView,
+    NativeImport18SourceMetadataData, OriginalNativeImport18Assignment,
+    OriginalNativeImport18AssignmentHistoryView, OriginalNativeImport18AssignmentStorageData,
+    OriginalNativeImport18Bootstrap, OriginalNativeImport18BootstrapBirthInputs,
+    OriginalNativeImport18BootstrapConstructionData, OriginalNativeImport18BootstrapHistoryData,
+    OriginalNativeImport18BootstrapRowHistoryData, OriginalNativeImport18HostRegistrationView,
     OriginalNativeImport18InputUploadProspectiveStorageData,
     OriginalNativeImport18InputUploadStorageData, OriginalNativeImport18ReceiveConstructionData,
 };

@@ -17,6 +17,8 @@
 //! No returned number, token document or successful assembly grants a native
 //! operation or supplies a completed Source/native witness.
 
+#[path = "edition18_tokens/capacities.rs"]
+mod capacities;
 #[path = "edition18_tokens/correspondence.rs"]
 mod correspondence;
 #[path = "edition18_tokens/decode.rs"]

@@ -375,6 +375,25 @@ impl OriginalNativeImport18Assignment {
         binding: Option<&PacketNativeImport18Binding>,
     ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
         let mut observer = MetadataObserver::new();
+        Self::observe_source_inputs_data(
+            request_id,
+            baseline,
+            prepare,
+            commit,
+            binding,
+            &mut observer,
+        )?;
+        Ok(observer.finish())
+    }
+
+    pub(super) fn observe_source_inputs_data(
+        request_id: Option<&Id>,
+        baseline: Option<&BeginRequest>,
+        prepare: Option<&PacketCompleteRestorePrepareRequest>,
+        commit: Option<&PacketCompleteRestoreCommitRequest>,
+        binding: Option<&PacketNativeImport18Binding>,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
         if let Some(id) = request_id {
             observer.observe(id)?;
         }
@@ -390,7 +409,7 @@ impl OriginalNativeImport18Assignment {
         if let Some(binding) = binding {
             observer.observe(binding)?;
         }
-        Ok(observer.finish())
+        Ok(())
     }
 
     /// Names the actual typed visitor and borrowed optional input controls.

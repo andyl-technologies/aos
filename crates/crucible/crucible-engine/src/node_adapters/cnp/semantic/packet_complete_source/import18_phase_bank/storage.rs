@@ -63,81 +63,14 @@ impl PacketCompleteSemanticSource {
         &self,
         maximum: usize,
     ) -> Result<usize, E> {
-        self.storage_origin_with_error::<E>()?;
-        let slot = self
-            .native_import18_phase_bank
-            .try_borrow()
-            .map_err(|_| E::refused("Source18 phase bank already borrowed"))?;
-        let bytes = match slot.as_ref() {
-            Some(bank) => bank.retained_backing_data(maximum).map_err(E::runtime)?,
-            None => 0,
-        };
-        self.storage_origin_with_error::<E>()?;
-        Ok(bytes)
+        let facts = self.native_import18_phase_bank_capacity_with_error::<E>(None)?;
+        Self::complete_retained_metadata_storage_with_error::<E>(&facts, maximum)
     }
 }
 
-impl NativeImport18SourcePhaseBank {
-    /// Includes the actual Box payload and full spare vector capacity.
-    pub(super) fn retained_backing_data(&self, maximum: usize) -> Result<usize, RuntimeError> {
-        let slots = Layout::array::<NativeImport18SourcePhaseOwner>(self.owners.capacity())
-            .map_err(|_| RuntimeError::ResourceLimit)?;
-        let mut bytes = add(size_of::<Self>(), slots.size(), maximum)?;
-        for owner in &self.owners {
-            bytes = add(bytes, owner.retained_backing_data(maximum)?, maximum)?;
-        }
-        Ok(bytes)
-    }
-}
-
-impl NativeImport18SourcePhaseOwner {
-    fn retained_backing_data(&self, maximum: usize) -> Result<usize, RuntimeError> {
-        let mut bytes = self.bootstrap.retained_backing_data(maximum)?;
-        bytes = add(bytes, self.prepare.retained_backing_data(maximum)?, maximum)?;
-        bytes = add(bytes, self.commit.retained_backing_data(maximum)?, maximum)?;
-        bytes = add(
-            bytes,
-            foreign_backing(
-                &OriginalNativeImport18Assignment::source_input_retained_metadata_data(
-                    None,
-                    None,
-                    self.prepare_request.as_ref(),
-                    self.commit_request.as_ref(),
-                    self.binding.as_ref(),
-                )
-                .map_err(|_| RuntimeError::ResourceLimit)?,
-                maximum,
-            )?,
-            maximum,
-        )?;
-        for row in self.sdk_rows.iter().flatten() {
-            bytes = add(
-                bytes,
-                foreign_backing(
-                    &row.retained_metadata_data()
-                        .map_err(|_| RuntimeError::ResourceLimit)?,
-                    maximum,
-                )?,
-                maximum,
-            )?;
-        }
-        if let Some(sdk) = &self.prepare_capsule {
-            bytes = add(
-                bytes,
-                foreign_backing(
-                    &sdk.retained_metadata_data()
-                        .map_err(|_| RuntimeError::ResourceLimit)?,
-                    maximum,
-                )?,
-                maximum,
-            )?;
-        }
-        Ok(bytes)
-    }
-}
-
+#[cfg(test)]
 impl BootstrapPartials {
-    fn retained_backing_data(&self, maximum: usize) -> Result<usize, RuntimeError> {
+    pub(super) fn retained_backing_data(&self, maximum: usize) -> Result<usize, RuntimeError> {
         let mut sdk_bytes = 0;
         if let Some(row) = &self.sdk_row {
             sdk_bytes = add(
@@ -223,8 +156,9 @@ impl BootstrapPartials {
     }
 }
 
+#[cfg(test)]
 impl PhasePartials {
-    fn retained_backing_data(&self, maximum: usize) -> Result<usize, RuntimeError> {
+    pub(super) fn retained_backing_data(&self, maximum: usize) -> Result<usize, RuntimeError> {
         let mut bytes = foreign_backing(
             &OriginalNativeImport18Assignment::source_input_retained_metadata_data(
                 self.request_id.as_ref(),
@@ -248,6 +182,7 @@ impl PhasePartials {
     }
 }
 
+#[cfg(test)]
 fn literal_backing(
     attempt: Option<&LiteralValue18TokenAttempt>,
     literal: Option<&LiteralValue18Data>,
@@ -271,6 +206,7 @@ fn literal_backing(
     Ok(bytes)
 }
 
+#[cfg(test)]
 fn foreign_backing(
     facts: &RetainedProtocolMetadataFacts,
     maximum: usize,
@@ -286,7 +222,8 @@ fn add(left: usize, right: usize, maximum: usize) -> Result<usize, RuntimeError>
 
 /// Names only the actual fixed census and metadata-prewalk controls.
 pub(super) fn retained_counter_scratch_data() -> usize {
-    PacketCompleteSemanticSource::retained_metadata_conversion_counter_scratch_data()
+    super::metadata::counter_scratch_data()
+        + PacketCompleteSemanticSource::retained_metadata_conversion_counter_scratch_data()
         + OriginalNativeImport18Assignment::source_input_metadata_counter_scratch_data()
         + CnpController::original_native_import18_assignment_counter_scratch_data()
         + native_import18_bootstrap_retention_counter_scratch_data()

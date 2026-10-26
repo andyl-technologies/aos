@@ -62,6 +62,10 @@ mod receive;
 #[path = "native_import18/registration.rs"]
 mod registration;
 pub use receive::OriginalNativeImport18ReceiveConstructionData;
+#[path = "native_import18/source_metadata.rs"]
+mod source_metadata;
+pub use source_metadata::NativeImport18SourceMetadataData;
+
 #[path = "native_import18/storage.rs"]
 mod storage;
 pub use input_upload::{

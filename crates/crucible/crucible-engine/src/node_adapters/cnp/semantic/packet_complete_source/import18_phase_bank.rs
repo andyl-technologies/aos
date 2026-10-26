@@ -43,6 +43,8 @@ use std::{
 mod construction;
 #[path = "import18_phase_bank/history.rs"]
 mod history;
+#[path = "import18_phase_bank/metadata.rs"]
+mod metadata;
 #[path = "import18_phase_bank/storage.rs"]
 mod storage;
 

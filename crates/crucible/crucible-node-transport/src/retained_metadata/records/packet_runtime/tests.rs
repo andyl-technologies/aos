@@ -34,6 +34,120 @@ fn encoded(capacity: usize, maximum: usize, state: &str, rows: &str) -> Vec<u8> 
 }
 
 #[test]
+fn source_phase_inputs_append_actual_geometry_without_replacing_earlier_rows() {
+    use crate::client::NativeImport18SourceMetadataData;
+    use crucible_node_format::Id;
+
+    let id = Id::new("phase18/independent-retained-input").unwrap();
+    let input = NativeImport18SourceMetadataData::SourceInputs {
+        request_id: Some(&id),
+        baseline: None,
+        prepare: None,
+        commit: None,
+        binding: None,
+    };
+    let expected = input.retained_metadata_data().unwrap();
+    let prefix = row(MetadataRecordKind::Vector, 17, 1, 1);
+    let mut bank = bank(expected.capacity_records + 1);
+    bank.reserve_retained_data().unwrap();
+    bank.append_capacity_record_data(prefix).unwrap();
+    let allocated = bank.allocated_bytes();
+
+    let actual = input.record_retained_metadata_data(&mut bank).unwrap();
+
+    assert_eq!(actual, expected);
+    assert_eq!(actual.string_capacity_bytes, id.allocated_capacity());
+    assert_eq!(bank.rows()[0], prefix);
+    assert_eq!(
+        bank.rows()[1],
+        row(MetadataRecordKind::String, id.allocated_capacity(), 1, 1)
+    );
+    assert_eq!(bank.allocated_bytes(), allocated);
+    assert!(input.record_retained_metadata_data(&mut bank).is_err());
+    assert_eq!(bank.rows().len(), 2);
+    assert_eq!(bank.rows()[0], prefix);
+}
+
+#[test]
+fn source_bootstrap_failed_dto_preserves_actual_prefix_when_physical_rows_run_out() {
+    use crate::{
+        client::NativeImport18SourceMetadataData,
+        reference_packet::service::{
+            complete_restore::import18::bootstrap_ack::{
+                PacketNativeImport18BootstrapRequest, PacketNativeImport18BootstrapRetainedData,
+            },
+            native_startup::PacketNativeStartupAllocationRow,
+        },
+    };
+    use crucible_node_format::{Bytes, U64};
+
+    let mut schema = String::with_capacity(97);
+    schema.push_str("invalid-failed-schema");
+    let mut digest = Vec::with_capacity(113);
+    digest.push(7);
+    let request = PacketNativeImport18BootstrapRequest {
+        schema,
+        recipe_identity: Bytes::new(digest),
+        initial_funding: PacketNativeStartupAllocationRow {
+            retained_requested_bytes: U64::new(1),
+            maximum_simultaneous_transient_bytes: U64::new(2),
+            declared_counter_scratch_bytes: U64::new(3),
+        },
+    };
+    let dto = PacketNativeImport18BootstrapRetainedData::Request(&request);
+    let view = NativeImport18SourceMetadataData::BootstrapDto(dto);
+    let expected = dto.retained_metadata_data().unwrap();
+    let mut exact = bank(expected.capacity_records);
+    exact.reserve_retained_data().unwrap();
+
+    assert!(request.validate_data().is_err());
+    assert_eq!(view.retained_metadata_data().unwrap(), expected);
+    assert_eq!(
+        view.record_retained_metadata_data(&mut exact).unwrap(),
+        expected
+    );
+    assert_eq!(exact.rows().len(), expected.capacity_records);
+    assert_eq!(expected.string_capacity_bytes, request.schema.capacity());
+    assert_eq!(
+        expected.vector_capacity_bytes,
+        request.recipe_identity.allocation_capacity()
+    );
+
+    let mut short = bank(expected.capacity_records - 1);
+    short.reserve_retained_data().unwrap();
+    assert!(view.record_retained_metadata_data(&mut short).is_err());
+    assert_eq!(short.rows(), &exact.rows()[..short.maximum_rows()]);
+    let retained = short.rows().to_vec();
+    assert!(view.record_retained_metadata_data(&mut short).is_err());
+    assert_eq!(short.rows(), retained);
+    assert_eq!(view.retained_metadata_data().unwrap(), expected);
+}
+
+#[test]
+fn source_phase_recording_refuses_unallocated_bank_without_changing_history() {
+    use crate::client::NativeImport18SourceMetadataData;
+    use crucible_node_format::Id;
+
+    let id = Id::new("phase18/unallocated").unwrap();
+    let view = NativeImport18SourceMetadataData::SourceInputs {
+        request_id: Some(&id),
+        baseline: None,
+        prepare: None,
+        commit: None,
+        binding: None,
+    };
+    let mut bank = bank(1);
+
+    assert!(view.record_retained_metadata_data(&mut bank).is_err());
+    assert!(bank.rows().is_empty());
+    assert_eq!(bank.allocated_bytes(), 0);
+    assert_eq!(
+        bank.reservation_state_data(),
+        PacketRuntimeMetadataReservationData::Unallocated
+    );
+}
+
+#[test]
 fn packet_bank_records_above_legacy_limit_without_widening_legacy_grammar() {
     let maximum = MAXIMUM_ROWS + 1;
     let mut bank = bank(maximum);

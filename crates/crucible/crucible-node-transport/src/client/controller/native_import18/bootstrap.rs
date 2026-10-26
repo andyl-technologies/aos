@@ -199,6 +199,15 @@ impl OriginalNativeImport18Bootstrap {
     /// # Errors
     /// Refuses a foreign creator or checked metadata traversal exhaustion.
     pub fn retained_metadata_data(&self) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+        let mut observer = MetadataObserver::new();
+        self.observe_source_metadata_data(&mut observer)?;
+        Ok(observer.finish())
+    }
+
+    pub(super) fn observe_source_metadata_data(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
         let Self {
             row,
             request_id,
@@ -231,26 +240,25 @@ impl OriginalNativeImport18Bootstrap {
             failed: _,
         } = self;
         row.controller.ensure_current()?;
-        let mut observer = MetadataObserver::new();
         observer.shared_original(MetadataSharedKind::ProtocolOwner, row.controller.as_ref())?;
         observer.observe(request_id)?;
         if let Some(request) = request {
-            storage::observe_request_data(request, &mut observer)?;
+            storage::observe_request_data(request, observer)?;
         }
         if let Some(assignment) = assignment {
-            assignment.observe_retained_into_data(&mut observer)?;
+            assignment.observe_retained_into_data(observer)?;
         }
         if let Some(sealing) = sealing {
-            sealing.observe_retained_into_data(&mut observer)?;
+            sealing.observe_retained_into_data(observer)?;
         }
         if let Some(raw) = raw_response {
-            raw.observe_retained_into_data(&mut observer)?;
+            raw.observe_retained_into_data(observer)?;
         }
         if let Some(decoded) = decoded_response {
-            decoded.observe_retained_into_data(&mut observer)?;
+            decoded.observe_retained_into_data(observer)?;
         }
         observer.observe(settled_request)?;
-        Ok(observer.finish())
+        Ok(())
     }
 
     /// Names this actual fixed-depth census without expanded receive allowances.

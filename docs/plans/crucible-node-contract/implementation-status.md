@@ -55,7 +55,7 @@ Nine actual SDK funding controls include exact whole-row and one-byte-short
 refusal, request/content/object limits, independent Provider replay, foreign or
 revoked owners, erased callback refusal, recording a retained ProviderFault under
 a wider enclosing-Source layout and preserving history under foreign supervisors.
-Eight physical bank controls cover populations above the legacy limit, ordered rows,
+Eleven physical bank controls cover populations above the legacy limit, ordered rows,
 independent backing credit, sticky failed reservations, retained allocator
 overshoot history, checked component appends that preserve earlier and refused
 prefixes, and strict rejection of malformed, truncated or impossible history.
@@ -77,6 +77,15 @@ capacity after unlink, and non-UTF-8 path backing as DATA. Receiver-group storag
 and nested dynamic fields remain independent components. Census controls are
 included in the Source's original precredit observation demand.
 
+The Source18 phase bank now retains its enclosing Box and spare owner-vector
+geometry, independent SDK owners and input DTOs, encoded buffers and flat literal
+banks. A closed borrowed SDK roster uses the same defining walks for capacity
+facts and physical appends; opaque SDK variants keep their creator checks.
+Invalid bootstrap DTOs and failed literal attempts retain their actual backing
+without becoming native completion witnesses. Constructor validation and
+production byte admission consume this same census. The literal capacity walk
+does not report a scalar-work bound.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its seven
@@ -86,15 +95,15 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 106 focused Transport controls and eighteen Engine
-census/installation/holder controls. Complete Transport suites pass 2,317 tests each
-with twenty ignored; all 643 selected SDK/dependency source inputs remain unchanged.
-Complete Engine suites pass 2,094 tests each with thirty-four ignored, using matching
-source-built installed packet fixtures. Five-package
-all-feature/all-target checks, six-file scoped formatting, all six architecture
+Both codec configurations pass 120 focused Transport controls and 25 Engine
+census/installation/holder controls. Complete Transport suites pass 2,320 tests each
+with twenty ignored; all 646 selected SDK/dependency inputs match the tested
+Transport snapshot. Complete Engine suites pass 2,098 tests each with thirty-four
+ignored, using matching source-built installed packet fixtures. Five-package
+all-feature/all-target checks, sixteen-file scoped formatting, all six architecture
 gates and the RFC requirement-map gate pass. Required application test-target
 compilation passes with 185 artifacts across 58 packages and 76 integration targets;
-all 793 selected frozen Rust/Cargo inputs match current and captured source. User-owned
+all 802 selected frozen Rust/Cargo inputs match current and captured source. User-owned
 changes are preserved. These are component results; the requirement map records
 planning coverage, and no latest-source strict lint or native lifecycle result
 is claimed.

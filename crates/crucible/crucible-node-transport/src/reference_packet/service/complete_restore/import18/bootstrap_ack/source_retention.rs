@@ -48,7 +48,7 @@ impl PacketNativeImport18BootstrapRetainedData<'_> {
             .maximum_temporary_requested_bytes_data()
     }
 
-    pub(in crate::reference_packet) fn observe_data(
+    pub(crate) fn observe_data(
         self,
         observer: &mut MetadataObserver<'_>,
     ) -> Result<(), ProviderError> {

@@ -52,10 +52,17 @@ impl OriginalNativeImport18AssignmentStorageData {
     /// # Errors
     /// Refuses a foreign actor, overflow or metadata traversal exhaustion.
     pub fn retained_metadata_data(&self) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
-        self.controller.ensure_current()?;
         let mut observer = MetadataObserver::new();
-        observer.shared_value(self.controller.as_ref())?;
+        self.observe_source_metadata_data(&mut observer)?;
         Ok(observer.finish())
+    }
+
+    pub(super) fn observe_source_metadata_data(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        self.controller.ensure_current()?;
+        observer.shared_value(self.controller.as_ref())
     }
 
     pub(super) fn authenticate_prepare_data(
