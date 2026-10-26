@@ -31,6 +31,26 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Closed compiled TPM-helper image measurement now lives in the shared Broker
+  layer. Normal Broker, Host and online-Nix adapters keep their fixed purpose
+  selection and Security error mapping; the initial Controller and Storage
+  purposes select their separate compiled images. The same genuine initial
+  Source can now prepay and retain its helper's pin reads, executable and loader
+  measurements, failed native prefixes and independent terminal image posts.
+  No caller supplies a path, purpose, descriptor or amount. Partial acquisition
+  posts attempt both reached files without reopening or completing a failed
+  pair; a refused or busy helper post cannot suppress the original Source after.
+  All 422 shared Broker, 124 focused initial-Source, 432 ordinary Security and
+  441 online-Nix Security tests pass; one Broker and two cases in each Security
+  suite remain ignored. Full application unit/integration compilation is in
+  progress on the audited final source; its 833-derivation closure excludes
+  production policy. This is passive file
+  custody: no helper child starts, private auth remains unexported and no TPM
+  observation or effect occurs. Normal packages do not select the initial helper
+  compile variables. A positive installed Source, measured child/carrier auth
+  handoff, first encrypted Extend, checkpoint and lifecycle/recovery gates remain
+  open. Admission stays closed.
+
 - Separate fixed Controller and Storage initial TPM-helper images now share
   the existing ESYS/carrier implementation. Both run as UID/GID zero, clear
   effective/permitted/inheritable capabilities before HELLO, accept no role

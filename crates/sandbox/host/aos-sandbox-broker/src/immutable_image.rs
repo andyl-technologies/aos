@@ -40,7 +40,7 @@ use backend_acquisition::BackendImageSlotsV1;
 const MAXIMUM_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Reports unavailable or changed nonauthorizing immutable-file custody.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum ImmutableImageErrorV1 {
     /// A required file or kernel observation is unavailable.
     #[error("immutable image observation unavailable")]

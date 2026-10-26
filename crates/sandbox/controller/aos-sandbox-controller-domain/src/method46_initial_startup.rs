@@ -38,6 +38,7 @@ pub use credentials::{
 };
 mod images;
 mod main_writer;
+mod tpm_helper_image;
 pub use main_writer::{
     METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1, METHOD46_INITIAL_MAIN_CUT_BYTES_V1,
     METHOD46_INITIAL_SESSION_SCHEMA_BYTES_V1, METHOD46_INITIAL_SESSION_SCHEMA_CELLS_V1,
@@ -63,6 +64,7 @@ enum First {
     ApprovalListener,
     StoppedOwners,
     MainWriter,
+    TpmHelperImage,
     Order,
 }
 
@@ -105,6 +107,7 @@ struct StartupRolesOriginalV1 {
     stopped_cgroups: stopped_cgroups::InitialStoppedCgroupsOriginalV1,
     main_writer: RefCell<crate::journal::Method46InitialMainWriterOriginalV1>,
     credentials: RefCell<credentials::InitialCredentialsOriginalV1>,
+    tpm_helper_image: RefCell<tpm_helper_image::InitialTpmHelperImageOriginalV1>,
     profile_original: Option<File>,
     profile: ImmutableFileAcquisitionOriginalV1,
     profile_flags: Option<Result<rustix::fs::OFlags, rustix::io::Errno>>,
@@ -134,6 +137,7 @@ impl StartupRolesOriginalV1 {
             stopped_cgroups: stopped_cgroups::InitialStoppedCgroupsOriginalV1::new(),
             main_writer: RefCell::new(crate::journal::Method46InitialMainWriterOriginalV1::new()),
             credentials: RefCell::new(credentials::InitialCredentialsOriginalV1::new()),
+            tpm_helper_image: RefCell::new(tpm_helper_image::InitialTpmHelperImageOriginalV1::new()),
             profile_original: None,
             profile: ImmutableFileAcquisitionOriginalV1::new(),
             profile_flags: None,
@@ -483,6 +487,16 @@ impl Method46InitialStartupOriginalV1 {
                         .is_err()
                     {
                         self.fail(First::ApprovalListener);
+                    }
+                }
+                Err(_) => {
+                    self.fail(First::Order);
+                }
+            }
+            match body.tpm_helper_image.try_borrow_mut() {
+                Ok(mut helper) => {
+                    if helper.finish_post().is_err() {
+                        self.fail(First::TpmHelperImage);
                     }
                 }
                 Err(_) => {

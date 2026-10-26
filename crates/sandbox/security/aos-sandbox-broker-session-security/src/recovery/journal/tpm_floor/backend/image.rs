@@ -1,244 +1,146 @@
-//! Measures the fixed helper ELF and loader under immutable lower-store custody.
+//! Adapts shared fixed-helper measurement to the private floor roles.
 //!
-//! The source-built package records hashes after explicit stripping. The parent
-//! retains both files and checks the actually executed inode and loader mapping
-//! before releasing index auth to the private child. Subsequent checks retain
-//! the same read-only names, contents and process instance; the helper never
-//! execs or forks after this observation.
+//! Broker owns the passive image, pin and native-prefix engine. This facade
+//! selects only the existing normal purpose and keeps Security's redacted error
+//! categories and PID1 launch admission local. Measurement grants no authority.
 
-use std::fs::File;
-use std::io::Read as _;
-use std::path::{Path, PathBuf};
+use std::error::Error;
+use std::path::Path;
 
-#[cfg(test)]
-use rustix::fs::OFlags;
+use aos_sandbox_broker::fixed_tpm_helper_image as shared;
+use aos_sandbox_model::ResourceVector;
 
 use super::super::FloorErrorV1;
 
-mod currentness;
-mod executed;
-pub(crate) use executed::HelperExecutedImageOriginalV1;
-use executed::{helper_executed_recipe_v1, helper_executed_step_v1};
-mod acquisition;
-pub(crate) use acquisition::HelperImageAcquisitionOriginalV1;
-pub(crate) use currentness::HelperImageRevalidationOriginalV1;
-
-const MAXIMUM_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 pub(super) use crate::immutable_image::RetainedImmutableFileV1 as MeasuredFileV1;
-#[cfg(test)]
-use crate::immutable_image::require_readonly_launch_flags;
 
-const MAXIMUM_MAPS_BYTES: u64 = 64 * 1024;
+use shared::FixedTpmHelperPurposeV1 as Purpose;
+pub(crate) use shared::{HelperExecutedImageOriginalV1, HelperImageRevalidationOriginalV1};
 
-// Only these image-built purposes can enter the shared measurement engine.
-enum HelperImagePurposeV1 {
-    Broker,
-    RuntimeDeployment,
-    ControllerNix,
-    NixOwner,
-}
-
-impl HelperImagePurposeV1 {
-    fn compiled_path(&self) -> Result<&'static str, FloorErrorV1> {
-        match self {
-            Self::Broker => option_env!("AOS_METHOD46_TPM_HELPER"),
-            Self::RuntimeDeployment => option_env!("AOS_RUNTIME_DEPLOYMENT_TPM_HELPER"),
-            Self::ControllerNix => option_env!("AOS_NIX_CONTROLLER_TPM_HELPER"),
-            Self::NixOwner => option_env!("AOS_NIX_OWNER_TPM_HELPER"),
-        }
-        .ok_or(FloorErrorV1::Unavailable)
-    }
-
-    const fn names(&self) -> (&'static str, &'static str, &'static str) {
-        match self {
-            Self::Broker => (
-                "aos-method46-tpm-helper",
-                "aos-method46-tpm-helper.sha256",
-                "aos-method46-tpm-helper.loader",
-            ),
-            Self::RuntimeDeployment => (
-                "aos-runtime-deployment-tpm-helper",
-                "aos-runtime-deployment-tpm-helper.sha256",
-                "aos-runtime-deployment-tpm-helper.loader",
-            ),
-            Self::ControllerNix => (
-                "aos-nix-controller-tpm-helper",
-                "aos-nix-controller-tpm-helper.sha256",
-                "aos-nix-controller-tpm-helper.loader",
-            ),
-            Self::NixOwner => (
-                "aos-nix-owner-tpm-helper",
-                "aos-nix-owner-tpm-helper.sha256",
-                "aos-nix-owner-tpm-helper.loader",
-            ),
-        }
-    }
-}
-
-pub(crate) struct MeasuredHelperImageV1 {
-    executable: MeasuredFileV1,
-    loader: MeasuredFileV1,
-}
+pub(crate) struct MeasuredHelperImageV1(shared::MeasuredHelperImageV1);
 
 impl MeasuredHelperImageV1 {
     pub(crate) fn open() -> Result<Self, FloorErrorV1> {
-        Self::open_purpose(HelperImagePurposeV1::Broker)
+        shared::MeasuredHelperImageV1::open(Purpose::Broker)
+            .map(Self)
+            .map_err(Into::into)
     }
 
-    /// Retains the compiled Host helper and loader through the same image engine.
-    ///
-    /// # Errors
-    /// Rejects missing compiled pins or unsafe, malformed or changed images.
     pub(crate) fn open_runtime_deployment() -> Result<Self, FloorErrorV1> {
-        Self::open_purpose(HelperImagePurposeV1::RuntimeDeployment)
+        shared::MeasuredHelperImageV1::open(Purpose::RuntimeDeployment)
+            .map(Self)
+            .map_err(Into::into)
     }
 
-    /// Retains only the compiled online purpose through the same image engine.
     pub(crate) fn open_online(
         role: crate::tpm_nv_custody::OnlineFloorRoleV1,
     ) -> Result<Self, FloorErrorV1> {
-        Self::open_purpose(match role {
-            crate::tpm_nv_custody::OnlineFloorRoleV1::Controller => HelperImagePurposeV1::ControllerNix,
-            crate::tpm_nv_custody::OnlineFloorRoleV1::Owner => HelperImagePurposeV1::NixOwner,
-        })
-    }
-
-    fn open_purpose(purpose: HelperImagePurposeV1) -> Result<Self, FloorErrorV1> {
-        Self::open_purpose_recipe(purpose, &mut None)
-    }
-
-    fn open_purpose_recipe(
-        purpose: HelperImagePurposeV1,
-        original: &mut Option<&mut HelperImageAcquisitionOriginalV1>,
-    ) -> Result<Self, FloorErrorV1> {
-        let path = PathBuf::from(purpose.compiled_path()?);
-        if let Some(original) = original.as_deref_mut() {
-            original.path = Some(path.clone());
-        }
-        let (basename, executable_pin_name, loader_pin_name) = purpose.names();
-        let relative = path
-            .strip_prefix("/nix/store")
-            .map_err(|_| FloorErrorV1::Provisioning)?;
-        if relative.components().count() != 3
-            || relative
-                .components()
-                .nth(1)
-                .is_none_or(|part| part.as_os_str() != "libexec")
-            || path
-                .file_name()
-                .is_none_or(|name| name != basename)
-        {
-            return Err(FloorErrorV1::Provisioning);
-        }
-        let directory = path.parent().ok_or(FloorErrorV1::Provisioning)?;
-        let executable_pin = acquisition::read_pin_once(
-            directory, executable_pin_name, 65, 65,
-            original.as_deref_mut().map(|original| &mut original.pins[0]),
-        )?;
-        let executable_digest = decode_hash(&executable_pin);
-        if let Some(original) = original.as_deref_mut() {
-            original.executable_digest = Some(executable_digest);
-        }
-        let executable_digest = executable_digest?;
-        let loader_pin = acquisition::read_pin_once(
-            directory, loader_pin_name, 79, 578,
-            original.as_deref_mut().map(|original| &mut original.pins[1]),
-        )?;
-        let mut lines = loader_pin.split_inclusive(|byte| *byte == b'\n');
-        let loader_path = lines.next().ok_or(FloorErrorV1::Provisioning)?;
-        let loader_digest = decode_hash(lines.next().ok_or(FloorErrorV1::Provisioning)?);
-        if let Some(original) = original.as_deref_mut() {
-            original.loader_digest = Some(loader_digest);
-        }
-        let loader_digest = loader_digest?;
-        if lines.next().is_some() || loader_path.last() != Some(&b'\n') || loader_path.len() > 513 {
-            return Err(FloorErrorV1::Provisioning);
-        }
-        let loader_path = PathBuf::from(acquisition::loader_text_once(
-            &loader_path[..loader_path.len() - 1], original.as_deref_mut(),
-        )?);
-        match original.as_deref_mut() {
-            Some(original) => {
-                // The actual executable remains resident if the later loader
-                // acquisition fails. No native return lives only in a local.
-                original.loader_path = Some(loader_path.clone());
-                original.measurements[0] = Some(original.files[0].open_and_measure_once(
-                    path, Some(executable_digest), MAXIMUM_IMAGE_BYTES, true,
-                ));
-                if !matches!(original.measurements[0], Some(Ok(()))) {
-                    return Err(FloorErrorV1::Provisioning);
-                }
-                original.executable = original.files[0].take_completed_measurement_once();
-                original.measurements[1] = Some(original.files[1].open_and_measure_once(
-                    loader_path, Some(loader_digest), MAXIMUM_IMAGE_BYTES, true,
-                ));
-                if !matches!(original.measurements[1], Some(Ok(()))) {
-                    return Err(FloorErrorV1::Provisioning);
-                }
-                original.loader = original.files[1].take_completed_measurement_once();
-                match (original.executable.take(), original.loader.take()) {
-                    (Some(executable), Some(loader)) => {
-                        original.image = Some(Self { executable, loader });
-                    }
-                    (executable, loader) => {
-                        original.executable = executable;
-                        original.loader = loader;
-                        return Err(FloorErrorV1::Unavailable);
-                    }
-                }
-                let image = original.image.as_ref().ok_or(FloorErrorV1::Unavailable)?;
-                original.revalidated = Some(image.revalidate_owed_retaining_v1(
-                    &mut original.revalidation,
-                ));
-                match original.revalidated {
-                    Some(Ok(())) => original.image.take().ok_or(FloorErrorV1::Unavailable),
-                    Some(Err(cause)) => Err(cause),
-                    None => Err(FloorErrorV1::Unavailable),
-                }
-            }
-            None => {
-                let mut image = Self {
-                    executable: MeasuredFileV1::open(path, executable_digest)?,
-                    loader: MeasuredFileV1::open(loader_path, loader_digest)?,
-                };
-                image.revalidate()?;
-                Ok(image)
-            }
-        }
+        let purpose = match role {
+            crate::tpm_nv_custody::OnlineFloorRoleV1::Controller => Purpose::ControllerNix,
+            crate::tpm_nv_custody::OnlineFloorRoleV1::Owner => Purpose::NixOwner,
+        };
+        shared::MeasuredHelperImageV1::open(purpose)
+            .map(Self)
+            .map_err(Into::into)
     }
 
     pub(crate) fn path(&self) -> &Path {
-        self.executable.path()
+        self.0.path()
     }
 
     pub(crate) fn require_executed(&self, pid: u32) -> Result<(), FloorErrorV1> {
-        helper_executed_recipe_v1!(Ordinary, self, pid, original)
+        self.0.require_executed(pid).map_err(Into::into)
     }
 
     pub(crate) fn require_executed_retaining_v1(
-        &self, pid: u32, original: &mut HelperExecutedImageOriginalV1,
+        &self,
+        pid: u32,
+        original: &mut HelperExecutedImageOriginalV1,
     ) -> Result<(), FloorErrorV1> {
-        if original.returned.is_some() {
-            original.reentry.get_or_insert(FloorErrorV1::Unavailable);
-            return Err(FloorErrorV1::Unavailable);
-        }
-        original.returned = Some((|| {
-            helper_executed_recipe_v1!(Retained, self, pid, original)
-        })());
-        original.returned.as_ref().copied().unwrap_or(Err(FloorErrorV1::Unavailable))
+        self.0
+            .require_executed_retaining_v1(pid, original)
+            .map_err(Into::into)
     }
 
     pub(crate) fn revalidate(&mut self) -> Result<(), FloorErrorV1> {
-        self.executable.revalidate()?;
-        self.loader.revalidate().map_err(Into::into)
+        self.0.revalidate().map_err(Into::into)
+    }
+
+    pub(crate) fn revalidation_receiving_demand_v1(&self) -> Option<ResourceVector> {
+        self.0.revalidation_receiving_demand_v1()
+    }
+
+    pub(crate) fn revalidate_primary_retaining_v1(
+        &self,
+        original: &mut HelperImageRevalidationOriginalV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.0
+            .revalidate_primary_retaining_v1(original)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn revalidate_owed_retaining_v1(
+        &self,
+        original: &mut HelperImageRevalidationOriginalV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.0
+            .revalidate_owed_retaining_v1(original)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn drain_owed_after_unwind_once_v1(
+        &self,
+        original: &mut HelperImageRevalidationOriginalV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.0
+            .drain_owed_after_unwind_once_v1(original)
+            .map_err(Into::into)
     }
 }
 
-/// Retains the original PID 1 launch file against the existing backend image pin.
+pub(crate) struct HelperImageAcquisitionOriginalV1(shared::HelperImageAcquisitionOriginalV1);
+
+impl HelperImageAcquisitionOriginalV1 {
+    pub(crate) fn new() -> Self {
+        Self(shared::HelperImageAcquisitionOriginalV1::new())
+    }
+
+    pub(crate) fn capture_once(&mut self) -> Result<(), FloorErrorV1> {
+        self.0.capture_once(Purpose::Broker).map_err(Into::into)
+    }
+
+    pub(crate) fn capture_runtime_deployment_once(&mut self) -> Result<(), FloorErrorV1> {
+        self.0
+            .capture_once(Purpose::RuntimeDeployment)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn take_completed_once(&mut self) -> Option<MeasuredHelperImageV1> {
+        self.0.take_completed_once().map(MeasuredHelperImageV1)
+    }
+
+    pub(crate) fn receiving_demand_v1() -> Option<ResourceVector> {
+        shared::HelperImageAcquisitionOriginalV1::receiving_demand_v1(Purpose::Broker)
+    }
+
+    pub(crate) fn runtime_deployment_receiving_demand_v1() -> Option<ResourceVector> {
+        shared::HelperImageAcquisitionOriginalV1::receiving_with_input_demand_v1(
+            Purpose::RuntimeDeployment,
+        )
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn Error + 'static)> {
+        self.0.failure()
+    }
+}
+
+/// Retains the original PID1 file against the existing backend image pin.
 pub(super) fn open_original_pid1_image(
     launch_image: &crate::production_startup::Pid1LaunchImageV1,
-) -> Result<MeasuredFileV1, FloorErrorV1> {
-    let original = launch_image.file().map_err(|_| FloorErrorV1::Provisioning)?;
+) -> Result<crate::immutable_image::RetainedImmutableFileV1, FloorErrorV1> {
+    let original = launch_image
+        .file()
+        .map_err(|_| FloorErrorV1::Provisioning)?;
     aos_sandbox_broker::immutable_image::retain_original_backend_pid1_v1(original)
         .map_err(Into::into)
 }
@@ -248,55 +150,6 @@ impl From<crate::immutable_image::ImmutableImageErrorV1> for FloorErrorV1 {
         match error {
             crate::immutable_image::ImmutableImageErrorV1::Unavailable => Self::Unavailable,
             crate::immutable_image::ImmutableImageErrorV1::Provisioning => Self::Provisioning,
-        }
-    }
-}
-
-fn read_pin(
-    directory: &Path,
-    name: &str,
-    minimum: usize,
-    maximum: usize,
-) -> Result<Vec<u8>, FloorErrorV1> {
-    aos_sandbox_broker::immutable_image::read_immutable_image_pin_v1(directory, name, minimum, maximum)
-        .map_err(Into::into)
-}
-
-fn decode_hash(bytes: &[u8]) -> Result<[u8; 32], FloorErrorV1> {
-    aos_sandbox_broker::immutable_image::decode_immutable_sha256_pin_v1(bytes).map_err(Into::into)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tpm_floor_helper_image_hash_is_exact_lowercase_and_bounded() {
-        assert_eq!(
-            decode_hash(&[b"09".repeat(32), b"\n".to_vec()].concat()).unwrap(),
-            [9; 32]
-        );
-        for bytes in [
-            b"".to_vec(),
-            b"A".repeat(65),
-            b"0".repeat(64),
-            [b"0".repeat(64), b"\n\0".to_vec()].concat(),
-        ] {
-            assert!(decode_hash(&bytes).is_err());
-        }
-    }
-
-    #[test]
-    fn tpm_floor_pid1_launch_image_rejects_non_readonly_descriptor_flags() {
-        assert!(require_readonly_launch_flags(OFlags::RDONLY | OFlags::CLOEXEC).is_ok());
-        for flags in [
-            OFlags::WRONLY,
-            OFlags::RDWR,
-            OFlags::PATH,
-            OFlags::RDONLY | OFlags::APPEND,
-            OFlags::RDONLY | OFlags::TRUNC,
-        ] {
-            assert!(require_readonly_launch_flags(flags).is_err());
         }
     }
 }
