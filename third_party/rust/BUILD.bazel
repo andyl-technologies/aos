@@ -120,6 +120,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
             "//tools/bazel/rules:hub_worker_wasm_do_e2e_dependencies": HUB_WORKER_WASM_DO_E2E_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_worker_wasm_all_features_dependencies": HUB_WORKER_WASM_ALL_FEATURES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_native_postgres_dependencies": HUB_NATIVE_POSTGRES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:hub_native_dialects_dependencies": HUB_NATIVE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_native_tests_dependencies": HUB_NATIVE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_service_dependencies": HUB_SERVICE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_service_tests_dependencies": HUB_SERVICE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),

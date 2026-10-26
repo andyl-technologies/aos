@@ -2596,6 +2596,54 @@ These format and signature checks do not establish a firmware boot, live kernel
 module loading, foreign-host execution, numeric performance acceptance, a
 production default cutover or repository-wide Cargo removal.
 
+## Native required-live SQL dialect driver
+
+`aos-hub-dialect-tests` retains its Cargo default and exposes the temporary
+`passthru.withBuildDriver "bazel"` selector, reverse selector and Cargo fallback.
+The native Linux installer preserves `bin/aos-hub-dialect-contract`, the package
+qualification probe, platform metadata and public `live-dialects` VM check.
+
+```sh
+nix-build -A checks.build.bazel.hub-dialect-production.all --no-out-link
+```
+
+The gate requires equal installed ELF contracts and complete runtime closures,
+actual release compiler profiles and exact compiled features. Each installed
+driver executes SQLite and rejects absent required PostgreSQL and MySQL
+endpoints. Separate observation VMs run all three original contract cases
+against source-built PostgreSQL and MariaDB and retain their actual exit
+status. PostgreSQL and SQLite pass; the existing MySQL documentation fixture
+fails constraint 4025 before reaching crash replay or concurrent startup.
+The comparison requires that exact failure under both drivers and rejects
+additional failures or skipped cases. It does not claim all live SQL cases
+pass. The original public required-live check remains unchanged.
+
+Compiler evidence compares all 30 units in the installed driver's graph. Cargo
+also builds the two Hub service binaries for integration-test executable
+discovery; the report records their release profiles separately and requires
+that neither binary enters the installed dialect package.
+
+The ordinary package previously omitted the native SSH input required by its
+compiled binding. Both builders now declare AOS libssh2 and dynamic SQLite;
+the Cargo baseline explicitly selects those libraries before comparison. Its
+package license metadata also follows the workspace's Apache-2.0 declaration.
+This qualification does not claim that the previous broken recipe built.
+
+Application runtime and existing test-fixture behavior remain unchanged. The
+migration records pre-existing Cargo failures and requires the Bazel driver to
+match that baseline; it does not repair unrelated SQL behavior. The public
+required-live check retains its original semantics.
+
+The new first-party configuration reuses the existing `hub-native-tests`
+external dependency profile. The unchanged console build script produces the
+same fallback browser assets as the ordinary dialect driver. The precise
+workspace also retains model fixtures required by a package-loading glob for a
+separate test target. Neither Bazel compilation nor installation invokes Cargo.
+The linker retains the same declared Git/TLS native imports as Cargo's installed
+harness, including imports unused by these SQL cases.
+Production default cutover, foreign-host execution, performance acceptance and
+repository-wide Cargo removal remain separate gates.
+
 ## Storage/campaign compilation measurements
 
 `tests/evidence/store-performance-v3.json` identifies a frozen compilation trial

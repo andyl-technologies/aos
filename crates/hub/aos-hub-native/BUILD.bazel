@@ -19,6 +19,7 @@ RUST_PACKAGE = aos_rust_package(
 
 # The installed package enables PostgreSQL; ordinary tests retain Cargo defaults.
 NATIVE_FEATURES = select({
+    "//tools/bazel/rules:hub_native_dialects_dependencies": ["default", "postgres", "mysql", "required-live-dialects"],
     "//tools/bazel/rules:hub_worker_tests_dependencies": ["default", "test-support"],
     "//tools/bazel/rules:hub_worker_all_features_tests_dependencies": ["default", "test-support"],
     "//tools/bazel/rules:hub_native_postgres_dependencies": ["default", "postgres"],
@@ -285,4 +286,24 @@ cc_binary(
     copts = ["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"],
     linkshared = True,
     visibility = ["//crates/cli:__subpackages__", "//crates/packages:__subpackages__", "//crates/registry:__subpackages__", "//crates/release:__subpackages__"],
+)
+
+# The installed gate requires all three database backends at runtime.
+aos_package(
+    name = "dialect_package",
+    testonly = True,
+    package_name = "aos-hub-dialect-tests",
+    version = "0.1.0",
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {":dialect_binary": "bin/aos-hub-dialect-contract"},
+    executables = ["bin/aos-hub-dialect-contract"],
+    visibility = ["//visibility:public"],
+)
+
+aos_license_check(
+    name = "dialect_license_closure",
+    testonly = True,
+    roots = [":dialect_binary"],
+    license_domain = RUST_PACKAGE.license_domain,
 )

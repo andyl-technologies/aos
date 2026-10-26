@@ -22,6 +22,7 @@ DEPENDENCIES = select({
     "//tools/bazel/rules:aos_cli_tests_dependencies": ["//crates/transfer/aos-transfer:lib"],
     "//tools/bazel/rules:aos_cli_fleet_tests_dependencies": ["//crates/transfer/aos-transfer:lib"],
     "//tools/bazel/rules:aos_cli_production_dependencies": ["//crates/transfer/aos-transfer:lib"],
+    "//tools/bazel/rules:hub_native_dialects_dependencies": ["//crates/transfer/aos-transfer:lib"],
     "//tools/bazel/rules:hub_native_tests_dependencies": ["//crates/transfer/aos-transfer:lib"],
     "//tools/bazel/rules:package_manager_dependencies": ["//crates/transfer/aos-transfer:lib"],
     "//tools/bazel/rules:deployment_check_dependencies": ["//crates/transfer/aos-transfer:lib"],

@@ -1,0 +1,15 @@
+{
+  "all_current_tracked_workspace_rust_sources_present": true,
+  "compiled_test_targets_count": 185,
+  "derivation": "/nix/store/mzlzpk6v5i4ai55rbqxlgd4ii0bxs36g-aos-test-targets-0.1.0.drv",
+  "frozen_rust_source_inventory_sha256": "63a82c5a342db104f284482689b29f30a70117baa57002650f575a153cd8a3e8",
+  "matching_current_rust_source_files": 3773,
+  "new_application_rust_changes": false,
+  "observation": "Every current Rust file matches the existing completed compilation. No new compilation or execution is claimed.",
+  "output": "/nix/store/nvggbvrmb3k1s5jx7vx4ls5ylpn49q1p-aos-test-targets-0.1.0",
+  "preceding_completed_receipt": "tools/bazel/tests/evidence/configuration-provider-full-rust-compilation.json",
+  "preceding_completed_receipt_sha256": "3b48bd428a7f8d0fd3552141a5e850bf24d33e72a07545a9645b5950b33e3b3e",
+  "schema_version": 1,
+  "source": "/nix/store/1zkn1pdhblkwvnhr8zhh8pw9hdbl71yr-aos-workspace-src",
+  "status": "PASS"
+}

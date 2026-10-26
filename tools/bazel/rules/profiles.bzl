@@ -12,6 +12,7 @@ def _dependency_profile_impl(ctx):
         "hub-worker-wasm-all-features",
         "hub-native-postgres",
         "hub-native-tests",
+        "hub-native-dialects",
         "hub-service",
         "hub-service-tests",
         "hub-service-all-features",

@@ -3,15 +3,19 @@
   lib,
   mkAosCargoPackage,
   aosWorkspaceVendor,
+  callPackage,
+  buildDriver ? "cargo",
+  libssh2,
   openssl,
   perl,
   pkg-config,
   protobuf,
+  sqlite,
   zlib,
 }: let
   version = "0.1.0";
-in
-  mkAosCargoPackage {
+  withBuildDriver = selected: callPackage ./aos-hub-dialect-tests.nix {buildDriver = selected;};
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -95,11 +99,17 @@ in
     runtimeDeps = [
       openssl
       zlib
+      libssh2
+      sqlite
     ];
     installBins = false;
     doCheck = false;
 
+    # Match the installed Hub's AOS native libraries instead of relying on
+    # undeclared SSH inputs or a different bundled SQLite implementation.
     preBuild = ''
+      export AOS_LIBSSH2_PREFIX="${libssh2}"
+      export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
       export OPENSSL_DIR="${openssl}"
       export OPENSSL_LIB_DIR="${openssl}/lib"
       export OPENSSL_INCLUDE_DIR="${openssl}/include"
@@ -127,7 +137,7 @@ in
     meta = {
       description = "Required live PostgreSQL and MariaDB parity contract for AOS Hub";
       homepage = "https://github.com/andyl/andyl-os";
-      license = "MIT";
+      license = "Apache-2.0";
     };
 
     checks = {
@@ -233,4 +243,18 @@ in
         '';
       };
     };
-  }
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-hub-dialect-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

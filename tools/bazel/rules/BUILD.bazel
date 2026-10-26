@@ -564,3 +564,9 @@ config_setting(
     flag_values = {":dependency_profile": "release-signer"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "hub_native_dialects_dependencies",
+    flag_values = {":dependency_profile": "hub-native-dialects"},
+    visibility = ["//visibility:public"],
+)

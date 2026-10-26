@@ -149,6 +149,7 @@ in
     boot-configuration-driver-production = import ./_bazel-boot-configuration-driver-production.nix {inherit pkgs;};
     deployment-check-production = import ./_bazel-deployment-check-production.nix {inherit pkgs;};
     release-signer-production = import ./_bazel-release-signer-production.nix {inherit pkgs;};
+    hub-dialect-production = import ./_bazel-hub-dialect-production.nix {inherit pkgs;};
     pilot = import ./_bazel-pilot.nix {inherit pkgs;};
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
@@ -565,6 +566,7 @@ in
             boot-configuration-driver-production.all
             deployment-check-production.all
             release-signer-production.all
+            hub-dialect-production.all
             native-xz-source
             static-runtime.all
             precision-parity

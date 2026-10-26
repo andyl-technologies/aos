@@ -1,0 +1,3512 @@
+{
+  "actual_conservative_snapshot": {
+    "differing_files_outside_declared_compiler_source_selection": [
+      "tools/bazel/tests/verify_hub_dialect.py"
+    ],
+    "installed_output": "/nix/store/3f1kdw4yqmh2rxkffqvvrzzhabln6zdg-aos-hub-dialect-tests-0.1.0",
+    "installer_derivation": "/nix/store/8gwihsmmyxgfv3vy05n9kwj45jzbwr48-aos-hub-dialect-tests-0.1.0.drv",
+    "matching_current_files": 22774,
+    "note": "The observation helper was edited after this immutable conservative build began; every selected compiler input and declaration remains current. The actual qualification executes the current helper separately.",
+    "workspace": "/nix/store/ppghr7xkaxh9ycnbdm6dwdms42cnacrg-aos-bazel-workspace"
+  },
+  "build_exit_status": 0,
+  "checks": {
+    "eval": {
+      "derivation": "/nix/store/3z0k9p599k9ra8azwipqgwxk0c8zdwa1-aos-native-evaluation-checks-0.drv",
+      "exit_status": 0,
+      "output": "/nix/store/8wp43is6mcn2d8ln4lmd2gc38qwqg1j3-aos-native-evaluation-checks-0"
+    },
+    "policy": {
+      "derivation": "/nix/store/w4kk9rjjga0y54gg0axyjs73r694j0d2-aos-bazel-policy-checks.drv",
+      "exit_status": 0,
+      "output": "/nix/store/cmxbdqc156la1lg65qfz5pk63i98zz7k-aos-bazel-policy-checks"
+    }
+  },
+  "dependency_and_source_audit": {
+    "current_source_inventories_valid": 73,
+    "existing_external_profiles_unchanged_except_contract_hashes": 78,
+    "existing_generated_dependency_files_unchanged": 17750,
+    "status": "PASS"
+  },
+  "derivation": "/nix/store/c9x08nndqldn23q2pbkrshbj2j8prj74-aos-bazel-hub-dialect-production-checks.drv",
+  "driver_selection": {
+    "bazel": "/nix/store/l7ixiqc46y6alqssmvsqis0vys095knk-aos-hub-dialect-tests-0.1.0.drv",
+    "cargo": "/nix/store/zxnd71zq1f4iy90ir07jgx8pv0z624pr-aos-hub-dialect-tests-0.1.0.drv",
+    "cargo_constructor_and_vendor_not_evaluated": true,
+    "fallback": "/nix/store/zxnd71zq1f4iy90ir07jgx8pv0z624pr-aos-hub-dialect-tests-0.1.0.drv",
+    "invalid_driver_rejected": true,
+    "platform_runtime_qualification_and_live_check_contracts_preserved": true
+  },
+  "entry_point": "checks.build.bazel.hub-dialect-production.all",
+  "existing_source_inventory_selections_preserved": 72,
+  "failure_observation_negative_checks": {
+    "accepted_real_matched_baseline": true,
+    "rejected_mutated_observations": [
+      "unknown_database_failure",
+      "missing_real_exit_status",
+      "skipped_workload",
+      "additional_panic"
+    ],
+    "scope": "Verifier negative tests using copies of actual serial evidence; not additional application execution.",
+    "status": "PASS"
+  },
+  "inputs_sha256": {
+    "pkgs/tools/_aos-hub-dialect-bazel-build.nix": "a2cf14b9d415c6f9ed9ecd38b2df0bf15676d209ab657d1ea61cef84d983350f",
+    "pkgs/tools/_aos-hub-dialect-bazel.nix": "a24e54b70a46f377159b8cbaa91967467d13ac7ca4d2b2baed7492d26d34864a",
+    "pkgs/tools/aos-hub-dialect-tests.nix": "1ab3e257866e7d26fbeea320d183b99e9a00b74ff853adb78ade149d804d98cb",
+    "tests/build/_bazel-hub-dialect-production.nix": "217188a5afeffccefc21f0bf53ad1bf10869fcc05f22dba8522e698a9f7d48b5",
+    "tools/bazel/metadata/hub-dialect-inventory.json": "c250f8ec48739622f73926824e1042075ec89b92aec11bc43477c4472294d753",
+    "tools/bazel/tests/verify_hub_dialect.py": "608a7be2f3ca4a41540920e14025d4a55c0b6b6be40da95e0afb2df6220a5085"
+  },
+  "installed_artifact_bytes_and_modes_equal": true,
+  "installed_binary_sha256": "855732999cc21e5be9cc58c3460a5e0e83209873d58c7508c53bc05d88f636a6",
+  "installed_comparison": {
+    "existing_failure_parity_only": true,
+    "features": {
+      "features": {
+        "adler2@2.0.1": [
+          []
+        ],
+        "aead@0.5.2": [
+          [
+            "alloc",
+            "getrandom",
+            "rand_core"
+          ]
+        ],
+        "aes-gcm@0.10.3": [
+          [
+            "aes",
+            "alloc",
+            "default",
+            "getrandom",
+            "rand_core"
+          ]
+        ],
+        "aes@0.8.4": [
+          []
+        ],
+        "ahash@0.8.12": [
+          []
+        ],
+        "aho-corasick@1.1.4": [
+          [
+            "perf-literal",
+            "std"
+          ]
+        ],
+        "allocator-api2@0.2.21": [
+          [
+            "alloc"
+          ]
+        ],
+        "anstream@1.0.0": [
+          [
+            "auto",
+            "default",
+            "wincon"
+          ]
+        ],
+        "anstyle-parse@1.0.0": [
+          [
+            "default",
+            "utf8"
+          ]
+        ],
+        "anstyle-query@1.1.5": [
+          []
+        ],
+        "anstyle@1.0.14": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "anyhow@1.0.103": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "arc-swap@1.9.1": [
+          []
+        ],
+        "argon2@0.5.3": [
+          [
+            "alloc",
+            "default",
+            "password-hash",
+            "rand"
+          ]
+        ],
+        "async-trait@0.1.89": [
+          []
+        ],
+        "atoi@2.0.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "atomic-waker@1.1.2": [
+          []
+        ],
+        "autocfg@1.5.1": [
+          []
+        ],
+        "aws-config@1.13.0": [
+          [
+            "credentials-process",
+            "default",
+            "default-https-client",
+            "rt-tokio",
+            "sso"
+          ]
+        ],
+        "aws-credential-types@1.3.1": [
+          [
+            "test-util"
+          ]
+        ],
+        "aws-lc-rs@1.18.2": [
+          [
+            "aws-lc-sys",
+            "prebuilt-nasm"
+          ]
+        ],
+        "aws-lc-sys@0.46.0": [
+          [
+            "prebuilt-nasm"
+          ]
+        ],
+        "aws-runtime@1.10.2": [
+          [
+            "event-stream",
+            "http-1x",
+            "sigv4a"
+          ]
+        ],
+        "aws-sdk-s3@1.155.0": [
+          [
+            "default-https-client",
+            "http-1x",
+            "rt-tokio",
+            "sigv4a"
+          ]
+        ],
+        "aws-sdk-sso@1.117.0": [
+          []
+        ],
+        "aws-sdk-ssooidc@1.119.0": [
+          []
+        ],
+        "aws-sdk-sts@1.122.0": [
+          []
+        ],
+        "aws-sigv4@1.6.3": [
+          [
+            "default",
+            "http1",
+            "sign-eventstream",
+            "sign-http",
+            "sigv4a"
+          ]
+        ],
+        "aws-smithy-async@1.3.1": [
+          [
+            "rt-tokio"
+          ]
+        ],
+        "aws-smithy-checksums@0.65.0": [
+          []
+        ],
+        "aws-smithy-eventstream@0.61.6": [
+          []
+        ],
+        "aws-smithy-http-client@1.5.1": [
+          [
+            "__rustls",
+            "default-client",
+            "rustls-aws-lc"
+          ]
+        ],
+        "aws-smithy-http@0.64.2": [
+          [
+            "aws-smithy-eventstream",
+            "event-stream"
+          ]
+        ],
+        "aws-smithy-json@0.65.0": [
+          []
+        ],
+        "aws-smithy-observability@0.3.0": [
+          []
+        ],
+        "aws-smithy-query@0.64.0": [
+          []
+        ],
+        "aws-smithy-runtime-api-macros@1.1.0": [
+          []
+        ],
+        "aws-smithy-runtime-api@1.19.1": [
+          [
+            "client",
+            "default",
+            "http-1x",
+            "http-auth",
+            "test-util"
+          ]
+        ],
+        "aws-smithy-runtime@1.16.1": [
+          [
+            "client",
+            "default-https-client",
+            "rt-tokio"
+          ]
+        ],
+        "aws-smithy-schema@1.1.0": [
+          []
+        ],
+        "aws-smithy-types@1.9.0": [
+          [
+            "byte-stream-poll-next",
+            "http-body-1-x",
+            "rt-tokio",
+            "test-util"
+          ]
+        ],
+        "aws-smithy-xml@0.64.0": [
+          []
+        ],
+        "aws-types@1.7.0": [
+          []
+        ],
+        "axum-core@0.5.6": [
+          [
+            "tracing"
+          ]
+        ],
+        "axum-macros@0.5.1": [
+          [
+            "default"
+          ]
+        ],
+        "axum@0.8.9": [
+          [
+            "default",
+            "form",
+            "http1",
+            "json",
+            "macros",
+            "matched-path",
+            "original-uri",
+            "query",
+            "tokio",
+            "tower-log",
+            "tracing"
+          ]
+        ],
+        "base16ct@0.2.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "base16ct@1.0.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "base64-simd@0.8.0": [
+          [
+            "alloc",
+            "default",
+            "detect",
+            "std"
+          ]
+        ],
+        "base64@0.21.7": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "base64@0.22.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "base64ct@1.8.3": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "bitflags@2.13.0": [
+          [
+            "serde",
+            "serde_core",
+            "std"
+          ],
+          [
+            "std"
+          ]
+        ],
+        "blake2@0.10.6": [
+          []
+        ],
+        "block-buffer@0.10.4": [
+          []
+        ],
+        "block-buffer@0.12.0": [
+          []
+        ],
+        "byteorder@1.5.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "bytes-utils@0.1.4": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "bytes@1.11.1": [
+          [],
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "bzip2-rs@0.1.2": [
+          [
+            "default"
+          ]
+        ],
+        "cc@1.2.65": [
+          [
+            "parallel"
+          ]
+        ],
+        "cfg-if@1.0.4": [
+          []
+        ],
+        "ciborium-io@0.2.2": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "ciborium-ll@0.2.2": [
+          []
+        ],
+        "ciborium@0.2.2": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "cipher@0.4.4": [
+          []
+        ],
+        "clap@4.6.1": [
+          [
+            "color",
+            "default",
+            "derive",
+            "env",
+            "error-context",
+            "help",
+            "std",
+            "suggestions",
+            "usage"
+          ]
+        ],
+        "clap_builder@4.6.0": [
+          [
+            "color",
+            "env",
+            "error-context",
+            "help",
+            "std",
+            "suggestions",
+            "usage"
+          ]
+        ],
+        "clap_derive@4.6.1": [
+          [
+            "default"
+          ]
+        ],
+        "clap_lex@1.1.0": [
+          []
+        ],
+        "cmake@0.1.58": [
+          []
+        ],
+        "cmov@0.5.4": [
+          []
+        ],
+        "colorchoice@1.0.5": [
+          []
+        ],
+        "console@0.15.11": [
+          [
+            "ansi-parsing",
+            "default",
+            "unicode-width"
+          ]
+        ],
+        "const-oid@0.10.2": [
+          []
+        ],
+        "const-oid@0.9.6": [
+          []
+        ],
+        "cpubits@0.1.1": [
+          []
+        ],
+        "cpufeatures@0.2.17": [
+          []
+        ],
+        "cpufeatures@0.3.0": [
+          []
+        ],
+        "crc-catalog@2.5.0": [
+          []
+        ],
+        "crc-fast@1.10.0": [
+          [
+            "alloc",
+            "default",
+            "digest",
+            "ffi",
+            "panic-handler",
+            "std"
+          ]
+        ],
+        "crc32fast@1.5.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crc@3.4.0": [
+          []
+        ],
+        "crossbeam-deque@0.8.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crossbeam-epoch@0.9.20": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "crossbeam-queue@0.3.13": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "crossbeam-utils@0.8.21": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crypto-bigint@0.5.5": [
+          [
+            "default",
+            "generic-array",
+            "rand",
+            "rand_core",
+            "zeroize"
+          ]
+        ],
+        "crypto-bigint@0.7.5": [
+          [
+            "getrandom",
+            "hybrid-array",
+            "rand_core",
+            "subtle",
+            "zeroize"
+          ]
+        ],
+        "crypto-common@0.1.7": [
+          [
+            "getrandom",
+            "rand_core",
+            "std"
+          ]
+        ],
+        "crypto-common@0.2.2": [
+          [
+            "getrandom",
+            "rand_core"
+          ]
+        ],
+        "ctr@0.9.2": [
+          []
+        ],
+        "ctutils@0.4.2": [
+          [
+            "subtle"
+          ]
+        ],
+        "curve25519-dalek-derive@0.1.1": [
+          []
+        ],
+        "curve25519-dalek@4.1.3": [
+          [
+            "alloc",
+            "digest",
+            "precomputed-tables",
+            "zeroize"
+          ]
+        ],
+        "der@0.7.10": [
+          [
+            "alloc",
+            "oid",
+            "pem",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "der@0.8.2": [
+          [
+            "alloc",
+            "oid",
+            "pem",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "deranged@0.5.8": [
+          [
+            "default",
+            "powerfmt"
+          ]
+        ],
+        "digest@0.10.7": [
+          [
+            "alloc",
+            "block-buffer",
+            "const-oid",
+            "core-api",
+            "default",
+            "mac",
+            "oid",
+            "std",
+            "subtle"
+          ]
+        ],
+        "digest@0.11.3": [
+          [
+            "alloc",
+            "block-api",
+            "default",
+            "mac",
+            "oid"
+          ]
+        ],
+        "displaydoc@0.2.6": [
+          []
+        ],
+        "dotenvy@0.15.7": [
+          []
+        ],
+        "dunce@1.0.5": [
+          []
+        ],
+        "dyn-clone@1.0.20": [
+          []
+        ],
+        "ecdsa@0.16.9": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "der",
+            "digest",
+            "hazmat",
+            "pem",
+            "pkcs8",
+            "rfc6979",
+            "signing",
+            "spki",
+            "std",
+            "verifying"
+          ]
+        ],
+        "ecdsa@0.17.0": [
+          [
+            "algorithm",
+            "alloc",
+            "default",
+            "der",
+            "digest",
+            "pem",
+            "pkcs8",
+            "spki",
+            "std"
+          ]
+        ],
+        "ed25519-dalek@2.2.0": [
+          [
+            "alloc",
+            "default",
+            "fast",
+            "pkcs8",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "ed25519@2.2.3": [
+          [
+            "alloc",
+            "pkcs8",
+            "std"
+          ]
+        ],
+        "either@1.16.0": [
+          [
+            "default",
+            "serde",
+            "std"
+          ],
+          [
+            "std",
+            "use_std"
+          ]
+        ],
+        "elliptic-curve@0.13.8": [
+          [
+            "alloc",
+            "arithmetic",
+            "digest",
+            "ecdh",
+            "ff",
+            "group",
+            "hazmat",
+            "pem",
+            "pkcs8",
+            "sec1",
+            "std"
+          ]
+        ],
+        "elliptic-curve@0.14.1": [
+          [
+            "alloc",
+            "arithmetic",
+            "digest",
+            "ff",
+            "getrandom",
+            "group",
+            "pem",
+            "pkcs8",
+            "sec1",
+            "std"
+          ]
+        ],
+        "equivalent@1.0.2": [
+          []
+        ],
+        "errno@0.3.14": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "event-listener@5.4.2": [
+          [
+            "default",
+            "parking",
+            "std"
+          ]
+        ],
+        "fallible-iterator@0.3.0": [
+          [
+            "alloc",
+            "default"
+          ]
+        ],
+        "fallible-streaming-iterator@0.1.9": [
+          []
+        ],
+        "fastrand@2.4.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "ff@0.13.1": [
+          [
+            "alloc"
+          ]
+        ],
+        "ff@0.14.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "filetime@0.2.29": [
+          []
+        ],
+        "find-msvc-tools@0.1.9": [
+          []
+        ],
+        "fixedbitset@0.5.7": [
+          []
+        ],
+        "flate2@1.1.9": [
+          [
+            "any_impl",
+            "miniz_oxide",
+            "rust_backend"
+          ]
+        ],
+        "flume@0.11.1": [
+          [
+            "async",
+            "futures-core",
+            "futures-sink"
+          ]
+        ],
+        "fnv@1.0.7": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "foldhash@0.1.5": [
+          []
+        ],
+        "foldhash@0.2.0": [
+          []
+        ],
+        "form_urlencoded@1.2.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "fs_extra@1.3.0": [
+          []
+        ],
+        "futures-channel@0.3.32": [
+          [
+            "alloc",
+            "default",
+            "futures-sink",
+            "sink",
+            "std"
+          ]
+        ],
+        "futures-core@0.3.32": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "futures-executor@0.3.32": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "futures-intrusive@0.5.0": [
+          [
+            "alloc",
+            "default",
+            "parking_lot",
+            "std"
+          ]
+        ],
+        "futures-io@0.3.32": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "futures-macro@0.3.32": [
+          []
+        ],
+        "futures-sink@0.3.32": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "futures-task@0.3.32": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "futures-util@0.3.32": [
+          [
+            "alloc",
+            "async-await",
+            "async-await-macro",
+            "channel",
+            "default",
+            "futures-channel",
+            "futures-io",
+            "futures-macro",
+            "futures-sink",
+            "io",
+            "memchr",
+            "sink",
+            "slab",
+            "std"
+          ]
+        ],
+        "futures@0.3.32": [
+          [
+            "alloc",
+            "async-await",
+            "default",
+            "executor",
+            "futures-executor",
+            "std"
+          ]
+        ],
+        "generic-array@0.14.7": [
+          [
+            "more_lengths",
+            "zeroize"
+          ]
+        ],
+        "getrandom@0.2.17": [
+          [
+            "std"
+          ]
+        ],
+        "getrandom@0.3.4": [
+          [
+            "std"
+          ]
+        ],
+        "getrandom@0.4.2": [
+          [],
+          [
+            "sys_rng"
+          ]
+        ],
+        "ghash@0.5.1": [
+          []
+        ],
+        "git2@0.21.0": [
+          [
+            "cred",
+            "https",
+            "openssl-probe",
+            "openssl-sys",
+            "ssh",
+            "unstable-sha256",
+            "vendored-libgit2"
+          ]
+        ],
+        "group@0.13.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "group@0.14.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "h2@0.4.16": [
+          []
+        ],
+        "half@2.7.1": [
+          []
+        ],
+        "hashbrown@0.14.5": [
+          [
+            "ahash",
+            "inline-more"
+          ]
+        ],
+        "hashbrown@0.15.5": [
+          [
+            "allocator-api2",
+            "default",
+            "default-hasher",
+            "equivalent",
+            "inline-more",
+            "raw-entry"
+          ]
+        ],
+        "hashbrown@0.17.1": [
+          [],
+          [
+            "default-hasher",
+            "inline-more"
+          ]
+        ],
+        "hashlink@0.10.0": [
+          []
+        ],
+        "hashlink@0.9.1": [
+          []
+        ],
+        "heck@0.5.0": [
+          []
+        ],
+        "hex@0.4.3": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "hkdf@0.12.4": [
+          []
+        ],
+        "hmac@0.12.1": [
+          [
+            "reset"
+          ]
+        ],
+        "hmac@0.13.0": [
+          []
+        ],
+        "home@0.5.12": [
+          []
+        ],
+        "http-body-util@0.1.3": [
+          [
+            "default"
+          ]
+        ],
+        "http-body@1.0.1": [
+          []
+        ],
+        "http@1.4.1": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "httparse@1.10.1": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "httpdate@1.0.3": [
+          []
+        ],
+        "humantime@2.3.0": [
+          []
+        ],
+        "hybrid-array@0.4.15": [
+          [
+            "alloc",
+            "subtle",
+            "zeroize"
+          ]
+        ],
+        "hyper-rustls@0.27.9": [
+          [
+            "http1",
+            "http2",
+            "native-tokio",
+            "ring",
+            "rustls-native-certs",
+            "tls12"
+          ]
+        ],
+        "hyper-util@0.1.20": [
+          [
+            "client",
+            "client-legacy",
+            "client-proxy",
+            "default",
+            "http1",
+            "http2",
+            "server",
+            "service",
+            "tokio"
+          ]
+        ],
+        "hyper@1.10.0": [
+          [
+            "client",
+            "default",
+            "http1",
+            "http2",
+            "server"
+          ]
+        ],
+        "icu_collections@2.2.0": [
+          []
+        ],
+        "icu_locale_core@2.2.0": [
+          [
+            "zerovec"
+          ]
+        ],
+        "icu_normalizer@2.2.0": [
+          [
+            "compiled_data"
+          ]
+        ],
+        "icu_normalizer_data@2.2.0": [
+          []
+        ],
+        "icu_properties@2.2.0": [
+          [
+            "compiled_data"
+          ]
+        ],
+        "icu_properties_data@2.2.0": [
+          []
+        ],
+        "icu_provider@2.2.0": [
+          [
+            "baked"
+          ]
+        ],
+        "idna@1.1.0": [
+          [
+            "alloc",
+            "compiled_data",
+            "std"
+          ]
+        ],
+        "idna_adapter@1.2.2": [
+          [
+            "compiled_data"
+          ]
+        ],
+        "indexmap@2.14.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "indicatif@0.17.11": [
+          [
+            "default",
+            "unicode-width"
+          ]
+        ],
+        "inout@0.1.4": [
+          []
+        ],
+        "ipnet@2.12.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "is_terminal_polyfill@1.70.2": [
+          [
+            "default"
+          ]
+        ],
+        "itertools@0.13.0": [
+          [
+            "default",
+            "use_alloc",
+            "use_std"
+          ]
+        ],
+        "itertools@0.14.0": [
+          [
+            "default",
+            "use_alloc",
+            "use_std"
+          ]
+        ],
+        "itoa@1.0.18": [
+          []
+        ],
+        "jobserver@0.1.34": [
+          []
+        ],
+        "jsonwebtoken@9.3.1": [
+          [
+            "default",
+            "pem",
+            "simple_asn1",
+            "use_pem"
+          ]
+        ],
+        "jwt-rustcrypto@0.2.1": [
+          []
+        ],
+        "k256@0.13.4": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdsa",
+            "ecdsa-core",
+            "once_cell",
+            "pkcs8",
+            "precomputed-tables",
+            "schnorr",
+            "sha2",
+            "sha256",
+            "signature",
+            "std"
+          ]
+        ],
+        "lazy_static@1.5.0": [
+          [
+            "spin",
+            "spin_no_std"
+          ]
+        ],
+        "libc@0.2.186": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "libgit2-sys@0.18.7+1.9.6": [
+          [
+            "https",
+            "libssh2-sys",
+            "openssl-sys",
+            "ssh",
+            "unstable-sha256",
+            "vendored"
+          ]
+        ],
+        "libm@0.2.16": [
+          [
+            "arch",
+            "default"
+          ]
+        ],
+        "libsqlite3-sys@0.30.1": [
+          [
+            "bundled",
+            "bundled_bindings",
+            "cc",
+            "default",
+            "min_sqlite_version_3_14_0",
+            "pkg-config",
+            "unlock_notify",
+            "vcpkg"
+          ]
+        ],
+        "libz-sys@1.1.28": [
+          [
+            "libc"
+          ]
+        ],
+        "linux-raw-sys@0.12.1": [
+          [
+            "auxvec",
+            "elf",
+            "errno",
+            "general",
+            "if_ether",
+            "ioctl",
+            "net",
+            "netlink",
+            "no_std",
+            "prctl",
+            "xdp"
+          ],
+          [
+            "auxvec",
+            "elf",
+            "errno",
+            "general",
+            "ioctl",
+            "no_std"
+          ]
+        ],
+        "litemap@0.8.2": [
+          []
+        ],
+        "lock_api@0.4.14": [
+          [
+            "atomic_usize",
+            "default"
+          ]
+        ],
+        "log@0.4.30": [
+          []
+        ],
+        "lru@0.18.5": [
+          [
+            "default",
+            "hashbrown"
+          ]
+        ],
+        "lzma-rs@0.3.0": [
+          []
+        ],
+        "lzma-sys@0.1.20": [
+          [
+            "static"
+          ]
+        ],
+        "matchit@0.8.4": [
+          [
+            "default"
+          ]
+        ],
+        "md-5@0.10.6": [
+          []
+        ],
+        "md-5@0.11.0": [
+          [
+            "alloc",
+            "default",
+            "oid"
+          ]
+        ],
+        "memchr@2.8.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "mime@0.3.17": [
+          []
+        ],
+        "miniz_oxide@0.8.9": [
+          [
+            "simd",
+            "simd-adler32",
+            "with-alloc"
+          ]
+        ],
+        "mio@1.2.1": [
+          [
+            "net",
+            "os-ext",
+            "os-poll"
+          ]
+        ],
+        "multimap@0.10.1": [
+          []
+        ],
+        "num-bigint-dig@0.8.6": [
+          [
+            "i128",
+            "prime",
+            "rand",
+            "u64_digit",
+            "zeroize"
+          ]
+        ],
+        "num-bigint@0.4.6": [
+          []
+        ],
+        "num-conv@0.2.2": [
+          []
+        ],
+        "num-integer@0.1.46": [
+          [
+            "default",
+            "i128",
+            "std"
+          ]
+        ],
+        "num-iter@0.1.45": [
+          []
+        ],
+        "num-traits@0.2.19": [
+          [
+            "i128",
+            "libm",
+            "std"
+          ]
+        ],
+        "number_prefix@0.4.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "once_cell@1.21.4": [
+          [
+            "alloc",
+            "default",
+            "race",
+            "std"
+          ]
+        ],
+        "opaque-debug@0.3.1": [
+          []
+        ],
+        "openssl-probe@0.1.6": [
+          []
+        ],
+        "openssl-probe@0.2.1": [
+          []
+        ],
+        "openssl-sys@0.9.116": [
+          []
+        ],
+        "outref@0.5.2": [
+          []
+        ],
+        "p256@0.13.2": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdsa",
+            "ecdsa-core",
+            "pem",
+            "pkcs8",
+            "sha2",
+            "sha256",
+            "std"
+          ]
+        ],
+        "p256@0.14.0": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdsa",
+            "ecdsa-core",
+            "getrandom",
+            "pem",
+            "pkcs8",
+            "precomputed-tables",
+            "sha2",
+            "sha256",
+            "std"
+          ]
+        ],
+        "p384@0.13.1": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdh",
+            "ecdsa",
+            "ecdsa-core",
+            "pem",
+            "pkcs8",
+            "sha2",
+            "sha384",
+            "std"
+          ]
+        ],
+        "p521@0.13.3": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdsa",
+            "ecdsa-core",
+            "getrandom",
+            "pem",
+            "pkcs8",
+            "rand_core",
+            "sha512",
+            "std"
+          ]
+        ],
+        "parking@2.2.1": [
+          []
+        ],
+        "parking_lot@0.12.5": [
+          [
+            "default"
+          ]
+        ],
+        "parking_lot_core@0.9.12": [
+          []
+        ],
+        "password-hash@0.5.0": [
+          [
+            "alloc",
+            "default",
+            "getrandom",
+            "rand_core"
+          ]
+        ],
+        "pbjson-build@0.7.0": [
+          []
+        ],
+        "pbjson@0.7.0": [
+          []
+        ],
+        "pem-rfc7468@0.7.0": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "pem-rfc7468@1.0.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "pem@3.0.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "percent-encoding@2.3.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "petgraph@0.7.1": [
+          []
+        ],
+        "pin-project-lite@0.2.17": [
+          []
+        ],
+        "pkcs1@0.7.5": [
+          [
+            "alloc",
+            "pem",
+            "pkcs8",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "pkcs8@0.10.2": [
+          [
+            "alloc",
+            "pem",
+            "std"
+          ]
+        ],
+        "pkcs8@0.11.0": [
+          [
+            "alloc",
+            "pem",
+            "std"
+          ]
+        ],
+        "pkg-config@0.3.33": [
+          []
+        ],
+        "polyval@0.6.2": [
+          []
+        ],
+        "portable-atomic@1.13.1": [
+          [
+            "default",
+            "fallback"
+          ]
+        ],
+        "potential_utf@0.1.5": [
+          [
+            "zerovec"
+          ]
+        ],
+        "powerfmt@0.2.0": [
+          []
+        ],
+        "ppv-lite86@0.2.21": [
+          [
+            "simd",
+            "std"
+          ]
+        ],
+        "prettyplease@0.2.37": [
+          []
+        ],
+        "primefield@0.14.0": [
+          []
+        ],
+        "primeorder@0.13.6": [
+          []
+        ],
+        "primeorder@0.14.0": [
+          [
+            "alloc",
+            "basepoint-table",
+            "std"
+          ]
+        ],
+        "proc-macro2@1.0.106": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "prost-build@0.13.5": [
+          [
+            "default",
+            "format"
+          ]
+        ],
+        "prost-derive@0.13.5": [
+          []
+        ],
+        "prost-types@0.13.5": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "prost@0.13.5": [
+          [
+            "default",
+            "derive",
+            "prost-derive",
+            "std"
+          ],
+          [
+            "default",
+            "derive",
+            "std"
+          ]
+        ],
+        "quote@1.0.46": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "rand@0.8.6": [
+          [
+            "alloc",
+            "getrandom",
+            "libc",
+            "rand_chacha",
+            "std",
+            "std_rng"
+          ]
+        ],
+        "rand@0.9.4": [
+          [
+            "alloc",
+            "default",
+            "os_rng",
+            "small_rng",
+            "std",
+            "std_rng",
+            "thread_rng"
+          ]
+        ],
+        "rand_chacha@0.3.1": [
+          [
+            "std"
+          ]
+        ],
+        "rand_chacha@0.9.0": [
+          [
+            "std"
+          ]
+        ],
+        "rand_core@0.10.1": [
+          []
+        ],
+        "rand_core@0.6.4": [
+          [
+            "alloc",
+            "getrandom",
+            "std"
+          ]
+        ],
+        "rand_core@0.9.5": [
+          [
+            "os_rng",
+            "std"
+          ]
+        ],
+        "rayon-core@1.13.0": [
+          []
+        ],
+        "rayon@1.12.0": [
+          []
+        ],
+        "rcgen@0.14.8": [
+          [
+            "crypto",
+            "default",
+            "pem",
+            "ring"
+          ]
+        ],
+        "ref-cast-impl@1.0.27": [
+          []
+        ],
+        "ref-cast@1.0.27": [
+          []
+        ],
+        "regex-automata@0.4.14": [
+          [
+            "alloc",
+            "dfa-onepass",
+            "hybrid",
+            "meta",
+            "nfa-backtrack",
+            "nfa-pikevm",
+            "nfa-thompson",
+            "perf-inline",
+            "perf-literal",
+            "perf-literal-multisubstring",
+            "perf-literal-substring",
+            "std",
+            "syntax",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment",
+            "unicode-word-boundary"
+          ],
+          [
+            "alloc",
+            "meta",
+            "nfa-pikevm",
+            "nfa-thompson",
+            "std",
+            "syntax",
+            "unicode-bool"
+          ]
+        ],
+        "regex-lite@0.1.9": [
+          [
+            "default",
+            "std",
+            "string"
+          ]
+        ],
+        "regex-syntax@0.8.11": [
+          [
+            "default",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ],
+          [
+            "std",
+            "unicode-bool"
+          ]
+        ],
+        "regex@1.12.4": [
+          [
+            "default",
+            "perf",
+            "perf-backtrack",
+            "perf-cache",
+            "perf-dfa",
+            "perf-inline",
+            "perf-literal",
+            "perf-onepass",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ],
+          [
+            "std",
+            "unicode-bool"
+          ]
+        ],
+        "reqwest@0.12.28": [
+          [
+            "__rustls",
+            "__rustls-ring",
+            "__tls",
+            "json",
+            "rustls-tls-native-roots",
+            "rustls-tls-native-roots-no-provider",
+            "stream"
+          ]
+        ],
+        "rfc6979@0.4.0": [
+          []
+        ],
+        "rfc6979@0.6.0": [
+          []
+        ],
+        "ring@0.17.14": [
+          [
+            "alloc",
+            "default",
+            "dev_urandom_fallback",
+            "std"
+          ]
+        ],
+        "rsa@0.9.10": [
+          [
+            "default",
+            "pem",
+            "sha2",
+            "std",
+            "u64_digit"
+          ]
+        ],
+        "rusqlite@0.32.1": [
+          []
+        ],
+        "rustc_version@0.4.1": [
+          []
+        ],
+        "rustix@1.1.4": [
+          [
+            "alloc",
+            "default",
+            "event",
+            "fs",
+            "net",
+            "process",
+            "std"
+          ],
+          [
+            "alloc",
+            "default",
+            "fs",
+            "std"
+          ]
+        ],
+        "rustls-native-certs@0.8.3": [
+          []
+        ],
+        "rustls-pemfile@2.2.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "rustls-pki-types@1.14.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "rustls-webpki@0.103.16": [
+          [
+            "alloc",
+            "aws-lc-rs",
+            "ring",
+            "std"
+          ]
+        ],
+        "rustls@0.23.46": [
+          [
+            "aws-lc-rs",
+            "aws_lc_rs",
+            "log",
+            "logging",
+            "prefer-post-quantum",
+            "ring",
+            "std",
+            "tls12"
+          ]
+        ],
+        "rustversion@1.0.22": [
+          []
+        ],
+        "ryu@1.0.23": [
+          []
+        ],
+        "schemars@1.2.2": [
+          [
+            "default",
+            "derive",
+            "schemars_derive",
+            "std"
+          ]
+        ],
+        "schemars_derive@1.2.2": [
+          []
+        ],
+        "scopeguard@1.2.0": [
+          []
+        ],
+        "sec1@0.7.3": [
+          [
+            "alloc",
+            "default",
+            "der",
+            "pem",
+            "pkcs8",
+            "point",
+            "std",
+            "subtle",
+            "zeroize"
+          ]
+        ],
+        "sec1@0.8.1": [
+          [
+            "alloc",
+            "ctutils",
+            "default",
+            "der",
+            "pem",
+            "point",
+            "std",
+            "subtle",
+            "zeroize"
+          ]
+        ],
+        "semver@1.0.28": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "serde@1.0.228": [
+          [
+            "alloc",
+            "default",
+            "derive",
+            "rc",
+            "serde_derive",
+            "std"
+          ]
+        ],
+        "serde_core@1.0.228": [
+          [
+            "alloc",
+            "default",
+            "rc",
+            "result",
+            "std"
+          ]
+        ],
+        "serde_derive@1.0.228": [
+          [
+            "default"
+          ]
+        ],
+        "serde_derive_internals@0.30.0": [
+          []
+        ],
+        "serde_json@1.0.150": [
+          [
+            "alloc",
+            "default",
+            "raw_value",
+            "std"
+          ]
+        ],
+        "serde_path_to_error@0.1.20": [
+          []
+        ],
+        "serde_spanned@0.6.9": [
+          [
+            "serde"
+          ]
+        ],
+        "serde_urlencoded@0.7.1": [
+          []
+        ],
+        "sha1@0.10.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "sha1@0.11.0": [
+          [
+            "alloc",
+            "default",
+            "oid"
+          ]
+        ],
+        "sha2@0.10.9": [
+          [
+            "compress",
+            "default",
+            "oid",
+            "std"
+          ]
+        ],
+        "sha2@0.11.0": [
+          [
+            "alloc",
+            "default",
+            "oid"
+          ]
+        ],
+        "shlex@2.0.1": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "signal-hook-registry@1.4.8": [
+          []
+        ],
+        "signature@2.2.0": [
+          [
+            "alloc",
+            "digest",
+            "rand_core",
+            "std"
+          ]
+        ],
+        "signature@3.0.0": [
+          [
+            "alloc",
+            "digest",
+            "rand_core"
+          ]
+        ],
+        "simd-adler32@0.3.9": [
+          []
+        ],
+        "simple_asn1@0.6.4": [
+          []
+        ],
+        "slab@0.4.12": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "smallvec@1.15.2": [
+          [
+            "const_generics",
+            "const_new",
+            "serde"
+          ]
+        ],
+        "socket2@0.6.4": [
+          [
+            "all"
+          ]
+        ],
+        "spin@0.10.0": [
+          [
+            "mutex",
+            "once",
+            "rwlock",
+            "spin_mutex"
+          ]
+        ],
+        "spin@0.9.8": [
+          [
+            "barrier",
+            "default",
+            "lazy",
+            "lock_api",
+            "lock_api_crate",
+            "mutex",
+            "once",
+            "rwlock",
+            "spin_mutex"
+          ]
+        ],
+        "spki@0.7.3": [
+          [
+            "alloc",
+            "pem",
+            "std"
+          ]
+        ],
+        "spki@0.8.1": [
+          [
+            "alloc",
+            "pem",
+            "std"
+          ]
+        ],
+        "sqlx-core@0.8.6": [
+          [
+            "_rt-tokio",
+            "crc",
+            "default",
+            "json",
+            "migrate",
+            "offline",
+            "serde",
+            "serde_json",
+            "sha2",
+            "tokio",
+            "tokio-stream"
+          ]
+        ],
+        "sqlx-mysql@0.8.6": [
+          []
+        ],
+        "sqlx-postgres@0.8.6": [
+          []
+        ],
+        "sqlx-sqlite@0.8.6": [
+          [
+            "bundled"
+          ]
+        ],
+        "sqlx@0.8.6": [
+          [
+            "_rt-tokio",
+            "_sqlite",
+            "mysql",
+            "postgres",
+            "runtime-tokio",
+            "sqlite",
+            "sqlx-mysql",
+            "sqlx-postgres",
+            "sqlx-sqlite"
+          ]
+        ],
+        "ssh-cipher@0.2.0": [
+          []
+        ],
+        "ssh-encoding@0.2.0": [
+          [
+            "alloc",
+            "base64",
+            "pem",
+            "sha2",
+            "std"
+          ]
+        ],
+        "ssh-key@0.6.7": [
+          [
+            "alloc",
+            "ed25519",
+            "rand_core",
+            "std"
+          ]
+        ],
+        "ssh2@0.9.5": [
+          []
+        ],
+        "stable_deref_trait@1.2.1": [
+          []
+        ],
+        "stringprep@0.1.5": [
+          []
+        ],
+        "strsim@0.11.1": [
+          []
+        ],
+        "subtle@2.6.1": [
+          [
+            "const-generics",
+            "default",
+            "i128",
+            "std"
+          ]
+        ],
+        "syn@2.0.118": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "extra-traits",
+            "fold",
+            "full",
+            "parsing",
+            "printing",
+            "proc-macro",
+            "visit",
+            "visit-mut"
+          ]
+        ],
+        "syn@3.0.5": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "parsing",
+            "printing",
+            "proc-macro"
+          ]
+        ],
+        "sync_wrapper@1.0.2": [
+          [
+            "futures",
+            "futures-core"
+          ]
+        ],
+        "synstructure@0.13.2": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "tar@0.4.46": [
+          [
+            "default",
+            "xattr"
+          ]
+        ],
+        "tempfile@3.27.0": [
+          [
+            "default",
+            "getrandom"
+          ]
+        ],
+        "thiserror-impl@1.0.69": [
+          []
+        ],
+        "thiserror-impl@2.0.18": [
+          []
+        ],
+        "thiserror@1.0.69": [
+          []
+        ],
+        "thiserror@2.0.18": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "time-core@0.1.8": [
+          []
+        ],
+        "time-macros@0.2.27": [
+          [
+            "formatting",
+            "parsing"
+          ]
+        ],
+        "time@0.3.47": [
+          [
+            "alloc",
+            "default",
+            "formatting",
+            "macros",
+            "parsing",
+            "std"
+          ]
+        ],
+        "tinystr@0.8.3": [
+          [
+            "zerovec"
+          ]
+        ],
+        "tinyvec@1.11.0": [
+          [
+            "alloc",
+            "default",
+            "tinyvec_macros"
+          ]
+        ],
+        "tinyvec_macros@0.1.1": [
+          []
+        ],
+        "tokio-macros@2.7.0": [
+          []
+        ],
+        "tokio-rustls@0.26.4": [
+          [
+            "aws_lc_rs",
+            "default",
+            "logging",
+            "ring",
+            "tls12"
+          ]
+        ],
+        "tokio-stream@0.1.18": [
+          [
+            "default",
+            "fs",
+            "time"
+          ]
+        ],
+        "tokio-util@0.7.18": [
+          [
+            "codec",
+            "default",
+            "io"
+          ]
+        ],
+        "tokio@1.52.3": [
+          [
+            "bytes",
+            "default",
+            "fs",
+            "io-std",
+            "io-util",
+            "libc",
+            "macros",
+            "mio",
+            "net",
+            "process",
+            "rt",
+            "rt-multi-thread",
+            "signal",
+            "signal-hook-registry",
+            "socket2",
+            "sync",
+            "time",
+            "tokio-macros"
+          ]
+        ],
+        "toml@0.8.23": [
+          [
+            "default",
+            "display",
+            "parse"
+          ]
+        ],
+        "toml_datetime@0.6.11": [
+          [
+            "serde"
+          ]
+        ],
+        "toml_edit@0.22.27": [
+          [
+            "default",
+            "display",
+            "parse",
+            "serde"
+          ]
+        ],
+        "toml_write@0.1.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "tower-http@0.6.11": [
+          [
+            "catch-panic",
+            "cors",
+            "default",
+            "follow-redirect",
+            "futures-util",
+            "limit",
+            "tower",
+            "trace",
+            "tracing"
+          ]
+        ],
+        "tower-layer@0.3.3": [
+          []
+        ],
+        "tower-service@0.3.3": [
+          []
+        ],
+        "tower@0.5.3": [
+          [
+            "futures-core",
+            "futures-util",
+            "log",
+            "make",
+            "pin-project-lite",
+            "retry",
+            "sync_wrapper",
+            "timeout",
+            "tokio",
+            "tracing",
+            "util"
+          ]
+        ],
+        "tracing-attributes@0.1.31": [
+          []
+        ],
+        "tracing-core@0.1.36": [
+          [
+            "once_cell",
+            "std"
+          ]
+        ],
+        "tracing@0.1.44": [
+          [
+            "attributes",
+            "default",
+            "log",
+            "std",
+            "tracing-attributes"
+          ]
+        ],
+        "try-lock@0.2.5": [
+          []
+        ],
+        "typenum@1.20.1": [
+          [
+            "const-generics"
+          ]
+        ],
+        "unicode-bidi@0.3.18": [
+          [
+            "default",
+            "hardcoded-data",
+            "std"
+          ]
+        ],
+        "unicode-ident@1.0.24": [
+          []
+        ],
+        "unicode-normalization@0.1.25": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "unicode-properties@0.1.4": [
+          [
+            "default",
+            "emoji",
+            "general-category"
+          ]
+        ],
+        "unicode-width@0.2.0": [
+          [
+            "cjk",
+            "default"
+          ]
+        ],
+        "universal-hash@0.5.1": [
+          []
+        ],
+        "untrusted@0.9.0": [
+          []
+        ],
+        "url@2.5.8": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "urlencoding@2.1.3": [
+          []
+        ],
+        "utf8_iter@1.0.4": [
+          []
+        ],
+        "utf8parse@0.2.2": [
+          [
+            "default"
+          ]
+        ],
+        "uuid@1.23.1": [
+          [
+            "default",
+            "rng",
+            "serde",
+            "std",
+            "v4"
+          ]
+        ],
+        "vcpkg@0.2.15": [
+          []
+        ],
+        "version_check@0.9.5": [
+          []
+        ],
+        "vsimd@0.8.0": [
+          [
+            "alloc",
+            "detect",
+            "std"
+          ]
+        ],
+        "want@0.3.1": [
+          []
+        ],
+        "whoami@1.6.1": [
+          []
+        ],
+        "winnow@0.7.15": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "wnaf@0.14.1": [
+          []
+        ],
+        "writeable@0.6.3": [
+          []
+        ],
+        "xattr@1.6.1": [
+          [
+            "default",
+            "unsupported"
+          ]
+        ],
+        "xmlparser@0.13.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "xz2@0.1.7": [
+          [
+            "static"
+          ]
+        ],
+        "yasna@0.6.0": [
+          [
+            "default",
+            "std",
+            "time"
+          ]
+        ],
+        "yoke-derive@0.8.2": [
+          []
+        ],
+        "yoke@0.8.3": [
+          [
+            "derive",
+            "zerofrom"
+          ]
+        ],
+        "zerocopy-derive@0.8.49": [
+          []
+        ],
+        "zerocopy@0.8.49": [
+          [
+            "derive",
+            "simd",
+            "zerocopy-derive"
+          ]
+        ],
+        "zerofrom-derive@0.1.7": [
+          []
+        ],
+        "zerofrom@0.1.8": [
+          [
+            "derive"
+          ]
+        ],
+        "zeroize@1.9.0": [
+          [
+            "alloc",
+            "default"
+          ]
+        ],
+        "zerotrie@0.2.4": [
+          [
+            "yoke",
+            "zerofrom"
+          ]
+        ],
+        "zerovec-derive@0.11.3": [
+          []
+        ],
+        "zerovec@0.11.6": [
+          [
+            "derive",
+            "yoke"
+          ]
+        ],
+        "zmij@1.0.21": [
+          []
+        ],
+        "zstd-safe@7.2.4": [
+          [
+            "arrays",
+            "legacy",
+            "std",
+            "zdict_builder",
+            "zstdmt"
+          ]
+        ],
+        "zstd-sys@2.0.16+zstd.1.5.7": [
+          [
+            "legacy",
+            "std",
+            "zdict_builder",
+            "zstdmt"
+          ]
+        ],
+        "zstd@0.13.3": [
+          [
+            "arrays",
+            "default",
+            "legacy",
+            "zdict_builder",
+            "zstdmt"
+          ]
+        ]
+      },
+      "first_party_features": {
+        "aos-activation": [
+          []
+        ],
+        "aos-artifact-evidence": [
+          []
+        ],
+        "aos-cli-ui": [
+          []
+        ],
+        "aos-core": [
+          []
+        ],
+        "aos-deployment": [
+          []
+        ],
+        "aos-deployment-format": [
+          []
+        ],
+        "aos-hub-api": [
+          []
+        ],
+        "aos-hub-client": [
+          []
+        ],
+        "aos-hub-db": [
+          [
+            "default",
+            "do-e2e-test-support",
+            "mysql",
+            "postgres",
+            "test-fixtures"
+          ]
+        ],
+        "aos-hub-model": [
+          [
+            "default"
+          ]
+        ],
+        "aos-hub-native": [
+          [
+            "default",
+            "mysql",
+            "postgres",
+            "required-live-dialects"
+          ]
+        ],
+        "aos-hub-service": [
+          [
+            "default",
+            "do-e2e-test-support",
+            "test-fixtures"
+          ]
+        ],
+        "aos-hub-ui": [
+          []
+        ],
+        "aos-module-docs": [
+          []
+        ],
+        "aos-module-format": [
+          []
+        ],
+        "aos-nar": [
+          [
+            "default"
+          ]
+        ],
+        "aos-nix": [
+          []
+        ],
+        "aos-nix-cache": [
+          []
+        ],
+        "aos-oci": [
+          []
+        ],
+        "aos-oci-types": [
+          []
+        ],
+        "aos-registry-authoring": [
+          []
+        ],
+        "aos-registry-client": [
+          []
+        ],
+        "aos-registry-format": [
+          []
+        ],
+        "aos-release-format": [
+          []
+        ],
+        "aos-transfer": [
+          [
+            "transfer"
+          ]
+        ],
+        "libssh2-sys": [
+          []
+        ]
+      }
+    },
+    "foreign_host_execution_qualified": false,
+    "fresh_linux_sandbox_actions": 1039,
+    "installed": {
+      "bazel": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-hub-dialect-contract": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "ld-linux-x86-64.so.2",
+              "libc.so.6",
+              "libcrypto.so.4",
+              "libm.so.6",
+              "libsqlite3.so",
+              "libssh2.so.1",
+              "libssl.so.4"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+              "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+              "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+              "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+              "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4",
+              "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+              "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+              "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib",
+              "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      },
+      "ordinary": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-hub-dialect-contract": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "ld-linux-x86-64.so.2",
+              "libc.so.6",
+              "libcrypto.so.4",
+              "libm.so.6",
+              "libsqlite3.so",
+              "libssh2.so.1",
+              "libssl.so.4"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+              "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+              "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+              "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+              "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4",
+              "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+              "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+              "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib",
+              "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      }
+    },
+    "installed_cases": {
+      "bazel": [
+        {
+          "case": "mysql_contract",
+          "status": 101,
+          "stderr_sha256": "6cc6f8cef0ffddbdc75b6d92c10c1f698126ccc56d1b017ed2ce73d02a0f234c",
+          "stdout_sha256": "c7dcb1b30b3d20f08fd8d58f5de014d3f23426a2ad10b5fcb6715501e026bdb0"
+        },
+        {
+          "case": "postgres_contract",
+          "status": 101,
+          "stderr_sha256": "6a4bf5e3687bfd67ec3e6bc8e6283a800c224e9f971980d0486e84baf265612e",
+          "stdout_sha256": "5eafd997020b6a12e72c7bce7b9797068c23dee3b272cf11d18cf4317fda5bb9"
+        },
+        {
+          "case": "sqlite_contract",
+          "status": 0,
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_sha256": "cd7d256d3de9d1b88ac6d02bab33d96c07ae83bfbdc65770515fb6602f1dd957"
+        }
+      ],
+      "ordinary": [
+        {
+          "case": "mysql_contract",
+          "status": 101,
+          "stderr_sha256": "fc88c1b80850a601cd14ef54c524b676ed1804eaacf76aad3601b2c9e830fe74",
+          "stdout_sha256": "c7dcb1b30b3d20f08fd8d58f5de014d3f23426a2ad10b5fcb6715501e026bdb0"
+        },
+        {
+          "case": "postgres_contract",
+          "status": 101,
+          "stderr_sha256": "e879059aa0def5a397d2b191fc06da5b8774ce189a84bb5b28538e40a94a5849",
+          "stdout_sha256": "5eafd997020b6a12e72c7bce7b9797068c23dee3b272cf11d18cf4317fda5bb9"
+        },
+        {
+          "case": "sqlite_contract",
+          "status": 0,
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_sha256": "2ab9b709c48b52451773063decee1205df8a010cb7ad3de833b14c24803627a8"
+        }
+      ]
+    },
+    "library_search_changes": {},
+    "live_databases": {
+      "bazel": {
+        "cases": [
+          "mysql_contract",
+          "postgres_contract",
+          "sqlite_contract"
+        ],
+        "existing_failed_cases": {
+          "mysql_contract": "Database(MySqlDatabaseError { code: Some(\"23000\"), number: 4025, message: \"CONSTRAINT `CONSTRAINT_1` failed for `hubtest`.`package_documentation`\" })"
+        },
+        "mysql_crash_and_concurrency_workload_reached": false,
+        "output": "/nix/store/4d9p7cv75308cib8cf1wk29ihqr5cw6g-aos-vm-test-aos-hub-live-sql-dialects-baseline-observation-0",
+        "passed_cases": [
+          "postgres_contract",
+          "sqlite_contract"
+        ],
+        "serial_log_sha256": "c2cbc76eafce9f5e0c191edd6edf0b5a88e92449666f50b375f170b48123a5cb",
+        "test_exit_status": 101
+      },
+      "ordinary": {
+        "cases": [
+          "mysql_contract",
+          "postgres_contract",
+          "sqlite_contract"
+        ],
+        "existing_failed_cases": {
+          "mysql_contract": "Database(MySqlDatabaseError { code: Some(\"23000\"), number: 4025, message: \"CONSTRAINT `CONSTRAINT_1` failed for `hubtest`.`package_documentation`\" })"
+        },
+        "mysql_crash_and_concurrency_workload_reached": false,
+        "output": "/nix/store/3zwc0kcvn79a3y5r1ivcl70p5j1wjvvr-aos-vm-test-aos-hub-live-sql-dialects-baseline-observation-0",
+        "passed_cases": [
+          "postgres_contract",
+          "sqlite_contract"
+        ],
+        "serial_log_sha256": "48f366c889f8f123494030d1032d8045eb971cfc58d5a6d50e20455e2378fcd8",
+        "test_exit_status": 101
+      }
+    },
+    "live_sql_all_cases_passed": false,
+    "packages": {
+      "bazel": {
+        "out": "/nix/store/jrp51497bljymbwcqcdap0l4vrachgs6-aos-hub-dialect-tests-0.1.0"
+      },
+      "ordinary": {
+        "out": "/nix/store/qgy5c659llclbk5g0d7457rcb86knyml-aos-hub-dialect-tests-0.1.0"
+      }
+    },
+    "production_default_cutover": false,
+    "production_profiles": {
+      "matched_units": {
+        "aos-activation/aos_activation": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-226328188",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/activation/aos-activation:lib"
+        },
+        "aos-artifact-evidence/aos_artifact_evidence": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-386196004",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/artifacts/aos-artifact-evidence:lib"
+        },
+        "aos-cli-ui/aos_cli_ui": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-3383011256",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/cli/aos-cli-ui:lib"
+        },
+        "aos-core/aos_core": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-2583899516",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/core/aos-core:lib"
+        },
+        "aos-deployment-format/aos_deployment_format": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-3350755736",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/packages/aos-deployment-format:lib"
+        },
+        "aos-deployment/aos_deployment": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1979258884",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/packages/aos-deployment:lib"
+        },
+        "aos-hub-api/aos_hub_api": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1590930596",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/hub/aos-hub-api:lib"
+        },
+        "aos-hub-api/custom-build": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "0",
+            "overflow-checks": "no",
+            "strip": "debuginfo"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "0",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/hub/aos-hub-api:build_script_program"
+        },
+        "aos-hub-client/aos_hub_client": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1226833768",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/hub/aos-hub-client:lib"
+        },
+        "aos-hub-db/aos_hub_db": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1565341768",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/hub/aos-hub-db:lib"
+        },
+        "aos-hub-model/aos_hub_model": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1303934332",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/hub/aos-hub-model:lib"
+        },
+        "aos-hub-native/aos_hub_native": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1481649896",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/hub/aos-hub-native:lib"
+        },
+        "aos-hub-native/dialect": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-946631953",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": true
+          },
+          "label": "//crates/hub/aos-hub-native:dialect_binary"
+        },
+        "aos-hub-service/aos_hub_service": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1174456700",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/hub/aos-hub-service:lib"
+        },
+        "aos-hub-service/custom-build": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "0",
+            "overflow-checks": "no",
+            "strip": "debuginfo"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "0",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/hub/aos-hub-service:build_script_program"
+        },
+        "aos-hub-ui/aos_hub_ui": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1038367224",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/hub/aos-hub-ui:lib"
+        },
+        "aos-module-docs/aos_module_docs": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-96399836",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/modules/aos-module-docs:lib"
+        },
+        "aos-module-format/aos_module_format": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1113882660",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/modules/aos-module-format:lib"
+        },
+        "aos-nar/aos_nar": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-3318985020",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/artifacts/aos-nar:lib"
+        },
+        "aos-nix-cache/aos_nix_cache": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-12002232",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/packages/aos-nix-cache:lib"
+        },
+        "aos-nix/aos_nix": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-965805444",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/nix/aos-nix:lib"
+        },
+        "aos-oci-types/aos_oci_types": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1736273532",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/artifacts/aos-oci-types:lib"
+        },
+        "aos-oci/aos_oci": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1002440836",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/artifacts/aos-oci:lib"
+        },
+        "aos-registry-authoring/aos_registry_authoring": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-2549846716",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/registry/aos-registry-authoring:lib"
+        },
+        "aos-registry-client/aos_registry_client": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-2945832552",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/registry/aos-registry-client:lib"
+        },
+        "aos-registry-format/aos_registry_format": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-693301736",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/registry/aos-registry-format:lib"
+        },
+        "aos-release-format/aos_release_format": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1089002904",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/release/aos-release-format:lib"
+        },
+        "aos-transfer/aos_transfer": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1494373508",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/transfer/aos-transfer:lib"
+        },
+        "libssh2-sys/custom-build": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "0",
+            "overflow-checks": "no",
+            "strip": "debuginfo"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "0",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/bindings/libssh2-sys:build_script_program"
+        },
+        "libssh2-sys/libssh2_sys": {
+          "bazel": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-325819651",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "none"
+          },
+          "cargo": {
+            "debug_assertions": false,
+            "debuginfo": 0,
+            "opt_level": "3",
+            "overflow_checks": false,
+            "test": false
+          },
+          "label": "//crates/bindings/libssh2-sys:lib"
+        }
+      },
+      "uninstalled_cargo_binary_units": {
+        "aos-hub": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "aos-hub-egress": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        }
+      }
+    },
+    "runtime_closures": {
+      "changes": {
+        "out": {
+          "added": [],
+          "removed": []
+        }
+      },
+      "closures": {
+        "bazel": {
+          "out": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2",
+            "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3",
+            "@output:out@"
+          ]
+        },
+        "ordinary": {
+          "out": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2",
+            "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3",
+            "@output:out@"
+          ]
+        }
+      }
+    },
+    "schema_version": 1
+  },
+  "limits": [
+    "The existing MySQL documentation fixture fails constraint 4025 under both drivers. PostgreSQL and SQLite pass.",
+    "MySQL crash replay and concurrent startup are not reached; no success is claimed for them.",
+    "Application SQL, migration locking and existing Rust fixtures are unchanged.",
+    "The original public required-live check retains its failure semantics; the parity gate uses separate observations.",
+    "Foreign execution, performance acceptance, default cutover and final Cargo removal are not qualified by this receipt."
+  ],
+  "output": "/nix/store/bkwvbckxki543w3kgg02prgp4cn5zymq-aos-bazel-hub-dialect-production-checks",
+  "preceding_commit": "13822506b27e946818f45b50dadff9d25c999e93",
+  "precise_and_conservative": {
+    "conservative": {
+      "derivation": "/nix/store/v4ipx1jcayi7lh8vbbpnl7687yly4pzk-aos-bazel-hub-dialect-production-1.drv",
+      "fresh_linux_sandbox_actions": 1039,
+      "output": "/nix/store/zx45svg05bcgx9iwqnllsvy3b67gfzmk-aos-bazel-hub-dialect-production-1"
+    },
+    "precise": {
+      "derivation": "/nix/store/16av26pvx19gjrdqk75s7car2f15dxji-aos-bazel-hub-dialect-production-1.drv",
+      "fresh_linux_sandbox_actions": 1039,
+      "output": "/nix/store/a49k2b87jg022mnfd9l0b7p7qw9rmcn0-aos-bazel-hub-dialect-production-1"
+    }
+  },
+  "qualification_scope": "Bazel conversion parity; existing application failures remain failures",
+  "schema_version": 1,
+  "status": "PASS",
+  "unchanged_application_compilation": {
+    "all_current_tracked_workspace_rust_sources_present": true,
+    "compiled_test_targets_count": 185,
+    "derivation": "/nix/store/mzlzpk6v5i4ai55rbqxlgd4ii0bxs36g-aos-test-targets-0.1.0.drv",
+    "frozen_rust_source_inventory_sha256": "63a82c5a342db104f284482689b29f30a70117baa57002650f575a153cd8a3e8",
+    "matching_current_rust_source_files": 3773,
+    "new_application_rust_changes": false,
+    "observation": "Every current Rust file matches the existing completed compilation. No new compilation or execution is claimed.",
+    "output": "/nix/store/nvggbvrmb3k1s5jx7vx4ls5ylpn49q1p-aos-test-targets-0.1.0",
+    "preceding_completed_receipt": "tools/bazel/tests/evidence/configuration-provider-full-rust-compilation.json",
+    "preceding_completed_receipt_sha256": "3b48bd428a7f8d0fd3552141a5e850bf24d33e72a07545a9645b5950b33e3b3e",
+    "schema_version": 1,
+    "source": "/nix/store/1zkn1pdhblkwvnhr8zhh8pw9hdbl71yr-aos-workspace-src",
+    "status": "PASS"
+  },
+  "unchanged_generated_dependency_files": 17750
+}
