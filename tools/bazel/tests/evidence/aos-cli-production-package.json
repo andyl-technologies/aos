@@ -1,0 +1,899 @@
+{
+  "build": {
+    "derivation": "/nix/store/1ghxbqpscvnqb34dmdb51vdhz1kh1ihf-aos-bazel-cli-production-programs-1.drv",
+    "output": "/nix/store/p46yhrng3szf9kvvzwwjrsydbha6a6p1-aos-bazel-cli-production-programs-1"
+  },
+  "candidate_build_requisites": {
+    "count": 4995,
+    "sha256": "831671fdf49e0427213cbd5ed77868f9a77142266e67f7ee742f4a1eb7a1a49a"
+  },
+  "driver_selection": {
+    "bazel": "/nix/store/s799lsp54zrfzpdlih4s0psqabd1h1pn-aos-0.1.0.drv",
+    "bazel_identity_unchanged_with_rejecting_cargo_constructor": true,
+    "fallback": "/nix/store/plwjjagrchqzy0wmfkqmqwaa4jm011la-aos-0.1.0.drv",
+    "invalid_driver_rejected": true,
+    "ordinary": "/nix/store/plwjjagrchqzy0wmfkqmqwaa4jm011la-aos-0.1.0.drv",
+    "ordinary_rejected_by_the_same_constructor_guard": true,
+    "output_and_module_and_runtime_declarations_preserved": true,
+    "unsupported_bazel_full_test_request_rejected": true
+  },
+  "elf_contracts": {
+    "apm/bin/.aos-package-runtime-unwrapped": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libcrypto.so.4",
+        "libm.so.6",
+        "libsqlite3.so",
+        "libssh2.so.1",
+        "libssl.so.4",
+        "libz.so.1"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+      ]
+    },
+    "apr/bin/.apr-unwrapped": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libcrypto.so.4",
+        "libm.so.6",
+        "libsqlite3.so",
+        "libssh2.so.1",
+        "libssl.so.4",
+        "libz.so.1"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+      ]
+    },
+    "out/bin/.aos-unwrapped": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libcrypto.so.4",
+        "libm.so.6",
+        "libsqlite3.so",
+        "libssh2.so.1",
+        "libssl.so.4",
+        "libz.so.1"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+      ]
+    },
+    "out/bin/aos-deployment-check": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+      ]
+    },
+    "out/bin/aos-image-metadata": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+      ]
+    },
+    "packageRuntime/bin/.aos-provisioning-configuration-evaluator-unwrapped": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libcrypto.so.4",
+        "libm.so.6",
+        "libssh2.so.1",
+        "libssl.so.4",
+        "libz.so.1"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+      ]
+    },
+    "packageRuntime/bin/aos-image-rollout-provider": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libcrypto.so.4",
+        "libm.so.6",
+        "libssh2.so.1",
+        "libssl.so.4",
+        "libz.so.1"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+      ]
+    },
+    "packageRuntime/libexec/.aos-image-rollout-boot-unwrapped": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libcrypto.so.4",
+        "libm.so.6",
+        "libssh2.so.1",
+        "libssl.so.4",
+        "libz.so.1"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+      ]
+    },
+    "packageRuntime/libexec/.aos-package-attestation-provider-unwrapped": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libcrypto.so.4",
+        "libm.so.6",
+        "libssh2.so.1",
+        "libssl.so.4",
+        "libz.so.1"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+      ]
+    },
+    "packageRuntime/libexec/aos-image-rollout-observer": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libcrypto.so.4",
+        "libm.so.6",
+        "libssh2.so.1",
+        "libssl.so.4",
+        "libz.so.1"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+      ]
+    },
+    "testSupport/bin/aos-ability-authority-audit": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+      ]
+    },
+    "testSupport/bin/aos-ability-interruption-audit": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+      ]
+    },
+    "testSupport/bin/aos-release-fleet-fixture": {
+      "interpreter": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+      ],
+      "needed": [
+        "ld-linux-x86-64.so.2",
+        "libc.so.6",
+        "libcrypto.so.4",
+        "libm.so.6",
+        "libssh2.so.1",
+        "libssl.so.4",
+        "libz.so.1"
+      ],
+      "resolved_libraries": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4"
+      ],
+      "rpath_directories": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+      ]
+    }
+  },
+  "elf_programs": 13,
+  "excluded_driver_diagnostics": [
+    "out/nix-support/cargo-build-messages.jsonl"
+  ],
+  "execution": {
+    "build": "/nix/store/p46yhrng3szf9kvvzwwjrsydbha6a6p1-aos-bazel-cli-production-programs-1",
+    "cache_hits": 0,
+    "executions": 1075,
+    "exit_codes": {
+      "0": 1075
+    },
+    "first_party_rust": [
+      "//crates/boot/aos-boot-identity:lib",
+      "//crates/bindings/libssh2-sys:build_script_program",
+      "//crates/bindings/libssh2-sys:lib",
+      "//crates/hub/aos-hub-api:build_script_program",
+      "//crates/hub/aos-hub-api:lib",
+      "//crates/core/aos-core:lib",
+      "//crates/artifacts/aos-artifact-evidence:lib",
+      "//crates/artifacts/aos-oci-types:lib",
+      "//crates/modules/aos-module-format:lib",
+      "//crates/activation/aos-activation:lib",
+      "//crates/boot/aos-storage-layout:lib",
+      "//crates/modules/aos-module-docs:lib",
+      "//crates/registry/aos-registry-format:lib",
+      "//crates/packages/aos-deployment-format:lib",
+      "//crates/release/aos-release-format:lib",
+      "//crates/release/aos-image-finalizer:lib",
+      "//crates/release/aos-image-finalizer:aos-image-metadata",
+      "//crates/release/aos-package-maintenance:lib",
+      "//crates/hub/aos-hub-client:lib",
+      "//crates/transfer/aos-transfer:lib",
+      "//crates/cli/aos-cli-ui:lib",
+      "//crates/packages/aos-build-api:build_script_program",
+      "//crates/artifacts/aos-nar:lib",
+      "//crates/artifacts/aos-oci:lib",
+      "//crates/nix/aos-nix:lib",
+      "//crates/boot/aos-platform-metadata:lib",
+      "//crates/cli/aos-closure-analysis:lib",
+      "//crates/cli/aos-nix-docs:lib",
+      "//crates/packages/aos-deployment:lib",
+      "//crates/packages/aos-nix-cache:lib",
+      "//crates/registry/aos-registry-client:lib",
+      "//crates/registry/aos-registry-authoring:lib",
+      "//crates/packages/aos-package-manager:lib",
+      "//crates/packages/aos-package-manager:aos-deployment-check",
+      "//crates/packages/aos-package-manager:aos-image-rollout-boot",
+      "//crates/packages/aos-package-manager:aos-image-rollout-observer",
+      "//crates/packages/aos-package-manager:aos-image-rollout-provider",
+      "//crates/packages/aos-package-manager:aos-package-attestation-provider",
+      "//crates/release/aos-release-coordinator:lib",
+      "//crates/packages/aos-build-api:lib",
+      "//crates/packages/aos-build-client:lib",
+      "//crates/packages/aos-build-server:lib",
+      "//crates/cli/aos-cli:lib",
+      "//crates/cli/aos-cli:aos",
+      "//crates/cli/aos-cli:aos-ability-authority-audit",
+      "//crates/cli/aos-cli:aos-ability-interruption-audit",
+      "//crates/cli/aos-cli:aos-boot-configuration",
+      "//crates/cli/aos-cli:aos-package-runtime",
+      "//crates/cli/aos-cli:aos-provisioning-configuration-evaluator",
+      "//crates/cli/aos-cli:aos-release-fleet-fixture",
+      "//crates/cli/aos-cli:apm",
+      "//crates/cli/aos-cli:apr"
+    ],
+    "runner_counts": {
+      "linux-sandbox": 1075
+    }
+  },
+  "fallback_derivation_in_candidate_build_requisites": false,
+  "help": {
+    "aos": {
+      "stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "57424a76d21c24808ddbcd9c3c6948d2494c5b8c0ab74d19e37ccf4be61b5c35"
+    },
+    "aos-package-runtime": {
+      "stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "00b616eb58c5900005b6c0dfd6c0983433cff23f19e7af74b76ce848ba21c61c"
+    },
+    "apm": {
+      "stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "00b616eb58c5900005b6c0dfd6c0983433cff23f19e7af74b76ce848ba21c61c"
+    },
+    "apr": {
+      "stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "ffa3a2dcdc5523a0a48b7d4a763c2e89eb8fdb5c8b2a9c84326b5d0299aa1be4"
+    }
+  },
+  "installed_entries": 52,
+  "library_search_changes": {
+    "packageRuntime/bin/.aos-provisioning-configuration-evaluator-unwrapped": {
+      "added": [],
+      "removed": [
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib"
+      ]
+    },
+    "packageRuntime/bin/aos-image-rollout-provider": {
+      "added": [],
+      "removed": [
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib"
+      ]
+    },
+    "packageRuntime/libexec/.aos-image-rollout-boot-unwrapped": {
+      "added": [],
+      "removed": [
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib"
+      ]
+    },
+    "packageRuntime/libexec/.aos-package-attestation-provider-unwrapped": {
+      "added": [],
+      "removed": [
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib"
+      ]
+    },
+    "packageRuntime/libexec/aos-image-rollout-observer": {
+      "added": [],
+      "removed": [
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib"
+      ]
+    },
+    "testSupport/bin/aos-ability-authority-audit": {
+      "added": [],
+      "removed": [
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+        "/nix/store/gf42mlx15ayz86m3ighznj0gzslxqa3k-aos-0.1.0/lib",
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+      ]
+    },
+    "testSupport/bin/aos-ability-interruption-audit": {
+      "added": [],
+      "removed": [
+        "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib",
+        "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+        "/nix/store/gf42mlx15ayz86m3ighznj0gzslxqa3k-aos-0.1.0/lib",
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib",
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib"
+      ]
+    },
+    "testSupport/bin/aos-release-fleet-fixture": {
+      "added": [],
+      "removed": [
+        "/nix/store/gf42mlx15ayz86m3ighznj0gzslxqa3k-aos-0.1.0/lib",
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib"
+      ]
+    }
+  },
+  "limits": [
+    "The default remains Cargo. Full packaged test selection fails closed for the Bazel driver.",
+    "This is CLI-component Cargo-constructor independence, not a Cargo-free toolchain and runtime closure.",
+    "No full compiler/linker option equivalence, cross-platform, complete CLI integration, live services, VM/ABI/license gate, performance-budget, or default-cutover claim.",
+    "This receipt binds the listed package and runtime identities. Independent source-slice or pinned runtime changes require requalification; it does not claim historical identity preservation across those changes."
+  ],
+  "native_evaluation_check": "/nix/store/whf72i1pkjkc5n7hrnnsavb63w7rragg-aos-native-evaluation-checks-0",
+  "normalization": "Only each package's own five output paths are replaced in non-ELF text and symlink targets.",
+  "openssl_build_script_linkage": {
+    "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_aos_cli_production_crates__openssl-sys-0.9.116/_bs.linkflags": {
+      "flags": [
+        "-lssl",
+        "-lcrypto"
+      ],
+      "sha256": "27d9fc333e2db7451a485b994ad31b003fbef28ef22f86c59028a1ae10d16fcf"
+    }
+  },
+  "openssl_imports": {
+    "apm/bin/.aos-package-runtime-unwrapped": [
+      "ASN1_STRING_get0_data",
+      "ASN1_STRING_length",
+      "ASN1_STRING_to_UTF8",
+      "ASN1_STRING_type",
+      "BIO_get_data",
+      "BIO_get_new_index",
+      "BIO_meth_free",
+      "BIO_meth_new",
+      "BIO_meth_set_create",
+      "BIO_meth_set_ctrl",
+      "BIO_meth_set_destroy",
+      "BIO_meth_set_gets",
+      "BIO_meth_set_puts",
+      "BIO_meth_set_read",
+      "BIO_meth_set_write",
+      "BIO_new",
+      "BIO_set_data",
+      "BIO_set_init",
+      "CRYPTO_free",
+      "CRYPTO_malloc",
+      "ERR_error_string",
+      "ERR_error_string_n",
+      "ERR_get_error",
+      "GENERAL_NAMES_free",
+      "OPENSSL_init_ssl",
+      "OPENSSL_sk_num",
+      "OPENSSL_sk_value",
+      "SHA256_Final",
+      "SHA256_Init",
+      "SHA256_Update",
+      "SSL_CTX_ctrl",
+      "SSL_CTX_free",
+      "SSL_CTX_new",
+      "SSL_CTX_set_cipher_list",
+      "SSL_CTX_set_default_verify_paths",
+      "SSL_CTX_set_options",
+      "SSL_CTX_set_verify",
+      "SSL_connect",
+      "SSL_ctrl",
+      "SSL_free",
+      "SSL_get1_peer_certificate",
+      "SSL_get_error",
+      "SSL_get_verify_result",
+      "SSL_new",
+      "SSL_read",
+      "SSL_set_bio",
+      "SSL_shutdown",
+      "SSL_write",
+      "TLS_method",
+      "X509_NAME_ENTRY_get_data",
+      "X509_NAME_get_entry",
+      "X509_NAME_get_index_by_NID",
+      "X509_free",
+      "X509_get_ext_d2i",
+      "X509_get_subject_name",
+      "i2d_X509"
+    ],
+    "apr/bin/.apr-unwrapped": [
+      "ASN1_STRING_get0_data",
+      "ASN1_STRING_length",
+      "ASN1_STRING_to_UTF8",
+      "ASN1_STRING_type",
+      "BIO_get_data",
+      "BIO_get_new_index",
+      "BIO_meth_free",
+      "BIO_meth_new",
+      "BIO_meth_set_create",
+      "BIO_meth_set_ctrl",
+      "BIO_meth_set_destroy",
+      "BIO_meth_set_gets",
+      "BIO_meth_set_puts",
+      "BIO_meth_set_read",
+      "BIO_meth_set_write",
+      "BIO_new",
+      "BIO_set_data",
+      "BIO_set_init",
+      "CRYPTO_free",
+      "CRYPTO_malloc",
+      "ERR_error_string",
+      "ERR_error_string_n",
+      "ERR_get_error",
+      "GENERAL_NAMES_free",
+      "OPENSSL_init_ssl",
+      "OPENSSL_sk_num",
+      "OPENSSL_sk_value",
+      "SHA256_Final",
+      "SHA256_Init",
+      "SHA256_Update",
+      "SSL_CTX_ctrl",
+      "SSL_CTX_free",
+      "SSL_CTX_new",
+      "SSL_CTX_set_cipher_list",
+      "SSL_CTX_set_default_verify_paths",
+      "SSL_CTX_set_options",
+      "SSL_CTX_set_verify",
+      "SSL_connect",
+      "SSL_ctrl",
+      "SSL_free",
+      "SSL_get1_peer_certificate",
+      "SSL_get_error",
+      "SSL_get_verify_result",
+      "SSL_new",
+      "SSL_read",
+      "SSL_set_bio",
+      "SSL_shutdown",
+      "SSL_write",
+      "TLS_method",
+      "X509_NAME_ENTRY_get_data",
+      "X509_NAME_get_entry",
+      "X509_NAME_get_index_by_NID",
+      "X509_free",
+      "X509_get_ext_d2i",
+      "X509_get_subject_name",
+      "i2d_X509"
+    ],
+    "out/bin/.aos-unwrapped": [
+      "ASN1_STRING_get0_data",
+      "ASN1_STRING_length",
+      "ASN1_STRING_to_UTF8",
+      "ASN1_STRING_type",
+      "BIO_get_data",
+      "BIO_get_new_index",
+      "BIO_meth_free",
+      "BIO_meth_new",
+      "BIO_meth_set_create",
+      "BIO_meth_set_ctrl",
+      "BIO_meth_set_destroy",
+      "BIO_meth_set_gets",
+      "BIO_meth_set_puts",
+      "BIO_meth_set_read",
+      "BIO_meth_set_write",
+      "BIO_new",
+      "BIO_set_data",
+      "BIO_set_init",
+      "CRYPTO_free",
+      "CRYPTO_malloc",
+      "ERR_error_string",
+      "ERR_error_string_n",
+      "ERR_get_error",
+      "GENERAL_NAMES_free",
+      "OPENSSL_init_ssl",
+      "OPENSSL_sk_num",
+      "OPENSSL_sk_value",
+      "SHA256_Final",
+      "SHA256_Init",
+      "SHA256_Update",
+      "SSL_CTX_ctrl",
+      "SSL_CTX_free",
+      "SSL_CTX_new",
+      "SSL_CTX_set_cipher_list",
+      "SSL_CTX_set_default_verify_paths",
+      "SSL_CTX_set_options",
+      "SSL_CTX_set_verify",
+      "SSL_connect",
+      "SSL_ctrl",
+      "SSL_free",
+      "SSL_get1_peer_certificate",
+      "SSL_get_error",
+      "SSL_get_verify_result",
+      "SSL_new",
+      "SSL_read",
+      "SSL_set_bio",
+      "SSL_shutdown",
+      "SSL_write",
+      "TLS_method",
+      "X509_NAME_ENTRY_get_data",
+      "X509_NAME_get_entry",
+      "X509_NAME_get_index_by_NID",
+      "X509_free",
+      "X509_get_ext_d2i",
+      "X509_get_subject_name",
+      "i2d_X509"
+    ],
+    "out/bin/aos-deployment-check": [],
+    "out/bin/aos-image-metadata": [],
+    "packageRuntime/bin/.aos-provisioning-configuration-evaluator-unwrapped": [],
+    "packageRuntime/bin/aos-image-rollout-provider": [],
+    "packageRuntime/libexec/.aos-image-rollout-boot-unwrapped": [],
+    "packageRuntime/libexec/.aos-package-attestation-provider-unwrapped": [],
+    "packageRuntime/libexec/aos-image-rollout-observer": [],
+    "testSupport/bin/aos-ability-authority-audit": [],
+    "testSupport/bin/aos-ability-interruption-audit": [],
+    "testSupport/bin/aos-release-fleet-fixture": [
+      "ASN1_STRING_get0_data",
+      "ASN1_STRING_length",
+      "ASN1_STRING_to_UTF8",
+      "ASN1_STRING_type",
+      "BIO_get_data",
+      "BIO_get_new_index",
+      "BIO_meth_free",
+      "BIO_meth_new",
+      "BIO_meth_set_create",
+      "BIO_meth_set_ctrl",
+      "BIO_meth_set_destroy",
+      "BIO_meth_set_gets",
+      "BIO_meth_set_puts",
+      "BIO_meth_set_read",
+      "BIO_meth_set_write",
+      "BIO_new",
+      "BIO_set_data",
+      "BIO_set_init",
+      "CRYPTO_free",
+      "CRYPTO_malloc",
+      "ERR_error_string",
+      "ERR_error_string_n",
+      "ERR_get_error",
+      "GENERAL_NAMES_free",
+      "OPENSSL_init_ssl",
+      "OPENSSL_sk_num",
+      "OPENSSL_sk_value",
+      "SHA256_Final",
+      "SHA256_Init",
+      "SHA256_Update",
+      "SSL_CTX_ctrl",
+      "SSL_CTX_free",
+      "SSL_CTX_new",
+      "SSL_CTX_set_cipher_list",
+      "SSL_CTX_set_default_verify_paths",
+      "SSL_CTX_set_options",
+      "SSL_CTX_set_verify",
+      "SSL_connect",
+      "SSL_ctrl",
+      "SSL_free",
+      "SSL_get1_peer_certificate",
+      "SSL_get_error",
+      "SSL_get_verify_result",
+      "SSL_new",
+      "SSL_read",
+      "SSL_set_bio",
+      "SSL_shutdown",
+      "SSL_write",
+      "TLS_method",
+      "X509_NAME_ENTRY_get_data",
+      "X509_NAME_get_entry",
+      "X509_NAME_get_index_by_NID",
+      "X509_free",
+      "X509_get_ext_d2i",
+      "X509_get_subject_name",
+      "i2d_X509"
+    ]
+  },
+  "original_package_check": {
+    "output": "/nix/store/8fxbwgcskxfcs6as9q925hlzcbx0riai-aos-bazel-cli-production-package-checks",
+    "report": {
+      "path": "/nix/store/8fxbwgcskxfcs6as9q925hlzcbx0riai-aos-bazel-cli-production-package-checks/report.json",
+      "sha256": "cc9cccf28703c95d0ef3fe358f2fdf02df27dc7de0363441a64ce373b6418741"
+    }
+  },
+  "packages": {
+    "bazel": {
+      "apm": "/nix/store/h7gmjxvqa19xajw04q6h1q7fvgvg01w9-aos-0.1.0-apm",
+      "apr": "/nix/store/krgszsbhvzzzm4r7pykmcv800rpn9pkk-aos-0.1.0-apr",
+      "out": "/nix/store/iwzb8a4zgg66bwf2r2kx5i7vn45ybpn5-aos-0.1.0",
+      "packageRuntime": "/nix/store/87g9z3v8y8q0bqqq58jz9hc5hz0mjb5p-aos-0.1.0-packageRuntime",
+      "testSupport": "/nix/store/bk8ph7nn9nxbd5gmy95mgymm3y365vv4-aos-0.1.0-testSupport"
+    },
+    "ordinary": {
+      "apm": "/nix/store/ikkamxpra3h7hm5417vg2i54xcdx8fp7-aos-0.1.0-apm",
+      "apr": "/nix/store/mvnmz0p04nm26p0gl9aw999sq6clhr39-aos-0.1.0-apr",
+      "out": "/nix/store/gf42mlx15ayz86m3ighznj0gzslxqa3k-aos-0.1.0",
+      "packageRuntime": "/nix/store/mrvdfnsyrbfqkqnvi30bnpi8agkh86a7-aos-0.1.0-packageRuntime",
+      "testSupport": "/nix/store/biffimh1yiq16rjip39397y33w1c8bkn-aos-0.1.0-testSupport"
+    }
+  },
+  "policy_check": "/nix/store/kd9vcz2jgpb5qkbac25w3mqqq1v9817n-aos-bazel-policy-checks",
+  "policy_tests": 433,
+  "retained_compiler_evidence": {
+    "actions.json": {
+      "path": "/nix/store/p46yhrng3szf9kvvzwwjrsydbha6a6p1-aos-bazel-cli-production-programs-1/evidence/actions.json",
+      "sha256": "725b75ef323e615e33714cc9373f1f16aae9256ab8548fde0335122b266ae1bd"
+    },
+    "compiler-inputs.json": {
+      "path": "/nix/store/p46yhrng3szf9kvvzwwjrsydbha6a6p1-aos-bazel-cli-production-programs-1/evidence/compiler-inputs.json",
+      "sha256": "218ec28d92af64facd04bf887ec4f6fb31e3d771dbf87401e387209f0de11f9b"
+    },
+    "compiler-invocations.json": {
+      "path": "/nix/store/p46yhrng3szf9kvvzwwjrsydbha6a6p1-aos-bazel-cli-production-programs-1/evidence/compiler-invocations.json",
+      "sha256": "1de6c21620bd5292d16d8b9d324bb29d8b1372058d6bf11252c1a8bac1a73905"
+    },
+    "execution.json": {
+      "path": "/nix/store/p46yhrng3szf9kvvzwwjrsydbha6a6p1-aos-bazel-cli-production-programs-1/evidence/execution.json",
+      "sha256": "fed1cb325600d78c725a33e6c71089dfe23e514b91465988b2bde5c93baa57d2"
+    }
+  },
+  "runtime_closure_changes": {
+    "apm": {
+      "added": [],
+      "removed": []
+    },
+    "apr": {
+      "added": [],
+      "removed": []
+    },
+    "out": {
+      "added": [],
+      "removed": []
+    },
+    "packageRuntime": {
+      "added": [],
+      "removed": []
+    },
+    "testSupport": {
+      "added": [],
+      "removed": [
+        "/nix/store/071yhimnxva604hfim2d7m51k593jpks-bash-5.3p15",
+        "/nix/store/09dipck6fr9k9r3r9wb7nkha9lgrx314-expat-2.8.4",
+        "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0",
+        "/nix/store/5cd32i1g3xgr4z5bf040gl6rkanyax16-brotli-1.2.0",
+        "/nix/store/5m9w9gbdaxrkyvkn5wbbhc52mhn6k82g-bzip2-1.0.8",
+        "/nix/store/6pc200h0wq66bk4r2w6xm0qyn349jaq0-libcap-ng-0.9.5",
+        "/nix/store/753ava2263yjcd0k8wii5gfijlk6w6lh-editline-2.1.0",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/7i0bjwawygncw5z27n7h6l67zdy6mk5n-boost-1.92.0",
+        "/nix/store/7sb534l6c2jqdh1r1zvzkhbgplrrrgmm-curl-8.22.0",
+        "/nix/store/7x29kikzxc63nz609gjy54d4z3jras5d-nghttp2-1.70.0",
+        "/nix/store/84jcdf4radcv196v68rligvgknb7lny9-gc-8.2.12",
+        "/nix/store/9d5sm56jg29gcfs4xia4ynymmahw6dks-xz-5.8.3",
+        "/nix/store/9mng6s0xrmlw96lc1f3r1izmbk7b7w5p-libselinux-3.11",
+        "/nix/store/cd1f6q83bigwx8aqzfw32ynqv4m72186-libutempter-1.2.3",
+        "/nix/store/d507nfs5krac6vhv38ay18jlgrmab8ac-libsodium-1.0.22",
+        "/nix/store/f0s6vf3wih2q3v74rxyiffsg19a4196j-publicsuffix-list-0-unstable-2026-05-13",
+        "/nix/store/f7i2glii19wbxjccwhc33abfvrhpkdys-libunistring-1.4.2",
+        "/nix/store/fh9cfzikw1k2qxwyd0j8b6dvyha8990h-libarchive-3.8.9",
+        "/nix/store/fqvj66cbpvpi9i9rx3f20lzwwzac66sl-util-linux-2.42.3",
+        "/nix/store/fyfijn09vd0rwssk61ldh65arnrp908d-libgit2-1.9.7",
+        "/nix/store/gmplkr86bygh8dnm8jsv8ma25fldng0g-libseccomp-2.6.1",
+        "/nix/store/gz5m241r9fbchgp2716xwzf25k79qcgj-libpsl-0.23.3",
+        "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7",
+        "/nix/store/hc0j2fwwk2c68q5r262ra30nn8xnj0rj-audit-4.2.1",
+        "/nix/store/jgb5r6dhb12r1957dfjrnrwhskgyb8vi-aos-landlock-0",
+        "/nix/store/k6f7bja36bsis6wkpng8538bjp79z5rx-nlohmann-json-3.12.0",
+        "/nix/store/kasdgb8a1vfsby5nw94r81adm6zp1qzx-libidn2-2.3.8",
+        "/nix/store/kvd29kxf9lgbdim13cc1d5mzra4l6gj6-git-minimal-2.55.0",
+        "/nix/store/lds2gsaa4b5xj00sh9s2gjd84mwxpfci-lowdown-3.1.1",
+        "/nix/store/m8snl4z29anz8jrjcvn4ngxi04av17nb-ca-certificates-2026-05-14",
+        "/nix/store/m9xlvi055675cls6fsr4wgah9adyyjky-linux-pam-1.7.1",
+        "/nix/store/n0jh974sfpb4lyig998y94xsq5rrbqp4-readline-8.3p3",
+        "/nix/store/pjbpxfx92xyzq6jmi7g7srln54ny4b4d-libsepol-3.11",
+        "/nix/store/qg9s9fsp9z4a5limbq8v7w7kcj8h5bx5-libxcrypt-4.5.2",
+        "/nix/store/qh11nfhpmb1p2wrkssc19j142c26w3qb-nix-2.24.12",
+        "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/vmzsynrrjd87qcbx9v4g7v14nm2clbwc-toml11-4.4.0",
+        "/nix/store/xby8fr5a2nyd5qyn587a9h8h7rwsw9q2-pcre2-10.48",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "@output:out@"
+      ]
+    }
+  },
+  "runtime_closure_counts": {
+    "bazel": {
+      "apm": 51,
+      "apr": 49,
+      "out": 46,
+      "packageRuntime": 52,
+      "testSupport": 5
+    },
+    "ordinary": {
+      "apm": 51,
+      "apr": 49,
+      "out": 46,
+      "packageRuntime": 52,
+      "testSupport": 47
+    }
+  },
+  "schema_version": 1,
+  "scope": "Opt-in native x86_64 Linux production CLI constructor; five installed outputs with ordinary Cargo rollback.",
+  "source_selection": {
+    "checked_inventory": {
+      "path": "tools/bazel/metadata/aos-cli-inventory.json",
+      "sha256": "402e71af70abd062894ffb03484344da2003b3c285dfc98197a9b61da835a6c1"
+    },
+    "compiled_inventory": {
+      "path": "/nix/store/p46yhrng3szf9kvvzwwjrsydbha6a6p1-aos-bazel-cli-production-programs-1/inventory.json",
+      "sha256": "cf788284a9e9ad6e72fcbdf4cd4b5d1b38314348ffe8eee8fe52f5c5f2fdaaee"
+    },
+    "first_party_cargo_files": [],
+    "workspace": "/nix/store/yf13fdbgdwnnmvd0ylqg0ifhz91xrrd2-aos-bazel-workspace",
+    "workspace_content_sha256": "bedd1986b42785cf65767e5ecf5acb55eb349d17f056678ca6aa44c593be0196",
+    "workspace_file_count": 1583
+  },
+  "strengthened_verifier_reexecution": {
+    "output": "/nix/store/bi7hvjbgm4iw9pgag7wmlh9xyimdhj83-aos-bazel-cli-qualified-output-reverification",
+    "report": {
+      "path": "/nix/store/bi7hvjbgm4iw9pgag7wmlh9xyimdhj83-aos-bazel-cli-qualified-output-reverification/report.json",
+      "sha256": "d8452b66c6a46b843ee366839917f7484df8c959ba2f32b7264b7dc078f5382d"
+    },
+    "scope": "Fresh Nix-sandbox verification of the same completed original package outputs, adding retained OpenSSL symbol parity after extracting shared installed-package helpers."
+  }
+}

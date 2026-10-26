@@ -42,8 +42,14 @@
   buildPackages,
   callPackage,
   withTests ? false,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
+  withBuildDriver = selected:
+    callPackage ./aos.nix {
+      inherit withTests;
+      buildDriver = selected;
+    };
   isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildPerl =
@@ -271,7 +277,7 @@
         ];
       };
     };
-  aosPackage = mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -413,6 +419,8 @@
     passthru =
       {
         inherit cargoArtifacts cargoDeps cargoEnv testTargets;
+        inherit withBuildDriver;
+        buildDriver = "cargo";
         integrationSource = aosWorkspaceIntegrationSource;
       }
       // lib.optionalAttrs (!withTests) {
@@ -967,5 +975,16 @@
       license = "MIT";
     };
   };
+  aosPackage = mkAosCargoPackage packageArguments;
 in
-  aosPackage
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      if withTests
+      then throw "aos: Bazel production selection does not yet replace the complete Cargo test derivation"
+      else
+        callPackage ./_bazel.nix {
+          inherit packageArguments;
+          cargoFallback = aosPackage;
+        }
+    else aosPackage

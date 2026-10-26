@@ -115,6 +115,7 @@ in
     release-metadata = import ./_bazel-release-metadata.nix {inherit pkgs;};
     rust-format = import ./_bazel-rust-format.nix {inherit pkgs;};
     boot-production = import ./_bazel-boot-production.nix {inherit pkgs;};
+    cli-production-package = import ./_bazel-aos-cli-package.nix {inherit pkgs;};
     test-support = import ./_bazel-test-support.nix {inherit pkgs;};
     feature-powerset = import ./_bazel-feature-powerset.nix {inherit pkgs;};
     crucible-feature-policy = import ./_bazel-crucible-feature-policy.nix {inherit pkgs;};
@@ -522,6 +523,7 @@ in
             release-metadata.all
             rust-format
             boot-production.all
+            cli-production-package.all
             test-support.all
             feature-powerset.all
             crucible-feature-policy.all

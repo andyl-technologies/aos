@@ -516,6 +516,31 @@ ABI, source-retention, and publication gates; it does not replace them.
 The pinned rules' source-built doctest writer embeds AOS Bash. Ordinary test
 execution never needs a host `/usr/bin/env` interpreter.
 
+## Installed AOS CLI package
+
+`pkgs.aos.passthru.withBuildDriver "bazel"` selects native Linux Bazel
+compilation with the existing five-output installation hook. The default
+remains Cargo, and `withBuildDriver "cargo"` selects the ordinary recipe.
+The candidate preserves wrappers, completions, private runtime dispatch,
+module declarations, pinned command paths, and installed verifier checks.
+It rejects `withTests = true` until the complete packaged test derivation is
+migrated. Its CLI constructor works with the Cargo constructor replaced by
+a throwing guard; other packages in its runtime and toolchain closure still
+have their existing builders.
+
+`checks.build.bazel.cli-production-package.all` (also available through
+`tools/bazel/tests/aos-cli-package.nix`) checks selector round trips, the runtime
+module library, all installed paths and modes, normalized text and symlinks,
+four CLI help surfaces, and every ELF's imports and actual AOS loader results.
+OpenSSL must use the shared AOS libraries in both retained linker inputs and
+installed dynamic symbols. Installation removes Bazel's temporary `_solib`
+search path and shrinks unused immutable search directories; the comparison
+allows removals only when the loader still resolves the same libraries and no
+output gains a runtime dependency. Both complete inventories and closure
+changes remain in the [production receipt](tests/evidence/aos-cli-production-package.json).
+Full integration, foreign hosts, performance
+acceptance, default cutover, and final Cargo removal remain separate work.
+
 ## Migration oracle
 
 `metadata/cargo-inventory.json` records Cargo's discovered targets, declared
