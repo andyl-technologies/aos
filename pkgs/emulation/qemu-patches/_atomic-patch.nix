@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "e08a467088fb11753252686054cc5b6f27f320d6aa4adec68cb6580c565cce13";
-  subject = "crucible: preserve complete integration and repair owning declarations";
-  body = "Retain the complete Crucible integration source, fixture, provider and\nisolation inputs together with the typed opaque Boundary frame acquire.\nKeep fail-closed ownership checks and acquire ordering intact.\n\nUse canonical declarations and const read-only identity projections, rename\nshadowing locals, and update only affected source extraction digests. The\nconfigured POSIX thread object compiles; the Source object still fails on\nthe unchanged uncalled RR birth helper. Runtime behavior is unqualified.";
-  commit = "cb9a5e825acb35abb16218cbf414168e4e330e36";
-  tree = "6dff4b0801c57c70a000468db97c146f6c25d8b8";
+  sha256 = "7a76cf82503f4a441a997e59759fbad56aabda7efc80a354e2ea3a8016a602c8";
+  subject = "crucible: preserve ownership integration with guarded Cleanup stacks";
+  body = "Retain the complete Crucible Source integration, Core quantum bank borrowers,\nfixed Module callbacks, opaque frame acquisition and bounded provider storage\ninterfaces in one source tree over the selected base.\n\nAdd a canonical application-paid guarded Cleanup stack mapping owner with\nonce-only physical-effect journals, checked complete fixed-control payment,\nand separate provider, terminal and outer-stack-last-use prerequisites.\nKeep physical unmap before settlement and the final gated debit return.\n\nComplete terminal execution-profile ownership is still unavailable. Missing\ncontaining prebirth payment, TLS/allocator consumers and actual outer last-use\nproduction remain fail-closed; one-MiB component geometry and worker join do\nnot qualify a complete execution profile or authorize admission.\n\nSource extraction and owning-source syntax checks pass. The owning-object\nbuild still rejects the existing unused quantum_rr_actor_birth helper with\nthe unchanged warning policy. No successful object build or runtime activation\nis claimed.";
+  commit = "3b099f055ec0c3715c509c39adc5ad68d0d914a5";
+  tree = "849797ff3dd3567fcc2a1d0cc5cc4625401e93cc";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/quantum-integration-compiler-corrections";
+  branchRef = "dplecki/guarded-cleanup-stack-atomic";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "24121a16a6c48f76ea17b76b471fd68b1e8d52c9adcaeb28a154823a33f013ae";
+  bundleSha256 = "050be6beb90cc90f926148bf20b3846498b93e7b80220ba1375788f304afba68";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

@@ -71,6 +71,35 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 680 bindings: 661 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
+#### Application-paid guarded Cleanup stack component
+
+Signed atomic QEMU commit `3b099f055ec` retains a canonical guarded-stack
+mapping owner beneath the application account. It pays the complete mapping
+before creation, leaves an inaccessible system page on each side of the
+writable interior, and retains physical results before independent posts.
+The borrowed interior has no separate debit or unmap. Account construction
+recomputes the complete compiled fixed-control floor and requires the exact
+paid extent, including the expanded inline controls.
+
+Physical return requires separate provider and terminal histories plus an
+independent outer-stack-last-use fact. No actual producer supplies that last
+fact yet, so return refuses before unmap. The one-MiB interior is component
+policy, not a qualified bound for the complete call graph. Full-profile
+Current, genuine containing prebirth payment, TLS/allocator consumers and
+terminal producers remain unfinished; Source admission is unchanged.
+
+Source extraction passes for 179 roots and 1,299 functions; its existing
+selected slices establish extraction/hash coherence and do not cover the new
+stack methods. The owning-source syntax check passes. The owning-object build
+still fails solely on the existing unused `quantum_rr_actor_birth` helper with
+unchanged warning options; no object or runtime qualification is claimed.
+Exact signed patch reconstruction passes at
+`hkjh3xl3cx07s56wnr5cjlrp703bl49a`, including the unsigned and sole-parent
+negative controls. The license ledger passes at
+`mx1hyqk1wdrr4lqzmvhyzp3wfdpym5g5`: all 664 created files have entries.
+Core evaluation passes. These checks do not execute the new stack methods or
+qualify the complete ABI/license boundary or runtime.
+
 #### Borrowed issued-Node handoff
 
 The caller now keeps its existing launch guard while taking an assembled Node.
@@ -83,8 +112,10 @@ All three issued-owner controls and the assembled-Node factory control pass,
 including allocation observations on both extraction outcomes. All 90
 testing-standard controls, five engineering-hygiene controls, source-bound
 hermetic hygiene and private-configuration compilation pass. Mandatory
-application compilation is checked separately for this checkpoint. Strict
-host-library Clippy removes one diagnostic and adds none, leaving 22 errors.
+application compilation passes at `bklvw3p1gizwb2j2lz3azyin5caqx2cg`: all
+5,471 committed Rust/TOML inputs and the lockfile match its immutable source.
+It compiles 185 test artifacts across 58 application packages; it does not
+execute the runtime tests. Strict host-library Clippy removes one diagnostic and adds none, leaving 22 errors.
 Inventory `a127xjix56kzlzsgd7lhjdz26hncfw9s` contains 680 bindings: 636 model,
 25 format and nineteen native. The same 142 requirements remain uncovered,
 none is qualified and no capability is advertised. Native activation, physical
