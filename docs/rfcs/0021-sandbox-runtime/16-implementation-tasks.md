@@ -41,12 +41,12 @@ Recent committed startup fixes close narrower prerequisites:
   stat/context checks. No executable maps are reread after the helper becomes
   nondumpable. Independent Source checks separate readiness from send/receive,
   including after native failure, and funding includes the child lock FDs.
-  All nine affected native descriptor/readiness/approval cases, 427 Broker
-  tests and 125 focused Source tests pass; Security validation is running.
+  All nine affected native descriptor/readiness/approval cases, 427 Broker,
+  125 focused Source, 428 ordinary Security and 437 online-Nix Security tests
+  pass. One Broker case and two cases in each Security suite remain ignored.
   Full application compilation is running on the audited corrected snapshot,
-  with 66 changed
-  Rust hashes and both deleted modules checked; its 833-derivation closure
-  excludes production policy. This does not qualify an installed positive
+  with 66 changed Rust hashes and both deleted modules checked; its
+  833-derivation closure excludes production policy. This does not qualify an installed positive
   Source or confined helper exchange. Private-auth transfer, Security's full
   initialization composition, TPM write/checkpoint and installed lifecycle and
   recovery remain open. Admission stays closed.
