@@ -440,6 +440,13 @@ in that gate's frozen source matched that checkpoint, including the edited audit
 helper. This is compilation evidence; executing application tests and qualifying
 later Nix/Bazel declarations remain separate checks.
 
+The [spec-index application compilation receipt](tests/evidence/test-support-spec-index-full-rust-compilation.json)
+records the subsequent completed gate after removing the audit's manifest
+ownership check. All 185 application unit and integration test targets compile,
+and all 3,773 frozen Rust files match the current sources. The compiled target
+inventory matches the preceding gate exactly. The source-audit qualification
+separately executes the changed Crucible audit and its negative controls.
+
 `checks.build.bazel.feature-powerset.all` independently compiles the nine
 engine, QEMU host, and device configurations from the existing feature-powerset
 driver. Explicit library targets suppress each root's default feature without
