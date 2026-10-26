@@ -138,6 +138,21 @@ pass review. Raw controller records and hashes are preserved; owned temporary
 controller scratch is removed after review. These results qualify the client
 and codec components, not the production service or current authorization.
 
+Native index and original collection qualification at `e6f214f3ce` passes
+in 3,112.305 seconds, including compilation and three independent AOS guests.
+All four scoped-index, two held-index and five original collection cases execute
+exactly once. Independent review matches all 8,272 immutable source files,
+5,495 bound crate inputs per image and both retained Cargo test executables.
+The index cases retain default-plus-Tokio, with thirty-second scoped and
+sixty-second held limits; collection retains its original `surface-sdk` profile
+and 180-second limits. Each ext4 guest executes as UID 840 with empty
+capabilities and no-new-privileges. Exact original pack/Trash reconciliation,
+late residue, current-lease takeover, foreign-hardlink refusal and cancellation
+exclusion all pass. This confirms the collection correction without changing
+its earlier failed run and qualifies the scoped/held backend components; fresh
+per-request service authorization, configured GC deployment and whole-role
+acceptance remain separate.
+
 Renewed native cache prerequisites are running at `e6f214f3ce`. The complete
 preflight classifies all 22 missing prerequisites: two compile-only retained
 images, twelve image-assembly derivations, six actual AOS KVM checks and two
@@ -164,7 +179,8 @@ and configuration are retained. The corrected test requires exactly those two
 original residues before reconciliation, including the owner's decoded tombstone
 identity, then their exact completion count and physical absence. The late
 single-pack assertion, original owner and lease controls remain unchanged.
-Native confirmation is still required; no collection success is claimed.
+The later `e6f214f3ce` native run confirms this correction as recorded above;
+the earlier `513ed9e29a` run remains failed.
 
 The focused scoped-index run at `4a3d4343cb` ends in 795.484 seconds before any
 test executes: the 16 GiB AOS builder's OOM killer terminates full SDK test
@@ -189,9 +205,9 @@ avoids reacquiring the adapter's own exclusion and grants no mutation authority
 to a read-only holder. Two genuine native fixture cases cover index-only results
 with the actual pack body withheld, original exclusion retention and release,
 duplicate and maximum batches, and refusal of a replaced coordination inode.
-A dedicated exact-selector AOS check is registered. Native qualification remains
-pending; required application compilation is reviewed above. Strict all-target Clippy
-passes for default Tokio and explicit `tokio,surface-sdk` native profiles; SDK
+A dedicated exact-selector AOS check is registered. Its two native cases and
+required application compilation pass at `e6f214f3ce` as reviewed above. Strict
+all-target Clippy passes for default Tokio and explicit `tokio,surface-sdk` native profiles; SDK
 Rust formatting, Nix formatting and parsing, guest-driver parsing and PLAN-2
 pass. All ten preexisting driver case groups retain their exact ordered selector
 inventories. This does not supply fresh request authorization or a production
@@ -208,11 +224,10 @@ cover routing, root-only and foreign decisions, request bounds, malformed replie
 and maximum-length duplicate requests; a dedicated exact-selector AOS check is
 registered. Strict all-target Clippy passes for default Tokio and explicit
 `tokio,surface-sdk` native profiles; SDK Rust formatting, Nix formatting and
-parsing, PLAN-2 and diff checks pass. Runtime qualification remains pending;
-required application compilation is reviewed above. This is a scoped backend
-primitive: the production service must
-still obtain fresh token, revocation and current-ACL authorization for each
-operation. It does not implement the Distribution service or accept T-PROTO-1.
+parsing, PLAN-2 and diff checks pass. Its four scoped runtime cases and required
+application compilation pass at `e6f214f3ce` as reviewed above. This is a scoped
+backend primitive: the production service must still obtain fresh token,
+revocation and current-ACL authorization for each operation. It does not implement the Distribution service or accept T-PROTO-1.
 
 The complete committed manager fixture at `874c01676f` now passes in 218.935
 seconds under its original 300-second bound. Independent review matches all
