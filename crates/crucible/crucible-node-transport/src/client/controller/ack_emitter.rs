@@ -14,6 +14,9 @@ use crate::{
 };
 use std::rc::Rc;
 
+#[path = "ack_emitter/capacities.rs"]
+mod capacities;
+
 /// Retains this controller's actual immutable canonical Blob acknowledgement path.
 ///
 /// The lease has no decoder, clone or portable representation. The source must

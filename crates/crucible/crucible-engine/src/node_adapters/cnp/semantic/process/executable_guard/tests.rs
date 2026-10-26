@@ -35,10 +35,24 @@ impl NativeFixture {
         fs::create_dir(&directory).unwrap();
         let executable = directory.join("original-peer");
         fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
-        let child = child_command(&executable, &directory)
-            .process_group(0)
-            .spawn()
-            .unwrap();
+        let mut command = child_command(&executable, &directory);
+        command.process_group(0);
+        let spawn_started = Instant::now();
+
+        // Parallel process startup can temporarily retain a writer inherited
+        // from the copy. Retry only this pre-execution refusal, with a deadline.
+        let child = loop {
+            match command.spawn() {
+                Ok(child) => break child,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        && spawn_started.elapsed() < Duration::from_secs(5) =>
+                {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("original executable fixture spawn refused: {error}"),
+            }
+        };
         let fixture = Self {
             directory,
             executable,

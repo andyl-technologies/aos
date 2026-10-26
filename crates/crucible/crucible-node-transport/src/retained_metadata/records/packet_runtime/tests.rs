@@ -418,3 +418,40 @@ fn appending_component_observer_keeps_earlier_and_refused_component_rows() {
     let _partial_facts = observer.finish();
     assert_eq!(bank.rows().len(), 2);
 }
+
+#[test]
+fn hello_capacity_data_appends_physical_rows_and_preserves_short_bank_history() {
+    use crate::{client::OriginalHelloJournal, retained_metadata::RetainedCaptureProtocolData};
+
+    let request = crate::handshake::tests::original_hello_envelope();
+    let journal = OriginalHelloJournal::reserve(&request, 65_536, 64).unwrap();
+    let view = RetainedCaptureProtocolData::HelloJournal(&journal);
+    let expected = view.observe_retained_metadata().unwrap();
+    let prefix = row(MetadataRecordKind::Vector, 173, 1, 1);
+    let mut exact = bank(expected.capacity_records + 1);
+    exact.reserve_retained_data().unwrap();
+    exact.append_capacity_record_data(prefix).unwrap();
+    let backing = exact.allocated_bytes();
+
+    assert_eq!(
+        view.record_retained_metadata_data(&mut exact).unwrap(),
+        expected
+    );
+
+    assert_eq!(exact.rows()[0], prefix);
+    assert_eq!(exact.allocated_bytes(), backing);
+    let mut short = bank(expected.capacity_records);
+    short.reserve_retained_data().unwrap();
+    short.append_capacity_record_data(prefix).unwrap();
+    assert!(view.record_retained_metadata_data(&mut short).is_err());
+    assert_eq!(short.rows(), &exact.rows()[..short.maximum_rows()]);
+    assert!(view.record_retained_metadata_data(&mut short).is_err());
+    assert_eq!(short.rows(), &exact.rows()[..short.maximum_rows()]);
+    let mut unallocated = bank(expected.capacity_records);
+    assert!(
+        view.record_retained_metadata_data(&mut unallocated)
+            .is_err()
+    );
+    assert!(unallocated.rows().is_empty());
+    assert!(!journal.attempted());
+}

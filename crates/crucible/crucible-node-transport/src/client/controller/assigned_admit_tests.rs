@@ -897,3 +897,6 @@ fn owned11_model_host_roundtrip_with_proofs(
     // Data restoration leaves the actual current actor and all original banks intact.
     assert!(controller.owns_original_protocol_snapshot(&captured));
 }
+
+#[path = "assigned_admit_tests/capacities.rs"]
+mod capacities;

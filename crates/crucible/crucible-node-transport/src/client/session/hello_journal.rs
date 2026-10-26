@@ -13,6 +13,9 @@ use crate::{ProviderError, envelope::Envelope};
 
 pub use crate::hello_frames::OriginalHelloFrameDigests;
 
+#[path = "hello_journal/capacities.rs"]
+mod capacities;
+
 const MAXIMUM_BYTES: usize = 1024 * 1024;
 
 /// Owns bounded original Hello bodies without registration or command authority.

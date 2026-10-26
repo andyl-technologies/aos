@@ -199,6 +199,22 @@ actual negotiated SDK originals and a genuinely issued read from the prebirth
 complete-byte launch reservation; that custody control does not qualify Source18
 native dispatch. All eight new controls pass in both codec configurations.
 
+ACK protocol capacity DATA now keeps the Source association's five raw banks,
+all retained normalized/proof JSON, every admission-context String/Bytes bank,
+original SDK emitters, ordinary/native Hello custody and its original native
+read. SDK emitter walks retain controller/connection/registrar/codec allocations
+without locking or renewing the registrar. Hello walks preserve independent typed
+request, raw request Value, response and literal-frame backing, including failed
+or incomplete exchanges; busy native custody refuses before adding Hello rows.
+The original live authentication, publication and legacy byte observers retain
+their existing gates. Restored transfer, execution, observation and Capture
+history remain separate owning census components and are not covered by this
+protocol projection. Controls use the actual ACK emitter issuer and original
+Hello constructors; their fixture peers and Hello verifier remain models and
+supply no native or Source18 permission. All eight new controls pass in both
+codec configurations. Input-emitter native issuance and the full restored-owner
+census remain separate qualification obligations.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its twelve
@@ -208,19 +224,23 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 78 Engine census/installation/holder/startup
+Both codec configurations pass 81 Engine census/installation/holder/startup
 controls, eight execution reservation controls and four Import18 bank constructor
-controls. Complete Engine suites pass 2,149 tests each with thirty-four ignored,
+controls. Complete Engine suites pass 2,152 tests each with thirty-four ignored,
 using matching source-built installed packet fixtures. Current Transport suites
-pass 2,330 tests and 130 focused controls each, with twenty ignored; HostResources
+pass 2,335 tests and 135 focused controls each, with twenty ignored; HostResources
 suites pass all 37 tests each, including both descriptor capacity controls.
-Six-package all-feature/all-target checks, sixteen-file scoped Rust formatting,
+Six-package all-feature/all-target checks, fourteen-file scoped Rust formatting,
 all six architecture gates and the RFC requirement-map gate pass. Required
 application test-target compilation passes with 185 artifacts across 58 packages
-and 76 integration targets; all 4,922 selected frozen Rust/Cargo inputs match
+and 76 integration targets; all 4,928 selected frozen Rust/Cargo inputs match
 current and captured source. User-owned changes are preserved. These are component
 results; the requirement map records planning coverage, and no latest-source
-strict lint or native lifecycle qualification is claimed.
+strict lint or native lifecycle qualification is claimed. Validation exposed
+transient Linux executable-busy errors during native fixture startup; that setup
+now retries only this pre-execution refusal within five seconds. Both Engine
+suites pass with the corrected fixture. The independent Transport/HostResources
+suites use unchanged, digest-verified executables from the completed prior run.
 
 The genuine same-Source one-use admission and funded move, completed Initial and
 address-bound claim retirement checks, integration of the physical bank into

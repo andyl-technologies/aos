@@ -1,4 +1,4 @@
-//! Observes retained Capture results, confirmations and original protocol banks.
+//! Observes retained Capture results and original Source protocol associations.
 //!
 //! Raw response maps and their decoded typed results own independent backing.
 //! Both are counted. These facts omit the caller's outer inline slots and do
@@ -10,7 +10,7 @@ use crate::reference_packet::service::confirmation::{
     PacketNativeAfterConfirmationReceipt, PacketNativeAfterConfirmationRequest,
 };
 
-/// Borrows the closed protocol families retained by complete Capture custody.
+/// Borrows the closed protocol families retained by complete Source custody.
 pub enum RetainedCaptureProtocolData<'a> {
     /// Borrows a Capture registration, Capture terminal or Poll response.
     ///
@@ -24,6 +24,15 @@ pub enum RetainedCaptureProtocolData<'a> {
     Snapshot(&'a crate::protocol_snapshot::OriginalProtocolSnapshot),
     /// Borrows post-move custody; the moved encoded Vec remains a separate owner.
     PayloadOwner(&'a crate::protocol_snapshot::OriginalProtocolPayloadOwner),
+    /// Borrows the original canonical Blob acknowledgement emitter association.
+    AckEmitter(&'a crate::client::OriginalCanonicalBlobAckEmitter),
+    /// Borrows the original canonical restoration input uploader association.
+    RestoreInputEmitter(&'a crate::client::OriginalCanonicalRestoreInputEmitter),
+    /// Borrows ordinary or native Hello custody, including failed partial frames.
+    ///
+    /// An ordinary journal has no creator field. Its owning Source must check
+    /// process/thread origin before lending physical record rows.
+    HelloJournal(&'a crate::client::OriginalHelloJournal),
 }
 
 impl RetainedCaptureProtocolData<'_> {
@@ -34,7 +43,7 @@ impl RetainedCaptureProtocolData<'_> {
     /// slots, metadata traversal scratch and checked tree/header geometry.
     ///
     /// # Errors
-    /// Refuses another method family, foreign snapshot creators, borrowed Hello
+    /// Refuses another method family, foreign original creators, borrowed Hello
     /// custody, checked extent overflow or bounded observer exhaustion. It
     /// performs no serialization, lifecycle operation or I/O.
     pub fn observe_retained_metadata(
@@ -48,12 +57,12 @@ impl RetainedCaptureProtocolData<'_> {
 
     /// Appends actual capacity rows without clearing earlier Source components.
     ///
-    /// Snapshot creator checks precede the bank loan. The caller separately
+    /// Association creator checks precede the bank loan. The caller separately
     /// authenticates the complete Source and admits simultaneous observation
     /// controls. Partial banks remain DATA and grant no lifecycle authority.
     ///
     /// # Errors
-    /// Refuses foreign snapshot creators, busy Hello custody, unsupported result
+    /// Refuses foreign original creators, busy Hello custody, unsupported result
     /// families, exhausted rows, invalid backing or ordinary traversal limits.
     /// Refusal preserves all previously initialized physical rows.
     pub fn record_retained_metadata_data(
@@ -69,6 +78,9 @@ impl RetainedCaptureProtocolData<'_> {
     /// Names concrete borrowed capture, snapshot and observer controls.
     pub fn capacity_counter_scratch_data() -> usize {
         crate::protocol_snapshot::capture_capacity_counter_scratch_data()
+            + crate::client::OriginalCanonicalBlobAckEmitter::capacity_counter_scratch_data()
+            + crate::client::OriginalCanonicalRestoreInputEmitter::capacity_counter_scratch_data()
+            + crate::client::OriginalHelloJournal::capacity_counter_scratch_data()
             + size_of::<Self>()
             + size_of::<&Self>()
             + size_of::<MetadataObserver<'static>>()
@@ -86,6 +98,9 @@ impl RetainedCaptureProtocolData<'_> {
             Self::SnapshotReservation(value) => value.check_capacity_creator_data(),
             Self::Snapshot(value) => value.check_capacity_creator_data(),
             Self::PayloadOwner(value) => value.check_capacity_creator_data(),
+            Self::AckEmitter(value) => value.check_capacity_creator_data(),
+            Self::RestoreInputEmitter(value) => value.check_capacity_creator_data(),
+            Self::HelloJournal(value) => value.check_capacity_creator_data(),
         }
     }
 
@@ -96,6 +111,9 @@ impl RetainedCaptureProtocolData<'_> {
             Self::SnapshotReservation(value) => value.observe_capacity_data(observer),
             Self::Snapshot(value) => value.observe_capacity_data(observer),
             Self::PayloadOwner(value) => value.observe_capacity_data(observer),
+            Self::AckEmitter(value) => value.observe_capacity_data(observer),
+            Self::RestoreInputEmitter(value) => value.observe_capacity_data(observer),
+            Self::HelloJournal(value) => value.observe_capacity_data(observer),
         }
     }
 }

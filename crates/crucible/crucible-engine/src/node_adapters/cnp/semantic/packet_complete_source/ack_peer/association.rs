@@ -24,6 +24,9 @@ use crucible_node_transport::{
     },
 };
 
+#[path = "association/protocol_capacities.rs"]
+mod protocol_capacities;
+
 #[path = "association/typed_decoder_backing.rs"]
 mod typed_decoder_backing;
 
