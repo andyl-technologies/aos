@@ -598,8 +598,11 @@ Recent committed startup fixes close narrower prerequisites:
   current request or reentry. The same prepaid allowance covers the compiled
   carriers and fixed wire representations; native credential posts and Source
   after remain owed. All 76 focused initial tests pass, including six new
-  approval-retention regressions. Complete current Rust target compilation
-  remains pending. This establishes captured-key signature DATA,
+  approval-retention regressions. Complete application unit and integration
+  targets compile for the captured-approval/listener/shared-identity source
+  (`/nix/store/zly61liy7lawpb3riqw1gxw5nm9l475a-aos-test-targets-0.1.0`),
+  without executing them and before the later normal-manifest and exchange
+  changes. This establishes captured-key signature DATA,
   not separation from normal endpoint/Nix/Root keys, durable-file custody,
   Session schema, job exclusion, physical TPM operations or installed producer
   qualification. Those gates and public admission remain closed.
@@ -611,10 +614,11 @@ Recent committed startup fixes close narrower prerequisites:
   and admitted descriptors remain resident; the independent options/pathname
   post cannot suppress Source after, including on busy or failed custody.
   All 80 focused initial tests pass, including four new admission-order,
-  native-cause-retention and owed-post regressions. Complete Rust target
-  compilation is pending for this source. This admission step accepts no
-  connection and verifies no signature. The actual bounded approval exchange, socket-unit
-  delivery, normal-key separation, durable intent, physical TPM operations and
+  native-cause-retention and owed-post regressions. Complete application targets
+  compile for this admission-only source in the captured-approval check above.
+  This admission step accepts no connection and verifies no signature. Installed
+  socket-unit delivery and exchange qualification, normal-key separation,
+  durable intent, physical TPM operations and
   installed producer qualification remain incomplete.
 
 - The same genuine startup now prepays one initial-approval exchange through
@@ -644,7 +648,8 @@ Recent committed startup fixes close narrower prerequisites:
   protocol/security library tests pass under isolated nextest, with two
   existing skips. Two new regressions pin fourteen independently computed
   identities across every protocol/endpoint role and the canonical manifest
-  roundtrip. Complete Rust target compilation remains pending for this source.
+  roundtrip. Complete application targets compile in the captured-approval check
+  above, before the later normal-manifest and original-exchange changes.
   This establishes no installed public-manifest provenance, approval-key
   separation, Session schema, physical TPM or initialization authority.
 
