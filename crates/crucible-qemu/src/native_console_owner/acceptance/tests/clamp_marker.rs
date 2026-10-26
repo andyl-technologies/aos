@@ -1,15 +1,16 @@
 //! A RUN that starts at the zero-length idle a settled clamp left behind.
 //!
 //! The runtime clamp, custody and acceptance are real host implementations;
-//! the provider thread models the plugin's slot writes. Below the next
-//! ceiling the plugin's control-boundary writer drops that marker and
-//! publishes running, so the host must wait for the RUN's own report.
+//! the provider thread models the plugin's slot writes as production makes
+//! them. A console RUN publishes no control request, so the RUN's doorbell
+//! reaches the plugin's control callback with an odd token, which only pumps
+//! fault commands and publishes nothing. The host must keep waiting on the
+//! marker until the vCPU's own idle pass reports the RUN.
 
 use super::*;
 
 #[test]
-fn native_run_control_boundary_dropping_the_clamp_marker_is_not_a_quiesced_report()
--> Result<(), FixtureError> {
+fn native_run_waits_past_the_clamp_marker_for_the_vcpu_report() -> Result<(), FixtureError> {
     let fixture = LaunchFixture::cold(2)?;
     let region = mapped(&fixture)?;
     let mut channel = fixture.hot_path()?;
@@ -50,22 +51,23 @@ fn native_run_control_boundary_dropping_the_clamp_marker_is_not_a_quiesced_repor
     let body = custody.authorization_snapshot()?;
     let native = mapped(&fixture)?;
     let plan_hash = custody.lock()?.accepted.plan.digest()?;
+    let unanswered = region.node_slot(0)?.snapshot();
+    assert!(unanswered.advance_publication_sequence > marker_advance);
     let (resume, resumed) = std::sync::mpsc::channel::<()>();
     let provider = std::thread::spawn(move || -> Result<(), FixtureError> {
         let slot = native.node_slot(0)?;
         let mut wake = [0; 8];
         notifications.read_exact(&mut wake)?;
+        // No request rides the RUN: the control callback sees an odd token
+        // and, as control_callback_stage does, publishes nothing.
         assert_eq!(slot.control_boundary_token(), accepted + 1);
-        // QEMU's main loop yields through the control-boundary writer below
-        // the new ceiling before any vCPU runs. The plugin recorded that the
-        // marker answered the clamp, so the writer publishes running there.
-        let answered = slot.publish_control_boundary_answering(50, 1, Some(marker_advance))?;
-        assert_eq!(answered, None);
-        assert_eq!(slot.snapshot().status, crucible_shmem::STATUS_RUNNING);
+        assert_eq!(slot.snapshot().publish_gen, unanswered.publish_gen);
         resumed
             .recv_timeout(Duration::from_secs(3))
             .map_err(|_| FixtureError::Peer("host never resumed the provider".into()))?;
-        // The halted vCPU then parks on its real timer beyond the ceiling.
+        // The halted vCPU's idle pass publishes its boundary at 50, then parks
+        // on its real timer beyond the ceiling.
+        slot.publish_reached_icount(50)?;
         let _wait = slot.publish_idle(50, 300)?;
         // Re-wake doorbells from the pending poll interleave with the clamp
         // request. The clamp publishes its pair before its own wake, so the
