@@ -598,6 +598,12 @@ where
         self.inner.exact_checkpoint_ready()
     }
 
+    fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<crate::QemuExactCheckpointRefusal>, SchedulerError> {
+        self.inner.exact_checkpoint_refusal()
+    }
+
     fn parked_campaign_marker(
         &mut self,
         node: &NodeId,

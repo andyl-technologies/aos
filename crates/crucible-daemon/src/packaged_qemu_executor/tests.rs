@@ -1155,6 +1155,14 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         panic!("controlled lifecycle does not capture a checkpoint")
     }
 
+    fn exact_checkpoint_refusal(
+        &mut self,
+    ) -> Result<Option<crate::QemuExactCheckpointRefusal>, SchedulerError> {
+        Ok(Some(crate::QemuExactCheckpointRefusal::Named(
+            crucible_api::ProductionExactCheckpointNotReady::UnsettledHostContinuation,
+        )))
+    }
+
     fn parked_campaign_marker(
         &mut self,
         node: &NodeId,
@@ -1363,6 +1371,17 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
             .event_log_offset()
             .expect("delegated event-log offset"),
         controlled_event_log_offset()
+    );
+
+    // A savepoint capture names its refusal from the innermost lifecycle; a
+    // wrapper that falls back to the trait's default reports it unnamed.
+    assert_eq!(
+        lifecycle
+            .exact_checkpoint_refusal()
+            .expect("delegated checkpoint refusal"),
+        Some(crate::QemuExactCheckpointRefusal::Named(
+            crucible_api::ProductionExactCheckpointNotReady::UnsettledHostContinuation,
+        ))
     );
 
     let marker_node = NodeId {
