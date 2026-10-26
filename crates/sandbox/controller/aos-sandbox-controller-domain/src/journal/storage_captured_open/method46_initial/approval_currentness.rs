@@ -109,6 +109,12 @@ impl ApprovalCurrentnessOriginalV1 {
         self.before_completed()
     }
 
+    pub(super) fn lock_identity_data(&self) -> Option<FileIdentity> {
+        self.witnesses[0]
+            .completed_witness()
+            .map(|witness| witness.lock())
+    }
+
     fn before_completed(&self) -> Result<(), JournalError> {
         if self.closed.is_none()
             && matches!(self.results[0], Some(Ok(())))

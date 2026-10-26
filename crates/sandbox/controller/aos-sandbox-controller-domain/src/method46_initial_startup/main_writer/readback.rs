@@ -10,6 +10,7 @@ use super::*;
 mod initial_intent;
 pub use initial_intent::{
     METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1, Method46InitialIntentFileLoanV1,
+    Method46InitialTpmLockLoanV1, Method46InitialTpmLockViewV1,
 };
 
 /// Bounds the co-live original main-cut hash state, key scratch and carriers.

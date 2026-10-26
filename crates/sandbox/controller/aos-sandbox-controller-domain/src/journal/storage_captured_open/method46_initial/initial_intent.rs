@@ -457,6 +457,14 @@ impl InitialIntentOriginal {
         }
     }
 
+    pub(super) fn durable_ready(&self) -> bool {
+        self.failure().is_none()
+            && matches!(self.operation, Some(Ok(())))
+            && matches!(self.file_sync, Some(Ok(())))
+            && matches!(self.directory_sync, Some(Ok(())))
+            && matches!(self.post, Some(Ok(())))
+    }
+
     pub(super) fn failure(&self) -> Option<&(dyn Error + 'static)> {
         self.main
             .before_failure()

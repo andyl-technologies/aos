@@ -837,7 +837,8 @@ mod tests {
             Method46InitialMainCutOriginalV1::hash_and_validate_captured_v1(readback, &provision);
         provision.capture_initial_intent_files_once_v1(&main)?;
         provision.verify_captured_initial_intent_once_v1(&main)?;
-        provision.publish_approved_initial_intent_once_v1(&main)
+        provision.publish_approved_initial_intent_once_v1(&main)?;
+        provision.prepare_approved_initial_tpm_locks_once_v1(&main)
     }
 
     #[test]

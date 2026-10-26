@@ -5,6 +5,9 @@
 
 use super::*;
 
+mod tpm_locks;
+pub use tpm_locks::{Method46InitialTpmLockLoanV1, Method46InitialTpmLockViewV1};
+
 /// Fixes the separate signed initial-intent byte extent.
 pub const METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1: usize = 398;
 

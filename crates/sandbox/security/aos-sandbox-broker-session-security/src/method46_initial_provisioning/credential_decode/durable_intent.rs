@@ -6,6 +6,7 @@
 
 use aos_sandbox_controller_domain::method46_initial_startup::{
     METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1, Method46InitialIntentFileLoanV1,
+    Method46InitialTpmLockLoanV1,
 };
 
 use super::*;
@@ -21,6 +22,10 @@ pub(super) struct InitialIntentPublicationOriginal<'owner> {
     native: Option<Result<(), Method46InitialStartupClosedV1>>,
     result: Option<Result<(), Method46InitialDataErrorV1>>,
     after: Option<Result<(), Method46InitialStartupClosedV1>>,
+    locks_entered: bool,
+    locks: Option<Method46InitialTpmLockLoanV1<'owner>>,
+    locks_result: Option<Result<(), Method46InitialDataErrorV1>>,
+    locks_after: Option<Result<(), Method46InitialStartupClosedV1>>,
 }
 
 const _: () = assert!(METHOD46_INITIAL_INTENT_BYTES_V1 == METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1);
@@ -36,10 +41,19 @@ impl<'owner> InitialIntentPublicationOriginal<'owner> {
             native: None,
             result: None,
             after: None,
+            locks_entered: false,
+            locks: None,
+            locks_result: None,
+            locks_after: None,
         }
     }
 
     fn finish_after_owed(&mut self) {
+        if self.locks_after.is_none() {
+            if let Some(locks) = self.locks.as_ref() {
+                self.locks_after = Some(locks.finish_after_owed_v1());
+            }
+        }
         if self.after.is_none() {
             if let Some(loan) = self.loan.as_ref() {
                 self.after = Some(loan.finish_after_owed_v1());
@@ -191,6 +205,63 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             } else {
                 Err(Method46InitialDataErrorV1::Conflict)
             }
+        })();
+        if result.is_err() {
+            self.refuse_intent_and_finish_after();
+        }
+        result
+    }
+
+    /// Retains both actual initial writer lock duplicates after durable approval.
+    ///
+    /// No lock descriptors or private authentication enter from the caller. The
+    /// canonical request is rederived from the same genuine main and compared
+    /// with the resident verified approval before its durable native intent can
+    /// lend custody. This prepares no helper and performs no TPM operation.
+    ///
+    /// # Errors
+    /// Refuses a foreign/ended main, missing completed intent or approval,
+    /// repeated entry, funding refusal, or failed native lock capture. Every
+    /// reached post remains owed on the same Source after a refusal.
+    pub fn prepare_approved_initial_tpm_locks_once_v1(
+        &self,
+        main: &Method46InitialMainCutOriginalV1<'_>,
+    ) -> Result<(), Method46InitialDataErrorV1> {
+        let result = (|| {
+            let mut intent = self
+                .intent
+                .try_borrow_mut()
+                .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
+            if std::mem::replace(&mut intent.locks_entered, true) {
+                return Err(Method46InitialDataErrorV1::Conflict);
+            }
+            let result = (|| {
+                let request = self.request_for_main_original_data_v1(main)?;
+                if !matches!(intent.result, Some(Ok(())))
+                    || !matches!(intent.native, Some(Ok(())))
+                    || !matches!(intent.after, Some(Ok(())))
+                    || self
+                        .approval
+                        .try_borrow()
+                        .map_err(|_| Method46InitialDataErrorV1::Conflict)?
+                        .verified_intent()?
+                        .request()
+                        != request
+                {
+                    return Err(Method46InitialDataErrorV1::Conflict);
+                }
+                intent.locks = Some(
+                    intent
+                        .loan
+                        .as_ref()
+                        .ok_or(Method46InitialDataErrorV1::Conflict)?
+                        .lend_tpm_lock_custody_once_v1()
+                        .map_err(|_| Method46InitialDataErrorV1::Conflict)?,
+                );
+                Ok(())
+            })();
+            intent.locks_result = Some(result);
+            result
         })();
         if result.is_err() {
             self.refuse_intent_and_finish_after();

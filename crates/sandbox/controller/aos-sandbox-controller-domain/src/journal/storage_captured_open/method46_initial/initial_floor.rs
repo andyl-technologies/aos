@@ -220,6 +220,15 @@ impl InitialFloorOriginal {
         }
     }
 
+    pub(super) fn journal_and_replayed_data(&self) -> Option<(&Journal, FileIdentity)> {
+        Some((
+            self.opening.original.journal_data_v1()?,
+            self.opening
+                .original
+                .captured_replay_file_identity_data_v1()?,
+        ))
+    }
+
     pub(super) fn ready(&self) -> bool {
         self.failure().is_none()
             && self.names.ready()

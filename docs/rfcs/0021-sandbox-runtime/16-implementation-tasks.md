@@ -31,6 +31,28 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The same genuine initial Source now retains both actual writer lock
+  duplicates after its signed intent has completed file fsync, parent fsync and
+  native posts. Security rederives the same admitted main request and requires
+  its resident verified approval and successful publication before requesting
+  custody. No path, UID, descriptor or amount selects this operation. The Source
+  prepays both strict native writer intervals, both duplicate descriptions and
+  all held metadata/flag originals before IO. A refused first before sample
+  cannot suppress the second; actual partial duplicates remain resident. Aliased
+  locks, different owners, changed files or names and reentry refuse. Both final
+  intervals and both held-lock samples stay owed after failure. Temporary views
+  borrow only those retained lock descriptions and captured identity DATA; each
+  access requires the same still-current Source, and completed posts fence new
+  borrows while retaining custody until exit. Security's simultaneous-borrow
+  composition compiles without a fabricated positive Source. All 121 focused
+  initializer, 434 ordinary Security and 443 online-Nix Security tests pass;
+  each Security suite retains two existing ignored cases. Full application
+  unit/integration target compilation is running on the audited final Rust
+  source; its 833-derivation closure excludes production policy. This is real native custody, not helper or
+  TPM admission: private auth remains unexported, and its measured-helper
+  handoff, first encrypted Extend, durable checkpoint and installed recovery
+  and lifecycle qualification remain open. Admission stays closed.
+
 - The genuine manual Source now prepares and retains its empty floor writer
   before lending the main readback. The actual held main selects the fixed
   sibling directory, normal UID and shared sidecar limits. Separate native,
@@ -76,8 +98,9 @@ Recent committed startup fixes close narrower prerequisites:
   main bookends, and all read/result reservoirs before IO. The focused
   initializer suite passes 104 tests; 434 ordinary and 443 online-Nix Security
   tests pass, with two existing ignored cases in each Security suite. Complete
-  application target compilation is running on the audited final Rust source;
-  its closure excludes production policy. These are native component and
+  application target compilation passed on the audited final Rust source
+  (`6cxq7ma57xrsrldzrg8z2lf51af4zdri`); its closure excludes production policy.
+  This result predates the empty-floor and paired-lock changes. These are native component and
   composition prerequisites: no genuine installed positive Source, physical
   TPM initializer, durable checkpoint or
   connected crash/lifecycle qualification is claimed. Admission remains closed.

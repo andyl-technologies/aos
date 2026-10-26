@@ -42,7 +42,7 @@ pub use main_writer::{
     METHOD46_INITIAL_INTENT_NATIVE_BYTES_V1, METHOD46_INITIAL_MAIN_CUT_BYTES_V1,
     METHOD46_INITIAL_SESSION_SCHEMA_BYTES_V1, METHOD46_INITIAL_SESSION_SCHEMA_CELLS_V1,
     Method46InitialIntentFileLoanV1, Method46InitialMainMapReadbackV1,
-    Method46InitialMainReadbackLoanV1,
+    Method46InitialMainReadbackLoanV1, Method46InitialTpmLockLoanV1, Method46InitialTpmLockViewV1,
 };
 mod approval_listener;
 mod policy;

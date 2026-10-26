@@ -16,6 +16,7 @@ mod initial_floor;
 mod initial_intent;
 mod namespace;
 mod readback;
+mod tpm_locks;
 
 #[derive(Debug, thiserror::Error)]
 enum ReplayDemandError {
@@ -53,6 +54,7 @@ pub(crate) struct Method46InitialMainWriterOriginalV1 {
     initial_intent: initial_intent::InitialIntentOriginal,
     initial_floor: initial_floor::InitialFloorOriginal,
     namespace: namespace::MainNamespaceOriginalV1,
+    tpm_locks: tpm_locks::InitialTpmLocksOriginal,
 }
 
 impl Method46InitialMainWriterOriginalV1 {
@@ -74,6 +76,7 @@ impl Method46InitialMainWriterOriginalV1 {
             initial_intent: initial_intent::InitialIntentOriginal::new(),
             initial_floor: initial_floor::InitialFloorOriginal::new(),
             namespace: namespace::MainNamespaceOriginalV1::new(),
+            tpm_locks: tpm_locks::InitialTpmLocksOriginal::new(),
         }
     }
 
@@ -217,6 +220,7 @@ impl Method46InitialMainWriterOriginalV1 {
         let _readback_after = self.finish_readback_after_owed();
         let _approval_after = self.finish_approval_currentness_after_owed();
         let _intent_after = self.finish_initial_intent_after_owed();
+        let _tpm_locks_after = self.finish_initial_tpm_locks_after_owed();
         let _floor_after = self.finish_initial_floor_after_owed();
         self.post = Some((|| {
             self.inner.original.check_named_currentness_retaining(
@@ -272,6 +276,7 @@ impl Method46InitialMainWriterOriginalV1 {
             .or_else(|| self.approval_currentness.after_failure())
             .or_else(|| self.approval_currentness.order_failure())
             .or_else(|| self.initial_intent.failure())
+            .or_else(|| self.tpm_locks.failure())
             .or_else(|| self.initial_floor.after_failure())
             .or_else(|| self.post_original.failure())
             .or_else(|| {

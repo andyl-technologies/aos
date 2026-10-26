@@ -56,6 +56,7 @@ fn method46_initial_intent_new_publication_keeps_original_sync_and_name_results(
     let bytes = [7; INTENT_BYTES];
     original.capture_once(&journal).unwrap();
     assert_eq!(original.captured_intent_data().unwrap(), None);
+    assert!(!original.durable_ready());
 
     original.publish_once(&journal, bytes).unwrap();
 
@@ -64,10 +65,12 @@ fn method46_initial_intent_new_publication_keeps_original_sync_and_name_results(
     assert!(matches!(original.file_sync, Some(Ok(()))));
     assert!(matches!(original.rename, Some(Ok(()))));
     assert!(matches!(original.directory_sync, Some(Ok(()))));
+    assert!(original.durable_ready());
     assert!(matches!(original.post, Some(Ok(()))));
     assert!(original.failure().is_none());
     original.finish_after_owed(&journal).unwrap();
     assert!(original.publish_once(&journal, [8; INTENT_BYTES]).is_err());
+    assert!(!original.durable_ready());
     assert_eq!(std::fs::read(directory.path().join(FINAL)).unwrap(), bytes);
     assert!(matches!(original.operation, Some(Ok(()))));
 }
@@ -99,9 +102,11 @@ fn method46_initial_intent_recovery_resyncs_the_actual_existing_exact_file() {
         .ino();
     original.capture_once(&journal).unwrap();
     assert_eq!(original.captured_intent_data().unwrap(), Some(bytes));
+    assert!(!original.durable_ready());
 
     original.publish_once(&journal, bytes).unwrap();
 
+    assert!(original.durable_ready());
     assert!(original.stage_open.is_none());
     assert!(original.write.is_none());
     assert!(original.rename.is_none());
@@ -135,6 +140,7 @@ fn method46_initial_intent_conflicts_are_preserved_with_independent_posts() {
         );
         assert!(original.stage_open.is_none());
         assert!(original.write.is_none());
+        assert!(!original.durable_ready());
         assert!(matches!(original.directory_sync, Some(Ok(()))));
         assert!(original.after.iter().all(|name| name.open.is_some()));
         assert!(original.failure().is_some());
