@@ -30,6 +30,7 @@ const PROFILE_BYTES: usize = 1024 * 1024;
 const PATH_BYTES: usize = 1024;
 const PROFILE_SUFFIX: &str = "-aos-method46-initial-startup-profile-1/profile.json";
 
+mod credentials;
 mod images;
 mod policy;
 mod unit;
@@ -44,6 +45,7 @@ enum First {
     Runtime,
     Policy,
     Unit,
+    Credentials,
     Order,
 }
 
@@ -82,6 +84,7 @@ struct StartupRolesOriginalV1 {
     runtime: images::InitialRuntimeOriginalV1,
     policy: policy::InitialPolicyOriginalV1,
     unit: unit::InitialUnitOriginalV1,
+    credentials: RefCell<credentials::InitialCredentialsOriginalV1>,
     profile_original: Option<File>,
     profile: ImmutableFileAcquisitionOriginalV1,
     profile_flags: Option<Result<rustix::fs::OFlags, rustix::io::Errno>>,
@@ -107,6 +110,7 @@ impl StartupRolesOriginalV1 {
             runtime: images::InitialRuntimeOriginalV1::new(),
             policy: policy::InitialPolicyOriginalV1::new(),
             unit: unit::InitialUnitOriginalV1::new(),
+            credentials: RefCell::new(credentials::InitialCredentialsOriginalV1::new()),
             profile_original: None,
             profile: ImmutableFileAcquisitionOriginalV1::new(),
             profile_flags: None,
@@ -452,15 +456,32 @@ impl Method46InitialStartupOriginalV1 {
             if body.images.finish_posts().is_err() {
                 self.fail(First::Image);
             }
-            let profile = body.profile_decoded.as_ref().and_then(|value| value.as_ref().ok());
+            let profile = body
+                .profile_decoded
+                .as_ref()
+                .and_then(|value| value.as_ref().ok());
             if body.runtime.finish_posts(profile).is_err() {
                 self.fail(First::Runtime);
             }
             if body.policy.finish_post(profile).is_err() {
                 self.fail(First::Policy);
             }
-            if body.unit.finish_post(self.origin.as_ref(), profile).is_err() {
+            if body
+                .unit
+                .finish_post(self.origin.as_ref(), profile)
+                .is_err()
+            {
                 self.fail(First::Unit);
+            }
+            match body.credentials.try_borrow_mut() {
+                Ok(mut credentials) => {
+                    if !credentials.finish_post(profile) {
+                        self.fail(First::Credentials);
+                    }
+                }
+                Err(_) => {
+                    self.fail(First::Order);
+                }
             }
         }
         let result = self

@@ -36,6 +36,7 @@ pub(super) struct InitialUnitOriginalV1 {
     file_post: RefCell<ProfilePostOriginalV1>,
     paid: bool,
     entered: bool,
+    admitted: bool,
 }
 
 struct UnitPropertiesOriginalV1 {
@@ -83,7 +84,12 @@ impl InitialUnitOriginalV1 {
             }),
             paid: false,
             entered: false,
+            admitted: false,
         }
+    }
+
+    pub(super) fn initial_admitted(&self) -> bool {
+        self.admitted
     }
 
     fn observe_properties(
@@ -437,7 +443,9 @@ impl Method46InitialStartupOriginalV1 {
                 self.origin.as_ref().ok_or(self.closed)?,
                 profile.ok_or(self.closed)?,
                 path,
-            )
+            )?;
+            unit.admitted = true;
+            Ok(())
         })();
         if result.is_err() {
             return Err(self.fail(First::Unit));

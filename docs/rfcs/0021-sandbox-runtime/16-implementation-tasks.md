@@ -375,6 +375,24 @@ Recent committed startup fixes close narrower prerequisites:
   hardening, actual credential admission, installed producers, journal writer
   custody and floor publication remain unqualified.
 
+- Initial credential custody now requires completed original unit comparison
+  before any credential IO. The same Source pays the original body before
+  allocation and another finite allowance for paths, native carriers, failed
+  read duplicates and all held/named posts. Beneath-root, no-symlink opens retain
+  the fixed manual unit's read-only root-owned directory, exact three-name
+  roster, purpose-specific labels and same-mount files with exact private modes
+  and lengths. Original 160-byte provisioning data, 32-byte nonzero index auth
+  and 32-byte approval public pin stay zeroizing; the actual approval readback
+  must match the original image profile. Every reached native metadata, mount,
+  label and read result remains resident. Held-file posts run independently of
+  named replacements, and a credential refusal or busy post cannot suppress
+  Source after. All 36 focused tests pass, including actual short-read custody
+  across a later successful read. Exact-source complete Rust target compilation
+  is running. This is file custody and comparison only: complete delivery
+  admission, independent key provenance, provisioning-codec admission, protected
+  writer/TPM ownership and installed producers remain open. No new service or
+  credential MAC role is selected by this change.
+
 - The isolated manager candidate gives initrd SwitchRoot its own appended
   `system:aos_switch_root` permission. Production grants only `init_t` to itself;
   whole-policy checks reject foreign grants, including disabled and attribute
@@ -392,9 +410,11 @@ Recent committed startup fixes close narrower prerequisites:
   A direct native query of that binary confirms the new grant has only `init_t`
   sources and targets. The complete current effective-policy checker also
   passes against that actual binary, including its global exclusivity check.
-  The final Nix build with corrected evidence/query-count expectations is
-  running, alongside the
-  isolated installed cold-boot/power-cycle test. This candidate excludes the
+  The final Nix production-policy build also passes all 178 unit tests, three
+  context tests, eleven native query tests and linked negative fixtures
+  (`/nix/store/k0pbnaqnp5wlsihsmhhk53kgskx6yy0l-aos-selinux-production-policy-1`).
+  The isolated installed cold-boot/power-cycle test is still running. This
+  candidate excludes the
   separate networkd and Host custody changes and establishes no initial-floor or public lifecycle result.
 
 Candidate Host credential-custody preparation and its selected initrd wiring
