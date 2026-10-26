@@ -197,6 +197,8 @@ pub(crate) enum TimingPhase {
     BindingPublication,
     StageBegin,
     StageProvider,
+    ProviderResponseHeaders,
+    ProviderResponseBody,
     StageTerminal,
 }
 
@@ -229,6 +231,8 @@ pub(crate) async fn timed<T, E>(
             TimingPhase::BindingPublication => "binding_publication",
             TimingPhase::StageBegin => "stage_begin",
             TimingPhase::StageProvider => "stage_provider",
+            TimingPhase::ProviderResponseHeaders => "provider_response_headers",
+            TimingPhase::ProviderResponseBody => "provider_response_body",
             TimingPhase::StageTerminal => "stage_terminal",
         };
         worker::console_log!(

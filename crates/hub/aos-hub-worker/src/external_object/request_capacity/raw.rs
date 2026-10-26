@@ -11,6 +11,7 @@ use anyhow::Result;
 use worker::{Env, Fetch, Request, Response, ResponseBody};
 
 use super::Scope;
+use crate::direct_upload::observation::{timed, TimingPhase};
 use crate::direct_upload::provider_capacity::{self, policy, Class, Permit};
 
 /// Runs one existing response handler through original cutoff and cancellation.
@@ -58,9 +59,12 @@ where
             scope.check()?;
             before_dispatch();
             provider_capacity::record_dispatch();
-            let response = Fetch::Request(request)
-                .send_with_signal(&worker::AbortSignal::from(scope.controller.signal()))
-                .await?;
+            let response = timed(
+                TimingPhase::ProviderResponseHeaders,
+                Fetch::Request(request)
+                    .send_with_signal(&worker::AbortSignal::from(scope.controller.signal())),
+            )
+            .await?;
             // Cancellation ownership precedes every fallible handler header/status
             // check. Native readers retain their own lock-specific cancel-on-drop.
             let _unhanded = match response.body() {
@@ -71,7 +75,7 @@ where
                 ),
                 _ => None,
             };
-            handler(response).await
+            timed(TimingPhase::ProviderResponseBody, handler(response)).await
         })
         .await
 }
@@ -137,9 +141,12 @@ where
             dispatch_fresh()?;
             before_dispatch();
             provider_capacity::record_dispatch();
-            let response = Fetch::Request(request)
-                .send_with_signal(&worker::AbortSignal::from(scope.controller.signal()))
-                .await?;
+            let response = timed(
+                TimingPhase::ProviderResponseHeaders,
+                Fetch::Request(request)
+                    .send_with_signal(&worker::AbortSignal::from(scope.controller.signal())),
+            )
+            .await?;
             let _unhanded = match response.body() {
                 ResponseBody::Stream(stream) => Some(
                     crate::external_object::oci::byte_stream::UnhandedStream::new(
@@ -148,7 +155,7 @@ where
                 ),
                 _ => None,
             };
-            handler(response).await
+            timed(TimingPhase::ProviderResponseBody, handler(response)).await
         })
         .await
 }
