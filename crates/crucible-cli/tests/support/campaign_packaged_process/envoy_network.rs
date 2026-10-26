@@ -907,6 +907,16 @@ pub(super) fn wait_for_public_attempt(
                 }
             }
 
+            // Plugin rows name the writer that left an earlier advance's
+            // marker in a node slot, and guest TX taken during an idle advance.
+            for prefix in ["CRUCIBLE-SLOT-WRITER-V1 ", "CRUCIBLE-NETWORK-TX-PATH-V1 "] {
+                if let Ok(rows) = service.stderr_recent_lines_with_prefix(prefix, 16, 512) {
+                    for row in rows {
+                        eprintln!("{row}");
+                    }
+                }
+            }
+
             // Work outside RUN dispatch, such as a checkpoint or capture after
             // a choice, logs no progress row; the newest service lines name it.
             let stderr = service.stderr_tail();

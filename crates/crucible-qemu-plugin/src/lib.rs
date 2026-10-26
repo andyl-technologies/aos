@@ -83,6 +83,7 @@ pub mod round_robin;
 pub mod runtime;
 pub mod setup;
 pub mod shmem_ordering;
+mod slot_writer_trace;
 pub mod teardown;
 pub mod time_control;
 pub mod vcpu_introspection;

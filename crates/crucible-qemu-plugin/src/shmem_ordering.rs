@@ -13,6 +13,8 @@ use crucible_shmem::{
     NodeSlotError, RegionControlAction, RegionHeader, RingHeader, SpscRingError, WakeAction,
 };
 
+use crate::slot_writer_trace::{self, SlotWriter};
+
 /// Supported version of the Linux paused stopped-Restore ACK notification operation.
 ///
 /// The canonical plugin package derives its immutable operation marker from
@@ -86,7 +88,9 @@ impl PluginShmemOrdering {
         slot: &NodeSlot,
         reached_icount: u64,
     ) -> Result<(), NodeSlotError> {
-        slot.publish_reached_icount(reached_icount)
+        slot.publish_reached_icount(reached_icount)?;
+        slot_writer_trace::note(slot, SlotWriter::ReachedIcount);
+        Ok(())
     }
 
     /// Publishes the reached icount, keeping an idle boundary already published there.
@@ -99,7 +103,9 @@ impl PluginShmemOrdering {
         slot: &NodeSlot,
         reached_icount: u64,
     ) -> Result<(), NodeSlotError> {
-        slot.publish_reached_icount_retaining_idle(reached_icount)
+        slot.publish_reached_icount_retaining_idle(reached_icount)?;
+        slot_writer_trace::note(slot, SlotWriter::ReachedIcountRetainingIdle);
+        Ok(())
     }
 
     /// Publishes the reached icount together with QEMU's settlement attestation.
@@ -119,7 +125,9 @@ impl PluginShmemOrdering {
         reached_icount: u64,
         settled_ceiling: u64,
     ) -> Result<bool, NodeSlotError> {
-        slot.publish_settled_icount(reached_icount, settled_ceiling)
+        let settled = slot.publish_settled_icount(reached_icount, settled_ceiling)?;
+        slot_writer_trace::note(slot, SlotWriter::Settled);
+        Ok(settled)
     }
 
     /// Publishes the validated native timer callback record before its logical wake.
@@ -128,6 +136,7 @@ impl PluginShmemOrdering {
         witness: crucible_shmem::VirtualTimerFireWitness,
     ) {
         slot.publish_virtual_timer_witness(witness);
+        slot_writer_trace::note(slot, SlotWriter::TimerWitness);
     }
 
     /// Publishes a control boundary against the plugin's zero-length idle record.
@@ -143,7 +152,10 @@ impl PluginShmemOrdering {
         raw_icount: u64,
         answered_advance: Option<u64>,
     ) -> Result<Option<u64>, NodeSlotError> {
-        slot.publish_control_boundary_answering(reached_icount, raw_icount, answered_advance)
+        let answered =
+            slot.publish_control_boundary_answering(reached_icount, raw_icount, answered_advance)?;
+        slot_writer_trace::note(slot, SlotWriter::ControlBoundary);
+        Ok(answered)
     }
 
     /// Publishes the plugin's idle state and prepares a futex wait decision.
@@ -160,7 +172,9 @@ impl PluginShmemOrdering {
         reached_icount: u64,
         idle_wake_icount: u64,
     ) -> Result<FutexWait, NodeSlotError> {
-        slot.publish_idle(reached_icount, idle_wake_icount)
+        let wait = slot.publish_idle(reached_icount, idle_wake_icount)?;
+        slot_writer_trace::note(slot, SlotWriter::IdleWait);
+        Ok(wait)
     }
 
     /// Publishes that the plugin is quiesced at an exact coordinated-pause boundary.
@@ -173,7 +187,9 @@ impl PluginShmemOrdering {
         reached_icount: u64,
         raw_icount: u64,
     ) -> Result<(), NodeSlotError> {
-        slot.publish_pause_quiesced(reached_icount, raw_icount)
+        slot.publish_pause_quiesced(reached_icount, raw_icount)?;
+        slot_writer_trace::note(slot, SlotWriter::PauseQuiesced);
+        Ok(())
     }
 
     /// Returns whether the host requested a QEMU main-loop control boundary.
@@ -229,7 +245,9 @@ impl PluginShmemOrdering {
         reached_icount: u64,
         raw_icount: u64,
     ) -> Result<(), NodeSlotError> {
-        slot.publish_control_boundary(reached_icount, raw_icount)
+        slot.publish_control_boundary(reached_icount, raw_icount)?;
+        slot_writer_trace::note(slot, SlotWriter::ControlBoundary);
+        Ok(())
     }
 
     /// Returns a pending host request to reconstruct plugin logical time.
@@ -276,6 +294,7 @@ impl PluginShmemOrdering {
     /// Publishes that the plugin has resumed running after a wake.
     pub fn mark_running_after_wake(slot: &NodeSlot) {
         slot.mark_running();
+        slot_writer_trace::note(slot, SlotWriter::MarkRunning);
     }
 
     /// Publishes that the plugin observed shutdown and is done.
@@ -305,11 +324,13 @@ impl PluginShmemOrdering {
     /// Publishes that plugin-submitted device I/O is in flight.
     pub fn publish_device_io_active(slot: &NodeSlot) {
         slot.mark_device_io_active();
+        slot_writer_trace::note(slot, SlotWriter::DeviceIoActive);
     }
 
     /// Clears the plugin-submitted device-I/O-active flag.
     pub fn clear_device_io_active(slot: &NodeSlot) {
         slot.clear_device_io_active();
+        slot_writer_trace::note(slot, SlotWriter::DeviceIoCleared);
     }
 
     /// Wakes an idle waiter after device I/O stops holding virtual time.
