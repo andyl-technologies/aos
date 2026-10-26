@@ -530,6 +530,7 @@ The atomic integration patch creates these QEMU source files:
 | `plugins/crucible-application-account.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-application-child.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-application-cleanup-stack.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-application-cleanup-worker.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-application-cleanup.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-application-process.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-core-quantum-advance-dispose.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |

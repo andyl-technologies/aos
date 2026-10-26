@@ -1,27 +1,32 @@
-From 3b099f055ec0c3715c509c39adc5ad68d0d914a5 Mon Sep 17 00:00:00 2001
+From 0703c5dfef1633a397e8f73d2d94874eec7d6a5f Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: preserve ownership integration with guarded Cleanup
- stacks
+Subject: [PATCH] crucible: preserve ownership integration with unarmed Cleanup
+ backing
 
 Retain the complete Crucible Source integration, Core quantum bank borrowers,
-fixed Module callbacks, opaque frame acquisition and bounded provider storage
-interfaces in one source tree over the selected base.
+fixed Module callbacks, opaque frame acquisition and bounded provider ownership
+interfaces as one complete source tree over the selected base.
 
-Add a canonical application-paid guarded Cleanup stack mapping owner with
-once-only physical-effect journals, checked complete fixed-control payment,
-and separate provider, terminal and outer-stack-last-use prerequisites.
-Keep physical unmap before settlement and the final gated debit return.
+Provide canonical application-paid guarded stack custody, checked expanded
+fixed-control payment and separately charged native startup and libc arena
+backing. Connect the retained stack interior and real caller-backed unarmed
+storage to the actual bounded provider initializer. Preserve exact outputs and
+once-only journals before independent posts, including both ranges consumed
+by one initialization. Keep the existing armed constructor's entry contract;
+unarmed creation refuses before physical effects and has no binding operation.
 
-Complete terminal execution-profile ownership is still unavailable. Missing
-containing prebirth payment, TLS/allocator consumers and actual outer last-use
-production remain fail-closed; one-MiB component geometry and worker join do
-not qualify a complete execution profile or authorize admission.
+Complete-profile Current, containing prebirth payment, workload bounds,
+allocator ownership and genuine terminal producers remain unavailable. This
+resource component enables no Cleanup worker or accepting admission. Physical
+return still requires distinct provider, context/cache/RCU and final outer
+last-use production; byte geometry or a successful join cannot supply them.
 
-Source extraction and owning-source syntax checks pass. The owning-object
-build still rejects the existing unused quantum_rr_actor_birth helper with
-the unchanged warning policy. No successful object build or runtime activation
-is claimed.
+Source syntax checks pass in default and authentic-header provider compile-only
+configurations. Native owner and component-control objects compile in both;
+Source objects retain the existing unused quantum_rr_actor_birth diagnostic
+with the unchanged warning policy. Source extraction passes. No component,
+provider/startup experiment, guest or runtime activation is executed.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -20901,10 +20906,10 @@ index 0000000000000000000000000000000000000000..f7f9aec92d438afcb3f8fc93721b9447
 +resource cursor supplies either missing owner.
 diff --git a/docs/devel/crucible-deferred-cleanup-installation.rst b/docs/devel/crucible-deferred-cleanup-installation.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..c032d8d071a4ef54e91732834773d253f806e29d
+index 0000000000000000000000000000000000000000..23adedc669261885ce5533c0e68e7250bd747ce2
 --- /dev/null
 +++ b/docs/devel/crucible-deferred-cleanup-installation.rst
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,230 @@
 +Clock-free Cleanup delegation installation
 +=========================================
 +
@@ -21087,12 +21092,54 @@ index 0000000000000000000000000000000000000000..c032d8d071a4ef54e91732834773d253
 +charge as the last gated operation. This is a resource component, not a
 +complete execution profile or an issuer of those terminal facts.
 +
-+In particular, no Cleanup provider currently consumes this interior, and no
-+producer currently writes its provider/last-use/return histories. The compiled
-+execution profile, authentic containing prebirth payment, TLS arena, allocator,
-+context/cache/RCU terminal actors and outer-owner return remain absent. The new
-+component does not fill those gaps with geometry, byte counts or a successful
-+join, and does not change publisher3/Source admission.
++Unarmed worker resource component
++---------------------------------
++
++The Source worker preparation operation connects the actual guarded interior to
++``qemu_thread_bounded_provider_init_v1``. It first requires the same genuine
++complete-profile Current, canonical prebirth request and containing process
++payment. Those prerequisites remain unavailable; admission therefore still
++refuses before debit or mapping. Expanded inline worker snapshots/configuration
++remain covered by the recomputed fixed-control floor and exact account subextent.
++
++Behind those prerequisites, the component retains separate application charges
++for QEMU startup backing and a libc arena before mapping either. Actual
++``qemu_thread_bounded_storage_bytes_v1`` determines startup storage geometry;
++checked page rounding applies to both mappings. The libc arena policy proposes
++256 KiB with STRICT finite per-kind limits of eight requests, 4096 bytes per
++request and 64-byte alignment. Only the actual provider initializer validates
++whether its compiled metadata fits that arena and configuration. These policies
++do not qualify the complete Cleanup workload, allocator, initial process TLS,
++loader state or call-graph stack bound.
++
++The new unarmed storage constructor shares the genuine caller-backed storage
++construction with the existing constructor, including canonical membership,
++incarnation, name, arguments and registry cells. The existing constructor still
++requires a nonnull entry. There is no entry-binding operation or placeholder
++callback. Provider creation refuses unarmed storage before attempt flags,
++attributes, signal masks or physical birth, and the native entry path also
++refuses an unarmed owner. Provider initialization retains actual arena and stack
++custody without supplying a callable worker.
++
++Every debit, mapping, storage construction, observation and actual provider
++operation has a distinct once-only physical journal and independent parent post.
++Outputs are retained before posts: canonical storage/incarnation live outside
++the native mappings, while the paid native storage retains the real provider
++control/incarnation and receipt even if a later observation fails. The borrowed
++stack interior is recorded before provider initialization; it has no second
++charge or unmap. A negative initializer, query or post retains exact existing
++mappings, debt, provider outputs and attempt history. It never retries an effect
++or turns a failure into custody return.
++
++No complete execution profile or terminal producer is supplied. In particular,
++there is no Cleanup entry, actual worker birth, genuine provider retirement and
++storage-return integration, complete allocator owner, context/cache/RCU terminal
++actor or independent outer-stack-last-use producer. Future return must observe
++the real provider's exact incarnation and physical backing return before QEMU
++startup custody returns, then separately establish each resource's last use,
++unmap and final application debit return. A successful join cannot replace those
++facts. Core bank borrowers, fixed Module callbacks and publisher3/Source
++admission remain unchanged.
 diff --git a/docs/devel/crucible-deferred-main-finish.rst b/docs/devel/crucible-deferred-main-finish.rst
 new file mode 100644
 index 0000000000000000000000000000000000000000..0285c0f5d3aca13ee00bdfbc042310b4afe53f97
@@ -98908,7 +98955,7 @@ index 758808b705e4b0bbbda1988c377f010ae179d3e1..05189a7919e528df30462e95a188795a
  
  /*
 diff --git a/include/qemu/thread.h b/include/qemu/thread.h
-index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..fe944420499289aef69faa209eebc0b2eec336e0 100644
+index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..a63e6e8326e43e0580d2792e5515216b3a71dc0c 100644
 --- a/include/qemu/thread.h
 +++ b/include/qemu/thread.h
 @@ -5,10 +5,15 @@
@@ -98966,7 +99013,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..fe944420499289aef69faa209eebc0b2
  void qemu_rec_mutex_init(QemuRecMutex *mutex);
  void qemu_rec_mutex_destroy(QemuRecMutex *mutex);
  void qemu_rec_mutex_lock_impl(QemuRecMutex *mutex, const char *file, int line);
-@@ -213,11 +250,549 @@ int qemu_thread_get_affinity(QemuThread *thread, unsigned long **host_cpus,
+@@ -213,11 +250,557 @@ int qemu_thread_get_affinity(QemuThread *thread, unsigned long **host_cpus,
                               unsigned long *nbits);
  void *qemu_thread_join(QemuThread *thread);
  void qemu_thread_get_self(QemuThread *thread);
@@ -98997,6 +99044,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..fe944420499289aef69faa209eebc0b2
 +    size_t backing_bytes;
 +    uint64_t incarnation;
 +    bool prepared;
++    bool entry_bound;
 +    bool creation_attempted;
 +    bool birth_uncertain;
 +    bool return_attempted;
@@ -99007,6 +99055,13 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..fe944420499289aef69faa209eebc0b2
 +int qemu_thread_bounded_storage_prepare_v1(
 +    void *backing, size_t bytes, const char *name,
 +    void *(*entry)(void *), void *opaque,
++    QemuThreadBoundedStorage **out, uint64_t *incarnation);
++/* Retains real startup storage without a worker entry. There is no binding
++ * operation yet; provider initialization may retain arena/stack custody, but
++ * every creation operation must refuse before effects for this owner. The
++ * ordinary preparation API above continues to require a nonnull entry. */
++int qemu_thread_bounded_storage_prepare_unarmed_v1(
++    void *backing, size_t bytes, const char *name, void *opaque,
 +    QemuThreadBoundedStorage **out, uint64_t *incarnation);
 +int qemu_thread_bounded_storage_observe_v1(
 +    QemuThreadBoundedStorage *storage, uint64_t incarnation,
@@ -100850,10 +100905,10 @@ index 0000000000000000000000000000000000000000..993d837a72a8b7d4a4dbf052e684170d
 +#endif
 diff --git a/include/system/crucible-application.h b/include/system/crucible-application.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e2f7a44f9618941037c2a27539330515a5cfc7af
+index 0000000000000000000000000000000000000000..acc41fa1209a74e7e9a977d487dd0b8ee6aa6d12
 --- /dev/null
 +++ b/include/system/crucible-application.h
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,166 @@
 +/*
 + * Finite TCG context-root resource production, separate from RR admission.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -100988,6 +101043,14 @@ index 0000000000000000000000000000000000000000..e2f7a44f9618941037c2a27539330515
 +int qemu_crucible_source_application_cleanup_stack_return_v1(
 +    QemuCrucibleApplicationCleanupProducer *producer,
 +    QemuCrucibleApplicationCleanupChild *child, uint64_t serial);
++
++/* Prepares actual caller-backed QEMU startup storage and initializes the
++ * bounded provider on a separately paid libc/TLS arena and the retained stack
++ * interior. The native owner has no entry and cannot create a worker. A
++ * component configuration is not a complete workload bound. Missing provider,
++ * complete-profile Current or containing process payment refuses preeffect. */
++int qemu_crucible_source_application_cleanup_worker_prepare_v1(
++    QemuCrucibleApplicationCleanupProducer *producer);
 +
 +/* Factual retained resource custody, independent of ended construction/Work
 + * and of the outer Current that calls this leaf through Source. No clock is
@@ -145238,10 +145301,10 @@ index 0000000000000000000000000000000000000000..519afa3957f4cc3aa673d1e343b75ce3
 +}
 diff --git a/plugins/crucible-application-account.h b/plugins/crucible-application-account.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2480b45852fbc870c64698e0f0994db20c76f032
+index 0000000000000000000000000000000000000000..74c8459da695bc45e80966fa11aa44861d2278a7
 --- /dev/null
 +++ b/plugins/crucible-application-account.h
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,324 @@
 +/*
 + * Source-owned application resource parent and independent issuance facts.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -145349,6 +145412,7 @@ index 0000000000000000000000000000000000000000..2480b45852fbc870c64698e0f0994db2
 +    APPLICATION_CLEANUP_STACK,
 +    APPLICATION_CLEANUP_GUARDS,
 +    APPLICATION_CLEANUP_TLS,
++    APPLICATION_CLEANUP_THREAD_STARTUP,
 +    APPLICATION_CLEANUP_ALLOCATOR,
 +    APPLICATION_CLEANUP_PARTS,
 +} QemuCrucibleApplicationCleanupPart;
@@ -145405,6 +145469,27 @@ index 0000000000000000000000000000000000000000..2480b45852fbc870c64698e0f0994db2
 +    bool returned;
 +} QemuCrucibleApplicationCleanupStackOwner;
 +
++/* Retains separately paid QEMU startup and libc arena mappings. The native
++ * storage is deliberately unarmed: provider initialization binds real backing
++ * custody without supplying a worker entry or permitting creation. */
++typedef struct QemuCrucibleApplicationCleanupWorkerOwner {
++    QemuCrucibleApplicationAccountEffect storage_current;
++    QemuCrucibleApplicationAccountEffect provider_query;
++    QemuCrucibleApplicationAccountEffect provider_current;
++    bool attempted;
++    bool busy;
++    bool prepared;
++#ifdef CONFIG_POSIX
++    QemuThreadBoundedStorage *storage;
++    uint64_t storage_incarnation;
++    QemuThreadBoundedStorageSnapshot storage_snapshot;
++#endif
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++    struct pthread_bounded_config config;
++    QemuThreadBoundedProviderSnapshot provider_snapshot;
++#endif
++} QemuCrucibleApplicationCleanupWorkerOwner;
++
 +/* Complete fixed external custody exists before a future Cleanup birth.
 + * This dormant resource record deliberately has no clock origin/progress/end.
 + * The canonical request owner can retain already paid fixed subextents.
@@ -145439,6 +145524,7 @@ index 0000000000000000000000000000000000000000..2480b45852fbc870c64698e0f0994db2
 +    QemuCrucibleApplicationAccountEffect outer_retained;
 +    QemuCrucibleApplicationCleanupStorage storage[APPLICATION_CLEANUP_PARTS];
 +    QemuCrucibleApplicationCleanupStackOwner guarded_stack;
++    QemuCrucibleApplicationCleanupWorkerOwner worker;
 +    QemuCrucibleApplicationAccountEffect worker_birth;
 +    QemuCrucibleApplicationAccountEffect producer_close;
 +    QemuCrucibleApplicationAccountEffect stop;
@@ -146804,12 +146890,349 @@ index 0000000000000000000000000000000000000000..6ca57beef5ba149b48ab6b2b85dc60b1
 +    return -ENOTSUP;
 +}
 +#endif
+diff --git a/plugins/crucible-application-cleanup-worker.inc.h b/plugins/crucible-application-cleanup-worker.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..61a475b18c60718cf4525e9466b2a52d19694754
+--- /dev/null
++++ b/plugins/crucible-application-cleanup-worker.inc.h
+@@ -0,0 +1,331 @@
++/*
++ * Application-paid, unarmed native Cleanup worker backing custody.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#if defined(QEMU_CRUCIBLE_DEFERRED_CLEANUP_REQUEST_OWNER) && \
++    defined(CONFIG_POSIX) && defined(CONFIG_PTHREAD_BOUNDED_PROVIDER)
++
++/* Retain physical output before independently observing the enclosing owner.
++ * A lost post never licenses repeating a debit, mapping or native consumer. */
++static int application_cleanup_worker_post(
++    QemuCrucibleApplicationCleanupChild *child,
++    QemuCrucibleApplicationAccountEffect *effect, int status)
++{
++    QemuCrucibleMetadataPartition *partition = &startup_source.metadata_partition;
++    pid_t process;
++    Coroutine *coroutine;
++    int capture;
++    int post;
++
++    effect->status = status;
++    effect->returned = true;
++    if (status < 0) {
++        qatomic_cmpxchg(&child->first_status, 0, status);
++    }
++    effect->post_attempted = true;
++    post = qemu_crucible_deferred_cleanup_producer_current_v1(child->producer);
++    effect->post_status = post;
++    effect->post_returned = true;
++    if (post < 0) {
++        qatomic_cmpxchg(&child->first_status, 0, post);
++    }
++    process = getpid();
++    coroutine = qemu_in_coroutine() ? qemu_coroutine_self() : NULL;
++    effect->post_capture_attempted = true;
++    if (!crucible_metadata_partition_enter(partition)) {
++        capture = -EAGAIN;
++    } else {
++        capture = application_cleanup_stack_identity_locked(child, process,
++                                                            coroutine);
++        if (!capture && !child->worker.busy) {
++            capture = -ESTALE;
++        }
++        effect->post_capture_status = capture;
++        qatomic_store_release(&effect->post_capture_returned, true);
++        crucible_metadata_partition_leave(partition);
++    }
++    if (capture < 0) {
++        qatomic_cmpxchg(&child->first_status, 0, capture);
++    }
++    return status ? status : post ? post : capture;
++}
++
++static int application_cleanup_worker_map(
++    QemuCrucibleApplicationCleanupChild *child,
++    QemuCrucibleApplicationCleanupStorage *part)
++{
++    void *mapping;
++    int status;
++
++    part->map.attempted = true;
++    mapping = mmap(NULL, part->mapping_bytes, PROT_READ | PROT_WRITE,
++                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    status = mapping == MAP_FAILED ? -errno : 0;
++    part->mapping = mapping == MAP_FAILED ? NULL : mapping;
++    part->map.consumed = mapping != MAP_FAILED;
++    return application_cleanup_worker_post(child, &part->map, status);
++}
++
++int qemu_crucible_source_application_cleanup_worker_prepare_v1(
++    QemuCrucibleApplicationCleanupProducer *producer)
++{
++    QemuCrucibleApplicationCleanupChild *child =
++        &startup_source.application_account.cleanup_child;
++    QemuCrucibleApplicationCleanupWorkerOwner *owner = &child->worker;
++    QemuCrucibleApplicationCleanupStackOwner *guarded = &child->guarded_stack;
++    QemuCrucibleApplicationCleanupStorage *startup =
++        &child->storage[APPLICATION_CLEANUP_THREAD_STARTUP];
++    QemuCrucibleApplicationCleanupStorage *arena =
++        &child->storage[APPLICATION_CLEANUP_TLS];
++    QemuCrucibleApplicationCleanupStorage *stack =
++        &child->storage[APPLICATION_CLEANUP_STACK];
++    QemuCrucibleApplicationCleanupStorage *paid[] = { startup, arena };
++    QemuCrucibleMetadataPartition *partition = &startup_source.metadata_partition;
++    const char name[] = "crucible-cleanup";
++    size_t startup_bytes;
++    size_t arena_bytes = 256 * 1024;
++    size_t rounded;
++    long page;
++    pid_t process;
++    Coroutine *coroutine;
++    int status;
++
++    /* No geometry, debit or provider operation precedes genuine complete
++     * profile Current. The currently unsupported profile still refuses here. */
++    status = qemu_crucible_deferred_cleanup_producer_current_v1(producer);
++    if (status) {
++        return status;
++    }
++    page = sysconf(_SC_PAGESIZE);
++    startup_bytes = qemu_thread_bounded_storage_bytes_v1(sizeof(name));
++    if (page <= 0 || (uintmax_t)page > SIZE_MAX || !startup_bytes) {
++        return -ENOTSUP;
++    }
++    if (__builtin_add_overflow(startup_bytes, (size_t)page - 1, &rounded)) {
++        return -EOVERFLOW;
++    }
++    startup_bytes = rounded - rounded % page;
++    if (__builtin_add_overflow(arena_bytes, (size_t)page - 1, &rounded)) {
++        return -EOVERFLOW;
++    }
++    arena_bytes = rounded - rounded % page;
++    process = getpid();
++    coroutine = qemu_in_coroutine() ? qemu_coroutine_self() : NULL;
++    if (!crucible_metadata_partition_enter(partition)) {
++        return -EAGAIN;
++    }
++    status = application_cleanup_stack_identity_locked(child, process, coroutine);
++    if (!status && (child->producer != producer || owner->attempted)) {
++        status = -EALREADY;
++    }
++    if (!status &&
++        (!application_cleanup_worker_unentered(owner) ||
++         !application_cleanup_bytes_unentered(startup, sizeof(*startup)) ||
++         !application_cleanup_bytes_unentered(arena, sizeof(*arena)) ||
++         !application_cleanup_bytes_unentered(stack, sizeof(*stack)) ||
++         !guarded->prepared || guarded->busy || guarded->returned ||
++         !guarded->charge.held ||
++         guarded->charge.bytes != guarded->mapping_bytes ||
++         !guarded->mapping || !guarded->stack || !guarded->guard_bytes ||
++         guarded->stack != (char *)guarded->mapping + guarded->guard_bytes ||
++         !application_effect_observed(&guarded->debit) ||
++         guarded->debit.status || !guarded->debit.consumed ||
++         !application_effect_observed(&guarded->map) ||
++         guarded->map.status || !guarded->map.consumed ||
++         !application_effect_observed(&guarded->protect) ||
++         guarded->protect.status || !guarded->protect.consumed)) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        owner->attempted = true;
++        owner->busy = true;
++        startup->origin = APPLICATION_CLEANUP_ORIGIN_NATIVE_MAPPING;
++        startup->mapping_bytes = startup_bytes;
++        startup->alignment = page;
++        arena->origin = APPLICATION_CLEANUP_ORIGIN_NATIVE_MAPPING;
++        arena->mapping_bytes = arena_bytes;
++        arena->alignment = page;
++        owner->config = (struct pthread_bounded_config) {
++            .version = PTHREAD_BOUNDED_VERSION,
++            .size = sizeof(owner->config),
++            .flags = PTHREAD_BOUNDED_STRICT,
++        };
++        /* Finite initialization policy, not a complete workload bound. The
++         * actual libc initializer alone accepts/refuses its compiled metadata
++         * layout in this arena; no declared extent claims it is sufficient. */
++        for (size_t kind = 0; kind < PTHREAD_BOUNDED_KINDS; kind++) {
++            owner->config.limit[kind] = (struct pthread_bounded_limit) {
++                .requests = 8,
++                .request_bytes = 4096,
++                .alignment = 64,
++            };
++        }
++    }
++    crucible_metadata_partition_leave(partition);
++    if (status) {
++        return status;
++    }
++
++    /* Separate application charges precede both mappings. A later refusal
++     * retains every earlier debt; there is no speculative refund/rollback. */
++    for (size_t index = 0; index < G_N_ELEMENTS(paid); index++) {
++        QemuCrucibleApplicationCleanupStorage *part = paid[index];
++
++        process = getpid();
++        coroutine = qemu_in_coroutine() ? qemu_coroutine_self() : NULL;
++        if (!crucible_metadata_partition_enter(partition)) {
++            qatomic_cmpxchg(&child->first_status, 0, -EAGAIN);
++            return -EAGAIN;
++        }
++        status = application_cleanup_stack_identity_locked(child, process,
++                                                            coroutine);
++        if (!status && !owner->busy) {
++            status = -ESTALE;
++        }
++        if (!status) {
++            part->debit.attempted = true;
++            status = crucible_metadata_native_admit_locked(partition,
++                part->mapping_bytes, &part->charge);
++            part->debit.status = status;
++            part->debit.returned = true;
++            part->debit.consumed = part->charge.held;
++        }
++        crucible_metadata_partition_leave(partition);
++        if (!part->debit.attempted) {
++            qatomic_cmpxchg(&child->first_status, 0, status);
++            return status;
++        }
++        status = application_cleanup_worker_post(child, &part->debit, status);
++        if (status) {
++            return status;
++        }
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(paid); index++) {
++        status = application_cleanup_worker_map(child, paid[index]);
++        if (status) {
++            return status;
++        }
++    }
++
++    startup->provider.attempted = true;
++    status = qemu_thread_bounded_storage_prepare_unarmed_v1(startup->mapping,
++        startup->mapping_bytes, name, owner,
++        &owner->storage, &owner->storage_incarnation);
++    startup->provider.consumed = owner->storage && owner->storage_incarnation;
++    status = application_cleanup_worker_post(child, &startup->provider, status);
++    if (status) {
++        return status;
++    }
++    owner->storage_current.attempted = true;
++    status = qemu_thread_bounded_storage_observe_v1(owner->storage,
++        owner->storage_incarnation, &owner->storage_snapshot);
++    status = application_cleanup_worker_post(child, &owner->storage_current,
++                                             status);
++    if (status) {
++        return status;
++    }
++    if (!owner->storage_snapshot.prepared || owner->storage_snapshot.entry_bound ||
++        owner->storage_snapshot.creation_attempted ||
++        owner->storage_snapshot.birth_uncertain ||
++        owner->storage_snapshot.return_attempted ||
++        owner->storage_snapshot.custody_returned ||
++        owner->storage_snapshot.incarnation != owner->storage_incarnation ||
++        owner->storage_snapshot.backing != (uintptr_t)startup->mapping ||
++        owner->storage_snapshot.backing_bytes != startup->mapping_bytes) {
++        qatomic_cmpxchg(&child->first_status, 0, -ESTALE);
++        return -ESTALE;
++    }
++
++    /* Save the borrowed interior before the actual provider retains it, even
++     * if initialization or its independent post fails. Its containing guarded
++     * mapping alone owns the charge and any eventual physical unmap. */
++    stack->origin = APPLICATION_CLEANUP_ORIGIN_NATIVE_SUBEXTENT;
++    stack->mapping = guarded->stack;
++    stack->mapping_bytes = guarded->stack_bytes;
++    stack->alignment = guarded->guard_bytes;
++    arena->provider.attempted = true;
++    stack->provider.attempted = true;
++    status = qemu_thread_bounded_provider_init_v1(owner->storage,
++        owner->storage_incarnation, arena->mapping, arena->mapping_bytes,
++        &owner->config, stack->mapping, stack->mapping_bytes);
++    /* One real invocation consumes both spans. Retain both outcomes before
++     * either independent post; no second initialization supplies stack facts. */
++    arena->provider.status = stack->provider.status = status;
++    arena->provider.returned = stack->provider.returned = true;
++    arena->provider.consumed = stack->provider.consumed = !status;
++    status = application_cleanup_worker_post(child, &arena->provider, status);
++    if (status) {
++        return status;
++    }
++    status = application_cleanup_worker_post(child, &stack->provider,
++                                             stack->provider.status);
++    if (status) {
++        return status;
++    }
++    owner->provider_query.attempted = true;
++    status = qemu_thread_bounded_provider_query_v1(owner->storage,
++                                                  owner->storage_incarnation);
++    status = application_cleanup_worker_post(child, &owner->provider_query,
++                                             status);
++    if (status) {
++        return status;
++    }
++    owner->provider_current.attempted = true;
++    status = qemu_thread_bounded_provider_observe_v1(owner->storage,
++        owner->storage_incarnation, &owner->provider_snapshot);
++    status = application_cleanup_worker_post(child, &owner->provider_current,
++                                             status);
++    if (status) {
++        return status;
++    }
++    if (!owner->provider_snapshot.init_attempted ||
++        !owner->provider_snapshot.init_returned ||
++        owner->provider_snapshot.init_status ||
++        !owner->provider_snapshot.provider_incarnation ||
++        owner->provider_snapshot.create_attempted ||
++        owner->provider_snapshot.worker_entered ||
++        owner->provider_snapshot.receipt.version != PTHREAD_BOUNDED_VERSION ||
++        owner->provider_snapshot.receipt.size !=
++            sizeof(owner->provider_snapshot.receipt) ||
++        owner->provider_snapshot.receipt.incarnation !=
++            owner->provider_snapshot.provider_incarnation ||
++        owner->provider_snapshot.receipt.backing != (uintptr_t)arena->mapping ||
++        owner->provider_snapshot.receipt.backing_bytes != arena->mapping_bytes ||
++        owner->provider_snapshot.receipt.born ||
++        owner->provider_snapshot.receipt.entered) {
++        qatomic_cmpxchg(&child->first_status, 0, -ESTALE);
++        return -ESTALE;
++    }
++    process = getpid();
++    coroutine = qemu_in_coroutine() ? qemu_coroutine_self() : NULL;
++    if (!crucible_metadata_partition_enter(partition)) {
++        qatomic_cmpxchg(&child->first_status, 0, -EAGAIN);
++        return -EAGAIN;
++    }
++    status = application_cleanup_stack_identity_locked(child, process, coroutine);
++    if (!status && (!owner->busy || !guarded->prepared || guarded->busy ||
++                    guarded->returned || guarded->stack != stack->mapping ||
++                    guarded->stack_bytes != stack->mapping_bytes)) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        owner->prepared = true;
++        owner->busy = false;
++    }
++    if (status < 0) {
++        qatomic_cmpxchg(&child->first_status, 0, status);
++    }
++    crucible_metadata_partition_leave(partition);
++    return status;
++}
++
++#else
++
++int qemu_crucible_source_application_cleanup_worker_prepare_v1(
++    QemuCrucibleApplicationCleanupProducer *producer)
++{
++    return -ENOTSUP;
++}
++
++#endif
 diff --git a/plugins/crucible-application-cleanup.inc.h b/plugins/crucible-application-cleanup.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..88dff29b765be96a2ac38bdba049129e36b5c729
+index 0000000000000000000000000000000000000000..dbb16c5458304622c1bd5db9075cafad68bd2091
 --- /dev/null
 +++ b/plugins/crucible-application-cleanup.inc.h
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,556 @@
 +/*
 + * Canonical fixed Cleanup request custody, separate from dynamic issuance.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -146847,6 +147270,50 @@ index 0000000000000000000000000000000000000000..88dff29b765be96a2ac38bdba049129e
 +            return false;
 +        }
 +    }
++    return true;
++}
++
++#if defined(CONFIG_POSIX) || defined(CONFIG_PTHREAD_BOUNDED_PROVIDER)
++/* These are fixed zero-initialized output buffers, not decoded resource
++ * grants. Refuse any prior physical output before the actual producer writes
++ * them, including provider receipt fields unknown to this constructor. */
++static bool application_cleanup_bytes_unentered(const void *object, size_t bytes)
++{
++    const unsigned char *data = object;
++
++    for (size_t index = 0; index < bytes; index++) {
++        if (data[index]) {
++            return false;
++        }
++    }
++    return true;
++}
++#endif
++
++static bool application_cleanup_worker_unentered(
++    const QemuCrucibleApplicationCleanupWorkerOwner *owner)
++{
++    if (owner->attempted || owner->busy || owner->prepared ||
++        !application_cleanup_effect_unentered(&owner->storage_current) ||
++        !application_cleanup_effect_unentered(&owner->provider_query) ||
++        !application_cleanup_effect_unentered(&owner->provider_current)) {
++        return false;
++    }
++#ifdef CONFIG_POSIX
++    if (owner->storage || owner->storage_incarnation ||
++        !application_cleanup_bytes_unentered(&owner->storage_snapshot,
++                                             sizeof(owner->storage_snapshot))) {
++        return false;
++    }
++#endif
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++    if (!application_cleanup_bytes_unentered(&owner->config,
++                                             sizeof(owner->config)) ||
++        !application_cleanup_bytes_unentered(&owner->provider_snapshot,
++                                             sizeof(owner->provider_snapshot))) {
++        return false;
++    }
++#endif
 +    return true;
 +}
 +
@@ -146900,6 +147367,7 @@ index 0000000000000000000000000000000000000000..88dff29b765be96a2ac38bdba049129e
 +        qatomic_read(&child->first_status) || child->busy || child->issued ||
 +        child->uncertain || child->process_retained ||
 +        !application_cleanup_stack_unentered(&child->guarded_stack) ||
++        !application_cleanup_worker_unentered(&child->worker) ||
 +        !application_cleanup_view_unentered(&child->fixed_request_view)) {
 +        return false;
 +    }
@@ -281945,10 +282413,10 @@ index 0000000000000000000000000000000000000000..56af4f0f563adbe761bdbdf83e1c7e62
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..59b2d113918ca67ca7764e7fdb4821adf995c9b2
+index 0000000000000000000000000000000000000000..4f9b9a7d85dbccd3c34e699a74d76d71ca8b4028
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8994 @@
+@@ -0,0 +1,8995 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -288857,6 +289325,7 @@ index 0000000000000000000000000000000000000000..59b2d113918ca67ca7764e7fdb4821ad
 +#include "crucible-application-child.inc.h"
 +#include "crucible-application-cleanup.inc.h"
 +#include "crucible-application-cleanup-stack.inc.h"
++#include "crucible-application-cleanup-worker.inc.h"
 +
 +static int cpu_metadata_account_issue(
 +    QemuCrucibleObservationConstructionBinding *binding)
@@ -309072,7 +309541,7 @@ index 0000000000000000000000000000000000000000..82bfae83900383ac30006bc4ca9201f9
 +    main()
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a1e6eee45835546ee7e5bcefae7fda036a19ca9f
+index 0000000000000000000000000000000000000000..ccdb1638cab923a550f3951bdac96a5a5e7b4cc9
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,184 @@
@@ -309144,7 +309613,7 @@ index 0000000000000000000000000000000000000000..a1e6eee45835546ee7e5bcefae7fda03
 +    'include/plugins/qemu-plugin.h':
 +        '98dffedb987540b27b5725b202fb65deaec3c9b1bedf0f80c7fcf6fcda499fe4',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e0c5ca38c943fa28d8fc05499aa091615b6914cae08fa4b3ebb912fa2507a10e',
++        '10ae93241b428c4f741de736176929c63949ed941f3d6c877d7ec84857978281',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +}
@@ -397529,7 +397998,7 @@ index 0000000000000000000000000000000000000000..f517993ed29c5a6611a6d10ad6a2a612
 +#endif /* TESTS_CRUCIBLE_TIMER_STREAM_H */
 diff --git a/tests/unit/extract-crucible-cached-writer.py b/tests/unit/extract-crucible-cached-writer.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9e7a2046ed061d1f4066249bd15c7ee5fc367268
+index 0000000000000000000000000000000000000000..347b0f145ba0140b229f0e18188733041a3a0d23
 --- /dev/null
 +++ b/tests/unit/extract-crucible-cached-writer.py
 @@ -0,0 +1,361 @@
@@ -397550,11 +398019,11 @@ index 0000000000000000000000000000000000000000..9e7a2046ed061d1f4066249bd15c7ee5
 +
 +SOURCE_HASHES = {
 +    'util/qemu-thread-posix.c':
-+        '65fe40ad4d4254af2579a045d5a336e6795fa0ba131a570b30f0070359b8224d',
++        '318315ca2098cc58c985e4327057772590835e963872270eada42c4d3e8e2d76',
 +    'util/oslib-posix.c':
 +        '3844eb962eac164dd29f0eb9ca7e48ec830d8aaf8281c2b2a0915d041eaaac38',
 +    'include/qemu/thread.h':
-+        '0903b45bf8f4cc8371ce77e514b0d9581fa9000367da9417aec42988af644c59',
++        '444c5d8e174440d58eaeeffd4e25bddd838808cd5674bb9159edf045ce1aace1',
 +    'include/qemu/thread-posix.h':
 +        '72d5cf709bbe89ccbc621c0bb0de9d56df2eb3c11210e9abd58fcf6e65c3baaa',
 +    'include/system/memory_cached.h':
@@ -397896,7 +398365,7 @@ index 0000000000000000000000000000000000000000..9e7a2046ed061d1f4066249bd15c7ee5
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c29d925d8b8f6fb7a9a1b100b4f7558b75b21177
+index 0000000000000000000000000000000000000000..8e91dc9576c1b1d1df4200734428cc7b3dd70231
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -397914,7 +398383,7 @@ index 0000000000000000000000000000000000000000..c29d925d8b8f6fb7a9a1b100b4f7558b
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e0c5ca38c943fa28d8fc05499aa091615b6914cae08fa4b3ebb912fa2507a10e',
++        '10ae93241b428c4f741de736176929c63949ed941f3d6c877d7ec84857978281',
 +}
 +
 +FUNCTIONS = (
@@ -398002,7 +398471,7 @@ index 0000000000000000000000000000000000000000..c29d925d8b8f6fb7a9a1b100b4f7558b
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d43b3678120aa530a66f1499e3624a193f20f9df
+index 0000000000000000000000000000000000000000..394bc227540469acfedaec8c1df42fc399a016dc
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -398023,7 +398492,7 @@ index 0000000000000000000000000000000000000000..d43b3678120aa530a66f1499e3624a19
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        'cc4f75dd11bc015dade9b0cc7e1c99173cccf4cae2fd8515c42aab501e1ff74b',
++        '08cc4ce3f6bab45f15f0b1f1952943499d578e8b75cdab14596e0928ee737725',
 +    'plugins/crucible-startup-source.h':
 +        '4d82e7f7d5849d906d6e788a99b030a9dd388db1a886cec98632fdb8887b4bf6',
 +    'include/plugins/qemu-plugin.h':
@@ -398033,7 +398502,7 @@ index 0000000000000000000000000000000000000000..d43b3678120aa530a66f1499e3624a19
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e0c5ca38c943fa28d8fc05499aa091615b6914cae08fa4b3ebb912fa2507a10e',
++        '10ae93241b428c4f741de736176929c63949ed941f3d6c877d7ec84857978281',
 +}
 +
 +FUNCTIONS = (
@@ -398249,7 +398718,7 @@ index 0000000000000000000000000000000000000000..d43b3678120aa530a66f1499e3624a19
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..cbee12863044b9d7243bc85a0a9da5ab0d548517
+index 0000000000000000000000000000000000000000..e87f7826189190b724934a3fd5b682dfb88a5109
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -398273,7 +398742,7 @@ index 0000000000000000000000000000000000000000..cbee12863044b9d7243bc85a0a9da5ab
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e0c5ca38c943fa28d8fc05499aa091615b6914cae08fa4b3ebb912fa2507a10e',
++        '10ae93241b428c4f741de736176929c63949ed941f3d6c877d7ec84857978281',
 +}
 +
 +FUNCTIONS = (
@@ -398367,7 +398836,7 @@ index 0000000000000000000000000000000000000000..cbee12863044b9d7243bc85a0a9da5ab
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..558daee08402727348976954e53f2302009f1817
+index 0000000000000000000000000000000000000000..ba0add4ad5a82faa2e9488155ecb8df638d785fe
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,795 @@
@@ -398453,15 +398922,15 @@ index 0000000000000000000000000000000000000000..558daee08402727348976954e53f2302
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e0c5ca38c943fa28d8fc05499aa091615b6914cae08fa4b3ebb912fa2507a10e',
++        '10ae93241b428c4f741de736176929c63949ed941f3d6c877d7ec84857978281',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'ab780f3fe1f9aaf377933d05c8da391721a1568c767b6bc39214ce456f569e1c',
++        '3e1c9303a2db922b6c27827111e58db1bed4b769b1fb654126333766b4790525',
 +    'meson.build':
 +        'd60f3d0a573e006c42c93c08720d825da552ccd45b6a9d276a68839968d59be7',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        '153138370240e25a5a429685f6557dfa76e0309ff6fe3700530215ae61158269',
 +    'tests/unit/meson.build':
-+        '78bcff399a07059b0af02180a2ce5df8f9ed0d9f516ba038cf31798f110c28b9',
++        '3e75dfc7c9b7334366979d0a0c6c4b35829f0d6897850fe18eb66ce1978a4f4c',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +    'system/crucible-preexec-publisher-offer.inc.h':
@@ -399168,10 +399637,10 @@ index 0000000000000000000000000000000000000000..558daee08402727348976954e53f2302
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..17e9a30c33079e52eb4919167ad4a8b42c29c522
+index 0000000000000000000000000000000000000000..73518ab5df26ff61eef2785e2c0c679c2bf098f0
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,2031 @@
+@@ -0,0 +1,2032 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -399181,6 +399650,7 @@ index 0000000000000000000000000000000000000000..17e9a30c33079e52eb4919167ad4a8b4
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'plugins/crucible-application-cleanup-worker.inc.h': 'b5da23ef92340e6785cb8b9c65391ca2f48401a65477833e24382ad7f3be9605',
 +    'plugins/crucible-application-cleanup-stack.inc.h':
 +        'a24a037f5aeedc356a056684dfa377f5633d3115652e77c957cf1318bdadf19f',
 +    'plugins/crucible-advance-outcome-no-target.inc.h': '2722fedd6ff59a63ae69619f76ea8f5dbb9409833b854061e8d17b5e770bd461',
@@ -399322,9 +399792,9 @@ index 0000000000000000000000000000000000000000..17e9a30c33079e52eb4919167ad4a8b4
 +    'plugins/crucible-application-process.inc.h':
 +        '1389c2578abb8c768d03354875434d026a646dc3699cfa7867ce71feaa315a04',
 +    'plugins/crucible-application-cleanup.inc.h':
-+        'dddccd04f3b8413481bfdeb6a03142372498f09792d6e0bafd33a129aa37489f',
++        'c7e4d777f2ec11959912713df8ef7e9c203d144b3920c3456c6365453aafb933',
 +    'include/system/crucible-application.h':
-+        'e7992df6e9172176a6fcaa6ba800baf836a74998984611deac12e3a5095e4956',
++        '81182da1b0b64c8850892521d198fb3eb26f78ac1f91ff2bb593c03e8ce84be7',
 +    'plugins/crucible-application-child.inc.h':
 +        '8935c9731e7472e7e871bd3a4441dc86d93d389d12fbb32ae72c2f58c192e1cb',
 +    'tcg/tcg.c':
@@ -399332,7 +399802,7 @@ index 0000000000000000000000000000000000000000..17e9a30c33079e52eb4919167ad4a8b4
 +    'include/tcg/tcg.h':
 +        'f16f28c3930b46397bd59ea487ebc05a3aab89d8d2ca071c31d1238c506342d4',
 +    'plugins/crucible-application-account.h':
-+        'bc2ac413bcda2f23f1a18fac19bc2f0b912a6916d7827dc1b5e9b75b0086824c',
++        'a88a0284d5a57eef6646f6cc1aaf540dbc799ee80d0494e62ee7db77f1c68082',
 +    'plugins/crucible-application-account.inc.h':
 +        '9061f3a983ace774c66d4e4331ed2c85c6d31e6f1f79a356dd28b5db01ede856',
 +    'plugins/crucible-deferred-cleanup-completed-current.inc.h':
@@ -399710,7 +400180,7 @@ index 0000000000000000000000000000000000000000..17e9a30c33079e52eb4919167ad4a8b4
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        '78bcff399a07059b0af02180a2ce5df8f9ed0d9f516ba038cf31798f110c28b9',
++        '3e75dfc7c9b7334366979d0a0c6c4b35829f0d6897850fe18eb66ce1978a4f4c',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -399922,7 +400392,7 @@ index 0000000000000000000000000000000000000000..17e9a30c33079e52eb4919167ad4a8b4
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        'cc4f75dd11bc015dade9b0cc7e1c99173cccf4cae2fd8515c42aab501e1ff74b',
++        '08cc4ce3f6bab45f15f0b1f1952943499d578e8b75cdab14596e0928ee737725',
 +    'plugins/crucible-startup-source.h':
 +        '4d82e7f7d5849d906d6e788a99b030a9dd388db1a886cec98632fdb8887b4bf6',
 +    'plugins/crucible-device-workspace.c':
@@ -400004,9 +400474,9 @@ index 0000000000000000000000000000000000000000..17e9a30c33079e52eb4919167ad4a8b4
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'include/qemu/thread.h':
-+        '0903b45bf8f4cc8371ce77e514b0d9581fa9000367da9417aec42988af644c59',
++        '444c5d8e174440d58eaeeffd4e25bddd838808cd5674bb9159edf045ce1aace1',
 +    'util/qemu-thread-posix.c':
-+        '65fe40ad4d4254af2579a045d5a336e6795fa0ba131a570b30f0070359b8224d',
++        '318315ca2098cc58c985e4327057772590835e963872270eada42c4d3e8e2d76',
 +    'include/qemu/crucible-process-purpose.h':
 +        '19c016e6edd3c49488f983032042c8bc1dbb14e4c2f0e2d19c65b4409d505f72',
 +    'include/qemu/crucible-paged-ram.h':
@@ -401302,7 +401772,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..7d00379f49cb2644859217d7d71d3cb0cb197b08 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0ca102b11dcbb300f41f202d9b4385c7c7cf0f4b 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -401377,7 +401847,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..7d00379f49cb2644859217d7d71d3cb0
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1874 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1875 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -402310,6 +402780,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..7d00379f49cb2644859217d7d71d3cb0
 +                        '../../plugins/crucible-application-child.inc.h',
 +                        '../../plugins/crucible-application-cleanup.inc.h',
 +                        '../../plugins/crucible-application-cleanup-stack.inc.h',
++                        '../../plugins/crucible-application-cleanup-worker.inc.h',
 +                        '../../plugins/crucible-application-process.inc.h',
 +                        '../../include/system/crucible-outcome-callback.h',
 +                        '../../include/system/crucible-work-termination.h',
@@ -414497,10 +414968,10 @@ index 0000000000000000000000000000000000000000..9a8e608e99b032b061575c8c2c97d7d2
 +    main()
 diff --git a/tests/unit/test-crucible-bounded-thread.c b/tests/unit/test-crucible-bounded-thread.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..7b4297c5bbe601edaf0e99f6dae808e074d4728b
+index 0000000000000000000000000000000000000000..719ba4c5d6d958cb3fe6c1c94850b2fb45c45922
 --- /dev/null
 +++ b/tests/unit/test-crucible-bounded-thread.c
-@@ -0,0 +1,900 @@
+@@ -0,0 +1,947 @@
 +/*
 + * Real bounded birth and native registry enrollment component controls.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -414954,6 +415425,7 @@ index 0000000000000000000000000000000000000000..7b4297c5bbe601edaf0e99f6dae808e0
 +    g_assert_cmpint(qemu_thread_bounded_storage_observe_v1(storage, incarnation,
 +                                                         &facts), ==, 0);
 +    g_assert_true(facts.prepared);
++    g_assert_true(facts.entry_bound);
 +    g_assert_false(facts.creation_attempted);
 +    g_assert_false(facts.birth_uncertain);
 +    g_assert_false(facts.custody_returned);
@@ -415368,9 +415840,55 @@ index 0000000000000000000000000000000000000000..7b4297c5bbe601edaf0e99f6dae808e0
 +}
 +#endif
 +
++/* Preparation retains actual storage but cannot select an entry, even when
++ * the provider implementation is present. This control never creates a worker. */
++static void test_unarmed_storage(void)
++{
++    const char name[] = "unarmed-storage";
++    size_t bytes = qemu_thread_bounded_storage_bytes_v1(sizeof(name));
++    QemuThreadBoundedStorage *storage = NULL;
++    QemuThreadBoundedStorageSnapshot facts = { 0 };
++    uint64_t incarnation = 0;
++    int owner = 0;
++    void *backing = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
++                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++
++    g_assert_true(backing != MAP_FAILED);
++    g_assert_cmpint(qemu_thread_bounded_storage_prepare_v1(backing, bytes,
++        name, NULL, &owner, &storage, &incarnation), ==, -EINVAL);
++    g_assert_null(storage);
++    g_assert_cmpuint(incarnation, ==, 0);
++
++    g_assert_cmpint(qemu_thread_bounded_storage_prepare_unarmed_v1(backing,
++        bytes, name, &owner, &storage, &incarnation), ==, 0);
++    g_assert_cmpint(qemu_thread_bounded_storage_observe_v1(storage, incarnation,
++                                                         &facts), ==, 0);
++    g_assert_true(facts.prepared);
++    g_assert_false(facts.entry_bound);
++    g_assert_false(facts.creation_attempted);
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++    QemuThreadBoundedProviderSnapshot provider = { 0 };
++
++    g_assert_cmpint(qemu_thread_bounded_provider_create_v1(storage, incarnation),
++                    ==, -ENOTSUP);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(storage, incarnation,
++                                                          &provider), ==, 0);
++    g_assert_false(provider.init_attempted);
++    g_assert_false(provider.create_attempted);
++    g_assert_false(provider.attr_init_attempted);
++    g_assert_false(provider.mask_block_attempted);
++#endif
++    g_assert_cmpint(qemu_thread_bounded_storage_return_unstarted_v1(storage,
++        incarnation, &facts), ==, 0);
++    g_assert_false(facts.creation_attempted);
++    g_assert_true(facts.custody_returned);
++    g_assert_cmpint(munmap(backing, bytes), ==, 0);
++}
++
 +int main(int argc, char **argv)
 +{
 +    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/crucible/bounded/unarmed-storage", test_unarmed_storage);
 +    g_test_add_func("/crucible/bounded/current-close-join",
 +                    test_current_close_join);
 +    g_test_add_func("/crucible/bounded/identity-copy-refusal",
@@ -500877,7 +501395,7 @@ index 4773755fd582e82436159cba2e114e047aae7478..74516a1c97422b317868dfb54686c357
          }
          break;
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf25591a7b77d 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..9dbb34e376e1147d68fd790ad574eb5d3568c245 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -22,6 +22,138 @@
@@ -501770,7 +502288,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
      if (err && err != ETIMEDOUT) {
          error_exit(err, __func__);
      }
-@@ -379,20 +1162,2249 @@ typedef struct {
+@@ -379,87 +1162,3349 @@ typedef struct {
      void *(*start_routine)(void *);
      void *arg;
      char *name;
@@ -504030,20 +504548,42 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    g_free(qemu_thread_args->name);
      g_free(qemu_thread_args);
  
-     /*
-@@ -410,13 +3422,39 @@ static void *qemu_thread_start(void *args)
- #pragma GCC diagnostic ignored "-Wstringop-overflow"
- #endif
- 
+-    /*
+-     * GCC 11 with glibc 2.17 on PowerPC reports
+-     *
+-     * qemu-thread-posix.c:540:5: error: ‘__sigsetjmp’ accessing 656 bytes
+-     *   in a region of size 528 [-Werror=stringop-overflow=]
+-     * 540 |     pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
+-     *     |     ^~~~~~~~~~~~~~~~~~~~
+-     *
+-     * which is clearly nonsense.
+-     */
+-#pragma GCC diagnostic push
+-#ifndef __clang__
+-#pragma GCC diagnostic ignored "-Wstringop-overflow"
++    /*
++     * GCC 11 with glibc 2.17 on PowerPC reports
++     *
++     * qemu-thread-posix.c:540:5: error: ‘__sigsetjmp’ accessing 656 bytes
++     *   in a region of size 528 [-Werror=stringop-overflow=]
++     * 540 |     pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
++     *     |     ^~~~~~~~~~~~~~~~~~~~
++     *
++     * which is clearly nonsense.
++     */
++#pragma GCC diagnostic push
++#ifndef __clang__
++#pragma GCC diagnostic ignored "-Wstringop-overflow"
++#endif
++
 +    pthread_cleanup_push(qemu_hot_fork_thread_unregister, hot_fork_record);
-     pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
-     r = start_routine(arg);
-     pthread_cleanup_pop(1);
++    pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
++    r = start_routine(arg);
 +    pthread_cleanup_pop(1);
- 
- #pragma GCC diagnostic pop
- 
--    return r;
++    pthread_cleanup_pop(1);
++
++#pragma GCC diagnostic pop
++
 +    return r;
 +}
 +
@@ -504069,30 +504609,55 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +        error_exit(err, __func__);
 +    }
 +    crucible_hot_fork_mutex_registry_unlock();
- }
- 
- void qemu_thread_create(QemuThread *thread, const char *name,
-@@ -450,18 +3488,998 @@ void qemu_thread_create(QemuThread *thread, const char *name,
-     qemu_thread_args->name = g_strdup(name);
-     qemu_thread_args->start_routine = start_routine;
-     qemu_thread_args->arg = arg;
++}
++
++void qemu_thread_create(QemuThread *thread, const char *name,
++                       void *(*start_routine)(void*),
++                       void *arg, int mode)
++{
++    sigset_t set, oldset;
++    int err;
++    pthread_attr_t attr;
++    QemuThreadArgs *qemu_thread_args;
++
++    err = pthread_attr_init(&attr);
++    if (err) {
++        error_exit(err, __func__);
++    }
++
++    if (mode == QEMU_THREAD_DETACHED) {
++        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
++    }
++
++    /* Leave signal handling to the iothread.  */
++    sigfillset(&set);
++    /* Blocking the signals can result in undefined behaviour. */
++    sigdelset(&set, SIGSEGV);
++    sigdelset(&set, SIGFPE);
++    sigdelset(&set, SIGILL);
++    /* TODO avoid SIGBUS loss on macOS */
++    pthread_sigmask(SIG_SETMASK, &set, &oldset);
++
++    qemu_thread_args = g_new0(QemuThreadArgs, 1);
++    qemu_thread_args->name = g_strdup(name);
++    qemu_thread_args->start_routine = start_routine;
++    qemu_thread_args->arg = arg;
 +    qemu_thread_args->mode = mode;
- 
++
 +    qemu_hot_fork_thread_start_begin();
-     err = pthread_create(&thread->thread, &attr,
-                          qemu_thread_start, qemu_thread_args);
- 
--    if (err)
++    err = pthread_create(&thread->thread, &attr,
++                         qemu_thread_start, qemu_thread_args);
++
 +    if (err) {
 +        qemu_hot_fork_thread_start_end();
-         error_exit(err, __func__);
++        error_exit(err, __func__);
 +    }
- 
-     pthread_sigmask(SIG_SETMASK, &oldset, NULL);
- 
-     pthread_attr_destroy(&attr);
- }
- 
++
++    pthread_sigmask(SIG_SETMASK, &oldset, NULL);
++
++    pthread_attr_destroy(&attr);
++}
++
 +size_t qemu_thread_bounded_registry_fixed_storage_bytes(void)
 +{
 +    return sizeof(qemu_hot_fork_bounded_threads) +
@@ -504235,7 +504800,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +                                        storage->provider_stack_bytes))) {
 +            return true;
 +        }
-+#endif
+ #endif
 +        if (record->bounded && bounded_storage_intersects(
 +                span, bytes, record->bounded, sizeof(*record->bounded))) {
 +            return true;
@@ -504252,7 +504817,9 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    }
 +    return false;
 +}
-+
+ 
+-    pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
+-    r = start_routine(arg);
 +static bool bounded_storage_conflict_locked(const void *span, size_t bytes)
 +{
 +    return bounded_storage_conflict_except_locked(span, bytes, NULL);
@@ -504304,7 +504871,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    return true;
 +}
 +
-+int qemu_thread_bounded_storage_prepare_v1(
++static int bounded_storage_prepare(
 +    void *backing, size_t bytes, const char *name,
 +    void *(*entry)(void *), void *opaque,
 +    QemuThreadBoundedStorage **out, uint64_t *incarnation)
@@ -504314,7 +504881,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    bool name_valid;
 +    int status;
 +
-+    if (!backing || !name || !entry || !opaque || !out || !incarnation ||
++    if (!backing || !name || !opaque || !out || !incarnation ||
 +        (uintptr_t)backing % _Alignof(QemuThreadBoundedStorage)) {
 +        return -EINVAL;
 +    }
@@ -504351,6 +504918,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +            .backing_bytes = bytes,
 +            .incarnation = ++qemu_hot_fork_bounded_storage_serial,
 +            .prepared = true,
++            .entry_bound = entry != NULL,
 +        };
 +        storage->process_id = getpid();
 +        qemu_thread_get_self(&storage->creator);
@@ -504378,6 +504946,26 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    }
 +    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
 +    return status;
++}
++
++int qemu_thread_bounded_storage_prepare_v1(
++    void *backing, size_t bytes, const char *name,
++    void *(*entry)(void *), void *opaque,
++    QemuThreadBoundedStorage **out, uint64_t *incarnation)
++{
++    if (!entry) {
++        return -EINVAL;
++    }
++    return bounded_storage_prepare(backing, bytes, name, entry, opaque,
++                                   out, incarnation);
++}
++
++int qemu_thread_bounded_storage_prepare_unarmed_v1(
++    void *backing, size_t bytes, const char *name, void *opaque,
++    QemuThreadBoundedStorage **out, uint64_t *incarnation)
++{
++    return bounded_storage_prepare(backing, bytes, name, NULL, opaque,
++                                   out, incarnation);
 +}
 +
 +static int bounded_storage_snapshot(QemuThreadBoundedStorage *storage,
@@ -504645,7 +505233,8 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +        error_exit(status, __func__);
 +    }
 +    storage->provider.worker_entered = true;
-+    if (!storage->provider_start_in_flight || ram_membership_owner ||
++    if (!storage->facts.entry_bound || !storage->arguments.start_routine ||
++        !storage->provider_start_in_flight || ram_membership_owner ||
 +        storage->process_id != getpid() || record->tracked ||
 +        qemu_hot_fork_thread_count == QEMU_HOT_FORK_THREAD_INVENTORY_MAX ||
 +        qemu_hot_fork_thread_generation == UINT64_MAX) {
@@ -504682,10 +505271,11 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    pthread_cleanup_push(bounded_provider_notifiers, storage);
 +    result = storage->arguments.start_routine(storage->arguments.arg);
 +    pthread_cleanup_pop(1);
-+    pthread_cleanup_pop(1);
+     pthread_cleanup_pop(1);
 +    return result;
 +}
-+
+ 
+-#pragma GCC diagnostic pop
 +int qemu_thread_bounded_provider_create_v1(
 +    QemuThreadBoundedStorage *storage, uint64_t incarnation)
 +{
@@ -504693,12 +505283,18 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    sigset_t blocked, previous;
 +    bool attributes_live = false, mask_changed = false;
 +    int status = bounded_provider_claim(storage, incarnation);
-+
+ 
+-    return r;
 +    if (status) {
 +        return status;
 +    }
-+    if (!storage->provider.init_returned || storage->provider.init_status ||
-+        !storage->provider_control || !storage->provider.provider_incarnation) {
++    /* Unarmed resource preparation never selects a callback. Refuse before
++     * creation_attempted, attributes, signal masks or provider birth effects. */
++    if (!storage->facts.entry_bound || !storage->arguments.start_routine) {
++        status = -ENOTSUP;
++    } else if (!storage->provider.init_returned || storage->provider.init_status ||
++               !storage->provider_control ||
++               !storage->provider.provider_incarnation) {
 +        status = -ESTALE;
 +    } else if (storage->facts.creation_attempted ||
 +               storage->provider.retire_attempted) {
@@ -504799,16 +505395,26 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +                 storage->provider.attr_destroy_status;
 +    }
 +    return bounded_provider_complete(storage, status);
-+}
-+
+ }
+ 
+-void qemu_thread_create(QemuThread *thread, const char *name,
+-                       void *(*start_routine)(void*),
+-                       void *arg, int mode)
 +static int bounded_provider_read(QemuThreadBoundedStorage *storage,
 +                                 uint64_t incarnation, bool retire)
-+{
+ {
+-    sigset_t set, oldset;
+-    int err;
+-    pthread_attr_t attr;
+-    QemuThreadArgs *qemu_thread_args;
 +    int status = bounded_provider_claim(storage, incarnation);
-+
+ 
+-    err = pthread_attr_init(&attr);
+-    if (err) {
+-        error_exit(err, __func__);
 +    if (status) {
 +        return status;
-+    }
+     }
 +    if (!storage->provider.init_returned || !storage->provider_control ||
 +        !storage->provider.provider_incarnation ||
 +        storage->provider.receipt.backing_returned) {
@@ -504838,7 +505444,9 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    }
 +    return bounded_provider_complete(storage, status);
 +}
-+
+ 
+-    if (mode == QEMU_THREAD_DETACHED) {
+-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 +int qemu_thread_bounded_provider_query_v1(
 +    QemuThreadBoundedStorage *storage, uint64_t incarnation)
 +{
@@ -504861,7 +505469,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +
 +    if (!out) {
 +        return -EINVAL;
-+    }
+     }
 +    status = bounded_provider_claim(storage, incarnation);
 +    if (status) {
 +        return status;
@@ -504870,7 +505478,15 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +        status = -EADDRINUSE;
 +    } else if (release) {
 +        struct pthread_bounded_receipt *receipt = &storage->provider.receipt;
-+
+ 
+-    /* Leave signal handling to the iothread.  */
+-    sigfillset(&set);
+-    /* Blocking the signals can result in undefined behaviour. */
+-    sigdelset(&set, SIGSEGV);
+-    sigdelset(&set, SIGFPE);
+-    sigdelset(&set, SIGILL);
+-    /* TODO avoid SIGBUS loss on macOS */
+-    pthread_sigmask(SIG_SETMASK, &set, &oldset);
 +        if (!storage->provider.retire_returned ||
 +            storage->provider.retire_status || !receipt->backing_returned ||
 +            receipt->version != PTHREAD_BOUNDED_VERSION ||
@@ -504918,14 +505534,20 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    bounded_provider_unlock();
 +    return status;
 +}
-+
+ 
+-    qemu_thread_args = g_new0(QemuThreadArgs, 1);
+-    qemu_thread_args->name = g_strdup(name);
+-    qemu_thread_args->start_routine = start_routine;
+-    qemu_thread_args->arg = arg;
 +int qemu_thread_bounded_provider_observe_v1(
 +    QemuThreadBoundedStorage *storage, uint64_t incarnation,
 +    QemuThreadBoundedProviderSnapshot *out)
 +{
 +    return bounded_provider_observe(storage, incarnation, out, false);
 +}
-+
+ 
+-    err = pthread_create(&thread->thread, &attr,
+-                         qemu_thread_start, qemu_thread_args);
 +int qemu_thread_bounded_provider_storage_return_v1(
 +    QemuThreadBoundedStorage *storage, uint64_t incarnation,
 +    QemuThreadBoundedProviderSnapshot *out)
@@ -504933,7 +505555,9 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    return bounded_provider_observe(storage, incarnation, out, true);
 +}
 +#endif
-+
+ 
+-    if (err)
+-        error_exit(err, __func__);
 +int qemu_thread_create_bounded(QemuThread *thread, const char *name,
 +                              void *(*entry)(void *), void *opaque,
 +                              void *stack, size_t stack_bytes,
@@ -504945,7 +505569,8 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    size_t name_bytes;
 +    uint64_t prior_generation = 0;
 +    int status;
-+
+ 
+-    pthread_sigmask(SIG_SETMASK, &oldset, NULL);
 +    if (!thread || !name || !entry || !opaque || !stack || !stack_bytes || !receipt) {
 +        return -EINVAL;
 +    }
@@ -505014,7 +505639,8 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +    arguments->arg = opaque;
 +    arguments->mode = QEMU_THREAD_JOINABLE;
 +    arguments->bounded = receipt;
-+
+ 
+-    pthread_attr_destroy(&attr);
 +    sigfillset(&blocked);
 +    sigdelset(&blocked, SIGSEGV);
 +    sigdelset(&blocked, SIGFPE);
@@ -505067,12 +505693,10 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3224375f0841afeeaf14bc4debeaf255
 +#else
 +    return -ENOTSUP;
 +#endif
-+}
-+
+ }
+ 
  int qemu_thread_set_affinity(QemuThread *thread, unsigned long *host_cpus,
-                              unsigned long nbits)
- {
-@@ -536,7 +4554,7 @@ void qemu_thread_get_self(QemuThread *thread)
+@@ -536,7 +4581,7 @@ void qemu_thread_get_self(QemuThread *thread)
      thread->thread = pthread_self();
  }
  

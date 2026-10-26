@@ -71,6 +71,38 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 680 bindings: 661 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
+#### Unarmed Cleanup worker backing
+
+Signed atomic QEMU commit `0703c5dfef` connects the actual bounded storage and
+provider initializer to separately paid startup and libc/TLS mappings plus the
+existing guarded-stack interior. Each physical result remains in the same
+owner before independent posts; one initializer records both borrowed ranges.
+Post observation preserves the producers' factual custody flags. The compiled
+fixed-control floor includes all added inline snapshots and configuration.
+
+The native storage constructor has an explicit unarmed form that grants no
+worker entry. Its original form still rejects a missing entry. Creation
+refuses an unarmed owner before attempt flags, attributes, signal masks or
+birth. The component's finite STRICT policy and proposed arena extent are
+validated by the actual provider; they do not qualify the complete workload.
+Missing complete-profile Current and containing process payment still refuse
+before all dynamic effects.
+
+The actual POSIX implementation and component control targets compile in both
+the default and authentic-header bounded-provider configurations. Source syntax
+checks pass in both configurations; Source object builds retain the existing
+unused `quantum_rr_actor_birth` error under unchanged warning options. The
+component controls were compiled, not executed. Extraction passes for the same
+179 roots and 1,299 functions, establishing slice/hash coherence only. Genuine
+worker entry, terminal receipt producers, physical return, complete execution
+profile and runtime qualification remain unfinished.
+
+Exact signed patch reconstruction passes at
+`45hwnn3lpzmkqqaqd7x1flp9wjwsgfn9`, including both negative identity controls.
+The license ledger passes at `1azb67hi883r0dxs9zbg4s2rzv90idhv`, covering all
+665 created files. Core evaluation passes. These results establish source
+artifact integrity, not complete boundary or runtime qualification.
+
 #### Application-paid guarded Cleanup stack component
 
 Signed atomic QEMU commit `3b099f055ec` retains a canonical guarded-stack

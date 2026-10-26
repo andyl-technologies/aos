@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "7a76cf82503f4a441a997e59759fbad56aabda7efc80a354e2ea3a8016a602c8";
-  subject = "crucible: preserve ownership integration with guarded Cleanup stacks";
-  body = "Retain the complete Crucible Source integration, Core quantum bank borrowers,\nfixed Module callbacks, opaque frame acquisition and bounded provider storage\ninterfaces in one source tree over the selected base.\n\nAdd a canonical application-paid guarded Cleanup stack mapping owner with\nonce-only physical-effect journals, checked complete fixed-control payment,\nand separate provider, terminal and outer-stack-last-use prerequisites.\nKeep physical unmap before settlement and the final gated debit return.\n\nComplete terminal execution-profile ownership is still unavailable. Missing\ncontaining prebirth payment, TLS/allocator consumers and actual outer last-use\nproduction remain fail-closed; one-MiB component geometry and worker join do\nnot qualify a complete execution profile or authorize admission.\n\nSource extraction and owning-source syntax checks pass. The owning-object\nbuild still rejects the existing unused quantum_rr_actor_birth helper with\nthe unchanged warning policy. No successful object build or runtime activation\nis claimed.";
-  commit = "3b099f055ec0c3715c509c39adc5ad68d0d914a5";
-  tree = "849797ff3dd3567fcc2a1d0cc5cc4625401e93cc";
+  sha256 = "3fd687914c83de266e6bf0494f78e477202882137b654e63b48fd71e36dace33";
+  subject = "crucible: preserve ownership integration with unarmed Cleanup backing";
+  body = "Retain the complete Crucible Source integration, Core quantum bank borrowers,\nfixed Module callbacks, opaque frame acquisition and bounded provider ownership\ninterfaces as one complete source tree over the selected base.\n\nProvide canonical application-paid guarded stack custody, checked expanded\nfixed-control payment and separately charged native startup and libc arena\nbacking. Connect the retained stack interior and real caller-backed unarmed\nstorage to the actual bounded provider initializer. Preserve exact outputs and\nonce-only journals before independent posts, including both ranges consumed\nby one initialization. Keep the existing armed constructor's entry contract;\nunarmed creation refuses before physical effects and has no binding operation.\n\nComplete-profile Current, containing prebirth payment, workload bounds,\nallocator ownership and genuine terminal producers remain unavailable. This\nresource component enables no Cleanup worker or accepting admission. Physical\nreturn still requires distinct provider, context/cache/RCU and final outer\nlast-use production; byte geometry or a successful join cannot supply them.\n\nSource syntax checks pass in default and authentic-header provider compile-only\nconfigurations. Native owner and component-control objects compile in both;\nSource objects retain the existing unused quantum_rr_actor_birth diagnostic\nwith the unchanged warning policy. Source extraction passes. No component,\nprovider/startup experiment, guest or runtime activation is executed.";
+  commit = "0703c5dfef1633a397e8f73d2d94874eec7d6a5f";
+  tree = "71b8c259ca754ff199775c2e3f891fb394873041";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/guarded-cleanup-stack-atomic";
+  branchRef = "dplecki/unarmed-cleanup-worker-atomic";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "050be6beb90cc90f926148bf20b3846498b93e7b80220ba1375788f304afba68";
+  bundleSha256 = "27640b31214a89e4286a0e864346a080989ebf5dd10a85e5d00eb6c573d8b101";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
