@@ -106,9 +106,16 @@ hashes without reading chunk bodies or issuing reusable content-read authority.
 Dictionary dependencies and ancestor metadata still need separate reachability
 evidence. Four additional native cases cover withheld inline and manifest chunk
 bodies, stored but unselected hashes, bounds and changed policy publication.
-Native execution and mandatory application-target compilation for this change
-remain pending. This is a prerequisite for the production Content service, not
-acceptance of Content.Has, Negotiate or T-PROTO1. Accepted tasks remain 28/64.
+Native qualification at `af1db36f6e` passes in 1,279.459 seconds, including
+compilation and image construction. Independent review matches all 8,291
+immutable source files, 5,512 bound inputs and the retained test executable.
+All six exact cases execute in one UID-840 ext4 AOS guest with empty capabilities
+and no-new-privileges, retaining the original 60-second case and 240-second guest
+bounds. The later descriptive-summary correction changes no selectors or limits;
+no Rust source has changed since that frozen qualification. Mandatory
+application-target compilation remains pending. This is a prerequisite for the
+production Content service, not acceptance of Content.Has, Negotiate or
+T-PROTO1. Accepted tasks remain 28/64.
 
 Actual configured CLI qualification at `221134c592` passes in 208.985 seconds.
 Independent review matches all 8,289 immutable source files, 5,510 bound inputs
