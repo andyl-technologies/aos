@@ -27,6 +27,7 @@ def _dependency_profile_impl(ctx):
         "hub-db-all-features-tests",
         "package-manager",
         "package-manager-tests",
+        "package-evaluation-driver",
         "configuration-image",
         "configuration-image-tests",
         "preparation-provider",

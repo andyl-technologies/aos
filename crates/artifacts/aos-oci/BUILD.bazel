@@ -71,7 +71,7 @@ aos_rust_test(
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "external_signing",
     crate_root = "tests/external_signing.rs",
-    srcs = glob(["tests/**/*.rs"]),
+    srcs = glob(["tests/**/*.rs"], allow_empty = True),
     deps = [":lib"] + DEPENDENCIES + TEST_DEPENDENCIES,
 )
 
@@ -82,7 +82,7 @@ aos_rust_test(
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "layout",
     crate_root = "tests/layout.rs",
-    srcs = glob(["tests/**/*.rs"]),
+    srcs = glob(["tests/**/*.rs"], allow_empty = True),
     deps = [":lib"] + DEPENDENCIES + TEST_DEPENDENCIES,
 )
 
@@ -93,7 +93,7 @@ aos_rust_test(
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "registry",
     crate_root = "tests/registry.rs",
-    srcs = glob(["tests/**/*.rs"]),
+    srcs = glob(["tests/**/*.rs"], allow_empty = True),
     deps = [":lib"] + DEPENDENCIES + TEST_DEPENDENCIES,
 )
 
@@ -149,7 +149,7 @@ aos_source_package(
 # Shared source fixtures compile in the consuming integration test crate.
 filegroup(
     name = "registry_fixture_sources",
-    srcs = glob(["tests/support/**/*.rs"]),
+    srcs = glob(["tests/support/**/*.rs"], allow_empty = True),
     tags = ["aos-license:apache-host"],
     visibility = ["//crates:__subpackages__"],
 )

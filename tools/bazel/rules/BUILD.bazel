@@ -546,3 +546,9 @@ config_setting(
     flag_values = {":dependency_profile": "nix-store-provider"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "package_evaluation_driver_dependencies",
+    flag_values = {":dependency_profile": "package-evaluation-driver"},
+    visibility = ["//visibility:public"],
+)

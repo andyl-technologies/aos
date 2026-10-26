@@ -57,7 +57,7 @@ aos_rust_test(
     name = "unit",
     package = RUST_PACKAGE,
     crate = ":lib",
-    compile_data = glob(["tests/fixtures/**/*.yaml"]),
+    compile_data = glob(["tests/fixtures/**/*.yaml"], allow_empty = True),
 )
 
 rust_binary(
@@ -154,6 +154,6 @@ aos_source_package(
     name = "source_package",
     package = RUST_PACKAGE,
     srcs = glob(["**/*.rs"]),
-    data = glob(["tests/fixtures/**/*.yaml"]),
+    data = glob(["tests/fixtures/**/*.yaml"], allow_empty = True),
     visibility = ["//visibility:public"],
 )

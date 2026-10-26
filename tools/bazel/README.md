@@ -2451,6 +2451,41 @@ Live image/system activation, foreign-host execution, numeric performance
 acceptance, production default cutover and repository-wide Cargo removal
 remain separate RFC gates.
 
+## Package evaluation fixture driver
+
+`pkgs.aos-package-evaluation-driver.passthru.withBuildDriver "bazel"` installs
+`bin/package_deployment_check` from the package-manager example. Cargo remains
+the default and rollback builder. The Bazel selector avoids evaluating the
+Cargo constructor or vendor tree and preserves the existing package identity,
+platform contract, installed files and complete runtime closure.
+
+`checks.build.bazel.package-evaluation-driver-production.all`, also exposed
+through `tools/bazel/tests/package-evaluation-driver-production.nix`, compares
+all 27 first-party compilation profiles, including both execution generators,
+and feature selections for 24 first-party packages and 332 external dependencies.
+A dedicated pinned dependency profile preserves Cargo's separate target and
+execution features for `getrandom` and `hashbrown`. All 75 existing profiles
+retain their dependency definitions and 16,769 generated files.
+
+The qualification runs both installed commands through three real fixture modes
+in separate private `local?root` Nix stores using source-built Nix: deterministic
+read-only evaluation; retention of source evaluation through generation roots
+followed by garbage collection; and publication, activation, recovery,
+reconfiguration and pruning. The existing read-only and source-collection
+harnesses are reused directly. Four retained JSON documents must match across
+builders, and five argument-rejection cases must produce identical results.
+
+Precise and conservative source selections must agree on both production roots
+and 442 configured reports and produce identical installed binary bytes after
+normal package fixup. The raw binaries differ only in four native `ring` DWARF
+sections that record sandbox paths; every non-debug section matches. Installed
+ELF linkage, runtime closures, Cargo-free source selection and all 887 fresh
+Linux sandbox actions are checked independently. Evidence is retained in
+`tests/evidence/package-evaluation-driver-production-package.json`.
+
+Foreign-host execution, numeric performance acceptance, production default
+cutover and repository-wide Cargo removal remain separate RFC gates.
+
 ## Storage/campaign compilation measurements
 
 `tests/evidence/store-performance-v3.json` identifies a frozen compilation trial

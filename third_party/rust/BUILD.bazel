@@ -14,6 +14,8 @@ load(":configuration-files-tests/aliases.bzl", CONFIGURATION_FILES_TESTS_CRATES 
 load(":preparation-provider/aliases.bzl", PREPARATION_PROVIDER_CRATES = "CRATES")
 load(":preparation-provider-tests/aliases.bzl", PREPARATION_PROVIDER_TESTS_CRATES = "CRATES")
 load(":nix-store-provider/aliases.bzl", NIX_STORE_PROVIDER_CRATES = "CRATES")
+load(":package-evaluation-driver/aliases.bzl", PACKAGE_EVALUATION_DRIVER_CRATES = "CRATES")
+load(":package-evaluation-driver.bzl", "PACKAGE_EVALUATION_DRIVER_FEATURE_VARIANTS")
 load(":boot-preparation.bzl", "BOOT_PREPARATION_FEATURE_VARIANTS", "BOOT_PREPARATION_MINIMAL_FEATURE_VARIANTS", "BOOT_PREPARATION_MINIMAL_PACKAGES", "BOOT_PREPARATION_PACKAGES")
 load(":boot-preparation/aliases.bzl", BOOT_PREPARATION_CRATES = "CRATES")
 load(":boot-preparation-minimal/aliases.bzl", BOOT_PREPARATION_MINIMAL_CRATES = "CRATES")
@@ -141,6 +143,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
             "//tools/bazel/rules:preparation_provider_dependencies": PREPARATION_PROVIDER_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:preparation_provider_tests_dependencies": PREPARATION_PROVIDER_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:nix_store_provider_dependencies": NIX_STORE_PROVIDER_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:package_evaluation_driver_dependencies": PACKAGE_EVALUATION_DRIVER_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:boot_preparation_dependencies": BOOT_PREPARATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:boot_preparation_minimal_dependencies": BOOT_PREPARATION_MINIMAL_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:release_coordination_dependencies": RELEASE_COORDINATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -216,6 +219,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         + PREPARATION_PROVIDER_CRATES.items()
         + PREPARATION_PROVIDER_TESTS_CRATES.items()
         + NIX_STORE_PROVIDER_CRATES.items()
+        + PACKAGE_EVALUATION_DRIVER_CRATES.items()
         + BOOT_PREPARATION_CRATES.items()
         + BOOT_PREPARATION_MINIMAL_CRATES.items()
         + RELEASE_COORDINATION_CRATES.items()
@@ -1115,6 +1119,7 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "package-evaluation-driver": PACKAGE_EVALUATION_DRIVER_FEATURE_VARIANTS,
     "nix-store-provider": {
         # Keep the native derive parser; the lock also resolves foreign-only
         # tempfile dependencies that enable Syn's full parser on other hosts.
@@ -1977,6 +1982,7 @@ APPROVED_LICENSES = [
             "hub-db-all-features-tests": ["hub-db.bzl"],
             "package-manager": ["package-manager.bzl"],
             "package-manager-tests": ["package-manager.bzl"],
+            "package-evaluation-driver": ["package-manager.bzl", "package-evaluation-driver.bzl"],
             "kernel-tunable": ["kernel-tunable.bzl"],
             "kernel-tunable-tests": ["kernel-tunable.bzl"],
             "systemd-provider": ["systemd-provider.bzl"],
@@ -2024,6 +2030,7 @@ APPROVED_LICENSES = [
         ("boot-preparation-minimal", BOOT_PREPARATION_MINIMAL_PACKAGES, {name: annotation for name, annotation in NATIVE_FOUNDATION_ANNOTATIONS.items() if name != "zstd-sys"}, "apache-host"),
         ("package-manager", PACKAGE_MANAGER_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("package-manager-tests", PACKAGE_MANAGER_TESTS_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
+        ("package-evaluation-driver", PACKAGE_MANAGER_TESTS_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("hub-db", HUB_DB_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
         ("hub-db-tests", HUB_DB_TESTS_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
         ("hub-db-all-features", HUB_DB_ALL_FEATURES_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
@@ -2123,6 +2130,7 @@ APPROVED_LICENSES = [
         "hub-db-all-features-tests",
         "package-manager",
         "package-manager-tests",
+        "package-evaluation-driver",
         "configuration-image",
         "configuration-image-tests",
         "kernel-tunable",

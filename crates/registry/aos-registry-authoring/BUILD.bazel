@@ -106,7 +106,7 @@ INTEGRATION_TESTS = ["change_requests", "registry_default_channel", "registry_e2
         package = RUST_PACKAGE,
         crate_name = name,
         crate_root = "tests/" + name + ".rs",
-        srcs = glob(["tests/**/*.rs"]),
+        srcs = glob(["tests/**/*.rs"], allow_empty = True),
         deps = [":lib"] + DEPENDENCIES + TEST_DEPENDENCIES,
         proc_macro_deps = PROC_MACROS,
         setup = "@aos_registry_runtime//:setup",

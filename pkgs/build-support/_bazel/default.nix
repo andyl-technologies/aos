@@ -102,6 +102,12 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    package-evaluation-driver = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "package-evaluation-driver";
+    };
+
     nix-store-provider = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;

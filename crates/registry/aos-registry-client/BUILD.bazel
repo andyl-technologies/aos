@@ -62,6 +62,7 @@ TEST_RUNFILES = {
 
 TEST_FEATURES = select({
     "//tools/bazel/rules:package_manager_tests_dependencies": ["test-support"],
+    "//tools/bazel/rules:package_evaluation_driver_dependencies": ["test-support"],
     "//tools/bazel/rules:registry_native_tests_dependencies": ["test-support"],
     "//conditions:default": [],
 })
@@ -77,6 +78,7 @@ rust_library(
     crate_features = TEST_FEATURES,
     deps = DEPENDENCIES + select({
         "//tools/bazel/rules:package_manager_tests_dependencies": ["//third_party/rust:core_ed25519_dalek"],
+        "//tools/bazel/rules:package_evaluation_driver_dependencies": ["//third_party/rust:core_ed25519_dalek"],
         "//tools/bazel/rules:registry_native_tests_dependencies": ["//third_party/rust:core_ed25519_dalek"],
         "//conditions:default": [],
     }),
@@ -108,7 +110,7 @@ INTEGRATION_TESTS = []
         package = RUST_PACKAGE,
         crate_name = name,
         crate_root = "tests/" + name + ".rs",
-        srcs = glob(["tests/**/*.rs"]),
+        srcs = glob(["tests/**/*.rs"], allow_empty = True),
         deps = [":lib"] + DEPENDENCIES + TEST_DEPENDENCIES,
         proc_macro_deps = PROC_MACROS,
         setup = "@aos_registry_runtime//:setup",

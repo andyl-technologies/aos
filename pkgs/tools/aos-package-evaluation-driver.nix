@@ -7,44 +7,61 @@
   sqlite,
   libssh2,
   zlib,
-}:
-mkAosCargoPackage {
-  pname = "native-config-evaluation-driver";
-  version = "0";
-  platformSupport = {
-    build = [
-      {
-        abi = ["gnu"];
-        os = ["linux"];
+  callPackage,
+  buildDriver ? "cargo",
+}: let
+  withBuildDriver = selected: callPackage ./aos-package-evaluation-driver.nix {buildDriver = selected;};
+  packageArguments = {
+    pname = "native-config-evaluation-driver";
+    version = "0";
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "build-input";
+    };
+    cargoDeps = aosWorkspaceVendor;
+    cargoRoot = "crates";
+    cargoFlags = "-p aos-package-manager --example package_deployment_check";
+    doCheck = false;
+    buildDeps = [buildPackages.pkg-config buildPackages.protobuf buildPackages.cmake buildPackages.perl];
+    runtimeDeps = [openssl sqlite libssh2 zlib];
+    cargoEnv = {
+      AOS_LIBSSH2_PREFIX = "${libssh2}";
+      OPENSSL_DIR = "${openssl}";
+      OPENSSL_LIB_DIR = "${openssl}/lib";
+      OPENSSL_INCLUDE_DIR = "${openssl}/include";
+      OPENSSL_NO_VENDOR = "1";
+      OPENSSL_STATIC = "0";
+    };
+    meta = {
+      description = "Exercises admitted native package evaluation without activating effects";
+      license = "Apache-2.0";
+      mainProgram = "package_deployment_check";
+    };
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-package-evaluation-driver-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
       }
-    ];
-    host = [
-      {
-        abi = ["gnu"];
-        cpu = ["x86_64" "aarch64"];
-        os = ["linux"];
-      }
-    ];
-    target = [];
-    role = "build-input";
-  };
-  cargoDeps = aosWorkspaceVendor;
-  cargoRoot = "crates";
-  cargoFlags = "-p aos-package-manager --example package_deployment_check";
-  doCheck = false;
-  buildDeps = [buildPackages.pkg-config buildPackages.protobuf buildPackages.cmake buildPackages.perl];
-  runtimeDeps = [openssl sqlite libssh2 zlib];
-  cargoEnv = {
-    AOS_LIBSSH2_PREFIX = "${libssh2}";
-    OPENSSL_DIR = "${openssl}";
-    OPENSSL_LIB_DIR = "${openssl}/lib";
-    OPENSSL_INCLUDE_DIR = "${openssl}/include";
-    OPENSSL_NO_VENDOR = "1";
-    OPENSSL_STATIC = "0";
-  };
-  meta = {
-    description = "Exercises admitted native package evaluation without activating effects";
-    license = "Apache-2.0";
-    mainProgram = "package_deployment_check";
-  };
-}
+    else cargoPackage
