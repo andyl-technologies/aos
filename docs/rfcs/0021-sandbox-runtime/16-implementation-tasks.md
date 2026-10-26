@@ -712,9 +712,12 @@ Recent committed startup fixes close narrower prerequisites:
   stopped-owner observation refuses. Strict drop-in typing also applies to the
   existing manual-unit reader. All 97 focused initial tests pass, including
   five new profile, changed-name, owed-post and property-shape regressions.
-  Complete application target compilation is running for the exact eight Rust
-  inputs. This closes the fragment-provenance prerequisite; full native unit
-  configuration and executable/runtime admission, key separation, Session
+  Complete application unit and integration targets compile for the frozen
+  V2 fragment source
+  (`/nix/store/ra1w329sy6xbbfpm73w86naazscb2285-aos-test-targets-0.1.0`),
+  without executing them and before the later V3 command/runtime and shared
+  Session schema changes. This closes the fragment-provenance prerequisite;
+  full native unit configuration and executable/runtime admission, key separation, Session
   schema, job exclusion, durable intent, physical TPM custody and installed
   producer qualification remain incomplete. Public admission remains closed.
 
