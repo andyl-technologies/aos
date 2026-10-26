@@ -202,6 +202,16 @@ fn startup_reports_actual_private_state_recovery_failure(
         b"generated scratch must survive failed preflight"
     );
     assert!(invalid_directory.is_dir());
+
+    let native = NativePublisher::open(
+        confinement,
+        "public".into(),
+        &paths[0],
+        &paths[1],
+        &paths[2],
+    )
+    .expect("failed startup must finish teardown before returning its error");
+    drop(native);
 }
 
 fn unsupported_wipe_policy_is_refused_before_directory_effects(

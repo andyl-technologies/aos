@@ -400,6 +400,14 @@ def run(driver, image):
                        and int(restarted_publisher["MainPID"]) > 0
                        and restarted_publisher["MainPID"] != publisher["MainPID"],
                        "managed publisher did not recover and notify from a fresh process")
+        restart_journal = command(driver, ["journalctl", "--no-pager", "--output=cat",
+                                           "--unit=terrane-publish.service"])
+        restart_identities = [json.loads(line.removeprefix("TERRANE_MANAGED_ACTOR_IDENTITY "))
+                              for line in restart_journal.splitlines()
+                              if line.startswith("TERRANE_MANAGED_ACTOR_IDENTITY ")]
+        driver.require(restart_identities == [publisher_identity[0],
+                        {**publisher_identity[0], "pid": int(restarted_publisher["MainPID"])}],
+                       "restarted publisher identity, privileges or executable differ")
         fresh_metadata = publisher_socket.lstat()
         driver.require(stat.S_ISSOCK(fresh_metadata.st_mode) and fresh_metadata.st_mode & 0o7777 == 0o660
                        and fresh_metadata.st_uid == 841 and fresh_metadata.st_gid == 845
@@ -427,6 +435,7 @@ def run(driver, image):
             "systemd_pid1": True, "restart_recovery": False, "physical_release": False,
             "publisher_mount_policy": publisher_policy[0], "publisher_identity": publisher_identity[0],
             "publisher": publisher, "restarted_publisher": restarted_publisher,
+            "restarted_publisher_identity": restart_identities[1],
             "publisher_listener_retired": True, "publisher_restart": True,
             "gc_manager_journal": gc_events,
         }, sort_keys=True), flush=True)

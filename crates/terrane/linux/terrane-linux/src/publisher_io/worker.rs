@@ -571,12 +571,22 @@ impl NativePublicationWorker {
                     }
                 });
             })?;
-        ready_receiver.recv().map_err(|_| {
-            io::Error::new(
+        let startup = match ready_receiver.recv() {
+            Ok(result) => result,
+            Err(_) => Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "publisher worker stopped during state recovery",
-            )
-        })??;
+            )),
+        };
+        if let Err(error) = startup {
+            // Sending the startup error precedes runtime and retained-guard
+            // teardown. Returning before that teardown would detach an actual
+            // failed owner and leave its exclusion live after startup returns.
+            drop(sender);
+            let _ = thread.join();
+            return Err(error);
+        }
+
         Ok((
             Self {
                 sender,

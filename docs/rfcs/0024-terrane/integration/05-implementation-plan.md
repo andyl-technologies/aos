@@ -273,6 +273,33 @@ CLI feature profile; module evaluation, Nix formatting, PLAN-2 and diff checks
 pass. Required application compilation and native runtime qualification of this
 correction remain pending. No complete task is newly accepted.
 
+At frozen `ee6316d492`, required application compilation passes in 1,487.824
+seconds; independent review matches all 8,296 immutable source files and 190
+test-target records across 59 packages. The isolated native prerequisite
+controller passes in 1,346.846 seconds. Its fresh capability-free ext4 probe,
+96 exact remote dispatches, three separately reviewed shared compile/package
+inputs, disabled host-native fallback and clean shutdown are verified. Seven
+raw records are preserved and owned scratch is removed. Independent image
+review binds that same source, 5,517 configured-image and 5,523 enrollment-image
+inputs, and five actual retained executables. These are compilation and image
+results; the unmodified managed publisher restart fixture is still running.
+
+A follow-up source audit finds that reporting a worker's startup error precedes
+its runtime and retained-guard teardown. The startup constructor now drops its
+command sender and joins that failed thread before returning the original error;
+successful startup is unchanged. The existing actual private-state recovery
+failure case also requires immediate reacquisition of the original native root
+exclusion after the error, with the malformed state and generated scratch still
+preserved. Qualification of this follow-up must use its own frozen source;
+the already running `ee6316d492` checks cannot establish it. The manager fixture
+also checks the restarted publisher's actual journal identity against PID 1's
+fresh main PID and the original UID, groups, empty capabilities,
+no-new-privileges and retained executable digest. Strict AOS-built all-target
+Clippy passes for Tokio alone and the native-fixture/production CLI profile;
+targeted formatting, Python syntax, PLAN-2 and diff checks pass. Required
+application compilation and native qualification of the follow-up remain
+pending, with no complete-task acceptance.
+
 The full feature matrix at the earlier frozen `e6f214f3ce` checkpoint passes in
 19,245.158 seconds in the isolated 32 GiB AOS builder. Independent review matches
 the immutable source and both native profile compiler records, all 21 passing
