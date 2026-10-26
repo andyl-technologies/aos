@@ -378,13 +378,16 @@ The [formatting receipt](tests/evidence/rust-format-workflow.json) retains the
 complete root inventory, output hashes, and observed CLI behavior.
 
 `checks.build.bazel.test-support.all` compiles and runs the harness unit tests
-and six executable integration fixtures: ABI vectors, adversarial determinism,
-divergence bisect, mock end-to-end determinism, layer-0 assertion contracts, and
-reproduction artifacts. An independent native rustc build compares all 76
+and eight executable integration fixtures: adversarial host conditions,
+fingerprint definitions, ABI vectors, adversarial determinism, divergence bisect,
+mock end-to-end determinism, layer-0 assertion contracts, and reproduction
+artifacts. An independent native rustc build compares all 94
 libtest cases, and native rustdoc checks the same doctest. The checked inventory
-selects 42 configured targets and a workspace without Cargo manifests or locks.
-The [fixture receipt](tests/evidence/test-support-native-fixtures.json) retains
-compiler-input and execution evidence for both source selections.
+selects 46 configured targets and a workspace without Cargo manifests or locks.
+The [host-fixture receipt](tests/evidence/test-support-host-fixtures.json) retains
+matching compiler arguments, environments, declared inputs, and output digests
+for both source selections. The 27 repository audit and feature-driver
+integration targets remain separate migration work.
 
 `checks.build.bazel.feature-powerset.all` independently compiles the nine
 engine, QEMU host, and device configurations from the existing feature-powerset
@@ -503,6 +506,15 @@ loader, and runtime paths. The [production builder receipt](tests/evidence/boot-
 also records identical runtime closures and an absent fallback build dependency.
 Default cutover, foreign-platform qualification, and performance acceptance
 remain separate requirements.
+
+`tools/bazel/tests/initrd-source.nix` compiles standalone initrd orchestration,
+runs its three unit cases, exports its executable package, and checks the
+production license closure. Its checked inventory selects one first-party Rust file.
+The [source-slice receipt](tests/evidence/initrd-source-slice.json) compares
+conservative and Cargo-free workspaces with identical compiler inputs and
+package bytes, using an explicitly pinned source-built boot-tool snapshot.
+Installed helper scripts, runtime-closure parity, and boot transactions require
+their separate production and VM checks.
 
 Shared compile macros declare a license domain. Package analysis follows
 compiled dependency edges and rejects Apache host/GPL QEMU combinations in

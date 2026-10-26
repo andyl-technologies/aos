@@ -1,6 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
@@ -48,7 +49,9 @@ rust_library(
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "aos_boot_runtime",
     crate_root = "src/lib.rs",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**/*.rs"]),
+    # The standalone-only Nix source slice omits the unselected library tree.
+    # Selecting this library still requires its explicit crate_root.
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**/*.rs"], allow_empty = True),
     crate_features = BOOT_FEATURES,
     deps = DEPENDENCIES,
 )
@@ -280,6 +283,19 @@ aos_rust_test(
 )
 
 STANDALONE_ARTIFACTS = [":standalone", ":standalone_unit_binary"]
+
+aos_package(
+    name = "standalone_package",
+    package = RUST_PACKAGE,
+    artifacts = {":standalone": "bin/aos-boot-preparations"},
+    executables = ["bin/aos-boot-preparations"],
+)
+
+aos_license_check(
+    name = "standalone_production_license_closure",
+    roots = [":standalone"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
 
 rust_clippy(name = "standalone_clippy", testonly = True, deps = STANDALONE_ARTIFACTS)
 rustfmt_test(name = "standalone_format", targets = STANDALONE_ARTIFACTS)

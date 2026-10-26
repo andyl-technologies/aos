@@ -51,6 +51,8 @@ aos_rust_test(
         deps = [":lib"],
     )
     for target in [
+        "adversarial_host_fixture",
+        "fingerprint_definition",
         "gate_abi_conformance",
         "gate_adversarial_determinism",
         "gate_divergence_bisect",

@@ -7,6 +7,8 @@
   label = "//${packagePath}";
   source = ../../crates/crucible/crucible-test-support;
   integrations = [
+    "adversarial_host_fixture"
+    "fingerprint_definition"
     "gate_abi_conformance"
     "gate_adversarial_determinism"
     "gate_divergence_bisect"
