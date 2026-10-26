@@ -2,24 +2,29 @@
 //!
 //! The enclosing original lends actual Source-paid Host, Mount and Network
 //! credential readbacks. Each canonical decode and comparison stays resident,
-//! including revoked and superseded pins. These comparisons do not establish
-//! optional Nix/Mount FUSE or Root key separation, or any native effect permit.
+//! including revoked and superseded pins. Configured Mount FUSE and Nix use
+//! that same codec. Their absence is accepted only from the genuine readback
+//! loan's compared roster. Nix floor-authority and Root key separation and
+//! native effects remain owed.
 
 use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
 use aos_sandbox_broker_session_protocol::manifest::{
     BrokerSessionManifestAudienceV1, BrokerSessionManifestErrorV1, BrokerSessionManifestV1,
 };
 
-pub(super) const PROTOCOLS: [BrokerSessionProtocolV1; 3] = [
+pub(super) const PROTOCOLS: [BrokerSessionProtocolV1; 5] = [
     BrokerSessionProtocolV1::Host,
     BrokerSessionProtocolV1::Mount,
     BrokerSessionProtocolV1::Network,
+    BrokerSessionProtocolV1::MountFuse,
+    BrokerSessionProtocolV1::Nix,
 ];
 
 pub(super) struct OtherNormalManifestOriginal {
     decoded: Option<Result<BrokerSessionManifestV1, BrokerSessionManifestErrorV1>>,
     scope_match: Option<bool>,
     approval_separate: Option<bool>,
+    absent: Option<BrokerSessionProtocolV1>,
     entered: bool,
     closed: bool,
 }
@@ -30,6 +35,7 @@ impl OtherNormalManifestOriginal {
             decoded: None,
             scope_match: None,
             approval_separate: None,
+            absent: None,
             entered: false,
             closed: false,
         }
@@ -69,10 +75,30 @@ impl OtherNormalManifestOriginal {
     }
 
     pub(super) fn admitted(&self) -> bool {
-        !self.closed
-            && matches!(self.decoded, Some(Ok(_)))
-            && self.scope_match == Some(true)
-            && self.approval_separate == Some(true)
+        if self.closed || self.scope_match != Some(true) {
+            return false;
+        }
+        match self.absent {
+            Some(BrokerSessionProtocolV1::MountFuse | BrokerSessionProtocolV1::Nix) => {
+                self.decoded.is_none() && self.approval_separate.is_none()
+            }
+            Some(_) => false,
+            None => matches!(self.decoded, Some(Ok(_))) && self.approval_separate == Some(true),
+        }
+    }
+
+    pub(super) fn observe_optional_absence_once(&mut self, protocol: BrokerSessionProtocolV1) {
+        if self.entered || self.closed {
+            self.closed = true;
+            return;
+        }
+        self.entered = true;
+        self.absent = Some(protocol);
+        self.scope_match = Some(matches!(
+            protocol,
+            BrokerSessionProtocolV1::MountFuse | BrokerSessionProtocolV1::Nix
+        ));
+        self.closed = !self.admitted();
     }
 }
 
@@ -249,6 +275,56 @@ mod tests {
                 first
             );
             assert_eq!(original.approval_separate, Some(true));
+        }
+    }
+
+    #[test]
+    fn only_optional_protocols_can_retain_a_compared_absence() {
+        for protocol in PROTOCOLS
+            .into_iter()
+            .chain([BrokerSessionProtocolV1::Storage])
+        {
+            let mut original = OtherNormalManifestOriginal::new();
+            original.observe_optional_absence_once(protocol);
+
+            assert_eq!(
+                original.admitted(),
+                matches!(
+                    protocol,
+                    BrokerSessionProtocolV1::MountFuse | BrokerSessionProtocolV1::Nix
+                )
+            );
+            assert_eq!(original.absent, Some(protocol));
+            assert!(original.decoded.is_none());
+            assert!(original.approval_separate.is_none());
+
+            let (manifest, _) = crate::test_signed_endpoint::manifest_and_secrets(protocol);
+            original.observe_once(
+                &manifest.encode(),
+                protocol,
+                manifest.node_id(),
+                independent_approval(),
+            );
+            assert!(!original.admitted());
+            assert!(original.decoded.is_none());
+            assert_eq!(original.absent, Some(protocol));
+        }
+        for protocol in [
+            BrokerSessionProtocolV1::MountFuse,
+            BrokerSessionProtocolV1::Nix,
+        ] {
+            let (manifest, _) = crate::test_signed_endpoint::manifest_and_secrets(protocol);
+            let mut original = OtherNormalManifestOriginal::new();
+            original.observe_once(
+                &manifest.encode(),
+                protocol,
+                manifest.node_id(),
+                independent_approval(),
+            );
+            original.observe_optional_absence_once(protocol);
+            assert!(!original.admitted());
+            assert!(original.absent.is_none());
+            assert!(matches!(original.decoded, Some(Ok(_))));
         }
     }
 }

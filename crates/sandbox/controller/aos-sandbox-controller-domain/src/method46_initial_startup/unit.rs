@@ -99,6 +99,15 @@ impl InitialUnitOriginalV1 {
         self.admitted
     }
 
+    pub(super) fn credential_roster(
+        &self,
+    ) -> Result<[bool; credentials::NAMES.len()], Method46InitialStartupClosedV1> {
+        if !self.initial_admitted() {
+            return Err(Method46InitialStartupClosedV1);
+        }
+        delivery::selected_credential_roster(self.acquisition.bytes())
+    }
+
     fn observe_properties(
         &self,
         index: usize,

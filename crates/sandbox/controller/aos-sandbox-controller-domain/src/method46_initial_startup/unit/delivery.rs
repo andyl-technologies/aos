@@ -8,7 +8,7 @@
 
 use aos_systemd_client::{OwnedValue, Value};
 
-use super::super::credentials::NAMES;
+use super::super::credentials::{NAMES, REQUIRED_CREDENTIALS};
 use super::{Method46InitialServiceRoleV1, Method46InitialStartupClosedV1};
 
 const SIGNATURES: [&str; 6] = ["a(ss)", "a(ss)", "a(say)", "a(say)", "as", "a(ss)"];
@@ -72,13 +72,24 @@ fn selected_sources(
 
     let mut selected = [""; NAMES.len()];
     for (index, source) in sources.into_iter().enumerate() {
-        let source = source.ok_or(Method46InitialStartupClosedV1)?;
+        let Some(source) = source else {
+            if index < REQUIRED_CREDENTIALS {
+                return Err(Method46InitialStartupClosedV1);
+            }
+            continue;
+        };
         if selected[..index].contains(&source) {
             return Err(Method46InitialStartupClosedV1);
         }
         selected[index] = source;
     }
     Ok(selected)
+}
+
+pub(super) fn selected_credential_roster(
+    fragment: &[u8],
+) -> Result<[bool; NAMES.len()], Method46InitialStartupClosedV1> {
+    Ok(selected_sources(fragment)?.map(|source| !source.is_empty()))
 }
 
 pub(super) fn require_delivery(
@@ -105,7 +116,7 @@ pub(super) fn require_delivery(
             }
             continue;
         }
-        if rows.len() != NAMES.len() {
+        if rows.len() != sources.iter().filter(|source| !source.is_empty()).count() {
             return Err(Method46InitialStartupClosedV1);
         }
         // PID1's hash-map traversal order is not a protocol guarantee. Require
@@ -126,7 +137,7 @@ pub(super) fn require_delivery(
             }
         }
     }
-    if found != [true; NAMES.len()] {
+    if found != sources.map(|source| !source.is_empty()) {
         return Err(Method46InitialStartupClosedV1);
     }
     Ok(())
@@ -150,11 +161,17 @@ pub(super) fn require_other_normal_manifest_sources(
     fragment: &[u8],
 ) -> Result<(), Method46InitialStartupClosedV1> {
     let sources = selected_sources(fragment)?;
-    for (name, expected) in ["host-manifest", "mount-manifest", "network-manifest"]
-        .into_iter()
-        .zip(&sources[4..])
+    for (name, expected) in [
+        "host-manifest",
+        "mount-manifest",
+        "network-manifest",
+        "mount-fuse-manifest",
+        "nix-broker-session-manifest-v1",
+    ]
+    .into_iter()
+    .zip(&sources[4..])
     {
-        require_named_source(values, name, expected)?;
+        require_source(values, name, (!expected.is_empty()).then_some(*expected))?;
     }
     Ok(())
 }
@@ -163,6 +180,14 @@ fn require_named_source(
     values: &[OwnedValue],
     name: &str,
     expected: &str,
+) -> Result<(), Method46InitialStartupClosedV1> {
+    require_source(values, name, Some(expected))
+}
+
+fn require_source(
+    values: &[OwnedValue],
+    name: &str,
+    expected: Option<&str>,
 ) -> Result<(), Method46InitialStartupClosedV1> {
     if values.len() != SIGNATURES.len() {
         return Err(Method46InitialStartupClosedV1);
@@ -191,13 +216,13 @@ fn require_named_source(
                 return Err(Method46InitialStartupClosedV1);
             };
             if actual.as_str() == name
-                && (std::mem::replace(&mut found, true) || source.as_str() != expected)
+                && (std::mem::replace(&mut found, true) || Some(source.as_str()) != expected)
             {
                 return Err(Method46InitialStartupClosedV1);
             }
         }
     }
-    if !found {
+    if found != expected.is_some() {
         return Err(Method46InitialStartupClosedV1);
     }
     Ok(())
@@ -368,16 +393,22 @@ mod tests {
     }
 
     fn other_normal_rows() -> Vec<(String, String)> {
-        ["host-manifest", "mount-manifest", "network-manifest"]
-            .into_iter()
-            .enumerate()
-            .map(|(index, name)| {
-                (
-                    name.to_owned(),
-                    format!("/run/credentials/@system/external-{}", index + 4),
-                )
-            })
-            .collect()
+        [
+            "host-manifest",
+            "mount-manifest",
+            "network-manifest",
+            "mount-fuse-manifest",
+            "nix-broker-session-manifest-v1",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| {
+            (
+                name.to_owned(),
+                format!("/run/credentials/@system/external-{}", index + 4),
+            )
+        })
+        .collect()
     }
 
     #[test]
@@ -400,7 +431,7 @@ mod tests {
             rows.reverse();
         }
 
-        for index in 0..3 {
+        for index in 0..5 {
             let mut missing = other_normal_rows();
             missing.remove(index);
             let mut duplicate = other_normal_rows();
@@ -456,6 +487,83 @@ mod tests {
                 );
 
                 assert!(selected_sources(aliased.as_bytes()).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn optional_delivery_requires_exact_initial_and_controller_presence() {
+        for mount_fuse in [false, true] {
+            for nix in [false, true] {
+                let mut selected = [true; NAMES.len()];
+                selected[7] = mount_fuse;
+                selected[8] = nix;
+                let fragment = NAMES
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| selected[*index])
+                    .fold(String::from("[Service]\n"), |mut text, (index, name)| {
+                        text.push_str(&format!(
+                            "LoadCredential={name}:/run/credentials/@system/external-{index}\n"
+                        ));
+                        text
+                    });
+                let initial_rows = NAMES
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| selected[*index])
+                    .map(|(index, name)| {
+                        (
+                            name.to_string(),
+                            format!("/run/credentials/@system/external-{index}"),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let normal_rows = other_normal_rows()
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(index, _)| selected[index + 4])
+                    .map(|(_, row)| row)
+                    .collect::<Vec<_>>();
+                let mut values = properties();
+                values[12] = value(initial_rows.clone());
+
+                assert_eq!(
+                    selected_credential_roster(fragment.as_bytes()).unwrap(),
+                    selected
+                );
+                assert!(require_delivery(&values, fragment.as_bytes()).is_ok());
+                assert!(
+                    require_other_normal_manifest_sources(
+                        &normal_properties(normal_rows.clone()),
+                        fragment.as_bytes()
+                    )
+                    .is_ok()
+                );
+
+                for index in REQUIRED_CREDENTIALS..NAMES.len() {
+                    let mut changed_initial = initial_rows.clone();
+                    let mut changed_normal = normal_rows.clone();
+                    let normal_name = other_normal_rows()[index - 4].0.clone();
+                    if selected[index] {
+                        changed_initial.retain(|(name, _)| name != NAMES[index]);
+                        changed_normal.retain(|(name, _)| name != &normal_name);
+                    } else {
+                        let source = format!("/run/credentials/@system/external-{index}");
+                        changed_initial.push((NAMES[index].into(), source.clone()));
+                        changed_normal.push((normal_name, source));
+                    }
+                    values[12] = value(changed_initial);
+
+                    assert!(require_delivery(&values, fragment.as_bytes()).is_err());
+                    assert!(
+                        require_other_normal_manifest_sources(
+                            &normal_properties(changed_normal),
+                            fragment.as_bytes()
+                        )
+                        .is_err()
+                    );
+                }
             }
         }
     }

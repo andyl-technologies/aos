@@ -26,7 +26,8 @@ pub use provisioning_readback::{
 use entries::Entries;
 use observation::Observation;
 
-pub(super) const NAMES: [&str; 7] = [
+pub(super) const REQUIRED_CREDENTIALS: usize = 7;
+pub(super) const NAMES: [&str; 9] = [
     "broker-method46-tpm-provision-v1",
     "broker-method46-tpm-index-auth-v1",
     "method46-initial-approval-public-key-v1",
@@ -34,6 +35,8 @@ pub(super) const NAMES: [&str; 7] = [
     "method46-normal-host-manifest-v1",
     "method46-normal-mount-manifest-v1",
     "method46-normal-network-manifest-v1",
+    "method46-normal-mount-fuse-manifest-v1",
+    "method46-normal-nix-manifest-v1",
 ];
 const MANIFEST_BYTES: usize =
     aos_sandbox_broker_session_protocol::manifest::BROKER_SESSION_MANIFEST_BYTES;
@@ -41,6 +44,8 @@ const LENGTHS: [usize; NAMES.len()] = [
     160,
     32,
     32,
+    MANIFEST_BYTES,
+    MANIFEST_BYTES,
     MANIFEST_BYTES,
     MANIFEST_BYTES,
     MANIFEST_BYTES,
@@ -98,6 +103,7 @@ pub(super) struct InitialCredentialsOriginalV1 {
     entries: [Entries; 2],
     named_directory: Option<rustix::io::Result<File>>,
     credentials: [Credential; NAMES.len()],
+    selected: [bool; NAMES.len()],
     paid: bool,
     entered: bool,
     completed: bool,
@@ -120,6 +126,7 @@ impl InitialCredentialsOriginalV1 {
             entries: std::array::from_fn(|_| Entries::new()),
             named_directory: None,
             credentials: std::array::from_fn(|_| Credential::new()),
+            selected: [false; NAMES.len()],
             paid: false,
             entered: false,
             completed: false,
@@ -128,11 +135,16 @@ impl InitialCredentialsOriginalV1 {
         }
     }
 
-    fn capture(&mut self, profile: &Method46InitialProfileDataV3) -> bool {
+    fn capture(
+        &mut self,
+        profile: &Method46InitialProfileDataV3,
+        selected: [bool; NAMES.len()],
+    ) -> bool {
         if self.entered || !self.paid {
             return false;
         }
         self.entered = true;
+        self.selected = selected;
         self.root = Some(
             rustix::fs::open(
                 "/",
@@ -161,12 +173,15 @@ impl InitialCredentialsOriginalV1 {
         let label = credential_label(profile);
         self.directory_observations[0].observe(directory);
         if !self.directory_observations[0].require(label, None)
-            || !self.entries[0].observe(directory)
+            || !self.entries[0].observe(directory, &self.selected)
         {
             return false;
         }
 
         for (index, credential) in self.credentials.iter_mut().enumerate() {
+            if !self.selected[index] {
+                continue;
+            }
             credential.opened = Some(open_credential(directory, NAMES[index]));
             let Some(Ok(file)) = &credential.opened else {
                 return false;
@@ -247,13 +262,16 @@ impl InitialCredentialsOriginalV1 {
         self.directory_observations[2].observe(directory);
         let shape = self.directory_observations[2].require(label, None)
             && self.directory_observations[0].same_object(&self.directory_observations[2]);
-        let entries = self.entries[1].observe(directory);
+        let entries = self.entries[1].observe(directory, &self.selected);
         if !shape || !entries {
             return false;
         }
 
         let mut result = self.completed;
         for (index, credential) in self.credentials.iter_mut().enumerate() {
+            if !self.selected[index] {
+                continue;
+            }
             credential.named = Some(open_credential(directory, NAMES[index]));
             let shape = if let Some(Ok(file)) = &credential.named {
                 credential.observations[2].observe(file);
@@ -339,6 +357,13 @@ impl Method46InitialStartupOriginalV1 {
         if !ready {
             return Err(self.fail(First::Order));
         }
+        let selected = self
+            .body
+            .as_ref()
+            .ok_or(self.closed)?
+            .unit
+            .credential_roster()
+            .map_err(|_| self.fail(First::Credentials))?;
         // Startup body already includes all inline originals and buffers. This
         // additional finite allowance covers zeroizing bytes, path/native
         // allocations, kernel FD carriers and every initial/owed-post read.
@@ -357,7 +382,7 @@ impl Method46InitialStartupOriginalV1 {
             .and_then(|value| value.as_ref().ok());
         let original = body.credentials.get_mut();
         original.paid = true;
-        let result = profile.is_some_and(|profile| original.capture(profile));
+        let result = profile.is_some_and(|profile| original.capture(profile, selected));
         if !result {
             return Err(self.fail(First::Credentials));
         }

@@ -11,11 +11,11 @@ use std::cell::Ref;
 
 use super::*;
 
-/// Bounds the provisioning and mandatory manifest decoders and one approval verification.
+/// Bounds the provisioning and selected manifest decoders and one approval verification.
 ///
 /// Security checks its compiled retained layouts and fixed wire carriers
-/// against this prepaid bound, including all four mandatory normal public
-/// manifests, the signature and public pin.
+/// against this prepaid bound, including four mandatory and two optional
+/// normal public manifests, the signature and public pin.
 /// Actual credential buffers and original native observations are paid by the
 /// enclosing file owner separately. This size alone authenticates no payer.
 pub const METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1: usize = 32 * 1024;
@@ -125,6 +125,48 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
             }
         };
         self.public_bytes(slot)
+    }
+
+    /// Borrows a configured optional endpoint's original public manifest.
+    ///
+    /// Only Mount FUSE and Nix are accepted. The Source-bound initial unit and
+    /// actual stopped-Controller delivery sample must agree on each optional
+    /// source before this loan exists. `None` reports their compared absence,
+    /// also required by the original exact credential-directory enumeration.
+    /// It is not a caller-selected skip of key separation. Named and held
+    /// credential posts and the second Controller sample remain owed.
+    ///
+    /// # Errors
+    /// Refuses a mandatory protocol, an ended Source, busy or incomplete
+    /// credential custody, an entered post or a missing configured readback.
+    pub fn optional_normal_endpoint_manifest_bytes_v1(
+        &self,
+        protocol: aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1,
+    ) -> Result<Option<Ref<'_, [u8]>>, Method46InitialStartupClosedV1> {
+        use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
+
+        let slot = match protocol {
+            BrokerSessionProtocolV1::MountFuse => 7,
+            BrokerSessionProtocolV1::Nix => 8,
+            _ => return Err(self.startup.closed),
+        };
+        self.require_current()?;
+        let credentials = self
+            .startup
+            .body
+            .as_ref()
+            .ok_or(self.startup.closed)?
+            .credentials
+            .try_borrow()
+            .map_err(|_| self.startup.closed)?;
+        if !credentials.admitted_before_post() || !credentials.decode_loan_issued {
+            return Err(self.startup.closed);
+        }
+        if !credentials.selected[slot] {
+            return Ok(None);
+        }
+        drop(credentials);
+        self.public_bytes(slot).map(Some)
     }
 
     /// Exchanges fixed public request DATA through the same original listener.
@@ -283,6 +325,15 @@ mod tests {
         assert!(loan.provision_bytes_v1().is_err());
         assert!(loan.approval_public_key_bytes_v1().is_err());
         assert!(loan.normal_storage_manifest_bytes_v1().is_err());
+        for protocol in [
+            aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::MountFuse,
+            aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Nix,
+        ] {
+            assert!(
+                loan.optional_normal_endpoint_manifest_bytes_v1(protocol)
+                    .is_err()
+            );
+        }
         assert!(
             loan.exchange_approval_request_data_once_v1([0; INITIAL_APPROVAL_REQUEST_BYTES_V1])
                 .is_err()

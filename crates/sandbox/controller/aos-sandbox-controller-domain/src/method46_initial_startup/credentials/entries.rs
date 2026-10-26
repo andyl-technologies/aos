@@ -4,7 +4,7 @@ use std::fs::File;
 use std::mem::MaybeUninit;
 use std::os::fd::AsFd as _;
 
-use super::NAMES;
+use super::{NAMES, REQUIRED_CREDENTIALS};
 
 struct Entry {
     name: [u8; 64],
@@ -30,18 +30,24 @@ impl Entries {
         }
     }
 
-    pub(super) fn observe(&mut self, file: &File) -> bool {
+    pub(super) fn observe(&mut self, file: &File, selected: &[bool; NAMES.len()]) -> bool {
         if self.entered {
             return false;
         }
         self.entered = true;
+        if !selected[..REQUIRED_CREDENTIALS]
+            .iter()
+            .all(|selected| *selected)
+        {
+            return false;
+        }
         let mut directory = rustix::fs::RawDir::new(file.as_fd(), &mut self.buffer);
         let mut seen = [false; NAMES.len() + 2];
         for slot in &mut self.entries {
             match directory.next() {
                 None => {
                     self.eof = true;
-                    return seen.iter().all(|seen| *seen);
+                    return seen[..2].iter().all(|seen| *seen) && seen[2..] == selected[..];
                 }
                 Some(Err(error)) => {
                     *slot = Some(Err(error));
@@ -69,7 +75,7 @@ impl Entries {
                     let Some(index) = index else {
                         return false;
                     };
-                    if seen[index] {
+                    if seen[index] || (index >= 2 && !selected[index - 2]) {
                         return false;
                     }
                     seen[index] = true;
@@ -105,7 +111,7 @@ mod tests {
         let file = File::open(directory.path()).unwrap();
         let mut complete = Entries::new();
 
-        assert!(complete.observe(&file));
+        assert!(complete.observe(&file, &[true; NAMES.len()]));
         assert!(complete.eof);
         for name in NAMES {
             assert!(complete.retained_names().contains(&name.as_bytes()));
@@ -115,7 +121,7 @@ mod tests {
         let file = File::open(directory.path()).unwrap();
         let mut missing = Entries::new();
 
-        assert!(!missing.observe(&file));
+        assert!(!missing.observe(&file, &[true; NAMES.len()]));
         assert!(missing.eof);
         assert!(!missing.retained_names().contains(&NAMES[3].as_bytes()));
     }
@@ -127,7 +133,7 @@ mod tests {
         let file = File::open(directory.path()).unwrap();
         let mut original = Entries::new();
 
-        assert!(!original.observe(&file));
+        assert!(!original.observe(&file, &[true; NAMES.len()]));
         assert!(
             original
                 .retained_names()
@@ -135,11 +141,46 @@ mod tests {
         );
 
         std::fs::remove_file(directory.path().join("foreign-credential")).unwrap();
-        assert!(!original.observe(&file));
+        assert!(!original.observe(&file, &[true; NAMES.len()]));
         assert!(
             original
                 .retained_names()
                 .contains(&b"foreign-credential".as_slice())
         );
+    }
+
+    #[test]
+    fn optional_native_names_match_the_exact_selected_roster() {
+        for mount_fuse in [false, true] {
+            for nix in [false, true] {
+                let mut selected = [true; NAMES.len()];
+                selected[7] = mount_fuse;
+                selected[8] = nix;
+                let directory = tempfile::tempdir().unwrap();
+                for (index, name) in NAMES.iter().enumerate() {
+                    if selected[index] {
+                        std::fs::write(directory.path().join(name), b"data").unwrap();
+                    }
+                }
+                let mut original = Entries::new();
+                assert!(original.observe(&File::open(directory.path()).unwrap(), &selected));
+
+                // Neither appearance nor disappearance of an optional name is
+                // interchangeable with the original configured absence/presence.
+                for index in REQUIRED_CREDENTIALS..NAMES.len() {
+                    let mut changed = selected;
+                    changed[index] = !changed[index];
+                    let mut original = Entries::new();
+                    assert!(!original.observe(&File::open(directory.path()).unwrap(), &changed));
+                }
+                for index in 0..REQUIRED_CREDENTIALS {
+                    let mut changed = selected;
+                    changed[index] = false;
+                    let mut original = Entries::new();
+                    assert!(!original.observe(&File::open(directory.path()).unwrap(), &changed));
+                    assert!(original.retained_names().is_empty());
+                }
+            }
+        }
     }
 }

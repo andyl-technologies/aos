@@ -6,8 +6,8 @@
 //! epoch as the deployment epoch nor creates a writer or physical TPM permit.
 //! The same owner retains the canonical public Storage manifest, compares its
 //! stable identity and excludes its pins and the captured mandatory Host,
-//! Mount and Network pins from approval. Full endpoint provenance, optional
-//! Nix/Mount FUSE and Root key separation, and durable publication remain owed
+//! Mount, Network and configured optional pins from approval. Full endpoint
+//! provenance, Nix floor-authority/Root key separation and durable publication remain owed
 //! alongside one strict approval signature verification.
 
 use std::cell::RefCell;
@@ -178,7 +178,18 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
         }
 
         for (index, protocol) in PROTOCOLS.into_iter().enumerate() {
-            let bytes = match self.readback.normal_endpoint_manifest_bytes_v1(protocol) {
+            use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
+
+            let readback = match protocol {
+                BrokerSessionProtocolV1::MountFuse | BrokerSessionProtocolV1::Nix => self
+                    .readback
+                    .optional_normal_endpoint_manifest_bytes_v1(protocol),
+                _ => self
+                    .readback
+                    .normal_endpoint_manifest_bytes_v1(protocol)
+                    .map(Some),
+            };
+            let bytes = match readback {
                 Ok(bytes) => {
                     self.other_normal_reads[index] = Some(Ok(()));
                     bytes
@@ -188,7 +199,12 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
                     return;
                 }
             };
-            self.other_normal[index].observe_once(&bytes, protocol, origin.node, approval);
+            match bytes {
+                Some(bytes) => {
+                    self.other_normal[index].observe_once(&bytes, protocol, origin.node, approval)
+                }
+                None => self.other_normal[index].observe_optional_absence_once(protocol),
+            }
             if !self.other_normal[index].admitted() {
                 return;
             }

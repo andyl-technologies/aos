@@ -31,6 +31,24 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Configured Mount FUSE and Nix public endpoint manifests now follow the same
+  initial approval-key exclusion as mandatory endpoints, including all four
+  canonical pins and revoked or superseded keys. The original admitted initial
+  unit selects the optional credential roster; both stopped-Controller samples,
+  native credential-directory enumerations and held/named readbacks must agree.
+  Disabled endpoints require compared absence, and an ended or missing genuine
+  Source cannot report that absence. No caller-supplied skip flag or private
+  authentication accessor is exposed. The same Source prepays the worst-case
+  nine-file roster and 49 descriptor carriers. The existing 32 KiB decode
+  allowance passes compiled layout checks; resource-bank capacities are unchanged.
+  All 79 focused initializer tests, 416 ordinary Security tests and 425 online-Nix
+  Security tests pass, with two existing ignored cases in each Security suite.
+  Complete unit/integration target compilation is running for the seven changed
+  Rust files. Independent Nix floor-authority/approval keys, Root key delivery,
+  complete endpoint provenance, durable intent and installed TPM qualification
+  remain open. These comparisons do not establish positive Source admission or
+  physical-effect authority.
+
 - `aosMethod46InitialStartupProfileWith` now constructs the immutable V3 image
   comparison profile for either fixed manual purpose. It reuses the existing
   ELF-closure resolver and file-pin engine for separately exported initializer
@@ -58,8 +76,8 @@ Recent committed startup fixes close narrower prerequisites:
   or auth accessor is added. All 77 focused initializer tests, 415 ordinary
   Security tests and 424 online-Nix Security tests pass, with two existing ignored
   cases in each Security configuration. Complete unit/integration target
-  compilation is running for the final seven Rust inputs. Optional Nix/Mount
-  FUSE and Root key separation, complete endpoint provenance, durable approved
+  compilation is running for the final seven Rust inputs. Independent Nix floor-authority and Root key separation, complete endpoint
+  provenance, durable approved
   intent, physical TPM effects and installed qualification remain open.
 
 - PID1 now excludes competing normal Controller/Storage starts and the other
