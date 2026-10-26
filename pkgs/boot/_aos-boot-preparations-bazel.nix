@@ -10,8 +10,13 @@
   build = callPackage ./_aos-boot-preparations-bazel-build.nix {inherit sourceInventory;};
   workspace = build.passthru.bazelSelection.workspace;
   package = mkAosBazelPackage {
-    pname = rustcPackage.pname;
+    # The declared Rust package owns the payload; the outer recipe installs it
+    # under the public initrd-provider package name.
+    pname = "aos-boot-runtime";
     version = rustcPackage.version;
+    # Ordinary fixup must retain the immutable commands embedded by env! before
+    # the outer recipe copies this payload into its final installation.
+    runtimeDeps = rustcPackage.runtimeDeps;
     inherit build;
     packageLabel = "${prefix}standalone_package";
   };

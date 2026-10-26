@@ -537,6 +537,11 @@ runtime commands. `checks.build.bazel.initrd-production.all`, also exposed by
 three unit cases, all installed paths and modes, loader results, runtime
 closures, and rejected command invocations. Successful boot transactions remain
 the responsibility of the existing authenticated-image and VM checks.
+The [installed-package receipt](tests/evidence/initrd-production-package.json)
+records equal runtime closures, exact embedded commands, and the absent fallback
+build dependency. The intermediate package must declare the ordinary runtime
+dependencies so reference scrubbing preserves those command paths before the
+final installation.
 
 Shared compile macros declare a license domain. Package analysis follows
 compiled dependency edges and rejects Apache host/GPL QEMU combinations in

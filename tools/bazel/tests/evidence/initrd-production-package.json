@@ -1,0 +1,401 @@
+{
+  "candidate_build_requisites": 2747,
+  "compilation": {
+    "boot_tools": "/nix/store/452b4dwcw4qfc7l5r4gkl35zxgv2vdg7-aos-bazel-boot-tools-1",
+    "boot_tools_closure_sha256": "8aa4f33de09ffd061e20b3ed44d1df5f5cff0e06a8763d1a9f3182cc2529c348",
+    "build": "/nix/store/12qxmiiiwwc4qxlfglsbsrh66p33bk40-aos-bazel-initrd-preparation-production-1",
+    "derivation": "/nix/store/bfh73adgyxvxf7pxpm25zdb4ga3ccwb1-aos-bazel-initrd-preparation-production-1.drv",
+    "installation_reuses_completed_compilation": true,
+    "retained_evidence_sha256": {
+      "actions.json": "c008b90a7b462e2fe30a51241aa5b2cc494db1d18004fd443408291728009895",
+      "compiler-inputs.json": "acc60db729ff716c469e126f990d04d30a2fc8cefa381b600b9883b1f6c18495",
+      "execution.json": "856cf4cb8f69dd78a213bbf5a63151563fd2d3e4e816581ae2aea2cfe4e23f42"
+    }
+  },
+  "driver_selection": {
+    "bazel": "/nix/store/l6bnmx5vdwr3la4lzrfkwmlkad5zqysk-aos-boot-preparations-0.1.0.drv",
+    "fallback": "/nix/store/39hx81bwbardr9kzxvvqhag9s70i092s-aos-boot-preparations-0.1.0.drv",
+    "invalid_driver_rejected": true,
+    "module_and_runtime_declarations_preserved": true,
+    "ordinary": "/nix/store/39hx81bwbardr9kzxvvqhag9s70i092s-aos-boot-preparations-0.1.0.drv"
+  },
+  "entry_point": "checks.build.bazel.initrd-production.all",
+  "fallback_derivation_in_candidate_build_requisites": false,
+  "installed_package_report": {
+    "embedded_commands": [
+      "/nix/store/g9cmrw368n8in7idx2w2lay8j7k803dc-aos-0.1.0-packageRuntime/bin/aos-package-runtime",
+      "/nix/store/g9cmrw368n8in7idx2w2lay8j7k803dc-aos-0.1.0-packageRuntime/bin/aos-boot-configuration",
+      "/nix/store/6hm66n8byjrn054ifwp1pa1sa94jiag3-aos-configuration-lower-0.1.0/bin/aos-configuration-boot"
+    ],
+    "first_party_rust_compilations": 2,
+    "installed": {
+      "bazel": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-boot-preparations": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "ld-linux-x86-64.so.2",
+              "libc.so.6"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/bin/aos-host-store-seed": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "0a3a72cb6dee934b99c7391b1dd670e2e8cf6c300648685a028e3a8be992489c"
+        },
+        "out/bin/aos-machine-id": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "9a2126e84235e86db367c94f543e256f7d36ef46471df8418a96d9b14f8415cb"
+        },
+        "out/bin/aos-seed-profiles": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "6cf633ee48c468b16b4ea5c126e82aad1996f0e758cfadabbdd9e09446aca759"
+        },
+        "out/bin/etc-overlay-setup": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "e8a32d5733db101246812fedb380cd319be8f8b2abb8b4a0930dffc73f0bb1f8"
+        },
+        "out/bin/mount-var": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "ca1a1d82a69a4f0db998b6e8b23859054c81471db04e15ab888aeb484745e5fc"
+        },
+        "out/bin/nix-overlay-setup": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "6942e0eb7b40073fe388b38e5f906aae20e81c467330fba01eb6883f41db0245"
+        },
+        "out/bin/run-etc-setup": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "2916eaf66705b0bdfc44a0ecb388463a1499f78ed64a2493b5ad12214e0cdca8"
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      },
+      "ordinary": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-boot-preparations": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "ld-linux-x86-64.so.2",
+              "libc.so.6"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/bin/aos-host-store-seed": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "0a3a72cb6dee934b99c7391b1dd670e2e8cf6c300648685a028e3a8be992489c"
+        },
+        "out/bin/aos-machine-id": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "9a2126e84235e86db367c94f543e256f7d36ef46471df8418a96d9b14f8415cb"
+        },
+        "out/bin/aos-seed-profiles": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "6cf633ee48c468b16b4ea5c126e82aad1996f0e758cfadabbdd9e09446aca759"
+        },
+        "out/bin/etc-overlay-setup": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "e8a32d5733db101246812fedb380cd319be8f8b2abb8b4a0930dffc73f0bb1f8"
+        },
+        "out/bin/mount-var": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "ca1a1d82a69a4f0db998b6e8b23859054c81471db04e15ab888aeb484745e5fc"
+        },
+        "out/bin/nix-overlay-setup": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "6942e0eb7b40073fe388b38e5f906aae20e81c467330fba01eb6883f41db0245"
+        },
+        "out/bin/run-etc-setup": {
+          "kind": "file",
+          "mode": 365,
+          "sha256": "2916eaf66705b0bdfc44a0ecb388463a1499f78ed64a2493b5ad12214e0cdca8"
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      }
+    },
+    "library_search_changes": {},
+    "limits": [
+      "Native Linux installed-package and unit-test qualification only; successful boot-time transactions require their existing VM and authenticated image gates."
+    ],
+    "packages": {
+      "bazel": {
+        "out": "/nix/store/88z6gd0yk5wcsws0nyigzmkrvb2s2a7i-aos-boot-preparations-0.1.0"
+      },
+      "ordinary": {
+        "out": "/nix/store/vh4ycm5rm7lr7bxy90n1lzcpc4ldf8dv-aos-boot-preparations-0.1.0"
+      }
+    },
+    "rejected_invocations": [
+      {
+        "arguments": [],
+        "exit_code": 1,
+        "stderr_sha256": "ec4577d85e5125fba27bfde218d0ab30493e63bd6574078606f445ddbcb6a122"
+      },
+      {
+        "arguments": [
+          "--help"
+        ],
+        "exit_code": 1,
+        "stderr_sha256": "ec4577d85e5125fba27bfde218d0ab30493e63bd6574078606f445ddbcb6a122"
+      },
+      {
+        "arguments": [
+          "apply-deployment"
+        ],
+        "exit_code": 1,
+        "stderr_sha256": "ec4577d85e5125fba27bfde218d0ab30493e63bd6574078606f445ddbcb6a122"
+      },
+      {
+        "arguments": [
+          "unknown"
+        ],
+        "exit_code": 1,
+        "stderr_sha256": "ec4577d85e5125fba27bfde218d0ab30493e63bd6574078606f445ddbcb6a122"
+      },
+      {
+        "arguments": [
+          "apply-deployment",
+          "--input",
+          "/tmp/untrusted-deployment",
+          "--state-directory",
+          "/run/journal",
+          "--nix-store",
+          "/nix/store/tool/bin/nix-store"
+        ],
+        "exit_code": 1,
+        "stderr_sha256": "6540cea39efdd9544d0681b23e76e51164048182283006fbad9bf11d284a6b12"
+      }
+    ],
+    "runtime_closures": {
+      "changes": {
+        "out": {
+          "added": [],
+          "removed": []
+        }
+      },
+      "closures": {
+        "bazel": {
+          "out": [
+            "/nix/store/071yhimnxva604hfim2d7m51k593jpks-bash-5.3p15",
+            "/nix/store/09dipck6fr9k9r3r9wb7nkha9lgrx314-expat-2.8.4",
+            "/nix/store/1cyjnnlmk5gbvknnfxz4mi01csmn9i4f-tpm2-tools-5.8",
+            "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0",
+            "/nix/store/5cd32i1g3xgr4z5bf040gl6rkanyax16-brotli-1.2.0",
+            "/nix/store/5k6xm6fq57pb67vqqhz2ay50jc0zn5jz-mtools-4.0.49",
+            "/nix/store/5m9w9gbdaxrkyvkn5wbbhc52mhn6k82g-bzip2-1.0.8",
+            "/nix/store/6hm66n8byjrn054ifwp1pa1sa94jiag3-aos-configuration-lower-0.1.0",
+            "/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11",
+            "/nix/store/6pc200h0wq66bk4r2w6xm0qyn349jaq0-libcap-ng-0.9.5",
+            "/nix/store/753ava2263yjcd0k8wii5gfijlk6w6lh-editline-2.1.0",
+            "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+            "/nix/store/7i0bjwawygncw5z27n7h6l67zdy6mk5n-boost-1.92.0",
+            "/nix/store/7sb534l6c2jqdh1r1zvzkhbgplrrrgmm-curl-8.22.0",
+            "/nix/store/7x29kikzxc63nz609gjy54d4z3jras5d-nghttp2-1.70.0",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "/nix/store/84jcdf4radcv196v68rligvgknb7lny9-gc-8.2.12",
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1",
+            "/nix/store/9d5sm56jg29gcfs4xia4ynymmahw6dks-xz-5.8.3",
+            "/nix/store/9mng6s0xrmlw96lc1f3r1izmbk7b7w5p-libselinux-3.11",
+            "/nix/store/bkg4d8g5wgwcmwlvg3scwjr2090xvvsf-which-2.25",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2",
+            "/nix/store/cd1f6q83bigwx8aqzfw32ynqv4m72186-libutempter-1.2.3",
+            "/nix/store/d507nfs5krac6vhv38ay18jlgrmab8ac-libsodium-1.0.22",
+            "/nix/store/d942g6gnlb3yqynxl8k6j4vd3na77j30-aos-module-library",
+            "/nix/store/f0s6vf3wih2q3v74rxyiffsg19a4196j-publicsuffix-list-0-unstable-2026-05-13",
+            "/nix/store/f7i2glii19wbxjccwhc33abfvrhpkdys-libunistring-1.4.2",
+            "/nix/store/fh9cfzikw1k2qxwyd0j8b6dvyha8990h-libarchive-3.8.9",
+            "/nix/store/fm4hr98z2743v6z1xqf5zqn0rwrrlzvx-aos-boot-identity-0.1.0",
+            "/nix/store/fqvj66cbpvpi9i9rx3f20lzwwzac66sl-util-linux-2.42.3",
+            "/nix/store/fyfijn09vd0rwssk61ldh65arnrp908d-libgit2-1.9.7",
+            "/nix/store/g9cmrw368n8in7idx2w2lay8j7k803dc-aos-0.1.0-packageRuntime",
+            "/nix/store/gmplkr86bygh8dnm8jsv8ma25fldng0g-libseccomp-2.6.1",
+            "/nix/store/gz5m241r9fbchgp2716xwzf25k79qcgj-libpsl-0.23.3",
+            "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7",
+            "/nix/store/hc0j2fwwk2c68q5r262ra30nn8xnj0rj-audit-4.2.1",
+            "/nix/store/i3jmdna23drwp862kjcq8rk4pzzh9bpr-sbsigntools-0.9.5",
+            "/nix/store/i5m2757vw6nnm4ar4d0z9hxrv2fyr6lh-tpm2-tss-4.2.0",
+            "/nix/store/jgb5r6dhb12r1957dfjrnrwhskgyb8vi-aos-landlock-0",
+            "/nix/store/k6f7bja36bsis6wkpng8538bjp79z5rx-nlohmann-json-3.12.0",
+            "/nix/store/kasdgb8a1vfsby5nw94r81adm6zp1qzx-libidn2-2.3.8",
+            "/nix/store/lds2gsaa4b5xj00sh9s2gjd84mwxpfci-lowdown-3.1.1",
+            "/nix/store/m8snl4z29anz8jrjcvn4ngxi04av17nb-ca-certificates-2026-05-14",
+            "/nix/store/m9xlvi055675cls6fsr4wgah9adyyjky-linux-pam-1.7.1",
+            "/nix/store/n0jh974sfpb4lyig998y94xsq5rrbqp4-readline-8.3p3",
+            "/nix/store/pjbpxfx92xyzq6jmi7g7srln54ny4b4d-libsepol-3.11",
+            "/nix/store/qg9s9fsp9z4a5limbq8v7w7kcj8h5bx5-libxcrypt-4.5.2",
+            "/nix/store/qh11nfhpmb1p2wrkssc19j142c26w3qb-nix-2.24.12",
+            "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+            "/nix/store/r21k06h65brsmfibd50lsg68imvigac8-erofs-utils-1.9.4",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3",
+            "/nix/store/vmzsynrrjd87qcbx9v4g7v14nm2clbwc-toml11-4.4.0",
+            "/nix/store/wdnbcqbv9m24biz7w8wz7aza9byrvyq9-aos-0.1.0-apm",
+            "/nix/store/xby8fr5a2nyd5qyn587a9h8h7rwsw9q2-pcre2-10.48",
+            "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+            "@output:out@"
+          ]
+        },
+        "ordinary": {
+          "out": [
+            "/nix/store/071yhimnxva604hfim2d7m51k593jpks-bash-5.3p15",
+            "/nix/store/09dipck6fr9k9r3r9wb7nkha9lgrx314-expat-2.8.4",
+            "/nix/store/1cyjnnlmk5gbvknnfxz4mi01csmn9i4f-tpm2-tools-5.8",
+            "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0",
+            "/nix/store/5cd32i1g3xgr4z5bf040gl6rkanyax16-brotli-1.2.0",
+            "/nix/store/5k6xm6fq57pb67vqqhz2ay50jc0zn5jz-mtools-4.0.49",
+            "/nix/store/5m9w9gbdaxrkyvkn5wbbhc52mhn6k82g-bzip2-1.0.8",
+            "/nix/store/6hm66n8byjrn054ifwp1pa1sa94jiag3-aos-configuration-lower-0.1.0",
+            "/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11",
+            "/nix/store/6pc200h0wq66bk4r2w6xm0qyn349jaq0-libcap-ng-0.9.5",
+            "/nix/store/753ava2263yjcd0k8wii5gfijlk6w6lh-editline-2.1.0",
+            "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+            "/nix/store/7i0bjwawygncw5z27n7h6l67zdy6mk5n-boost-1.92.0",
+            "/nix/store/7sb534l6c2jqdh1r1zvzkhbgplrrrgmm-curl-8.22.0",
+            "/nix/store/7x29kikzxc63nz609gjy54d4z3jras5d-nghttp2-1.70.0",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "/nix/store/84jcdf4radcv196v68rligvgknb7lny9-gc-8.2.12",
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1",
+            "/nix/store/9d5sm56jg29gcfs4xia4ynymmahw6dks-xz-5.8.3",
+            "/nix/store/9mng6s0xrmlw96lc1f3r1izmbk7b7w5p-libselinux-3.11",
+            "/nix/store/bkg4d8g5wgwcmwlvg3scwjr2090xvvsf-which-2.25",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2",
+            "/nix/store/cd1f6q83bigwx8aqzfw32ynqv4m72186-libutempter-1.2.3",
+            "/nix/store/d507nfs5krac6vhv38ay18jlgrmab8ac-libsodium-1.0.22",
+            "/nix/store/d942g6gnlb3yqynxl8k6j4vd3na77j30-aos-module-library",
+            "/nix/store/f0s6vf3wih2q3v74rxyiffsg19a4196j-publicsuffix-list-0-unstable-2026-05-13",
+            "/nix/store/f7i2glii19wbxjccwhc33abfvrhpkdys-libunistring-1.4.2",
+            "/nix/store/fh9cfzikw1k2qxwyd0j8b6dvyha8990h-libarchive-3.8.9",
+            "/nix/store/fm4hr98z2743v6z1xqf5zqn0rwrrlzvx-aos-boot-identity-0.1.0",
+            "/nix/store/fqvj66cbpvpi9i9rx3f20lzwwzac66sl-util-linux-2.42.3",
+            "/nix/store/fyfijn09vd0rwssk61ldh65arnrp908d-libgit2-1.9.7",
+            "/nix/store/g9cmrw368n8in7idx2w2lay8j7k803dc-aos-0.1.0-packageRuntime",
+            "/nix/store/gmplkr86bygh8dnm8jsv8ma25fldng0g-libseccomp-2.6.1",
+            "/nix/store/gz5m241r9fbchgp2716xwzf25k79qcgj-libpsl-0.23.3",
+            "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7",
+            "/nix/store/hc0j2fwwk2c68q5r262ra30nn8xnj0rj-audit-4.2.1",
+            "/nix/store/i3jmdna23drwp862kjcq8rk4pzzh9bpr-sbsigntools-0.9.5",
+            "/nix/store/i5m2757vw6nnm4ar4d0z9hxrv2fyr6lh-tpm2-tss-4.2.0",
+            "/nix/store/jgb5r6dhb12r1957dfjrnrwhskgyb8vi-aos-landlock-0",
+            "/nix/store/k6f7bja36bsis6wkpng8538bjp79z5rx-nlohmann-json-3.12.0",
+            "/nix/store/kasdgb8a1vfsby5nw94r81adm6zp1qzx-libidn2-2.3.8",
+            "/nix/store/lds2gsaa4b5xj00sh9s2gjd84mwxpfci-lowdown-3.1.1",
+            "/nix/store/m8snl4z29anz8jrjcvn4ngxi04av17nb-ca-certificates-2026-05-14",
+            "/nix/store/m9xlvi055675cls6fsr4wgah9adyyjky-linux-pam-1.7.1",
+            "/nix/store/n0jh974sfpb4lyig998y94xsq5rrbqp4-readline-8.3p3",
+            "/nix/store/pjbpxfx92xyzq6jmi7g7srln54ny4b4d-libsepol-3.11",
+            "/nix/store/qg9s9fsp9z4a5limbq8v7w7kcj8h5bx5-libxcrypt-4.5.2",
+            "/nix/store/qh11nfhpmb1p2wrkssc19j142c26w3qb-nix-2.24.12",
+            "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+            "/nix/store/r21k06h65brsmfibd50lsg68imvigac8-erofs-utils-1.9.4",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3",
+            "/nix/store/vmzsynrrjd87qcbx9v4g7v14nm2clbwc-toml11-4.4.0",
+            "/nix/store/wdnbcqbv9m24biz7w8wz7aza9byrvyq9-aos-0.1.0-apm",
+            "/nix/store/xby8fr5a2nyd5qyn587a9h8h7rwsw9q2-pcre2-10.48",
+            "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+            "@output:out@"
+          ]
+        }
+      }
+    },
+    "sandboxed_cache_miss_actions": 5,
+    "schema_version": 1,
+    "source_selection": {
+      "checked_inventory_sha256": "432cd152c7791b512d78f0e80b50b0c1aaaf96ec227615bf233aca017e920bcb",
+      "compiled_inventory_matches": true,
+      "first_party_cargo_files": [],
+      "rust_sources": [
+        "crates/boot/aos-boot-runtime/standalone/initrd_preparation.rs"
+      ],
+      "workspace": "/nix/store/25f36wgp774fzb8lpfhwm1icmj8ynb8k-aos-bazel-workspace"
+    },
+    "test_parity": {
+      "schema_version": 1,
+      "targets": {
+        "//crates/boot/aos-boot-runtime:standalone_unit": {
+          "executed": [
+            "tests::admission_digest_accepts_only_canonical_sha256",
+            "tests::deployment_rejects_mutable_or_unrecognized_bundle_locations",
+            "tests::profile_generation_requires_one_exact_assignment"
+          ],
+          "ignored": []
+        }
+      }
+    }
+  },
+  "intermediate_fixup_regression": {
+    "corrected_binary_sha256": "d8d7acbed6684ee9f7e280911c9578668234016e2853d97686aa0abedc07eb15",
+    "corrected_candidate_retained_all_three_exact_commands": true,
+    "failed_binary_sha256": "93ee8b3bbcf495461d59e0879ff2b83d8af81d27861b70bae1c6cc793742934f",
+    "failed_candidate": "/nix/store/9043qh1in5crzhl3zwrbphm9ls3z4jvn-aos-boot-preparations-0.1.0",
+    "failed_candidate_retained_exact_commands": false,
+    "failed_derivation": "/nix/store/lpi7mxyc193zk86r66vlyz475nafn294-aos-boot-preparations-0.1.0.drv",
+    "required_declaration": "Intermediate mkAosBazelPackage receives the ordinary package runtimeDeps, preserving embedded command identities through reference scrubbing."
+  },
+  "limits": [
+    "The source-only comparison against an older pinned boot-tool snapshot is retained separately in initrd-source-slice.json. This receipt uses the realized current production runtime graph.",
+    "Successful boot transactions, authenticated images, foreign platforms, performance acceptance, default cutover and complete Cargo removal remain separate qualification requirements."
+  ],
+  "qualification": {
+    "derivation": "/nix/store/5d7afkbr11078iskd1x4saqxmnqzccla-aos-bazel-initrd-preparation-production-checks.drv",
+    "output": "/nix/store/pwbmvzbg5xs61vyi70j9by0fzqyvward-aos-bazel-initrd-preparation-production-checks",
+    "report_sha256": "fe8455462a58ac51a0e39c133869ee64fa41961805a5dfb3b0b6d08ea63ebdc4"
+  },
+  "schema_version": 1,
+  "scope": "Native installed standalone initrd preparation package, exact runtime commands, explicit direct-rustc rollback and retained source-only compilation."
+}
