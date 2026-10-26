@@ -14,6 +14,7 @@ use super::*;
 
 mod confinement;
 mod delivery;
+mod normal_fragment;
 mod service;
 mod stopped;
 
@@ -101,7 +102,7 @@ impl InitialUnitOriginalV1 {
         &self,
         index: usize,
         origin: Option<&Method46InitialOriginComparisonDataV1>,
-        profile: Option<&Method46InitialProfileDataV1>,
+        profile: Option<&Method46InitialProfileDataV2>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         let mut observation = self
             .properties
@@ -178,7 +179,7 @@ impl InitialUnitOriginalV1 {
     fn measure_fragment(
         &mut self,
         origin: &Method46InitialOriginComparisonDataV1,
-        profile: &Method46InitialProfileDataV1,
+        profile: &Method46InitialProfileDataV2,
         profile_path: &std::path::Path,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         let observation = self.properties[0]
@@ -273,13 +274,13 @@ impl InitialUnitOriginalV1 {
     pub(super) fn finish_post(
         &self,
         origin: Option<&Method46InitialOriginComparisonDataV1>,
-        profile: Option<&Method46InitialProfileDataV1>,
+        profile: Option<&Method46InitialProfileDataV2>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         if !self.paid {
             return Ok(());
         }
         let properties = self.observe_properties(1, origin, profile);
-        let stopped = self.finish_stopped_post(origin.map(|origin| origin.role));
+        let stopped = self.finish_stopped_post(origin.map(|origin| origin.role), profile);
         let canonical = self.finish_canonical_post();
         let file = match self.file_post.try_borrow_mut() {
             Ok(mut post) => {
@@ -301,7 +302,17 @@ impl InitialUnitOriginalV1 {
 fn fragment_path(
     original: &ServicePropertiesReadOriginalV2,
 ) -> Result<&str, Method46InitialStartupClosedV1> {
-    let Some([fragment, dropins, transient]) = original.unit_values_v2() else {
+    fragment_values(
+        original
+            .unit_values_v2()
+            .ok_or(Method46InitialStartupClosedV1)?,
+    )
+}
+
+fn fragment_values(
+    values: &[aos_systemd_client::OwnedValue],
+) -> Result<&str, Method46InitialStartupClosedV1> {
+    let [fragment, dropins, transient] = values else {
         return Err(Method46InitialStartupClosedV1);
     };
     let (Value::Str(path), Value::Array(dropins), Value::Bool(false)) =
@@ -309,7 +320,11 @@ fn fragment_path(
     else {
         return Err(Method46InitialStartupClosedV1);
     };
-    if !dropins.inner().is_empty() || path.len() > PATH_BYTES {
+    if !dropins.inner().is_empty()
+        || dropins.element_signature() != Value::from("").value_signature()
+        || path.is_empty()
+        || path.len() > PATH_BYTES
+    {
         return Err(Method46InitialStartupClosedV1);
     }
     Ok(path.as_str())
@@ -355,10 +370,10 @@ fn normalize_fragment(
 }
 
 fn manager_schedule() -> Option<ReadonlyPropertyReceiveScheduleV2> {
-    // Two 67-call startup samples and four 22-call stopped-owner samples,
+    // Two 67-call startup samples and four 25-call stopped-owner samples,
     // plus Hello and bounded signal/header carryover.
     // These are native-enforced ceilings, never an account or semantic claim.
-    ReadonlyPropertyReceiveScheduleV2::new(248, 264, 64 * 1024, 4096, 264 * 64 * 1024).ok()
+    ReadonlyPropertyReceiveScheduleV2::new(260, 276, 64 * 1024, 4096, 276 * 64 * 1024).ok()
 }
 
 fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVector> {
@@ -383,7 +398,7 @@ fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVe
         .with(D::MetadataEntries, 4 * PATH_BYTES as u64)
         .with(
             D::OutputBytes,
-            read.checked_add((264 * 64 * 1024 + 248 * 4096 + 4096) as u64)?,
+            read.checked_add((276 * 64 * 1024 + 260 * 4096 + 4096) as u64)?,
         )
         .checked_add(ImmutableFileAcquisitionOriginalV1::receiving_demand_v1(
             PATH_BYTES,
@@ -391,6 +406,11 @@ fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVe
         .ok()?
         .checked_add(ImmutableFileRevalidationOriginalV1::receiving_demand_v1()?)
         .ok()
+        .and_then(|demand| {
+            demand
+                .checked_add(normal_fragment::receiving_demand()?)
+                .ok()
+        })
 }
 
 impl Method46InitialStartupOriginalV1 {
@@ -480,6 +500,33 @@ impl Method46InitialStartupOriginalV1 {
 mod tests {
     use super::*;
     use std::mem::ManuallyDrop;
+
+    #[test]
+    fn fragment_properties_require_a_nontransient_unit_without_typed_dropins() {
+        fn value<T: Into<Value<'static>>>(input: T) -> aos_systemd_client::OwnedValue {
+            aos_systemd_client::OwnedValue::try_from(input.into()).unwrap()
+        }
+
+        let path = "/etc/systemd/system/aos-storaged.service";
+        let mut properties = [
+            value(path.to_owned()),
+            value(Vec::<String>::new()),
+            value(false),
+        ];
+        assert_eq!(fragment_values(&properties).unwrap(), path);
+
+        properties[1] = value(Vec::<u32>::new());
+        assert!(fragment_values(&properties).is_err());
+        properties[1] = value(vec!["/run/systemd/system/override.conf".to_owned()]);
+        assert!(fragment_values(&properties).is_err());
+        properties[1] = value(Vec::<String>::new());
+        properties[2] = value(true);
+        assert!(fragment_values(&properties).is_err());
+        properties[2] = value(false);
+        properties[0] = value(String::new());
+        assert!(fragment_values(&properties).is_err());
+        assert!(fragment_values(&[]).is_err());
+    }
 
     #[test]
     fn normalization_replaces_only_the_one_exact_profile_line() {

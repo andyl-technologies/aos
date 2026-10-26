@@ -60,7 +60,7 @@ impl InitialRuntimeOriginalV1 {
 
     pub(in crate::method46_initial_startup) fn finish_posts(
         &self,
-        profile: Option<&Method46InitialProfileDataV1>,
+        profile: Option<&Method46InitialProfileDataV2>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         let mut refused = false;
         for image in &self.files {
@@ -83,7 +83,7 @@ impl InitialRuntimeOriginalV1 {
     fn observe_maps(
         &self,
         index: usize,
-        profile: &Method46InitialProfileDataV1,
+        profile: &Method46InitialProfileDataV2,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         let mut original = self
             .maps
@@ -156,7 +156,7 @@ fn slot_demand(count: usize) -> Option<ResourceVector> {
     Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(bytes).ok()?))
 }
 
-fn pin(profile: &Method46InitialProfileDataV1, index: usize) -> Option<&ImagePinV1> {
+fn pin(profile: &Method46InitialProfileDataV2, index: usize) -> Option<&ImagePinV1> {
     if index < profile.runtime_files.len() {
         return profile.runtime_files.get(index);
     }
@@ -380,12 +380,12 @@ mod tests {
 
     use super::*;
 
-    fn untrusted_profile_data() -> Method46InitialProfileDataV1 {
+    fn untrusted_profile_data() -> Method46InitialProfileDataV2 {
         let image = ImagePinV1 {
             path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-untrusted/bin/image".to_owned(),
             sha256: [1; 32],
         };
-        Method46InitialProfileDataV1 {
+        Method46InitialProfileDataV2 {
             format: String::new(),
             unit: String::new(),
             owner_context: String::new(),
@@ -396,8 +396,9 @@ mod tests {
             closure_roots: Vec::new(),
             canonical_policy: image.clone(),
             source_policy: image.clone(),
-            effective_matrix: image,
+            effective_matrix: image.clone(),
             unit_sha256: [1; 32],
+            normal_unit_fragment: image.clone(),
             controller_uid: 1,
             controller_gid: 1,
             approval_public_key: [1; 32],

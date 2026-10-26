@@ -16,8 +16,8 @@ use aos_sandbox_broker::immutable_image::{
     ImmutableFileRevalidationOriginalV1, ImmutableImageErrorV1,
 };
 use aos_sandbox_broker::profile_data::method46_initial::{
-    Method46InitialProfileDataErrorV1, Method46InitialProfileDataV1,
-    method46_initial_profile_representation_bytes_v1,
+    Method46InitialProfileDataErrorV2, Method46InitialProfileDataV2,
+    method46_initial_profile_representation_bytes_v2,
 };
 use aos_sandbox_broker::receiving::{
     Method46InitialOriginComparisonDataV1, Method46InitialReceivingClosedV1,
@@ -27,7 +27,7 @@ use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector}
 
 const PROFILE_BYTES: usize = 1024 * 1024;
 const PATH_BYTES: usize = 1024;
-const PROFILE_SUFFIX: &str = "-aos-method46-initial-startup-profile-1/profile.json";
+const PROFILE_SUFFIX: &str = "-aos-method46-initial-startup-profile-2/profile.json";
 
 mod credentials;
 pub use credentials::{
@@ -106,8 +106,8 @@ struct StartupRolesOriginalV1 {
     profile_measure: Option<Result<(), ImmutableFileAcquisitionRefusalV1>>,
     profile_read: Option<Result<(), ImmutableImageErrorV1>>,
     profile_decode_attempted: bool,
-    profile_decoded: Option<Result<Method46InitialProfileDataV1, serde_json::Error>>,
-    profile_shape: Option<Result<(), Method46InitialProfileDataErrorV1>>,
+    profile_decoded: Option<Result<Method46InitialProfileDataV2, serde_json::Error>>,
+    profile_shape: Option<Result<(), Method46InitialProfileDataErrorV2>>,
     profile_post: RefCell<ProfilePostOriginalV1>,
 }
 
@@ -396,7 +396,7 @@ impl Method46InitialStartupOriginalV1 {
             return Err(self.fail(First::Order));
         }
         body.profile_decode_attempted = true;
-        let demand = method46_initial_profile_representation_bytes_v1(body.profile.bytes().len())
+        let demand = method46_initial_profile_representation_bytes_v2(body.profile.bytes().len())
             .and_then(|bytes| {
                 Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(bytes).ok()?))
             });
@@ -408,15 +408,15 @@ impl Method46InitialStartupOriginalV1 {
         let Some(Ok(profile)) = body.profile_decoded.as_ref() else {
             return Err(self.fail(First::Profile));
         };
-        body.profile_shape = Some(profile.require_shape_data_v1(role).and_then(|()| {
+        body.profile_shape = Some(profile.require_shape_data_v2(role).and_then(|()| {
             let original = body
                 .profile
                 .completed_measurement()
-                .ok_or(Method46InitialProfileDataErrorV1)?;
+                .ok_or(Method46InitialProfileDataErrorV2)?;
             if std::path::Path::new(&profile.source_policy.path).parent()
                 != original.path().parent()
             {
-                return Err(Method46InitialProfileDataErrorV1);
+                return Err(Method46InitialProfileDataErrorV2);
             }
             Ok(())
         }));

@@ -678,6 +678,24 @@ Recent committed startup fixes close narrower prerequisites:
   durable intent, physical TPM custody and installed qualification remain open.
   No publication or Extend authority is issued, and public admission stays shut.
 
+- Initial startup profile V2 now pins the selected normal Controller or
+  Storage unit fragment; old-version profiles, missing pins, foreign roles,
+  mutable paths and sentinel digests refuse. The same Source prepays the
+  expanded finite PID1 schedule, immutable acquisition, digest reads and
+  independent held-file/pathname posts. Before the public credential readback
+  can be lent, the actual stopped-owner sample must report a loaded,
+  nontransient unit without drop-ins and its resolved immutable fragment must
+  match that original profile's exact path and digest. The final PID1 sample
+  compares the reported name again; fragment posts still run when another
+  stopped-owner observation refuses. Strict drop-in typing also applies to the
+  existing manual-unit reader. All 97 focused initial tests pass, including
+  five new profile, changed-name, owed-post and property-shape regressions.
+  Complete application target compilation is running for the exact eight Rust
+  inputs. This closes the fragment-provenance prerequisite; full native unit
+  configuration and executable/runtime admission, key separation, Session
+  schema, job exclusion, durable intent, physical TPM custody and installed
+  producer qualification remain incomplete. Public admission remains closed.
+
 - Initial main capture now admits historical namespaces and legacy capacity
   ownership through the ordinary protected namespace engine. The read-only
   comparison shares the exact health, complete canonical-family, deleted-history

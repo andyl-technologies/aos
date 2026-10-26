@@ -44,7 +44,7 @@ impl InitialPolicyOriginalV1 {
     fn observe(
         &self,
         index: usize,
-        profile: Option<&Method46InitialProfileDataV1>,
+        profile: Option<&Method46InitialProfileDataV2>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         let mut observation = self
             .observations
@@ -73,7 +73,7 @@ impl InitialPolicyOriginalV1 {
 
     pub(super) fn finish_post(
         &self,
-        profile: Option<&Method46InitialProfileDataV1>,
+        profile: Option<&Method46InitialProfileDataV2>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         if !self.paid {
             return Ok(());

@@ -2,7 +2,8 @@
 //!
 //! These observations share the actual Source-paid startup manager. They prove
 //! bracketed inactive/dead unit DATA and compare the selected normal owner's
-//! public manifest source. Full unit image admission, exclusion of new jobs,
+//! public manifest source and its Source-pinned immutable unit fragment.
+//! Full unit image admission, exclusion of new jobs,
 //! native cgroup population, exclusive journal custody and physical TPM
 //! authority remain independent requirements.
 
@@ -34,13 +35,14 @@ const SERVICE: &[&str] = &[
     "ImportCredential",
     "ImportCredentialEx",
 ];
-const UNIT: &[&str] = &["LoadState"];
+const UNIT: &[&str] = &["LoadState", "FragmentPath", "DropInPaths", "Transient"];
 
 pub(super) struct InitialStoppedOwnersOriginalV1 {
     samples: [[RefCell<UnitPropertiesOriginalV1>; 2]; 2],
     entered: Cell<bool>,
     before_completed: Cell<bool>,
     manifest_source_match: [Cell<Option<bool>>; 2],
+    fragment: RefCell<normal_fragment::NormalFragmentOriginalV1>,
 }
 
 impl InitialStoppedOwnersOriginalV1 {
@@ -52,6 +54,7 @@ impl InitialStoppedOwnersOriginalV1 {
             entered: Cell::new(false),
             before_completed: Cell::new(false),
             manifest_source_match: std::array::from_fn(|_| Cell::new(None)),
+            fragment: RefCell::new(normal_fragment::NormalFragmentOriginalV1::new()),
         }
     }
 
@@ -62,6 +65,7 @@ impl InitialStoppedOwnersOriginalV1 {
         manager: Option<&aos_systemd_client::SystemdClient>,
         role: Option<Method46InitialServiceRoleV1>,
         fragment: &[u8],
+        profile: Option<&Method46InitialProfileDataV2>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         let selected = role.map(|role| match role {
             Method46InitialServiceRoleV1::ControllerStorageClient => 0,
@@ -93,7 +97,12 @@ impl InitialStoppedOwnersOriginalV1 {
                 if !matches!(sample.result, Some(Ok(()))) {
                     return Err(Method46InitialStartupClosedV1);
                 }
-                require_loaded(sample.original.unit_values_v2())?;
+                require_loaded(
+                    sample
+                        .original
+                        .unit_values_v2()
+                        .and_then(|values| values.get(..1)),
+                )?;
                 let values = sample.original.service_values_v2();
                 require_cgroup(
                     values
@@ -102,6 +111,28 @@ impl InitialStoppedOwnersOriginalV1 {
                     cgroup,
                 )?;
                 if selected == Some(index) {
+                    let properties = sample
+                        .original
+                        .unit_values_v2()
+                        .ok_or(Method46InitialStartupClosedV1)?;
+                    let path = fragment_values(
+                        properties.get(1..).ok_or(Method46InitialStartupClosedV1)?,
+                    )?;
+                    require_fragment_name(path, unit)?;
+                    if round == 1 {
+                        let before = self.samples[0][index]
+                            .try_borrow()
+                            .map_err(|_| Method46InitialStartupClosedV1)?;
+                        let initial = before
+                            .original
+                            .unit_values_v2()
+                            .ok_or(Method46InitialStartupClosedV1)?;
+                        if fragment_values(initial.get(1..).ok_or(Method46InitialStartupClosedV1)?)?
+                            != path
+                        {
+                            return Err(Method46InitialStartupClosedV1);
+                        }
+                    }
                     let matched = values
                         .and_then(|values| values.get(1..))
                         .zip(role)
@@ -139,6 +170,19 @@ impl InitialStoppedOwnersOriginalV1 {
             Err(Method46InitialStartupClosedV1)
         } else {
             if round == 0 {
+                let index = selected.ok_or(Method46InitialStartupClosedV1)?;
+                let profile = profile.ok_or(Method46InitialStartupClosedV1)?;
+                let sample = self.samples[0][index]
+                    .try_borrow()
+                    .map_err(|_| Method46InitialStartupClosedV1)?;
+                self.fragment
+                    .try_borrow_mut()
+                    .map_err(|_| Method46InitialStartupClosedV1)?
+                    .observe_once(
+                        &sample.original,
+                        OWNERS[index].0,
+                        &profile.normal_unit_fragment,
+                    )?;
                 self.before_completed.set(true);
             }
             Ok(())
@@ -184,6 +228,11 @@ pub(super) fn receiving_memory_bytes() -> Option<usize> {
 impl InitialUnitOriginalV1 {
     pub(in crate::method46_initial_startup) fn stopped_units_before_completed(&self) -> bool {
         self.stopped.before_completed.get()
+            && self
+                .stopped
+                .fragment
+                .try_borrow()
+                .is_ok_and(|fragment| fragment.completed())
             && self.stopped.manifest_source_match[0].get() == Some(true)
             && self.stopped.samples[0].iter().all(|sample| {
                 sample.try_borrow().is_ok_and(|sample| {
@@ -197,11 +246,12 @@ impl InitialUnitOriginalV1 {
     pub(super) fn finish_stopped_post(
         &self,
         role: Option<Method46InitialServiceRoleV1>,
+        profile: Option<&Method46InitialProfileDataV2>,
     ) -> Result<(), Method46InitialStartupClosedV1> {
         if !self.stopped.entered.get() {
             return Ok(());
         }
-        self.stopped.observe(
+        let stopped = self.stopped.observe(
             1,
             self.runtime
                 .as_ref()
@@ -212,7 +262,15 @@ impl InitialUnitOriginalV1 {
                 .map(|client| client.as_ref()),
             role,
             self.acquisition.bytes(),
-        )
+            profile,
+        );
+        let fragment = self
+            .stopped
+            .fragment
+            .try_borrow_mut()
+            .map_err(|_| Method46InitialStartupClosedV1)
+            .and_then(|mut original| original.finish_post());
+        stopped.and(fragment)
     }
 }
 
@@ -228,7 +286,9 @@ impl Method46InitialStartupOriginalV1 {
     /// # Errors
     /// Refuses an unavailable Source, missing unit admission, reentry, nested
     /// Runtime, live/failed/missing owner, nonzero PID, foreign cgroup or any
-    /// native/property failure. Originals stay resident through Source posts.
+    /// native/property failure, mutable/changed normal fragment or a digest
+    /// differing from the same startup's profile. Originals and both fragment
+    /// posts stay resident through Source posts.
     pub fn observe_stopped_owner_units_once_v1(
         &mut self,
     ) -> Result<(), Method46InitialStartupClosedV1> {
@@ -236,7 +296,8 @@ impl Method46InitialStartupOriginalV1 {
             .get_mut()
             .require_current_v1()
             .map_err(|_| self.closed)?;
-        let unit = &self.body.as_ref().ok_or(self.closed)?.unit;
+        let body = self.body.as_ref().ok_or(self.closed)?;
+        let unit = &body.unit;
         if self.first.get().is_some()
             || !unit.initial_admitted()
             || unit.stopped.entered.replace(true)
@@ -255,6 +316,9 @@ impl Method46InitialStartupOriginalV1 {
                     .map(|client| client.as_ref()),
                 self.origin.as_ref().map(|origin| origin.role),
                 unit.acquisition.bytes(),
+                body.profile_decoded
+                    .as_ref()
+                    .and_then(|value| value.as_ref().ok()),
             )
             .map_err(|_| self.fail(First::Unit))
     }
@@ -321,8 +385,8 @@ mod tests {
         let original = InitialStoppedOwnersOriginalV1::new();
         original.entered.set(true);
 
-        assert!(original.observe(0, None, None, None, b"").is_err());
-        assert!(original.observe(1, None, None, None, b"").is_err());
+        assert!(original.observe(0, None, None, None, b"", None).is_err());
+        assert!(original.observe(1, None, None, None, b"", None).is_err());
 
         for round in original.samples {
             for sample in round {
