@@ -91,6 +91,27 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The immutable-read refresh at `da9223ef67` passes its complete native batch
+in 366.684 seconds: all ten local service/direct-read cases, 35 distribution
+socket cases and 22 portable cases execute with their original thirty-second
+limits. Independent review matches all 8,286 immutable source files and 5,507
+bound crate inputs, actual Cargo artifacts and retained service/socket executable
+hashes. The fresh nonce proves an AOS 7.2.3, capability-free ext4 sandbox;
+exactly four derivations run remotely with host jobs disabled. Clean shutdown,
+temporary disk removal, preservation of seven raw records and owned scratch
+cleanup are verified. The independent reader observes genuine new immutable
+file bytes and preserves old history. This does not qualify the later configured
+read-only route or accept a complete task.
+
+Required application-target compilation also passes at `3f05115d6d` in
+1,475.300 seconds and `5e93bbf1f2` in 933.163 seconds. Separate reviews each
+match all 8,286 immutable source files and 190 test-executable records across
+59 packages. These are compilation results without retained executable bytes.
+Earlier failed runtime batches remain failed; after their diagnosis and later
+qualified correction, their seven raw controller records are preserved and
+owned terminal VM scratch is removed. Application compilation of the direct-read
+and configured read-only extensions remains pending.
+
 Configured read-only Serve repositories now retain a separate native ref-read
 route marker after protected reopening. Ref service construction no longer
 requires the unrelated authoring/audit/collection root binding. Generic and
