@@ -47,6 +47,10 @@ type Witness = aos_sandbox_journal::protected_storage::WriterWitnessOriginalsV1<
 #[error("dedicated Root NoApply signing key envelope is malformed")]
 struct KeyEnvelopeError;
 
+#[derive(Debug, thiserror::Error)]
+#[error("dedicated Root NoApply signing key differs from its delivered public pin")]
+struct KeyBindingError;
+
 // Deliberately no Debug, clone, seed accessor or general signing method.
 struct Key {
     signer: SigningKey,
@@ -79,6 +83,16 @@ impl Key {
             RootNoApplyPublicPinDataV2::new(generation, signer.verifying_key().to_bytes())?;
         Ok(Self { signer, public })
     }
+
+    fn require_public_pin(&self, pin: RootNoApplyPublicPinDataV2) -> Result<(), KeyBindingError> {
+        // Exact equality to the nonweak secret-derived key also rejects invalid
+        // and weak point encodings. Generation is part of the pair.
+        if self.public == pin {
+            Ok(())
+        } else {
+            Err(KeyBindingError)
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -102,6 +116,8 @@ pub(in crate::policy_compiler::execution_no_apply_root) struct RootFloorSignerV2
     credential: RootNoApplySigningCredentialOriginalV2,
     capture: Option<Result<(), ()>>,
     key: Option<Result<Key, Cause>>,
+    public_pin: Option<Result<RootNoApplyPublicPinDataV2, Cause>>,
+    key_binding: Option<Result<(), KeyBindingError>>,
     before: Option<Result<(), ()>>,
     names: [ProtectedJournalCurrentnessOriginalsV1; 2],
     witnesses: [Witness; 2],
@@ -126,6 +142,8 @@ impl RootFloorSignerV2 {
             credential: RootNoApplySigningCredentialOriginalV2::new(),
             capture: None,
             key: None,
+            public_pin: None,
+            key_binding: None,
             before: None,
             names: std::array::from_fn(|_| Default::default()),
             witnesses: std::array::from_fn(|_| Default::default()),
@@ -191,7 +209,18 @@ impl RootFloorSignerV2 {
             let bytes = self.credential.bytes_v2().ok_or(KeyEnvelopeError)?;
             Key::decode_canonical(bytes)
         })());
-        positive(&self.key).map(|_| ())
+        // Decode both independently delivered originals before comparing them.
+        // A failed key decode must not discard the public decoder's own result.
+        self.public_pin = Some((|| {
+            let bytes = self.credential.public_bytes_v2().ok_or(KeyEnvelopeError)?;
+            RootNoApplyPublicPinDataV2::decode_canonical(bytes).map_err(Into::into)
+        })());
+        self.key_binding = Some((|| {
+            let key = positive(&self.key).map_err(|_| KeyBindingError)?;
+            let pin = positive(&self.public_pin).map_err(|_| KeyBindingError)?;
+            key.require_public_pin(*pin)
+        })());
+        positive(&self.key_binding).map(|_| ())
     }
 
     pub(super) fn sign_once_v2(
@@ -262,6 +291,7 @@ impl RootFloorSignerV2 {
     }
 
     fn sign_body_v2(&mut self, programme: &mut SigningProgrammeV2<'_, '_>) -> Result<(), Cause> {
+        positive(&self.key_binding)?;
         positive(&self.key)?;
         programme.require_current_v2()?;
         self.before = Some(self.credential.before_sign_once_v2().map_err(|_| ()));
@@ -338,10 +368,23 @@ impl RootFloorSignerV2 {
             return self.credential.failure().map(|cause| cause as _);
         }
         self.key
-            .as_ref()?
             .as_ref()
-            .err()
+            .and_then(|value| value.as_ref().err())
             .map(|cause| cause.as_ref())
+            .or_else(|| {
+                self.public_pin
+                    .as_ref()?
+                    .as_ref()
+                    .err()
+                    .map(|cause| cause.as_ref())
+            })
+            .or_else(|| {
+                self.key_binding
+                    .as_ref()?
+                    .as_ref()
+                    .err()
+                    .map(|cause| cause as _)
+            })
     }
 
     pub(super) fn external_trust_failed(&self) -> bool {
@@ -667,6 +710,46 @@ mod tests {
         seal(&mut changed);
         assert!(Key::decode_canonical(&changed[..]).is_err());
         assert!(Key::decode_canonical(&envelope(0)[..]).is_err());
+    }
+
+    #[test]
+    fn secret_and_delivered_public_pin_must_match_key_and_generation() {
+        let key = Key::decode_canonical(&envelope(11)[..]).unwrap();
+        let public =
+            RootNoApplyPublicPinDataV2::decode_canonical(&key.public.encode_canonical()).unwrap();
+        assert!(key.require_public_pin(public).is_ok());
+
+        for generation in [1, 12, u64::MAX] {
+            let changed =
+                RootNoApplyPublicPinDataV2::new(generation, public.public_key_v2()).unwrap();
+            assert!(key.require_public_pin(changed).is_err());
+        }
+
+        let other = Key::decode_canonical(&envelope(11)[..]).unwrap();
+        assert!(key.require_public_pin(other.public).is_err());
+        for bytes in [[0; 32], [0xff; 32]] {
+            let changed = RootNoApplyPublicPinDataV2::new(11, bytes).unwrap();
+            assert!(key.require_public_pin(changed).is_err());
+        }
+    }
+
+    #[test]
+    fn refused_pair_keeps_both_decode_causes_and_closes_packet() {
+        let mut signer = RootFloorSignerV2::new();
+        signer.key = Some(Err(KeyEnvelopeError.into()));
+        signer.public_pin = Some(Err(RootNoApplyPublicPinDataV2::decode_canonical(
+            b"foreign framing",
+        )
+        .unwrap_err()
+        .into()));
+        signer.key_binding = Some(Err(KeyBindingError));
+
+        assert!(signer.prepare_failure().unwrap().is::<KeyEnvelopeError>());
+        assert!(signer.public_pin.as_ref().unwrap().as_ref().unwrap_err().is::<
+            aos_sandbox_protocol::host_execution_no_apply::root_attestation::RootNoApplyAttestationDataErrorV2,
+        >());
+        assert!(signer.packet_bytes_v2().is_err());
+        assert!(signer.key_binding.as_ref().unwrap().is_err());
     }
 
     #[test]

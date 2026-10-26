@@ -386,7 +386,7 @@ in {
           else if builtins.hasAttr option deleteBrokerCredentials
           then "Optional public Controller session manifest for independent Root Delete verification. Provision Host, Mount and Network together with the same respective configured Controller manifests; these files contain no signing keys."
           else if option == "rootNoApplyFloorSigningKey"
-          then "Optional externally provisioned dedicated 80-byte AOSRNK02 Root NoApply floor signing credential with nonzero generation, signing seed and checksum. PID 1 delivers its bytes only to the normal Root service; no seed is generated or stored by Nix. Provision the matching AOSRNP02 Host public pin independently."
+          then "Optional externally provisioned dedicated 80-byte AOSRNK02 Root NoApply floor signing credential with nonzero generation, signing seed and checksum. PID 1 delivers its bytes only to the normal Root service; no seed is generated or stored by Nix. Provision the matching AOSRNP02 public pin independently; Root and Host both receive that public source and Root compares the pair before signing."
           else if option == "gitEvidenceProvision"
           then "Optional bounded AOSGEP01 trusted Root-administration Git evidence instruction, not a dynamic validator attestation or Git activation."
           else if option == "projectHeadPacketV2" || option == "projectLayerV2"
@@ -680,6 +680,8 @@ in {
         LoadCredential =
           lib.mapAttrsToList (option: name: "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
           (lib.filterAttrs (option: _: cfg.credentials.${option} != null) credentialFiles)
+          ++ lib.optional (ownershipTrust.rootNoApplyFloorPublicKey != null)
+          "root-noapply-floor-public:/run/credentials/@system/${ownershipTrust.rootNoApplyFloorPublicKey}"
           ++ ownershipTrustCredentials
           ++ brokerPlanCredentials
           ++ mountBrokerPlanCredentials

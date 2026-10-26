@@ -31,6 +31,25 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Normal Root now receives the same independently provisioned NoApply public
+  pin source as Host. Its existing funded signer retains both native credential
+  originals, canonical decoder results and the exact private-derived/public
+  generation-and-key comparison before either finite signing purpose can run.
+  Capture and all three held/named posts cover both files, including failed
+  prefixes; the receiving demand now prepays 24 descriptor carriers and both
+  bounded read streams without increasing resource-bank capacities. A malformed
+  public frame, another generation, another key or a weak/invalid public point
+  keeps signing closed. The Root seed remains inside its existing dedicated
+  custody. Recovery receives neither NoApply credential. The Nix delivery/pairing
+  contract passes, including missing counterparts and shared-source rejection;
+  the four focused Root signer DATA tests pass. The privileged fixed-path
+  fixture now covers the public copy's unsafe/replaced-file cases, but has not
+  been executed. All 418 broker library tests pass, with the privileged case
+  ignored. Complete application unit/integration target compilation is running
+  for the three final Rust inputs. Initializer exclusion of this public pin,
+  complete actual Host delivery provenance and installed signing/effect
+  qualification remain open.
+
 - Initial approval exclusion now includes Root's optional ownership/Host/Mount
   policy pins and the Source/Project administrative genesis verifier credentials
   independently selected by Root and Controller. Both actual PID1 delivery
@@ -94,8 +113,10 @@ Recent committed startup fixes close narrower prerequisites:
   independently exclude the initial approval key, even when the other issuer
   is distinct. All 86 focused initializer, 423 ordinary Security and 432 online-Nix
   Security tests pass, with two existing ignored cases in each Security suite.
-  Complete application unit/integration target compilation is running for the
-  nine final Rust inputs. Offline Nix approval,
+  Complete application unit/integration target compilation passes for the nine
+  final Rust inputs
+  (`/nix/store/j1wpbq1bz2h8gn5dlln1wpjwya16cyj1-aos-test-targets-0.1.0`),
+  before the policy-pin, genesis and NoApply additions. Offline Nix approval,
   other configured Nix/Root trust families, complete endpoint provenance,
   installed initial-floor effects and public lifecycle qualification remain open.
 

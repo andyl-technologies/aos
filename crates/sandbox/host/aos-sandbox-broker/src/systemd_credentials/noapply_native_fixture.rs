@@ -1,4 +1,4 @@
-//! Exercises both unchanged fixed80 wrappers in an isolated privileged child.
+//! Exercises fixed80 secret/public custody in an isolated privileged child.
 //!
 //! The ignored test requires UID0 and CAP_SYS_CHROOT. Foreign-owner cases also
 //! require mapped UID/GID1 and CAP_CHOWN. It creates no mounts or Source grant,
@@ -30,7 +30,7 @@ enum Original {
 impl Original {
     fn new(kind: &str) -> Self {
         match kind {
-            "root" => Self::Root(RootNoApplySigningCredentialOriginalV2::new()),
+            "root" | "root-public" => Self::Root(RootNoApplySigningCredentialOriginalV2::new()),
             "host" => Self::Host(HostNoApplyRootPublicCredentialOriginalV2::new()),
             _ => panic!("unknown native fixture kind"),
         }
@@ -64,8 +64,9 @@ impl Original {
         }
     }
 
-    fn bytes(&self) -> Option<&[u8]> {
+    fn bytes(&self, kind: &str) -> Option<&[u8]> {
         match self {
+            Self::Root(value) if kind == "root-public" => value.public_bytes_v2(),
             Self::Root(value) => value.bytes_v2(),
             Self::Host(value) => value.bytes_v2(),
         }
@@ -80,7 +81,7 @@ impl Original {
 }
 
 fn directory(kind: &str) -> &'static Path {
-    Path::new(if kind == "root" {
+    Path::new(if matches!(kind, "root" | "root-public") {
         ROOT_SERVICE
     } else {
         HOST_SERVICE
@@ -139,6 +140,12 @@ fn prepare_root(root: &Path) {
     );
     write_private(
         &root
+            .join(ROOT_SERVICE.trim_start_matches('/'))
+            .join(HOST_NAME),
+        &pin.encode_canonical(),
+    );
+    write_private(
+        &root
             .join(HOST_SERVICE.trim_start_matches('/'))
             .join(HOST_NAME),
         &pin.encode_canonical(),
@@ -185,7 +192,7 @@ fn capture_refusal(case: &str, kind: &str, expected: &[u8]) {
         );
     }
     let first = original.failure().unwrap() as *const dyn Error;
-    assert!(original.bytes().is_none());
+    assert!(original.bytes(kind).is_none());
 
     assert!(!original.capture());
     assert!(std::ptr::eq(first, original.failure().unwrap()));
@@ -194,7 +201,7 @@ fn capture_refusal(case: &str, kind: &str, expected: &[u8]) {
 fn readback_refusal(case: &str, kind: &str, expected: &[u8]) {
     let mut original = Original::new(kind);
     assert!(original.capture());
-    assert!(original.bytes() == Some(expected));
+    assert!(original.bytes(kind) == Some(expected));
     match case {
         "changed_name" => replace_same_bytes(&credential(kind), expected),
         "changed_ancestry" => {
@@ -215,7 +222,7 @@ fn readback_refusal(case: &str, kind: &str, expected: &[u8]) {
     assert!(!original.owed_after());
     assert!(original.after_entered(), "owed native after did not enter");
     assert!(std::ptr::eq(first, original.failure().unwrap()));
-    assert!(original.bytes().is_none());
+    assert!(original.bytes(kind).is_none());
 }
 
 fn after_refusal(kind: &str, expected: &[u8]) {
@@ -230,7 +237,7 @@ fn after_refusal(kind: &str, expected: &[u8]) {
     let first = original.failure().unwrap() as *const dyn Error;
     assert!(!original.capture());
     assert!(std::ptr::eq(first, original.failure().unwrap()));
-    assert!(original.bytes().is_none());
+    assert!(original.bytes(kind).is_none());
 }
 
 fn run_child(root: &Path, case: &str, kind: &str) {
@@ -264,7 +271,7 @@ fn run_child(root: &Path, case: &str, kind: &str) {
         "positive" => {
             let mut original = Original::new(kind);
             assert!(original.capture());
-            assert!(original.bytes() == Some(expected));
+            assert!(original.bytes(kind) == Some(expected));
             assert!(original.before());
             assert!(original.owed_after());
             assert!(original.after_entered());
@@ -304,7 +311,7 @@ fn fixed_root_and_host_wrappers_native() {
         0,
         "select this fixture only with honest root privileges"
     );
-    for kind in ["root", "host"] {
+    for kind in ["root", "root-public", "host"] {
         for case in [
             "positive",
             "missing",

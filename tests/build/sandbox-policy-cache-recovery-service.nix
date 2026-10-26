@@ -78,6 +78,26 @@
     ];
   };
 
+  noApplyEvaluation = signing: public:
+    evaluation.extendModules {
+      modules = [
+        {
+          aos.sandbox.policyAuthority.credentials.rootNoApplyFloorSigningKey = signing;
+          aos.sandbox.hostBroker.credentials.rootNoApplyFloorPublicKey = public;
+        }
+      ];
+    };
+  withNoApply = noApplyEvaluation "root-noapply-private" "root-noapply-public";
+  noApplyNormal = withNoApply.config.systemd.services.aos-sandbox-policy-authorityd.serviceConfig;
+  noApplyRecovery = withNoApply.config.systemd.services.${serviceName}.serviceConfig;
+  # This isolated legacy fixture checks delivery and the pairing assertion only;
+  # it does not select or qualify the confined Root signing role.
+  acceptsNoApplyPair = result:
+    (lib.findFirst
+      (check: check.message == "Root NoApply floor signing and Host public pin require distinct external credential names provisioned together")
+      (throw "missing Root NoApply pairing assertion")
+      result.config.assertions).assertion;
+
   recovery = evaluation.config.systemd.services.${serviceName};
   service = recovery.serviceConfig;
   normal = evaluation.config.systemd.services.aos-sandbox-policy-authorityd.serviceConfig;
@@ -159,6 +179,14 @@ in
   assert service.ProtectSystem == "strict" && service.CapabilityBoundingSet == "";
   assert lib.any (check: lib.hasInfix "must not depend on policy credentials" check.message) weakenedAssertions;
   assert builtins.length normal.LoadCredential == 9;
+  assert builtins.length noApplyNormal.LoadCredential == 11;
+  assert lib.elem "root-noapply-floor-signing:/run/credentials/@system/root-noapply-private" noApplyNormal.LoadCredential;
+  assert lib.elem "root-noapply-floor-public:/run/credentials/@system/root-noapply-public" noApplyNormal.LoadCredential;
+  assert (noApplyRecovery.LoadCredential or []) == [];
+  assert acceptsNoApplyPair withNoApply;
+  assert !(acceptsNoApplyPair (noApplyEvaluation "private-only" null));
+  assert !(acceptsNoApplyPair (noApplyEvaluation null "public-only"));
+  assert !(acceptsNoApplyPair (noApplyEvaluation "same-source" "same-source"));
   assert hasRefusal withoutPacket && hasRefusal withoutInput && hasRefusal withoutPair;
   assert strictOptionAccepted {};
   assert strictOptionAccepted {

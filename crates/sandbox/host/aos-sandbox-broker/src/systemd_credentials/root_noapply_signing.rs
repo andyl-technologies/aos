@@ -1,4 +1,4 @@
-//! Retains Root's dedicated secret credential through its native signing post.
+//! Retains Root's dedicated secret and public pin through native signing posts.
 //!
 //! The same fixed ancestry, no-follow original and held/named readback engines
 //! used by Controller Q04 retain zeroizing secret buffers. This custody exposes
@@ -7,8 +7,8 @@
 use super::*;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 
-const NAMES: [&str; 1] = ["root-noapply-floor-signing"];
-const WIDTHS: [u64; 1] = [80];
+const NAMES: [&str; 2] = ["root-noapply-floor-signing", "root-noapply-floor-public"];
+const WIDTHS: [u64; 2] = [80; 2];
 
 /// Keeps the native first cause resident while refusing secret credential use.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -24,15 +24,15 @@ enum First {
     Reentry,
 }
 
-/// Owns the fixed secret original and all three distinct readback destinations.
+/// Owns both fixed credential originals and three distinct paired readbacks.
 ///
 /// The enclosing genuine Root purpose must prepay this entire shape before
 /// construction. No path, supplied key, callback or general signer is accepted.
 #[must_use]
 pub struct RootNoApplySigningCredentialOriginalV2 {
-    originals: [OriginalControllerCredential; 1],
+    originals: [OriginalControllerCredential; 2],
     ancestors: CredentialAncestors,
-    readbacks: [CredentialReadback<1>; 3],
+    readbacks: [CredentialReadback<2>; 3],
     entered: bool,
     first: Option<First>,
     capture: Option<CredentialResult<()>>,
@@ -47,10 +47,10 @@ impl RootNoApplySigningCredentialOriginalV2 {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            originals: [OriginalControllerCredential {
+            originals: std::array::from_fn(|_| OriginalControllerCredential {
                 public: None,
                 read: CredentialReadSlot::new(),
-            }],
+            }),
             ancestors: CredentialAncestors::new(),
             readbacks: std::array::from_fn(|_| CredentialReadback::new()),
             entered: false,
@@ -66,8 +66,14 @@ impl RootNoApplySigningCredentialOriginalV2 {
     /// Prices all retained original, initial, before-sign and owed-after prefixes.
     #[must_use]
     pub fn receiving_demand_v2() -> Option<ResourceVector> {
-        let files = 4_u64.checked_mul(5)?;
-        let buffers = 81_u64.checked_mul(4)?.checked_mul(7)?;
+        // Four directory descriptors and both files remain resident for capture
+        // and each independent post, including every failed native prefix.
+        let namespace = 4_u64.checked_add(u64::try_from(NAMES.len()).ok()?)?;
+        let files = namespace.checked_mul(4)?;
+        let traffic = 81_u64
+            .checked_mul(7)?
+            .checked_mul(u64::try_from(NAMES.len()).ok()?)?;
+        let buffers = traffic.checked_mul(4)?;
         let memory = u64::try_from(std::mem::size_of::<Self>())
             .ok()?
             .checked_mul(2)?
@@ -77,12 +83,12 @@ impl RootNoApplySigningCredentialOriginalV2 {
             ResourceVector::ZERO
                 .with(D::MemoryBytes, memory)
                 .with(D::OpenFiles, files)
-                .with(D::MetadataEntries, 5)
-                .with(D::OutputBytes, 81 * 7),
+                .with(D::MetadataEntries, namespace)
+                .with(D::OutputBytes, traffic),
         )
     }
 
-    /// Captures only the compiled protected Root secret and initial named post.
+    /// Captures the compiled Root secret/public pair and initial named post.
     ///
     /// # Errors
     /// Retains missing/unsafe/replaced/short/oversized secret or non-root caller
@@ -104,18 +110,20 @@ impl RootNoApplySigningCredentialOriginalV2 {
                 &mut self.originals,
                 &mut self.ancestors,
             )?;
-            let original = self.originals[0]
-                .public
-                .as_ref()
-                .ok_or_else(credential_state_rejected)?;
-            // The shared secret reader already enforces root ownership,
-            // singleton regular files, no group/other access and stable bytes.
-            if original.bytes().len() != 80
-                || original.file_identity.2 != 0
-                || original.file_identity.3 != 0
-                || original.file_identity.4 & 0o7777 != 0o400
-            {
-                return Err(credential_state_rejected());
+            // Both the private seed and independently delivered public pin use
+            // root-owned, singleton, immutable credential files.
+            for original in &self.originals {
+                let original = original
+                    .public
+                    .as_ref()
+                    .ok_or_else(credential_state_rejected)?;
+                if original.bytes().len() != 80
+                    || original.file_identity.2 != 0
+                    || original.file_identity.3 != 0
+                    || original.file_identity.4 & 0o7777 != 0o400
+                {
+                    return Err(credential_state_rejected());
+                }
             }
             Ok(())
         })());
@@ -129,7 +137,7 @@ impl RootNoApplySigningCredentialOriginalV2 {
         self.require_positive()
     }
 
-    /// Rechecks the same fixed secret immediately before finite attestation signing.
+    /// Rechecks both fixed originals immediately before finite attestation signing.
     ///
     /// # Errors
     /// Retains changed original/name or earlier refusal and rejects repeat use.
@@ -165,6 +173,16 @@ impl RootNoApplySigningCredentialOriginalV2 {
     pub fn bytes_v2(&self) -> Option<&[u8]> {
         self.require_positive().ok()?;
         Some(self.originals[0].public.as_ref()?.bytes())
+    }
+
+    /// Borrows the independently delivered public pin as comparison DATA.
+    ///
+    /// Presence supplies no Root, signing or receiving authority. The dedicated
+    /// signing owner compares its canonical generation and key with the secret.
+    #[must_use]
+    pub fn public_bytes_v2(&self) -> Option<&[u8]> {
+        self.require_positive().ok()?;
+        Some(self.originals[1].public.as_ref()?.bytes())
     }
 
     /// Requires all finite signing readbacks before an upper artifact is released.
@@ -257,6 +275,7 @@ mod tests {
             original.reentry.as_ref().unwrap()
         ));
         assert!(original.bytes_v2().is_none());
+        assert!(original.public_bytes_v2().is_none());
         assert!(original.require_complete_v2().is_err());
     }
 }
