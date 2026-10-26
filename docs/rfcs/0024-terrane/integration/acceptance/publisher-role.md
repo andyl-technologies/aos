@@ -1,25 +1,26 @@
 # T-HOST-2 publisher role audit
 
-This audit inspects the publisher implementation at
-`330e82243d9441a63e9fbbb7672b9e4fd6883041`. It does not accept T-HOST-2.
-The complete `publisher-sole-writer` and `host-publish-sequence` owning gates
-pass at this source. PROTO-58 also names `host-crash-recovery`; that gate
-requires renewal before completing this clause review.
+T-HOST-2 is accepted at frozen
+`330e82243d9441a63e9fbbb7672b9e4fd6883041` after the complete
+`publisher-sole-writer`, `host-publish-sequence` and separately required
+`host-crash-recovery` gates pass and the ten clauses below are reconciled.
+This accepts the publisher component; complete host readiness, other process
+roles and intertier services remain separate obligations.
 
 ## Requirement coverage
 
-| Requirement | Inspected implementation | Required evidence and limits |
+| Requirement | Inspected implementation | Qualified evidence and limits |
 | --- | --- | --- |
-| HOST-6 | [Configured startup][configured] installs publisher confinement before opening native resources. [Native roots][native] retain directory custody; other roles receive read-only backing through the [local socket][socket]. | The ownership gate combines actual role permissions, native descriptor handoff and publisher confinement. Managed-role evidence must retain the original Serve read-only mounts and publisher namespace controls. A read-only pathname does not prove that an inherited writable descriptor is absent. |
-| HOST-7 | [Publication sequencing][sequence] stages, verifies the independent content claim, closes writers, seals, synchronizes, inserts without replacement, synchronizes the parent and records the binding before returning backing. Failed completion attempts inode-checked rollback. Adoption independently verifies the seal and plaintext and refuses conflicting recorded bindings. | The sequence gate requires all twelve portable fault cases and all ten original native publication selectors, including binding failure and retained physical-owner completion. Inline and manifest identities must remain distinct; a one-chunk manifest cannot become an inline claim. |
-| HOST-8 | [Native staging][native] copies the source into a newly created publisher-private inode. It does not reflink the source. The private copy is verified before writers close and sealing starts. | The conditional reflink permission is unused. Source mutation cannot substitute unverified bytes after the private-copy verification. This establishes no permission to introduce a future reflink path without its additional immutability and domain checks. |
-| HOST-9 | [Publication sequencing][sequence] handles an existing canonical name by independently adopting it. [Native insertion and rollback][native] use retained directory/inode custody and no-replace operations. | Native collision, recovery and domain-isolation controls must pass. Successful adoption requires the existing seal and content claim; cleanup must preserve a preexisting or replacement inode. |
-| ARCH-5 | The [server][server] and [closed codec][validation] implement the registered `publisher-local-v1` operations. The configured publisher opens no Store, repository or backend credentials. | This audit covers the assigned publisher boundary. It does not establish conformance of other registered local transports or the separate intertier services. No publisher command may become an alternate store/ref/repository API. |
-| ARCH-8 | [Configured startup][configured], [native publication][native] and [publisher confinement][confinement] keep sealed namespace effects in the publisher role. | The complete ownership gate must verify the retained actual executables and original privilege controls, rather than infer exclusivity from the Rust interface or module rendering alone. |
-| PROTO-56 | [Sockets][socket] use connected Unix sequenced packets and passed descriptors. The [codec][validation] accepts only the registered version, direction and operation fields. | The ownership gate retains the exact portable transport inventory and native multi-identity/lifecycle guests. HTTP authentication and intertier forwarding are outside this transport. |
-| PROTO-57 | [Sockets][socket] authenticate actual kernel peer credentials against distinct configured role identities, validate received descriptor access/type and retain close-on-exec files. [Server claim conversion][server] independently constructs domain-bound publication claims. | All seventeen socket cases are required, including credential spoofing, domain selection, descriptor rejection and listener retirement. Role authentication grants no repository authority; the separate repository read path remains responsible for authorization before disclosure. |
-| PROTO-58 | [Connection owners][shutdown] retain and join accepted work. A [server wait deadline][server] awaits actual native completion even when its reply fails. The [native worker][worker] owns its runtime and retained roots independently of the caller. | The original cancellation, binding-durability, recovery and native lifecycle controls must pass. Clean publisher restart requires a fresh process/listener identity after the original listener retires. Publisher restart alone establishes neither Serve restart recovery nor final physical charge release. |
-| PROTO-59 | [Validation][validation] closes the operation/descriptor matrix. [Server dispatch][server] converts registered content keys and configured domains into native operations; callers supply no filesystem path or callback. [Publication/adoption][sequence] precedes returned backing. | Native no-replace, domain, incarnation and partial-retirement controls must preserve replacement inodes. A returned quarantine inspection descriptor remains unverified and cannot become serving authority. |
+| HOST-6 | [Configured startup][configured] installs publisher confinement before opening native resources. [Native roots][native] retain directory custody; other roles receive read-only backing through the [local socket][socket]. | Qualified by seven distinct kernel role identities, six non-publisher namespace-refusal controls, actual read-only backing handoff and irreversible publisher confinement before resource startup. Startup audits inherited descriptors; trusted host standard-I/O policy remains required. |
+| HOST-7 | [Publication sequencing][sequence] stages, verifies the independent content claim, closes writers, seals, synchronizes, inserts without replacement, synchronizes the parent and records the binding before returning backing. Failed completion attempts inode-checked rollback. Adoption independently verifies the seal and plaintext and refuses conflicting recorded bindings. | All twelve portable ordering/fault cases and ten native publication selectors pass, including actual binding failure, rollback and retained physical-owner completion. Configured native inline and manifest reassembly also pass; manifest identity remains distinct from assembled plaintext. |
+| HOST-8 | [Native staging][native] copies the source into a newly created publisher-private inode. It does not reflink the source. The private copy is verified before writers close and sealing starts. | The inspected implementation uses a verified private copy and no reflink. The conditional reflink permission is unused; introducing that path would require its additional source immutability and domain checks. |
+| HOST-9 | [Publication sequencing][sequence] handles an existing canonical name by independently adopting it. [Native insertion and rollback][native] use retained directory/inode custody and no-replace operations. | Native collision, adoption, recovery and domain-isolation controls pass. Adoption independently checks the existing seal and claim; cleanup and partial-retirement controls preserve preexisting or replacement inodes. |
+| ARCH-5 | The [server][server] and [closed codec][validation] implement the registered `publisher-local-v1` operations. The configured publisher opens no Store, repository or backend credentials. | Qualified for the registered publisher boundary by the closed codec, twelve pure transport cases and native transport guests. Publisher operations expose no alternate Store/ref/repository API. Other registered local transports and intertier services retain their own conformance obligations. |
+| ARCH-8 | [Configured startup][configured], [native publication][native] and [publisher confinement][confinement] keep sealed namespace effects in the publisher role. | The complete ownership gate passes with source-bound actual executables and original privilege controls. All six non-publisher fixture identities are denied sealed namespace mutation; native handoff cannot be reopened writable. |
+| PROTO-56 | [Sockets][socket] use connected Unix sequenced packets and passed descriptors. The [codec][validation] accepts only the registered version, direction and operation fields. | The exact twelve portable transport cases and native multi-identity/lifecycle guests pass for registered Unix sequenced packets and descriptor exchange. HTTP authentication and intertier forwarding are outside this transport. |
+| PROTO-57 | [Sockets][socket] authenticate actual kernel peer credentials against distinct configured role identities, validate received descriptor access/type and retain close-on-exec files. [Server claim conversion][server] independently constructs domain-bound publication claims. | All seventeen socket cases pass, including kernel credentials, spoofing, domain selection, descriptor rejection and protected listener retirement. Role authentication grants no repository authority; guarded repository reads still authorize each disclosure. |
+| PROTO-58 | [Connection owners][shutdown] retain and join accepted work. A [server wait deadline][server] awaits actual native completion even when its reply fails. The [native worker][worker] owns its runtime and retained roots independently of the caller. | Current cancellation, joined physical completion, listener-retirement and new-cache recovery controls pass. The separately named crash-recovery gate consumes fourteen source-bound KVM guests and all ten original physical prerequisites. Managed publisher-restart execution retains its earlier source attribution; full Serve restart and general physical-release conformance are separate. |
+| PROTO-59 | [Validation][validation] closes the operation/descriptor matrix. [Server dispatch][server] converts registered content keys and configured domains into native operations; callers supply no filesystem path or callback. [Publication/adoption][sequence] precedes returned backing. | Registered operation/descriptor checks and native no-replace, domain, incarnation and partial-retirement controls pass. Returned backing follows verified publication/adoption. Quarantine inspection descriptors remain unverified and cannot become serving authority. |
 
 ## Qualification checkpoint
 
@@ -61,13 +62,23 @@ aggregate result begins with `PASS` is also preserved; the original publication
 aggregate's exact descriptive success message is checked against its source.
 No original runtime assertion or guest resource limit changes.
 
-PROTO-58 still requires the separately named `host-crash-recovery` gate. Its
-current-source preflight identifies 28 remaining derivations, including the
-original configured-SDK, private-release, cold-pressure and recovery-selector
-prerequisites. The passing publisher gates do not replace that dependency graph.
-The earlier manager result retains its original source attribution: production
-source equality alone cannot transfer execution evidence between executables
-whose actual hashes differ.
+The separately required `host-crash-recovery` gate passes at the same frozen
+source in 599.483 seconds. Independent review verifies all six remaining KVM
+guests and both aggregates, the four original recovery selectors, and the
+complete ten-entry physical prerequisite list. That list expands to thirteen
+actual cache/enrollment/SDK/release/pressure guests; the selector guest makes
+fourteen. Together with the publisher owning gates, seventeen distinct
+original KVM outputs pass. All original SDK positive/refusal, read-only namespace,
+wipe-refusal, private-release and cold-pressure controls remain intact.
+Seventeen consumed outputs are preserved as 65 hashed regular files and three
+validated aggregate symlink records.
+
+All 7,278 production/build/module Git entries and the normative specification
+remain identical through `806f6b98a5`. That commit changes only SDK image
+verification memory use and checkpoint documentation. This source comparison
+does not relabel the earlier manager execution or claim equal executable bytes
+across different builds. The managed publisher-restart result remains at
+`10699f7b5d`; complete Serve restart is still unqualified.
 
 The separate 194.410-second warm Serve-restart observation at `10699f7b5d`
 preserves the original units, credentials, endpoints, configuration and limits.
@@ -77,10 +88,10 @@ metadata. This is a qualified failure observation, not Serve restart acceptance.
 SDK checkout still requires a new private directory; deleting or reusing the
 completed snapshots would not qualify that original contract.
 
-Acceptance requires the remaining current-source crash-recovery gate result,
-its source and actual-executable review, and reconciliation of every clause
-above. These results do not accept T-HOST-1, other process roles, protocol services or global
-architecture conformance.
+These three complete gate results, retained source/executable reviews and the
+ten-clause reconciliation accept T-HOST-2. They do not accept T-HOST-1, other
+process roles, intertier services or global architecture conformance. The
+capabilities-update refusal and full NativeReady limits recorded above remain.
 
 [configured]: ../../../../../crates/terrane/linux/terrane-linux/src/configured.rs
 [native]: ../../../../../crates/terrane/linux/terrane-linux/src/publisher_io/native.rs

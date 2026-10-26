@@ -91,6 +91,17 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+Current trunk acceptance is **28/64** after accepting T-HOST-2. The complete
+publisher ownership/publication gates pass at `330e82243d` in 1,216.385 seconds;
+the separately required crash-recovery gate passes at that source in 599.483
+seconds. Independent reviews reconcile all ten publisher clauses, seventeen
+distinct original KVM outputs, twelve portable publication cases, twelve pure
+transport cases and all original native privilege, filesystem and recovery
+controls. The [publisher audit](acceptance/publisher-role.md) records the exact
+scope, unchanged production source and retained evidence. T-HOST-1, global
+NativeReady and complete Serve restart remain unaccepted. Counts in earlier
+checkpoints below describe acceptance at their respective sources.
+
 Shared-directory owning-gate renewal at `330e82243d` stops in 164.316
 seconds after all three original private-release guests pass. The 512 MiB
 portable shared-mode guest then OOM-kills its UID-840 Python verifier before
@@ -13609,14 +13620,15 @@ requirements; it does not grant acceptance.
   `checks.terrane.gates.host-eviction-s3fifo`,
   `checks.terrane.gates.host-verify-before-admit`,
   `checks.terrane.gates.host-crash-recovery`.
-- [ ] **T-HOST-2** `publish` role: networkless sealer with fs-verity,
+- [x] **T-HOST-2** `publish` role: networkless sealer with fs-verity,
   no-replace publication, adoption on recovery and the registered host-local
   descriptor channel. — satisfies HOST-6 to HOST-9, ARCH-5, ARCH-8,
   PROTO-56 to PROTO-59; `checks.terrane.gates.publisher-sole-writer`,
   `checks.terrane.gates.host-publish-sequence`.
   The [publisher role audit](acceptance/publisher-role.md) maps all ten assigned
-  clauses to implementation, required evidence and current qualification limits;
-  both owning gates pass; PROTO-58 crash-recovery renewal remains pending.
+  clauses to implementation and qualified evidence. Both owning gates and
+  PROTO-58's separately required crash-recovery gate pass at `330e82243d`;
+  complete clause reconciliation accepts this task.
 - [ ] **T-STORE-3** `shared-dir` backend and per-domain object directories.
   — satisfies STORE-14, DOM-12 to DOM-15, HOST-27;
   `checks.terrane.gates.shared-dir-read-only`,
