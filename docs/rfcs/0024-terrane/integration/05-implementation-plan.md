@@ -282,7 +282,7 @@ inputs, disabled host-native fallback and clean shutdown are verified. Seven
 raw records are preserved and owned scratch is removed. Independent image
 review binds that same source, 5,517 configured-image and 5,523 enrollment-image
 inputs, and five actual retained executables. These are compilation and image
-results; the unmodified managed publisher restart fixture is still running.
+results; the manager runtime and its refused receipt are recorded below.
 
 A follow-up source audit finds that reporting a worker's startup error precedes
 its runtime and retained-guard teardown. The startup constructor now drops its
@@ -324,6 +324,34 @@ its guest evidence. Exact source-inventory comparison and Python syntax pass;
 the existing per-case ext4, identity, unique execution and clean guest shutdown
 requirements remain enforced. This verifier correction grants no runtime or
 task acceptance; owning-gate renewal remains required.
+
+At frozen `10699f7b5d`, mandatory application-target compilation passes in
+703.613 seconds. Independent review matches 8,296 immutable source files and
+190 test-target records across 59 packages; this proves compilation only.
+The two isolated AOS prerequisite controllers pass in 870.899 and 606.532
+seconds. Joint review accounts for all sixty distinct remote derivations:
+the manager controller dispatches 49 inputs and reuses the two exact native
+images among the focused controller's eleven dispatches. Both fresh
+capability-free ext4 probes, distinct boot IDs, disabled host-native fallback
+and clean shutdowns are verified. Fourteen raw controller records are preserved
+and both owned scratch directories are removed.
+
+Focused image review binds that same source and six retained Cargo executables.
+The original socket and publication KVM checks pass in 42.470 seconds; separate
+review verifies every one of the seventeen socket cases and ten publication
+selectors, including the startup-failure exclusion and physical binding-owner
+join controls. Manager image review binds 5,517/5,523 inputs and five retained
+executables. The unmodified manager guest passes in 191.360 seconds with all
+fifteen enrollment controls, full initial publisher readiness, fresh publisher
+process and listener identities, both clean publisher stops, original namespace
+and custody checks, and preserved completed SDK snapshot payloads. The initial
+runtime review refuses a blanket serial bind-error assertion. All eight messages are
+then independently attributed to the test agent's exact AF_VSOCK port-52
+collisions, outside every Terrane role PID. The corrected review rejects any
+other collision and also requires both clean publisher stops; it passes. The
+first refusal and raw records remain preserved, and owned runtime scratch is
+removed. These scoped results do not qualify full Serve/SDK restart recovery,
+physical release or the complete owning aggregates. Acceptance remains 27/64.
 
 The full feature matrix at the earlier frozen `e6f214f3ce` checkpoint passes in
 19,245.158 seconds in the isolated 32 GiB AOS builder. Independent review matches
