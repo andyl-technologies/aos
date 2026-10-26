@@ -13596,6 +13596,9 @@ requirements; it does not grant acceptance.
   — satisfies STORE-14, DOM-12 to DOM-15, HOST-27;
   `checks.terrane.gates.shared-dir-read-only`,
   `checks.terrane.gates.dom-host-isolation`.
+  The [shared-directory audit](acceptance/shared-directory.md) maps all six
+  clauses, the original six runtime guests and the remaining realization and
+  physical-lifetime evidence boundaries; this task remains unaccepted.
 - [ ] **T-SURF-1** Surface interface, exposure records, schema validation,
   TOML configuration, status reporting, in-process registry, ownership and
   timestamp presentation, and privileged xattr filtering. — satisfies
