@@ -32673,7 +32673,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "0ec4f8238e73844907f03040bceb857a9ef6d9cb52c103b25fddcd51aa4925ec",
+    "MODULE.bazel": "0ee47c9e88c1cc55f0a4cb7040c803e084ce34fc2a5f671fd7778030f48d7b71",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/crucible/crucible-store-s3/BUILD.bazel": "46ae726e99de65aa4f8468c88bebf60bb689c21827f10766c2dff4356328b71a",
     "crates/crucible/crucible-store/BUILD.bazel": "3b55a3b50f81447aba444c9cdc298c3f9b309112adfe8f29a273eb5224f1f394",

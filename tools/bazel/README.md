@@ -3096,6 +3096,32 @@ Production and release tests execute 78 and 112 fresh Linux sandbox actions.
 Live procfs convergence, foreign hosts, numeric performance acceptance and
 default cutover remain separate gates.
 
+`pkgs.aos-network-ruleset-provider.passthru.withBuildDriver "bazel"` selects the
+static nftables handler while preserving its module dependencies, runtime closure,
+executable probe and package checks. Cargo remains the default and explicit
+rollback. The existing preparation-provider dependency profiles are reused.
+An immutable Nix repository supplies the packaged nft executable path to the
+compiler; it contains no executable or download logic.
+
+`checks.build.bazel.network-ruleset-provider-production.all`, also exposed through
+`tools/bazel/tests/network-ruleset-provider-production.nix`, compares both installed
+packages, exact native compiler features, static archive inputs and release tests.
+The retained `tests/evidence/network-ruleset-provider-production-package.json`
+requires four library cases, both optimized test binaries, four unoptimized
+procedural macros and the empty command-test and doctest targets. Eight installed
+rejection comparisons include the 16 MiB input bound; the version command also
+matches. Actual compiler reconstruction checks the nft path consumed by three
+Bazel compilations and both Cargo library compilations. Both original package
+version-command checks pass in source-built Firecracker VMs requiring KVM and
+are required by the qualification. Native module checks retain merged
+contributions, owner/identity, selected handler and invalid-port rejection.
+An installation negative control reproduces an intermediate package that scrubs
+the nft reference and requires the closure check to reject it.
+Production and release tests execute 115 and 140 fresh Linux sandbox actions.
+Precise and conservative inventories agree on six roots, 143 configured reports
+and 44 source files. Live firewall mutations, foreign hosts, numeric performance
+acceptance and default cutover remain separate gates.
+
 The broader [native evaluation gate](tests/evidence/static-storage-core-evaluation.json)
 passes for the static storage checkpoint. Reinstantiation after the OpenZFS and
 provisioning selector changes yields the identical completed root derivation;

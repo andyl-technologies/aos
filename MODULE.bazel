@@ -110,3 +110,5 @@ aos_tools(name = "aos_qemu_plugin_abi")
 aos_tools(name = "aos_qemu_test_tools")
 
 aos_tools(name = "aos_zfs_runtime")
+
+aos_tools(name = "aos_nft_runtime")

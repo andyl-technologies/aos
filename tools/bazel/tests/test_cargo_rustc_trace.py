@@ -73,6 +73,19 @@ class CompilerTraceTests(unittest.TestCase):
         self.assertNotIn("AOS_UNRELATED_SECRET", record["environment"])
         self.assertNotIn("keep this value absent", self.trace.read_text())
 
+    def test_nft_compiler_path_is_retained_without_unrelated_aos_environment(self):
+        self.environment["AOS_NFT_EXECUTABLE"] = "/nix/store/example-nftables/sbin/nft"
+        self.environment["AOS_UNRELATED_SECRET"] = "keep this value absent"
+
+        result = self.invoke("import os; print(os.environ['AOS_NFT_EXECUTABLE'])")
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "/nix/store/example-nftables/sbin/nft\n")
+        record = json.loads(self.trace.read_text())
+        self.assertEqual(record["environment"]["AOS_NFT_EXECUTABLE"], self.environment["AOS_NFT_EXECUTABLE"])
+        self.assertNotIn("AOS_UNRELATED_SECRET", record["environment"])
+        self.assertNotIn("keep this value absent", self.trace.read_text())
+
     def test_concurrent_compilers_append_complete_distinct_records(self):
         with ThreadPoolExecutor(max_workers=4) as executor:
             results = list(executor.map(lambda number: self.invoke("pass", str(number)), range(24)))

@@ -108360,7 +108360,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "0ec4f8238e73844907f03040bceb857a9ef6d9cb52c103b25fddcd51aa4925ec",
+    "MODULE.bazel": "0ee47c9e88c1cc55f0a4cb7040c803e084ce34fc2a5f671fd7778030f48d7b71",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/BUILD.bazel": "8c4094dbbcf911efdfe8c6a615b3021622a21816c119695c7e6a6779f2ee45cc",
     "crates/activation/aos-activation-bpf-lsm/BUILD.bazel": "31443585fe6c983ce87ad0eba7c674e3b12ae680e446e70bc33cf7e13b68fdf5",
@@ -108369,7 +108369,7 @@
     "crates/activation/aos-activation-crucible/BUILD.bazel": "4ff72b43a2944613c625e9f0f2006f0a0a276d37eddffe1ebd432a69a6c85df8",
     "crates/activation/aos-activation-filesystem/BUILD.bazel": "3dfa58dbb6d5a4729288086efc7b5d4328ea9200c2c07d6c557a69e211c86282",
     "crates/activation/aos-activation-kubernetes/BUILD.bazel": "ba539fb973ebeb240283ebb2fa95bd7e88aef7a1cf25582d382deb701ec372fb",
-    "crates/activation/aos-activation-nftables/BUILD.bazel": "4465a89d80e2cf16054dac277966526c597c6b03ef8b5b7f3388ac70c468996b",
+    "crates/activation/aos-activation-nftables/BUILD.bazel": "b5caf5ffd9fe6256db3351f922662b8d8921a0d2a8eeb1bfa3e46000972eb051",
     "crates/activation/aos-activation-nix-store/BUILD.bazel": "963adab41d128a4573c945e0a013c0c5efec30a7897bd0a2c1bbc0636c224529",
     "crates/activation/aos-activation-storage/BUILD.bazel": "c596939ba7714d840fb4e46de22121aa18ca13fc29a1d1f1e9be13997c25c7cf",
     "crates/activation/aos-activation-sysctl/BUILD.bazel": "8088b8ddd7f548937daadd1a7f71c74b7f40f76ce025507ba3f58bc371880a87",

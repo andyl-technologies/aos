@@ -20,7 +20,8 @@ def main():
         "environment": {
             name: value for name, value in os.environ.items()
             if name.startswith(("CARGO_PKG_", "CARGO_FEATURE_"))
-            or name in {"CARGO_MANIFEST_DIR", "OUT_DIR", "OPT_LEVEL", "DEBUG", "HOST", "TARGET", "AOS_ZFS_VERSION"}
+            or name in {"CARGO_MANIFEST_DIR", "OUT_DIR", "OPT_LEVEL", "DEBUG", "HOST", "TARGET",
+                        "AOS_ZFS_VERSION", "AOS_NFT_EXECUTABLE"}
         },
     }
     data = (json.dumps(record, sort_keys=True) + "\n").encode()
