@@ -4,6 +4,8 @@ use super::*;
 use crate::bodies::{BeginRequest, ObserveRequest, PollRequest, RetireRequest};
 use crate::retained_metadata::{MetadataObserver, RetainedProtocolMetadataFacts};
 
+mod capacities;
+
 /// Borrows one real typed owner, including an incomplete or rejected partial.
 ///
 /// The Source retains each owner before any fallible validation or assignment.

@@ -32,6 +32,8 @@ use std::{
     thread::ThreadId,
 };
 
+#[path = "producer_progress/capacities.rs"]
+mod capacities;
 #[path = "producer_progress/capture.rs"]
 pub(super) mod capture;
 #[path = "producer_progress/checkpoint_cache17.rs"]

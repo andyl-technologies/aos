@@ -51,6 +51,16 @@ pub enum RetainedCaptureProtocolData<'a> {
     RestoredInputReactive17(
         crate::reference_packet::service::restored_input_reactive17::PacketRestoredInputReactive17RetainedData<'a>,
     ),
+    /// Borrows separately retained Producer arguments and ordinary method bodies.
+    ///
+    /// The enclosing Source supplies its creator check; rejected DTOs remain DATA.
+    RestoredProducerTyped(
+        crate::reference_packet::service::complete_restore::producer_progress::PacketRestoredProducerTypedOwnerData<'a>,
+    ),
+    /// Borrows a complete ordinary suffix body without assigning or validating it.
+    ///
+    /// Actual typed fields and extensions retain their independent backing.
+    RestoredSuffixBody(crate::client::OriginalRestoredSuffixBody<'a>),
     /// Borrows independent restored receipt and underlying model partials.
     ///
     /// Missing or inconsistent partners remain DATA without acquiring native
@@ -112,6 +122,8 @@ impl RetainedCaptureProtocolData<'_> {
             + crate::client::OriginalRestoredSuffixHostAttempt::capacity_counter_scratch_data()
             + crate::reference_packet::service::complete_restore::restoration_observe::RetainedRestorationObservationData::capacity_counter_scratch_data()
             + crate::reference_packet::service::restored_input_reactive17::PacketRestoredInputReactive17RetainedData::capacity_counter_scratch_data()
+            + crate::reference_packet::service::complete_restore::producer_progress::PacketRestoredProducerTypedOwnerData::capacity_counter_scratch_data()
+            + crate::client::OriginalRestoredSuffixBody::capacity_counter_scratch_data()
             + size_of::<Self>()
             + size_of::<&Self>()
             + size_of::<MetadataObserver<'static>>()
@@ -137,7 +149,9 @@ impl RetainedCaptureProtocolData<'_> {
             | Self::AfterConfirmation(_)
             | Self::RestorationNativeEvidence(_, _)
             | Self::RestorationObservation(_)
-            | Self::RestoredInputReactive17(_) => Ok(()),
+            | Self::RestoredInputReactive17(_)
+            | Self::RestoredProducerTyped(_)
+            | Self::RestoredSuffixBody(_) => Ok(()),
             Self::SnapshotReservation(value) => value.check_capacity_creator_data(),
             Self::Snapshot(value) => value.check_capacity_creator_data(),
             Self::PayloadOwner(value) => value.check_capacity_creator_data(),
@@ -163,6 +177,8 @@ impl RetainedCaptureProtocolData<'_> {
             Self::RestoredSuffixAttempt(value) => value.observe_capacity_data(observer),
             Self::RestorationObservation(value) => value.observe_owned_metadata_data(observer),
             Self::RestoredInputReactive17(value) => value.observe_capacity_data(observer),
+            Self::RestoredProducerTyped(value) => value.observe_capacity_data(observer),
+            Self::RestoredSuffixBody(value) => value.observe_capacity_data(observer),
             Self::RestorationNativeEvidence(record, underlying) => {
                 crate::reference_packet::service::complete_restore::activation::observe_restoration_native_capacity_data(
                     *record, *underlying, observer,

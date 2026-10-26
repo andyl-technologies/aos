@@ -9,6 +9,8 @@ use super::*;
 use crate::operational_time::OperationalDeadline;
 use std::mem::size_of;
 
+#[path = "restored_suffix_host/body_capacities.rs"]
+mod body_capacities;
 #[path = "restored_suffix_host/capacities.rs"]
 mod capacities;
 
