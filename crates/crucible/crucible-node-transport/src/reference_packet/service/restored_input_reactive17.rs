@@ -22,6 +22,7 @@ use crate::{ProviderError, bodies::*, envelope::*};
 use crucible_node_format::{Bytes, ContentRef, InputBatch, SchemaRef, U64, Validate, canonical};
 use serde::{Deserialize, Serialize};
 
+mod capacities;
 mod wire;
 pub(crate) use wire::{verify_selected_wire_data, verify_selected_wire_header_data};
 
@@ -147,9 +148,14 @@ impl PacketRestoredInputReactive17PostCheckpointData {
         &self,
         observer: &mut MetadataObserver<'_>,
     ) -> Result<(), ProviderError> {
-        observer.observe(&self.schema)?;
-        observer.observe(&self.current_record)?;
-        observer.observe(&self.current_model)
+        let Self {
+            schema,
+            current_record,
+            current_model,
+        } = self;
+        observer.observe(schema)?;
+        observer.observe(current_record)?;
+        observer.observe(current_model)
     }
 }
 
@@ -176,12 +182,7 @@ impl PacketRestoredInputReactive17RetainedData<'_> {
         &self,
     ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
         let mut observer = MetadataObserver::new();
-        match self {
-            Self::Request(value) => value.observe_metadata(&mut observer)?,
-            Self::Context(value) => value.observe_metadata(&mut observer)?,
-            Self::Artifact(value) => value.observe_metadata(&mut observer)?,
-            Self::PostCheckpoint(value) => value.observe_owned_metadata_data(&mut observer)?,
-        }
+        self.observe_capacity_data(&mut observer)?;
         Ok(observer.finish())
     }
 
@@ -557,17 +558,27 @@ fn authenticate_input_data(
 
 impl ObserveMetadata for PacketRestoredInputReactive17Command {
     fn observe_metadata(&self, observer: &mut MetadataObserver<'_>) -> Result<(), ProviderError> {
-        if let Some(context) = self.input_context_data() {
-            observer.observe(context.cut())?;
-            if let PacketInputContext::Commit {
-                input_request_id,
-                staging_receipt,
-                ..
-            } = context
-            {
-                observer.observe(input_request_id)?;
-                observer.observe(staging_receipt)?;
-            }
+        match self {
+            Self::Input { context } => match context {
+                PacketInputContext::Stage { cut } => observer.observe(cut)?,
+                PacketInputContext::Commit {
+                    cut,
+                    input_request_id,
+                    staging_receipt,
+                } => {
+                    observer.observe(cut)?;
+                    observer.observe(input_request_id)?;
+                    observer.observe(staging_receipt)?;
+                }
+            },
+            Self::Run
+            | Self::Settle
+            | Self::Poll
+            | Self::Retire
+            | Self::Observe
+            | Self::BlobBegin
+            | Self::BlobChunk
+            | Self::BlobFinish => {}
         }
         Ok(())
     }
@@ -594,9 +605,14 @@ impl ObserveMetadata for PacketRestoredInputReactive17Request {
         observer.observe(current_model)?;
         observer.observe(history_prefix)?;
         observer.observe(history_next_sequence)?;
-        observer.observe(&native_allocation.retained_requested_bytes)?;
-        observer.observe(&native_allocation.maximum_simultaneous_transient_bytes)?;
-        observer.observe(&native_allocation.declared_counter_scratch_bytes)
+        let PacketNativeStartupAllocationRow {
+            retained_requested_bytes,
+            maximum_simultaneous_transient_bytes,
+            declared_counter_scratch_bytes,
+        } = native_allocation;
+        observer.observe(retained_requested_bytes)?;
+        observer.observe(maximum_simultaneous_transient_bytes)?;
+        observer.observe(declared_counter_scratch_bytes)
     }
 }
 

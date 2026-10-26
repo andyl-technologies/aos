@@ -27,6 +27,8 @@ use crucible_node_transport::{
 };
 use std::{cell::RefCell, mem::size_of, thread::ThreadId};
 
+#[path = "restored_observation17/capacities.rs"]
+mod capacities;
 #[path = "restored_observation17/checkpoint_cache17.rs"]
 mod checkpoint_cache17;
 #[path = "restored_observation17/retained.rs"]

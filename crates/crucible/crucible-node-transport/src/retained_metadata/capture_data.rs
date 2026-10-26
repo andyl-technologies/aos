@@ -44,6 +44,13 @@ pub enum RetainedCaptureProtocolData<'a> {
     RestorationObservation(
         crate::reference_packet::service::complete_restore::restoration_observe::RetainedRestorationObservationData<'a>,
     ),
+    /// Borrows actual signed Input/Reactive17 DTOs, including rejected partials.
+    ///
+    /// The enclosing Source supplies the original process/thread check. Capacity
+    /// rows neither verify a MAC nor authenticate a native action.
+    RestoredInputReactive17(
+        crate::reference_packet::service::restored_input_reactive17::PacketRestoredInputReactive17RetainedData<'a>,
+    ),
     /// Borrows independent restored receipt and underlying model partials.
     ///
     /// Missing or inconsistent partners remain DATA without acquiring native
@@ -104,6 +111,7 @@ impl RetainedCaptureProtocolData<'_> {
             + crate::protocol_snapshot::PreparedArchivedProtocolMapping::capacity_counter_scratch_data()
             + crate::client::OriginalRestoredSuffixHostAttempt::capacity_counter_scratch_data()
             + crate::reference_packet::service::complete_restore::restoration_observe::RetainedRestorationObservationData::capacity_counter_scratch_data()
+            + crate::reference_packet::service::restored_input_reactive17::PacketRestoredInputReactive17RetainedData::capacity_counter_scratch_data()
             + size_of::<Self>()
             + size_of::<&Self>()
             + size_of::<MetadataObserver<'static>>()
@@ -128,7 +136,8 @@ impl RetainedCaptureProtocolData<'_> {
             Self::Response(_)
             | Self::AfterConfirmation(_)
             | Self::RestorationNativeEvidence(_, _)
-            | Self::RestorationObservation(_) => Ok(()),
+            | Self::RestorationObservation(_)
+            | Self::RestoredInputReactive17(_) => Ok(()),
             Self::SnapshotReservation(value) => value.check_capacity_creator_data(),
             Self::Snapshot(value) => value.check_capacity_creator_data(),
             Self::PayloadOwner(value) => value.check_capacity_creator_data(),
@@ -153,6 +162,7 @@ impl RetainedCaptureProtocolData<'_> {
             Self::ArchivedMapping(value) => value.observe_capacity_data(observer),
             Self::RestoredSuffixAttempt(value) => value.observe_capacity_data(observer),
             Self::RestorationObservation(value) => value.observe_owned_metadata_data(observer),
+            Self::RestoredInputReactive17(value) => value.observe_capacity_data(observer),
             Self::RestorationNativeEvidence(record, underlying) => {
                 crate::reference_packet::service::complete_restore::activation::observe_restoration_native_capacity_data(
                     *record, *underlying, observer,
