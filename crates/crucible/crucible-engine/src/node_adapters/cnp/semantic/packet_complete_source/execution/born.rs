@@ -7,6 +7,9 @@
 
 use super::*;
 use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
+use crate::node_contract::restored_owner_history::{
+    OriginalRestoredOwnerCapacityRow, OriginalRestoredOwnerCapacityWalk,
+};
 
 /// Names only the object roles created by this concrete original capture path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +31,25 @@ pub(super) struct OriginalBornObject {
     role: OriginalBornRole,
     reference: ContentRef,
     dependencies: Vec<ContentRef>,
+}
+
+impl OriginalRestoredOwnerCapacityWalk for OriginalBornObject {
+    fn capacities(
+        &self,
+        depth: usize,
+        sink: &mut dyn FnMut(OriginalRestoredOwnerCapacityRow) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        let Self {
+            role,
+            reference,
+            dependencies,
+        } = self;
+        // Copy roles cannot acquire dynamic backing hidden from this roster.
+        fn inline<T: Copy>(_: &T) {}
+        inline(role);
+        reference.capacities(depth, sink)?;
+        dependencies.capacities(depth, sink)
+    }
 }
 
 impl OriginalBornObject {

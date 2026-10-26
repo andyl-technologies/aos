@@ -20,6 +20,8 @@ pub(super) mod dependency_credit;
 mod dispatch;
 #[path = "execution/finish.rs"]
 mod finish;
+#[path = "execution/metadata.rs"]
+mod metadata;
 #[path = "execution/move_output.rs"]
 mod move_output;
 
@@ -64,136 +66,11 @@ impl OriginalCompleteCaptureExecution {
         &self,
         maximum: usize,
     ) -> Result<usize, E> {
-        let bank = match (&self.backend_bank, &self.backend) {
-            (Some(bank), None) => bank.allocated_bytes(),
-            (None, Some(body)) => body.bytes.capacity(),
-            (None, None) if self.failed || self.transferred => 0,
-            _ => return Err(E::refused("original backend bank association differs")),
-        };
-        let references = self
-            .backend
-            .as_ref()
-            .map(|body| NodeRuntime::capture_reference_storage(&body.reference).map_err(E::unknown))
-            .transpose()?
-            .unwrap_or(0);
-        let mut bytes = retained_values::sum_with_error::<E, _>(
-            [
-                bank,
-                references,
-                self.allocation_bank.capacity(),
-                self.allocation
-                    .as_ref()
-                    .map_or(0, |body| body.bytes.capacity()),
-                self.allocation
-                    .as_ref()
-                    .map(|body| {
-                        NodeRuntime::capture_reference_storage(&body.reference).map_err(E::unknown)
-                    })
-                    .transpose()?
-                    .unwrap_or(0),
-                self.evidence
-                    .capacity()
-                    .checked_mul(size_of::<InputPayload>())
-                    .ok_or_else(|| E::refused("original evidence slots overflow"))?,
-                self.born
-                    .capacity()
-                    .checked_mul(size_of::<born::OriginalBornObject>())
-                    .ok_or_else(|| E::refused("original creation slots overflow"))?,
-            ],
-            maximum,
-        )?;
-        if let Some(plan) = &self.dependency_plan {
-            bytes = retained_values::sum_with_error::<E, _>(
-                [
-                    bytes,
-                    NodeRuntime::capture_reference_storage(&plan.runtime).map_err(E::unknown)?,
-                ],
-                maximum,
-            )?;
-        }
-        for original in &self.born {
-            bytes = retained_values::sum_with_error::<E, _>(
-                [bytes, original.retained_storage_with_error::<E>(maximum)?],
-                maximum,
-            )?;
-        }
-        for request in self
-            .capture_request
-            .iter()
-            .chain(self.confirmation_request.iter())
-        {
-            bytes = retained_values::sum_with_error::<E, _>(
-                [bytes, request.allocated_capacity()],
-                maximum,
-            )?;
-        }
-        if let Some(host) = &self.host_protocol {
-            bytes = retained_values::sum_with_error::<E, _>(
-                [
-                    bytes,
-                    host.bytes.capacity(),
-                    NodeRuntime::capture_reference_storage(&host.reference).map_err(E::unknown)?,
-                ],
-                maximum,
-            )?;
-        }
-        for object in &self.evidence {
-            bytes = retained_values::sum_with_error::<E, _>(
-                [
-                    bytes,
-                    object.bytes.capacity(),
-                    NodeRuntime::capture_reference_storage(&object.reference)
-                        .map_err(E::unknown)?,
-                ],
-                maximum,
-            )?;
-        }
-        match (&self.owner, &self.key) {
-            (Some(owner), Some(key)) => {
-                bytes = retained_values::sum_with_error::<E, _>(
-                    [
-                        bytes,
-                        NodeRuntime::capture_native_output_metadata_storage_data(
-                            owner,
-                            &self.participants,
-                            key,
-                        )
-                        .map_err(E::unknown)?,
-                    ],
-                    maximum,
-                )?;
-            }
-            (None, None) if self.participants.is_empty() => {}
-            _ => return Err(E::refused("original output metadata association differs")),
-        }
-        if let Some(owner) = &self.retained_protocol_owner {
-            let metadata = owner
-                .original_retained_metadata_facts()
-                .map_err(E::unknown)?;
-            let allocation = owner.original_allocation_facts().map_err(E::unknown)?;
-            let records = owner
-                .original_metadata_record_allocation_facts()
-                .map_err(E::unknown)?;
-            let aliases = owner
-                .original_alias_allocation_facts()
-                .map_err(E::unknown)?;
-            bytes = retained_values::sum_with_error::<E, _>(
-                [
-                    bytes,
-                    PacketCompleteSemanticSource::complete_retained_metadata_storage_with_error::<E>(
-                        &metadata, maximum,
-                    )?,
-                    allocation.literal.map_or(0, |bank| bank.allocated_bytes),
-                    records.map_or(0, |bank| bank.allocated_bytes),
-                    aliases
-                        .map(|bank| bank.row_bytes.checked_add(bank.lookup_bytes))
-                        .unwrap_or(Some(0))
-                        .ok_or_else(|| E::refused("original moved host alias banks overflow"))?,
-                ],
-                maximum,
-            )?;
-        }
-        Ok(bytes)
+        self.validate_storage_association_with_error::<E>()?;
+        let facts = self.capacity_facts_data(None).map_err(E::runtime)?;
+        PacketCompleteSemanticSource::complete_retained_metadata_storage_with_error::<E>(
+            &facts, maximum,
+        )
     }
 }
 
@@ -618,5 +495,6 @@ impl PacketCompleteSemanticSource {
             + size_of::<std::collections::TryReserveError>()
             + 4 * size_of::<usize>()
             + CnpSemanticSnapshotReservation::reservation_counter_scratch_data()
+            + Self::original_complete_capture_execution_capacity_counter_scratch_data()
     }
 }

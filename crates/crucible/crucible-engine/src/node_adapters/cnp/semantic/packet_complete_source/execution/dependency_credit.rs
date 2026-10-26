@@ -6,6 +6,7 @@
 
 use super::born::{ancestry_external_content_dependencies, semantic_external_content_dependencies};
 use super::*;
+use crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData;
 
 /// Reports distinct future original dependency-metadata obligations.
 ///
@@ -573,6 +574,19 @@ mod selected_report_tests {
 }
 
 impl OriginalDependencyPlan {
+    /// Preserves the retained runtime reference and closed fixed quote data.
+    ///
+    /// # Errors
+    /// Refuses invalid layout, selected-row exhaustion or unavailable backing.
+    pub(super) fn record_capacity_data(
+        &self,
+        census: &mut OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        let Self { runtime, data } = self;
+        census.observe_inline_data(data);
+        census.observe(runtime)
+    }
+
     pub(super) fn maximum_lookup_scratch_data(&self) -> usize {
         self.data.maximum_lookup_scratch
     }

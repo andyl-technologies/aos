@@ -158,6 +158,19 @@ prefixes, busy/foreign custody and the original separate byte formula. Existing
 byte accounting and association gates remain unchanged. SDK scalar observations
 and capacity-only Core rows do not establish whole-Source traversal-work credit.
 
+Execution capacity DATA now preserves all retained backend, allocation, evidence,
+born-reference/dependency, request, host-protocol, participant, key and moved
+protocol-owner backing. Its exhaustive roster includes the original dependency
+plan and complete schema extensions. Production byte admission consumes the
+same census while retaining the existing backend and output-association gates.
+Empty participant vectors now charge their actual spare capacity even before
+owner/key association; tree backing uses the complete conservative layout
+envelope. Six controls cover all three declarations, populated bodies and
+extensions, exact/short credit, failed coexisting slots, refused prefixes and
+busy/foreign custody. They establish capacity DATA without constructing genuine
+native completion or one-use Source authority. All eight existing execution
+reservation controls also pass with the updated constructor observation demand.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its twelve
@@ -167,14 +180,16 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 128 focused Transport controls and 62 Engine
-census/installation/holder/startup controls. Complete Transport suites pass 2,328 tests each
-with twenty ignored. Complete Engine suites pass 2,133 tests each with thirty-four
-ignored, using matching source-built installed packet fixtures. Five-package
-all-feature/all-target checks, fifteen-file scoped Rust formatting, all six architecture
-gates and the RFC requirement-map gate pass. Required application test-target
-compilation passes with 185 artifacts across 58 packages and 76 integration targets;
-all 4,894 selected frozen Rust/Cargo inputs match current and captured source. User-owned
+Both codec configurations pass 68 Engine census/installation/holder/startup
+controls and eight execution reservation controls. Complete Engine suites pass
+2,139 tests each with thirty-four ignored, using matching source-built installed
+packet fixtures. Previously qualified Transport suites pass 2,328 tests and 128
+focused controls each, with twenty ignored; all 2,015 SDK Rust/Cargo inputs match
+the previously qualified captured source. Five-package all-feature/all-target
+checks, five-file scoped Rust formatting, all six architecture gates and the RFC
+requirement-map gate pass. Required application test-target compilation passes
+with 185 artifacts across 58 packages and 76 integration targets; all 4,896
+selected frozen Rust/Cargo inputs match current and captured source. User-owned
 changes are preserved. These are component results; the requirement map records
 planning coverage, and no latest-source strict lint or native lifecycle result
 is claimed.
