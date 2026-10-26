@@ -286,11 +286,11 @@ def run(driver, image):
         # dependency. A pathname-existence loop cannot establish readiness.
         command(driver, ["systemctl", "start", "terrane-gc.service"])
         serve = properties(driver, "serve", ["MainPID", "Type", "NotifyAccess", "ActiveState", "ActiveEnterTimestampMonotonic"])
-        publisher = properties(driver, "publish", ["MainPID", "Type", "NotifyAccess", "ActiveState", "ActiveEnterTimestampMonotonic"])
-        driver.require(publisher["Type"] == "notify" and publisher["NotifyAccess"] == "main"
-                       and publisher["ActiveState"] == "active" and int(publisher["MainPID"]) > 0,
+        publisher_readiness = properties(driver, "publish", ["MainPID", "Type", "NotifyAccess", "ActiveState", "ActiveEnterTimestampMonotonic"])
+        driver.require(publisher_readiness["Type"] == "notify" and publisher_readiness["NotifyAccess"] == "main"
+                       and publisher_readiness["ActiveState"] == "active" and int(publisher_readiness["MainPID"]) > 0,
                        "managed publisher did not notify readiness")
-        driver.require(0 < int(publisher["ActiveEnterTimestampMonotonic"])
+        driver.require(0 < int(publisher_readiness["ActiveEnterTimestampMonotonic"])
                        <= int(serve["ActiveEnterTimestampMonotonic"]),
                        "managed Serve preceded publisher readiness")
         publisher_socket = pathlib.Path("/run/terrane-publish/publisher.sock")
@@ -336,6 +336,8 @@ def run(driver, image):
         publisher = properties(driver, "publish", ["MainPID", "ActiveState"])
         driver.require(publisher["ActiveState"] == "active" and int(publisher["MainPID"]) > 0,
                        "managed original publisher is no longer active")
+        driver.require(publisher == {name: publisher_readiness[name] for name in publisher},
+                       "managed publisher changed after its initial readiness")
         publisher_log = command(driver, ["journalctl", "--no-pager", "--output=cat",
             "--unit=terrane-publish.service", "_PID=" + publisher["MainPID"]])
         publisher_policy = [json.loads(line.removeprefix("TERRANE_MANAGED_PUBLISHER_MOUNT_POLICY "))
@@ -435,6 +437,8 @@ def run(driver, image):
             "systemd_pid1": True, "restart_recovery": False, "physical_release": False,
             "publisher_mount_policy": publisher_policy[0], "publisher_identity": publisher_identity[0],
             "publisher": publisher, "restarted_publisher": restarted_publisher,
+            "publisher_readiness": publisher_readiness,
+            "publisher_listener_inodes": [publisher_inode, (fresh_metadata.st_dev, fresh_metadata.st_ino)],
             "restarted_publisher_identity": restart_identities[1],
             "publisher_listener_retired": True, "publisher_restart": True,
             "gc_manager_journal": gc_events,

@@ -300,6 +300,15 @@ targeted formatting, Python syntax, PLAN-2 and diff checks pass. Required
 application compilation and native qualification of the follow-up remain
 pending, with no complete-task acceptance.
 
+The unmodified `ee6316d492` manager guest exits successfully in 182.928 seconds
+with all fifteen enrollment controls, but independent review refuses its
+incomplete publisher readiness receipt: a later status query overwrites the
+initial full manager view. Its raw runtime records remain evidence of that run,
+without native acceptance. The fixture now retains the initial readiness view
+separately, requires the later status to belong to that same process, and records
+both original and fresh listener inode identities alongside the restarted
+publisher's actual actor identity. Corrected qualification remains pending.
+
 The full feature matrix at the earlier frozen `e6f214f3ce` checkpoint passes in
 19,245.158 seconds in the isolated 32 GiB AOS builder. Independent review matches
 the immutable source and both native profile compiler records, all 21 passing
