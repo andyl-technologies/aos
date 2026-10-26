@@ -126,6 +126,18 @@ fresh portable execution remains required. Raw controller evidence and hashes
 are retained, and diagnosed owned VM scratch is removed. This does not implement
 the production Ref service or accept T-PROTO-1.
 
+Fresh qualification at the corrected `3d5b3ae20c` revision passes in 190.278
+seconds: all 25 original/new socket cases and all 21 portable codec cases
+execute exactly once under their unchanged thirty-second per-case limits.
+Independent reviews match 8,274 immutable source files and 5,497 crate inputs
+for each profile, the actual Cargo artifacts, and the retained socket-test ELF.
+The portable gate records its executed executable hash but retains no executable
+bytes. The exact three-derivation isolated AOS dispatch, fresh nonce-bound
+capability-free ext4 sandbox proof, imported outputs and clean shutdown all
+pass review. Raw controller records and hashes are preserved; owned temporary
+controller scratch is removed after review. These results qualify the client
+and codec components, not the production service or current authorization.
+
 Renewed native cache prerequisites are running at `e6f214f3ce`. The complete
 preflight classifies all 22 missing prerequisites: two compile-only retained
 images, twelve image-assembly derivations, six actual AOS KVM checks and two
