@@ -1,6 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
@@ -133,6 +134,20 @@ aos_license_check(
     name = "production_license_closure",
     roots = PRODUCTION_ARTIFACTS,
     license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_package(
+    name = "package",
+    package_name = "aos-metadata-provider",
+    version = "0.1.0",
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {
+        ":aos-metadata-acquisition-provider": "bin/aos-metadata-acquisition-provider",
+        ":aos-metadata-policy-provider": "bin/aos-metadata-policy-provider",
+    },
+    executables = ["bin/aos-metadata-acquisition-provider", "bin/aos-metadata-policy-provider"],
+    visibility = ["//visibility:public"],
 )
 
 aos_source_package(

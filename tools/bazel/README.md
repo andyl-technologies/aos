@@ -3181,6 +3181,38 @@ idempotent removal, and failure without the adjacent helper followed by successf
 relocation with it. Full system activation, crash recovery, Darwin and foreign
 hosts, numeric performance acceptance and default cutover remain separate gates.
 
+`pkgs.aos-metadata-provider.passthru.withBuildDriver "bazel"` selects both
+metadata acquisition and authorization commands. Cargo remains the default and
+explicit rollback. The package retains its module, qualification probe, runtime
+dependencies and exact source-built `libexec/nix-store` companion. Installation
+removes Bazel workspace-relative solib search paths; the installed loader,
+imports, immutable library search paths and resolved libraries must match Cargo.
+
+`checks.build.bazel.metadata-provider-production.all`, also exposed through
+`tools/bazel/tests/metadata-provider-production.nix`, checks both installed
+programs, exact runtime closures, compiled dependency features and compiler
+profiles. The production proof separates twelve target compilations from the
+execution build script. Release-test qualification compares three test binaries
+and fifteen execution procedural macros with actual Cargo compiler calls. It
+requires 53 passing unit cases, the existing ignored native-transaction contract
+case, both empty command-test targets, the empty doctest target and eighteen CLI
+comparisons including the 32 MiB bound and one byte over it.
+Production and release tests execute 609 and 618 fresh Linux sandbox actions.
+Precise and conservative inventories agree on seven roots, 326 configured
+reports and 106 source files. All 73 existing dependency SDKs remain unchanged;
+both compilations reuse `boot-preparation-minimal`. The retained receipt is
+`tests/evidence/metadata-provider-production-package.json`.
+
+The installed effect check exercises detect/acquire/authorize lifecycle responses
+and identity/action rejection without changing the host. Authorization runs the
+actual adjacent Nix companion against an immutable library in a private Nix
+store. Operator and fallback inputs must retain their canonical typed results;
+a mismatched library NAR and a missing adjacent companion must fail. Restoring
+the adjacent companion must restore authorization even after relocation.
+Cloud acquisition, the ignored native-transaction contract, privileged host
+effects, foreign hosts, numeric performance acceptance and default cutover
+remain separate gates.
+
 The broader [native evaluation gate](tests/evidence/static-storage-core-evaluation.json)
 passes for the static storage checkpoint. Reinstantiation after the OpenZFS and
 provisioning selector changes yields the identical completed root derivation;

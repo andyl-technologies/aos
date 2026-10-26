@@ -1,6 +1,8 @@
 ##! aos-metadata-provider - typed platform acquisition and provisioning policy
 {
   lib,
+  callPackage,
+  buildDriver ? "cargo",
   mkAosCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
@@ -14,6 +16,7 @@
   buildPackages,
   zlib,
 }: let
+  withBuildDriver = selected: callPackage ./aos-metadata-provider.nix {buildDriver = selected;};
   version = "0.1.0";
   cargoDeps = aosWorkspaceVendor;
   isCross = stdenv.isCross;
@@ -56,8 +59,7 @@
     buildDeps = [buildPkgConfig buildCmake];
     runtimeDeps = [openssl libssh2 zlib nix];
   };
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -105,4 +107,18 @@ in
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
     };
-  }
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-metadata-provider-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage
