@@ -1,6 +1,6 @@
 //! Compares credential delivery against the Source-bound immutable unit bytes.
 //!
-//! The three fixed mappings use canonical external system credential names.
+//! The fixed mappings use canonical external system credential names.
 //! Both retained PID1 samples must contain exactly those mappings and no other
 //! credential mechanism. This borrowed comparison grants no key provenance,
 //! floor decoding, writer or TPM authority; image composition must still bind
@@ -9,15 +9,17 @@
 use aos_systemd_client::{OwnedValue, Value};
 
 use super::super::credentials::NAMES;
-use super::Method46InitialStartupClosedV1;
+use super::{Method46InitialServiceRoleV1, Method46InitialStartupClosedV1};
 
 const SIGNATURES: [&str; 6] = ["a(ss)", "a(ss)", "a(say)", "a(say)", "as", "a(ss)"];
 
-fn selected_sources(fragment: &[u8]) -> Result<[&str; 3], Method46InitialStartupClosedV1> {
+fn selected_sources(
+    fragment: &[u8],
+) -> Result<[&str; NAMES.len()], Method46InitialStartupClosedV1> {
     let text = std::str::from_utf8(fragment).map_err(|_| Method46InitialStartupClosedV1)?;
     let mut in_service = false;
     let mut seen_service = false;
-    let mut sources = [None; 3];
+    let mut sources = [None; NAMES.len()];
 
     // The image generator emits simple assignments. Refuse continuation syntax
     // rather than accidentally interpreting only part of a systemd directive.
@@ -68,13 +70,16 @@ fn selected_sources(fragment: &[u8]) -> Result<[&str; 3], Method46InitialStartup
         sources[index] = Some(source);
     }
 
-    let [Some(provision), Some(auth), Some(approval)] = sources else {
+    let [Some(provision), Some(auth), Some(approval), Some(normal)] = sources else {
         return Err(Method46InitialStartupClosedV1);
     };
-    if provision == auth || provision == approval || auth == approval {
-        return Err(Method46InitialStartupClosedV1);
+    let sources = [provision, auth, approval, normal];
+    for (index, source) in sources.iter().enumerate() {
+        if sources[..index].contains(source) {
+            return Err(Method46InitialStartupClosedV1);
+        }
     }
-    Ok([provision, auth, approval])
+    Ok(sources)
 }
 
 pub(super) fn require_delivery(
@@ -86,7 +91,7 @@ pub(super) fn require_delivery(
     }
     let values = &service_values[12..18];
     let sources = selected_sources(fragment)?;
-    let mut found = [false; 3];
+    let mut found = [false; NAMES.len()];
 
     for (index, (value, signature)) in values.iter().zip(SIGNATURES).enumerate() {
         if value.value_signature().to_string() != signature {
@@ -122,7 +127,56 @@ pub(super) fn require_delivery(
             }
         }
     }
-    if found != [true; 3] {
+    if found != [true; NAMES.len()] {
+        return Err(Method46InitialStartupClosedV1);
+    }
+    Ok(())
+}
+
+pub(super) fn require_normal_manifest_source(
+    role: Method46InitialServiceRoleV1,
+    values: &[OwnedValue],
+    fragment: &[u8],
+) -> Result<(), Method46InitialStartupClosedV1> {
+    let expected = selected_sources(fragment)?[3];
+    let name = match role {
+        Method46InitialServiceRoleV1::ControllerStorageClient => "storage-manifest",
+        Method46InitialServiceRoleV1::StorageBroker => "storage-broker-manifest",
+    };
+    if values.len() != SIGNATURES.len() {
+        return Err(Method46InitialStartupClosedV1);
+    }
+    let mut found = false;
+    for (index, (value, signature)) in values.iter().zip(SIGNATURES).enumerate() {
+        if value.value_signature().to_string() != signature {
+            return Err(Method46InitialStartupClosedV1);
+        }
+        let Value::Array(rows) = &**value else {
+            return Err(Method46InitialStartupClosedV1);
+        };
+        // The selected normal units use the plain external LoadCredential
+        // recipe. Alternate mechanisms cannot shadow this public input.
+        if index != 0 {
+            if !rows.is_empty() {
+                return Err(Method46InitialStartupClosedV1);
+            }
+            continue;
+        }
+        for row in rows.inner() {
+            let Value::Structure(pair) = row else {
+                return Err(Method46InitialStartupClosedV1);
+            };
+            let [Value::Str(actual), Value::Str(source)] = pair.fields() else {
+                return Err(Method46InitialStartupClosedV1);
+            };
+            if actual.as_str() == name
+                && (std::mem::replace(&mut found, true) || source.as_str() != expected)
+            {
+                return Err(Method46InitialStartupClosedV1);
+            }
+        }
+    }
+    if !found {
         return Err(Method46InitialStartupClosedV1);
     }
     Ok(())
@@ -212,14 +266,14 @@ mod tests {
                     NAMES[0].to_string(),
                     "/run/credentials/@system/external-0".to_string()
                 );
-                3
+                NAMES.len()
             ],
             vec![
                 (
                     "foreign".into(),
                     "/run/credentials/@system/external-0".into()
                 );
-                3
+                NAMES.len()
             ],
             vec![(
                 NAMES[0].to_string(),
@@ -264,6 +318,9 @@ mod tests {
         let original = fragment();
         for changed in [
             original.replace("external-1", "external-0"),
+            original.replace("external-3", "external-0"),
+            original.replace("external-3", "external-1"),
+            original.replace("external-3", "external-2"),
             original.replace("@system/external-1", "@system/../external-1"),
             original.replace("@system/external-1", "@system/."),
             original.replace("/run/credentials/@system/", "/nix/store/"),
@@ -280,5 +337,98 @@ mod tests {
             assert!(selected_sources(changed.as_bytes()).is_err(), "{changed}");
         }
         assert!(selected_sources(&[0xff]).is_err());
+    }
+
+    fn normal_properties(rows: Vec<(String, String)>) -> Vec<OwnedValue> {
+        let mut values = properties();
+        let mut delivery: Vec<_> = values.drain(12..18).collect();
+        delivery[0] = value(rows);
+        delivery
+    }
+
+    #[test]
+    fn selected_normal_manifest_source_ignores_row_order_and_unrelated_key_metadata() {
+        for (role, name) in [
+            (
+                Method46InitialServiceRoleV1::ControllerStorageClient,
+                "storage-manifest",
+            ),
+            (
+                Method46InitialServiceRoleV1::StorageBroker,
+                "storage-broker-manifest",
+            ),
+        ] {
+            let mut rows = vec![
+                (
+                    "private-signing-key".into(),
+                    "/run/credentials/@system/private".into(),
+                ),
+                (name.into(), "/run/credentials/@system/external-3".into()),
+            ];
+            assert!(
+                require_normal_manifest_source(
+                    role,
+                    &normal_properties(rows.clone()),
+                    fragment().as_bytes()
+                )
+                .is_ok()
+            );
+            rows.reverse();
+            assert!(
+                require_normal_manifest_source(
+                    role,
+                    &normal_properties(rows),
+                    fragment().as_bytes()
+                )
+                .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn selected_normal_manifest_rejects_missing_duplicate_substituted_or_shadowed_source() {
+        let role = Method46InitialServiceRoleV1::StorageBroker;
+        let expected = (
+            "storage-broker-manifest".to_string(),
+            "/run/credentials/@system/external-3".to_string(),
+        );
+        for rows in [
+            vec![],
+            vec![expected.clone(), expected.clone()],
+            vec![("storage-manifest".into(), expected.1.clone())],
+            vec![(expected.0.clone(), "/run/credentials/@system/other".into())],
+        ] {
+            assert!(
+                require_normal_manifest_source(
+                    role,
+                    &normal_properties(rows),
+                    fragment().as_bytes()
+                )
+                .is_err()
+            );
+        }
+        let original = normal_properties(vec![expected]);
+        for (index, changed) in [
+            (
+                1,
+                value(vec![("other".to_string(), "/external".to_string())]),
+            ),
+            (2, value(vec![("other".to_string(), vec![1_u8])])),
+            (3, value(vec![("other".to_string(), vec![1_u8])])),
+            (4, value(vec!["*".to_string()])),
+            (5, value(vec![("*".to_string(), "*".to_string())])),
+        ] {
+            let mut values = original.clone();
+            values[index] = changed;
+            assert!(require_normal_manifest_source(role, &values, fragment().as_bytes()).is_err());
+        }
+        for index in 0..6 {
+            let mut values = original.clone();
+            values[index] = value(Vec::<u64>::new());
+            assert!(require_normal_manifest_source(role, &values, fragment().as_bytes()).is_err());
+        }
+        assert!(
+            require_normal_manifest_source(role, &original[..5], fragment().as_bytes()).is_err()
+        );
     }
 }

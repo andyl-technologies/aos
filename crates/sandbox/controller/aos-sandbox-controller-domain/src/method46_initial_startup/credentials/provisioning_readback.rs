@@ -8,19 +8,21 @@ use std::cell::Ref;
 
 use super::*;
 
-/// Bounds the co-live provisioning decoder and one approval verification.
+/// Bounds the provisioning/normal manifest decoders and one approval verification.
 ///
 /// Security checks its compiled retained layouts and fixed wire carriers
-/// against this prepaid bound, including the signature and public pin.
+/// against this prepaid bound, including the normal public manifest, signature
+/// and public pin.
 /// Actual credential buffers and original native observations are paid by the
 /// enclosing file owner separately. This size alone authenticates no payer.
-pub const METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1: usize = 8192;
+pub const METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1: usize = 16 * 1024;
 
 /// Borrows one Source-paid original public provisioning readback for decoding.
 ///
 /// Only the actual startup owner constructs this loan after unit and credential
-/// admission. The original files remain resident; all reached posts are still
-/// owed. Neither this loan nor a decoded public record authorizes an effect.
+/// admission and the stopped normal owner's manifest-source comparison. The
+/// original files remain resident; all reached posts are still owed. Neither
+/// this loan nor a decoded public record authorizes an effect.
 #[must_use = "retain the original readback loan with its canonical decode result"]
 pub struct Method46InitialProvisionReadbackLoanV1<'owner> {
     startup: &'owner Method46InitialStartupOriginalV1,
@@ -78,7 +80,23 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
         self.public_bytes(2)
     }
 
-    // Only the two fixed public accessors above select slots. The private auth
+    /// Borrows the held public manifest selected for this normal Storage role.
+    ///
+    /// Issuance of this loan requires the genuine stopped-owner samples to
+    /// match this credential's system source with the normal owner's actual
+    /// PID1 delivery properties. This supplies public readback DATA, without
+    /// authenticating a live normal endpoint or replacing its image admission.
+    ///
+    /// # Errors
+    /// Refuses ended Source custody, busy or incomplete credential admission,
+    /// missing original readback or an entered post. No file is reopened.
+    pub fn normal_storage_manifest_bytes_v1(
+        &self,
+    ) -> Result<Ref<'_, [u8]>, Method46InitialStartupClosedV1> {
+        self.public_bytes(3)
+    }
+
+    // Only the fixed public accessors above select slots. The private auth
     // credential has no readback accessor across this ownership boundary.
     fn public_bytes(&self, slot: usize) -> Result<Ref<'_, [u8]>, Method46InitialStartupClosedV1> {
         self.require_current()?;
@@ -132,13 +150,15 @@ impl Method46InitialStartupOriginalV1 {
     /// original to coexist with its same-owner main-map readback loan.
     ///
     /// # Errors
-    /// Refuses missing unit/credential admission, repeated issuance, busy native
-    /// custody, an ended Source or exhausted genuine receiving allocation.
+    /// Refuses missing unit/credential or stopped-owner admission, repeated
+    /// issuance, busy native custody, an ended Source or exhausted genuine
+    /// receiving allocation.
     pub fn lend_provisioning_readback_once_v1(
         &self,
     ) -> Result<Method46InitialProvisionReadbackLoanV1<'_>, Method46InitialStartupClosedV1> {
         let ready = self.body.as_ref().is_some_and(|body| {
             body.unit.initial_admitted()
+                && body.unit.stopped_units_before_completed()
                 && body.credentials.try_borrow().is_ok_and(|credentials| {
                     credentials.completed
                         && !credentials.post_entered
@@ -200,6 +220,7 @@ mod tests {
         let loan = Method46InitialProvisionReadbackLoanV1 { startup: &startup };
         assert!(loan.provision_bytes_v1().is_err());
         assert!(loan.approval_public_key_bytes_v1().is_err());
+        assert!(loan.normal_storage_manifest_bytes_v1().is_err());
         assert!(loan.origin_data_v1().is_err());
         loan.refuse_decode_v1();
 

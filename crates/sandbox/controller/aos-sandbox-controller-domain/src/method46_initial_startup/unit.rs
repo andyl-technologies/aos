@@ -279,7 +279,7 @@ impl InitialUnitOriginalV1 {
             return Ok(());
         }
         let properties = self.observe_properties(1, origin, profile);
-        let stopped = self.finish_stopped_post();
+        let stopped = self.finish_stopped_post(origin.map(|origin| origin.role));
         let canonical = self.finish_canonical_post();
         let file = match self.file_post.try_borrow_mut() {
             Ok(mut post) => {
@@ -355,10 +355,10 @@ fn normalize_fragment(
 }
 
 fn manager_schedule() -> Option<ReadonlyPropertyReceiveScheduleV2> {
-    // Two 67-call startup samples and four 16-call stopped-owner samples,
+    // Two 67-call startup samples and four 22-call stopped-owner samples,
     // plus Hello and bounded signal/header carryover.
     // These are native-enforced ceilings, never an account or semantic claim.
-    ReadonlyPropertyReceiveScheduleV2::new(224, 240, 64 * 1024, 4096, 240 * 64 * 1024).ok()
+    ReadonlyPropertyReceiveScheduleV2::new(248, 264, 64 * 1024, 4096, 264 * 64 * 1024).ok()
 }
 
 fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVector> {
@@ -383,7 +383,7 @@ fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVe
         .with(D::MetadataEntries, 4 * PATH_BYTES as u64)
         .with(
             D::OutputBytes,
-            read.checked_add((240 * 64 * 1024 + 224 * 4096 + 4096) as u64)?,
+            read.checked_add((264 * 64 * 1024 + 248 * 4096 + 4096) as u64)?,
         )
         .checked_add(ImmutableFileAcquisitionOriginalV1::receiving_demand_v1(
             PATH_BYTES,

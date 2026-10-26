@@ -629,6 +629,25 @@ Recent committed startup fixes close narrower prerequisites:
   This establishes no installed public-manifest provenance, approval-key
   separation, Session schema, physical TPM or initialization authority.
 
+- The initial credential owner now holds a fourth fixed public credential for
+  the normal Storage manifest. Source-paid stopped-owner PID1 samples compare
+  its external system-credential source with the selected normal Controller or
+  Storage service's delivery configuration before lending the original bytes.
+  Both normal owners still have independently owed stopped-unit posts. The
+  canonical manifest decoder compares Storage protocol, audience, actual node,
+  fixed endpoint purpose and the shared stable identity against the original
+  provisioning profile. All four delivered signing pins, including revoked
+  pins, must differ from the captured approval key. No normal private key is
+  read. Original codec and comparison results remain resident after refusal or
+  reentry; the same Source prepays the expanded decode and native PID1 schedule.
+  All 91 focused initial tests pass, including eleven new directory, delivery,
+  retained-native-sample and manifest regressions. Complete application unit
+  and integration target compilation is pending for this source. These are
+  public readback/configuration comparisons; full normal-unit image provenance,
+  Nix/Root key separation, exclusion of new jobs, Session schema, approved
+  durable intent, physical TPM custody and installed qualification remain open.
+  No publication or Extend authority is issued, and public admission stays shut.
+
 - Initial main capture now admits historical namespaces and legacy capacity
   ownership through the ordinary protected namespace engine. The read-only
   comparison shares the exact health, complete canonical-family, deleted-history

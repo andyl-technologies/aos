@@ -26,12 +26,13 @@ pub use provisioning_readback::{
 use entries::Entries;
 use observation::Observation;
 
-pub(super) const NAMES: [&str; 3] = [
+pub(super) const NAMES: [&str; 4] = [
     "broker-method46-tpm-provision-v1",
     "broker-method46-tpm-index-auth-v1",
     "method46-initial-approval-public-key-v1",
+    "method46-normal-storage-manifest-v1",
 ];
-const LENGTHS: [usize; 3] = [160, 32, 32];
+const LENGTHS: [usize; NAMES.len()] = [160, 32, 32, 920];
 
 struct Credential {
     opened: Option<rustix::io::Result<File>>,
@@ -83,7 +84,7 @@ pub(super) struct InitialCredentialsOriginalV1 {
     directory_observations: [Observation; 3],
     entries: [Entries; 2],
     named_directory: Option<rustix::io::Result<File>>,
-    credentials: [Credential; 3],
+    credentials: [Credential; NAMES.len()],
     paid: bool,
     entered: bool,
     completed: bool,

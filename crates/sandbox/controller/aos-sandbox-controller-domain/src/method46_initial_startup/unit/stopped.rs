@@ -1,8 +1,10 @@
 //! Retains fixed stopped-owner PID1 samples around initial provisioning work.
 //!
 //! These observations share the actual Source-paid startup manager. They prove
-//! only bracketed inactive/dead unit DATA; native cgroup population, exclusive
-//! journal custody and physical TPM authority remain independent requirements.
+//! bracketed inactive/dead unit DATA and compare the selected normal owner's
+//! public manifest source. Full unit image admission, exclusion of new jobs,
+//! native cgroup population, exclusive journal custody and physical TPM
+//! authority remain independent requirements.
 
 use super::*;
 
@@ -23,12 +25,22 @@ const OWNERS: [(&str, &[&str]); 2] = [
         ],
     ),
 ];
-const SERVICE: &[&str] = &["ControlGroup"];
+const SERVICE: &[&str] = &[
+    "ControlGroup",
+    "LoadCredential",
+    "LoadCredentialEncrypted",
+    "SetCredential",
+    "SetCredentialEncrypted",
+    "ImportCredential",
+    "ImportCredentialEx",
+];
 const UNIT: &[&str] = &["LoadState"];
 
 pub(super) struct InitialStoppedOwnersOriginalV1 {
     samples: [[RefCell<UnitPropertiesOriginalV1>; 2]; 2],
     entered: Cell<bool>,
+    before_completed: Cell<bool>,
+    manifest_source_match: [Cell<Option<bool>>; 2],
 }
 
 impl InitialStoppedOwnersOriginalV1 {
@@ -38,6 +50,8 @@ impl InitialStoppedOwnersOriginalV1 {
                 std::array::from_fn(|_| RefCell::new(UnitPropertiesOriginalV1::new()))
             }),
             entered: Cell::new(false),
+            before_completed: Cell::new(false),
+            manifest_source_match: std::array::from_fn(|_| Cell::new(None)),
         }
     }
 
@@ -46,8 +60,14 @@ impl InitialStoppedOwnersOriginalV1 {
         round: usize,
         runtime: Option<&tokio::runtime::Runtime>,
         manager: Option<&aos_systemd_client::SystemdClient>,
+        role: Option<Method46InitialServiceRoleV1>,
+        fragment: &[u8],
     ) -> Result<(), Method46InitialStartupClosedV1> {
-        let mut refused = false;
+        let selected = role.map(|role| match role {
+            Method46InitialServiceRoleV1::ControllerStorageClient => 0,
+            Method46InitialServiceRoleV1::StorageBroker => 1,
+        });
+        let mut refused = selected.is_none();
         for (index, (unit, cgroup)) in OWNERS.iter().enumerate() {
             // A failed owner cannot suppress the other independently paid read.
             let result = (|| {
@@ -74,7 +94,25 @@ impl InitialStoppedOwnersOriginalV1 {
                     return Err(Method46InitialStartupClosedV1);
                 }
                 require_loaded(sample.original.unit_values_v2())?;
-                require_cgroup(sample.original.service_values_v2(), cgroup)?;
+                let values = sample.original.service_values_v2();
+                require_cgroup(
+                    values
+                        .and_then(|values| values.first())
+                        .map(std::slice::from_ref),
+                    cgroup,
+                )?;
+                if selected == Some(index) {
+                    let matched = values
+                        .and_then(|values| values.get(1..))
+                        .zip(role)
+                        .is_some_and(|(values, role)| {
+                            delivery::require_normal_manifest_source(role, values, fragment).is_ok()
+                        });
+                    self.manifest_source_match[round].set(Some(matched));
+                    if !matched {
+                        return Err(Method46InitialStartupClosedV1);
+                    }
+                }
                 if round == 1 {
                     let before = self.samples[0][index]
                         .try_borrow()
@@ -84,8 +122,11 @@ impl InitialStoppedOwnersOriginalV1 {
                         .completed_invocation_bytes_data_v1()
                         .ok_or(Method46InitialStartupClosedV1)?;
                     if sample.original.completed_invocation_bytes_data_v1() != Some(invocation)
-                        || sample.original.service_values_v2()
-                            != before.original.service_values_v2()
+                        || values.and_then(|values| values.first())
+                            != before
+                                .original
+                                .service_values_v2()
+                                .and_then(|values| values.first())
                     {
                         return Err(Method46InitialStartupClosedV1);
                     }
@@ -97,6 +138,9 @@ impl InitialStoppedOwnersOriginalV1 {
         if refused {
             Err(Method46InitialStartupClosedV1)
         } else {
+            if round == 0 {
+                self.before_completed.set(true);
+            }
             Ok(())
         }
     }
@@ -139,7 +183,8 @@ pub(super) fn receiving_memory_bytes() -> Option<usize> {
 
 impl InitialUnitOriginalV1 {
     pub(in crate::method46_initial_startup) fn stopped_units_before_completed(&self) -> bool {
-        self.stopped.entered.get()
+        self.stopped.before_completed.get()
+            && self.stopped.manifest_source_match[0].get() == Some(true)
             && self.stopped.samples[0].iter().all(|sample| {
                 sample.try_borrow().is_ok_and(|sample| {
                     matches!(sample.result, Some(Ok(())))
@@ -149,7 +194,10 @@ impl InitialUnitOriginalV1 {
             })
     }
 
-    pub(super) fn finish_stopped_post(&self) -> Result<(), Method46InitialStartupClosedV1> {
+    pub(super) fn finish_stopped_post(
+        &self,
+        role: Option<Method46InitialServiceRoleV1>,
+    ) -> Result<(), Method46InitialStartupClosedV1> {
         if !self.stopped.entered.get() {
             return Ok(());
         }
@@ -162,6 +210,8 @@ impl InitialUnitOriginalV1 {
                 .as_ref()
                 .and_then(|original| original.client_v2())
                 .map(|client| client.as_ref()),
+            role,
+            self.acquisition.bytes(),
         )
     }
 }
@@ -203,6 +253,8 @@ impl Method46InitialStartupOriginalV1 {
                     .as_ref()
                     .and_then(|original| original.client_v2())
                     .map(|client| client.as_ref()),
+                self.origin.as_ref().map(|origin| origin.role),
+                unit.acquisition.bytes(),
             )
             .map_err(|_| self.fail(First::Unit))
     }
@@ -269,8 +321,8 @@ mod tests {
         let original = InitialStoppedOwnersOriginalV1::new();
         original.entered.set(true);
 
-        assert!(original.observe(0, None, None).is_err());
-        assert!(original.observe(1, None, None).is_err());
+        assert!(original.observe(0, None, None, None, b"").is_err());
+        assert!(original.observe(1, None, None, None, b"").is_err());
 
         for round in original.samples {
             for sample in round {
@@ -279,6 +331,19 @@ mod tests {
                 assert!(sample.result.is_none());
             }
         }
+    }
+
+    #[test]
+    fn copied_stopped_comparisons_cannot_replace_native_samples() {
+        let unit = InitialUnitOriginalV1::new();
+        unit.stopped.before_completed.set(true);
+        unit.stopped.manifest_source_match[0].set(Some(true));
+
+        assert!(!unit.stopped_units_before_completed());
+        assert!(unit.stopped.samples[0].iter().all(|sample| {
+            let sample = sample.borrow();
+            !sample.entered && sample.result.is_none()
+        }));
     }
 
     #[test]

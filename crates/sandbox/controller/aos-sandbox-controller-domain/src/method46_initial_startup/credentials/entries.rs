@@ -15,7 +15,7 @@ struct Entry {
 
 pub(super) struct Entries {
     buffer: [MaybeUninit<u8>; 4096],
-    entries: [Option<rustix::io::Result<Entry>>; 6],
+    entries: [Option<rustix::io::Result<Entry>>; NAMES.len() + 3],
     eof: bool,
     entered: bool,
 }
@@ -36,7 +36,7 @@ impl Entries {
         }
         self.entered = true;
         let mut directory = rustix::fs::RawDir::new(file.as_fd(), &mut self.buffer);
-        let mut seen = [false; 5];
+        let mut seen = [false; NAMES.len() + 2];
         for slot in &mut self.entries {
             match directory.next() {
                 None => {
@@ -95,6 +95,30 @@ impl Entries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_directory_requires_the_complete_fixed_public_and_private_roster() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in NAMES {
+            std::fs::write(directory.path().join(name), b"data").unwrap();
+        }
+        let file = File::open(directory.path()).unwrap();
+        let mut complete = Entries::new();
+
+        assert!(complete.observe(&file));
+        assert!(complete.eof);
+        for name in NAMES {
+            assert!(complete.retained_names().contains(&name.as_bytes()));
+        }
+
+        std::fs::remove_file(directory.path().join(NAMES[3])).unwrap();
+        let file = File::open(directory.path()).unwrap();
+        let mut missing = Entries::new();
+
+        assert!(!missing.observe(&file));
+        assert!(missing.eof);
+        assert!(!missing.retained_names().contains(&NAMES[3].as_bytes()));
+    }
 
     #[test]
     fn unknown_native_entry_stays_resident_and_cannot_be_retried() {

@@ -4,8 +4,10 @@
 //! owner retains its actual result alongside the genuine readback loan and
 //! checks role/node against that same Source. It neither adopts the resource
 //! epoch as the deployment epoch nor creates a writer or physical TPM permit.
-//! The same owner also retains its public approval pin and one strict signature
-//! verification; normal-key separation and durable publication remain owed.
+//! The same owner retains the canonical public Storage manifest, compares its
+//! stable identity and excludes all delivered normal pins from approval. Full
+//! endpoint provenance, Nix/Root key separation and durable publication remain
+//! owed alongside one strict approval signature verification.
 
 use std::cell::RefCell;
 
@@ -19,6 +21,8 @@ use aos_sandbox_controller_domain::method46_initial_startup::{
 
 mod approval;
 use approval::ApprovalVerificationOriginal;
+mod normal_manifest;
+use normal_manifest::NormalManifestOriginal;
 
 use super::{
     METHOD46_INITIAL_INTENT_BYTES_V1, METHOD46_INITIAL_REQUEST_BYTES_V1,
@@ -32,8 +36,9 @@ use crate::tpm_nv_custody::{FloorEndpointV1, FloorErrorV1, FloorProfileV1};
 /// The consumed loan was issued once, only after genuine Source prepayment and
 /// native credential admission. The actual codec result remains resident even
 /// on refusal. Matching role/node and canonical bytes is comparison only;
-/// independent endpoint/key provenance, stopped owners, writer custody, signed
-/// intent durability and authenticated physical TPM operations remain required.
+/// complete endpoint provenance, Nix/Root key separation, continued stopped
+/// owners, writer custody, signed intent durability and authenticated physical
+/// TPM operations remain required.
 #[must_use = "retain the canonical result and its actual original readback loan"]
 pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     readback: Method46InitialProvisionReadbackLoanV1<'owner>,
@@ -43,6 +48,8 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     node_matches: Option<bool>,
     approval_read: Option<Result<(), Method46InitialStartupClosedV1>>,
     approval_pin: Option<Result<[u8; 32], Method46InitialDataErrorV1>>,
+    normal_read: Option<Result<(), Method46InitialStartupClosedV1>>,
+    normal: NormalManifestOriginal,
     approval: RefCell<ApprovalVerificationOriginal>,
 }
 
@@ -53,6 +60,10 @@ const _: () = assert!(
         + 2 * std::mem::size_of::<Method46InitialRequestDataV1>()
         + 2 * std::mem::size_of::<Method46InitialIntentDataV1>()
         + std::mem::size_of::<ed25519_dalek::VerifyingKey>()
+        + 2 * std::mem::size_of::<
+            aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestV1,
+        >()
+        + 2 * aos_sandbox_broker_session_protocol::manifest::BROKER_SESSION_MANIFEST_BYTES
         + METHOD46_INITIAL_REQUEST_BYTES_V1
         + METHOD46_INITIAL_INTENT_BYTES_V1
         + 64
@@ -74,6 +85,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             node_matches: None,
             approval_read: None,
             approval_pin: None,
+            normal_read: None,
+            normal: NormalManifestOriginal::new(),
             approval: RefCell::new(ApprovalVerificationOriginal::new()),
         };
         original.decode();
@@ -129,6 +142,25 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
         };
         self.approval_pin =
             Some(<[u8; 32]>::try_from(&*public).map_err(|_| Method46InitialDataErrorV1::Approval));
+        drop(public);
+        let Some(Ok(approval)) = self.approval_pin else {
+            return;
+        };
+        let bytes = match self.readback.normal_storage_manifest_bytes_v1() {
+            Ok(bytes) => {
+                self.normal_read = Some(Ok(()));
+                bytes
+            }
+            Err(error) => {
+                self.normal_read = Some(Err(error));
+                return;
+            }
+        };
+        let Some(Ok((profile, _))) = self.decoded.as_ref() else {
+            return;
+        };
+        self.normal
+            .observe_once(&bytes, origin.role, origin.node, *profile, approval);
     }
 
     fn admitted(&self) -> bool {
@@ -138,6 +170,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             && self.node_matches == Some(true)
             && matches!(self.approval_read, Some(Ok(())))
             && matches!(self.approval_pin, Some(Ok(_)))
+            && matches!(self.normal_read, Some(Ok(())))
+            && self.normal.admitted()
     }
 
     /// Derives initial request DATA from this credential and the same main owner.
@@ -189,10 +223,10 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
     /// verification result remain resident, including after refusal or reentry.
     /// Their bounded carriers were paid by this original's decode allowance.
     ///
-    /// This returns comparison DATA only. In particular, native credential
-    /// provenance does not prove separation from endpoint, Nix or Root keys.
-    /// That separation, job exclusion, durable intent and physical TPM custody
-    /// remain required before any publication or Extend.
+    /// This returns comparison DATA only. The delivered Storage pins have been
+    /// compared, but full endpoint provenance and separation from Nix/Root keys
+    /// remain required alongside job exclusion, durable intent and physical TPM
+    /// custody before any publication or Extend.
     ///
     /// # Errors
     /// Refuses an ended/foreign main original, failed credential admission,
