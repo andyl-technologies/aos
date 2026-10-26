@@ -31,6 +31,26 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Normal Controller and Storage floor capture now share one fixed pending-name
+  check before handing the actual opened sidecar to their typed floor owner.
+  Their original B/F fixed suppliers prepay the resident owner, two retained
+  opens and bounded metadata observations before native work. Both observations
+  run even after the first fails. Only stable absence or the same safe empty,
+  single-link, mode-0600 file owned by the actual main's fixed UID is accepted;
+  nonempty, unsafe, appearing, disappearing or replaced artifacts fence transfer.
+  Native errors and files remain resident, with no deletion, truncation, repair
+  or initialization. Publisher and normal capture use one shared fixed-name
+  constant. Four actual-file regressions cover safe states, unsafe/nonempty
+  names, both-name changes and retained first errors with an independent after.
+  Non-test online Security compilation, 430 Broker, 146 focused Source, three
+  existing floor-geometry, 431 ordinary Security and 440 online-Nix Security
+  tests pass; one Broker case and two cases in each Security suite remain
+  ignored. Full application target compilation is running on the audited
+  86-source snapshot, with both deleted modules absent and
+  production policy excluded from its 833-derivation closure. This closes the
+  source-level cold pending-artifact gap, not installed provisioning or recovery
+  qualification. Admission remains closed.
+
 - The checkpoint publisher now uses the same Source/helper loan only after
   final approved target comparison and actual clean helper reaping. A prepaid
   native reservoir freshly compares the captured stage, preserves/resumes its

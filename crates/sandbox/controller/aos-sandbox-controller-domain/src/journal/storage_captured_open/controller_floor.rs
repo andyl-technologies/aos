@@ -21,6 +21,7 @@ use crate::{ControllerInitialBrokerSessionClosedV1, ControllerInitialBrokerSessi
 #[must_use = "retain the whole failed sidecar and all independent posts"]
 pub struct ControllerStorageFloorCapturedJournalOpenV1 {
     inner: FixedProtectedCapturedJournalOpenV1,
+    residue: initial_checkpoint_residue::InitialCheckpointResidueOriginalV1,
     attempted: bool,
     owner: Option<ControllerInitialBrokerSessionOwnerLinkV1>,
     main: Option<StorageNativeOpeningOwnerLinkV1>,
@@ -42,6 +43,7 @@ impl ControllerStorageFloorCapturedJournalOpenV1 {
             inner: FixedProtectedCapturedJournalOpenV1::with_recipe(
                 ProtectedCapturedJournalRecipeV1::JoinedControllerStorageFloor(None),
             ),
+            residue: initial_checkpoint_residue::InitialCheckpointResidueOriginalV1::new(),
             attempted: false, owner: None, main: None, entry: None, coordinates: None,
             limits: None, replay_binding: None, replay_entry: None,
             take_binding: None, take_entry: None, closed: None,
@@ -53,6 +55,8 @@ impl ControllerStorageFloorCapturedJournalOpenV1 {
     /// The main's held files remain separately funded. Seven rooted directory
     /// descriptors plus lock/main and two failed/owed name traversals use the
     /// existing engine's 27-FD peak; no future positive disposal is credited.
+    /// The initial-pending artifact has two separately priced retained opens
+    /// and bounded metadata originals before final native transfer.
     ///
     /// # Errors
     /// Refuses unrepresentable native or writable construction geometry.
@@ -69,7 +73,8 @@ impl ControllerStorageFloorCapturedJournalOpenV1 {
         let memory = u64::try_from(std::mem::size_of::<Self>()).ok()
             .and_then(|bytes| native.get(D::MemoryBytes).checked_add(bytes))
             .ok_or(aos_sandbox_model::AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes })?;
-        Ok(native.with(D::MemoryBytes, memory).with(D::MetadataEntries, 9))
+        native.with(D::MemoryBytes, memory).with(D::MetadataEntries, 9)
+            .checked_add(initial_checkpoint_residue::InitialCheckpointResidueOriginalV1::native_demand()?)
     }
 
     /// Enters the distinct sidecar gate before any rooted acquisition.
@@ -136,6 +141,10 @@ impl ControllerStorageFloorCapturedJournalOpenV1 {
     }
 
     /// Moves the same sibling after genuine B association and final native posts.
+    ///
+    /// Stable absence or a safe empty initial-pending file is required before
+    /// transfer. Nonempty, unsafe or changing artifacts remain untouched and
+    /// cannot be adopted as completed provisioning by normal startup.
     #[must_use]
     pub fn take_opened(&mut self, main: &Journal,
         receiving: &mut ControllerInitialBrokerSessionReceivingLoanV1<'_>) -> Option<(Journal, RecoveryReport)>
@@ -146,6 +155,8 @@ impl ControllerStorageFloorCapturedJournalOpenV1 {
         let opening = self.inner.owner_link.as_ref()?;
         self.take_entry = Some(receiving.enter_storage_floor_take_once_v1(main, opening));
         if !matches!(self.take_entry, Some(Ok(()))) { return None; }
+        self.residue.capture_once(main);
+        if self.residue.failure().is_some() { return None; }
         self.inner.take_opened()
     }
 
@@ -164,7 +175,8 @@ impl ControllerStorageFloorCapturedJournalOpenV1 {
         cause(&self.entry).or_else(|| cause(&self.coordinates)).or_else(|| cause(&self.limits))
             .or_else(|| self.inner.failure()).or_else(|| cause(&self.replay_binding))
             .or_else(|| cause(&self.replay_entry)).or_else(|| cause(&self.take_binding))
-            .or_else(|| cause(&self.take_entry)).or_else(|| self.closed.as_ref().map(|cause| cause as _))
+            .or_else(|| cause(&self.take_entry)).or_else(|| self.residue.failure())
+            .or_else(|| self.closed.as_ref().map(|cause| cause as _))
     }
 
     pub(crate) fn receiving_owner_link_v1(&self) -> Option<&ControllerInitialBrokerSessionOwnerLinkV1> {

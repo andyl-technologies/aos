@@ -23,6 +23,7 @@ enum DemandError {
 #[must_use = "retain the failed sidecar and independently owed native posts"]
 pub struct StorageBrokerFloorCapturedJournalOpenV2 {
     inner: FixedProtectedCapturedJournalOpenV1,
+    residue: initial_checkpoint_residue::InitialCheckpointResidueOriginalV1,
     payer: Option<StorageNativeOpeningOwnerLinkV1>,
     fixed: Option<Result<ResourceVector, AccountingError>>,
     preparation: Option<Result<(), StorageReceivingClosedV1>>,
@@ -41,6 +42,7 @@ impl StorageBrokerFloorCapturedJournalOpenV2 {
     pub const fn new() -> Self {
         Self {
             inner: FixedProtectedCapturedJournalOpenV1::new(FixedProtectedJournalRecipeV1::BrokerFloor),
+            residue: initial_checkpoint_residue::InitialCheckpointResidueOriginalV1::new(),
             payer: None, fixed: None, preparation: None, limits: None, shape: None,
             prefix: None, replay: None, take: None, opened: None, closed: None,
         }
@@ -50,6 +52,8 @@ impl StorageBrokerFloorCapturedJournalOpenV2 {
     ///
     /// The fixed namespace has six directories including root, journal and lock.
     /// Failed traversals retain their full independently priced descriptors.
+    /// Two additional file descriptions and bounded metadata originals cover
+    /// the fixed initial-pending artifact check before native transfer.
     ///
     /// # Errors
     /// Refuses unrepresentable constructor/native receiving geometry.
@@ -61,7 +65,8 @@ impl StorageBrokerFloorCapturedJournalOpenV2 {
             .and_then(|bytes| bytes.checked_add(upper_memory))
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(AccountingError::ArithmeticOverflow { dimension: D::MemoryBytes })?;
-        native.checked_add(ResourceVector::ZERO.with(D::MemoryBytes, memory))
+        native.checked_add(ResourceVector::ZERO.with(D::MemoryBytes, memory))?
+            .checked_add(initial_checkpoint_residue::InitialCheckpointResidueOriginalV1::native_demand()?)
     }
 
     /// Captures the existing sibling after actual main/F association.
@@ -132,6 +137,10 @@ impl StorageBrokerFloorCapturedJournalOpenV2 {
     }
 
     /// Moves the same native tuple after replay and independent final posts.
+    ///
+    /// The prepaid pending-name check must observe stable absence or a safe
+    /// empty displaced file. Unresolved initialization artifacts remain intact
+    /// and prevent transfer into the normal typed floor owner.
     #[must_use]
     pub fn take_opened(&mut self, main: &Journal,
         receiving: &mut StoragePrepareReceivingLoanV1<'_>) -> Option<(Journal, RecoveryReport)>
@@ -141,6 +150,8 @@ impl StorageBrokerFloorCapturedJournalOpenV2 {
         { return None; }
         self.take = Some(receiving.require_floor_capture_current_v2(main));
         if !matches!(self.take, Some(Ok(()))) { return None; }
+        self.residue.capture_once(main);
+        if self.residue.failure().is_some() { return None; }
         self.opened = self.inner.take_opened();
         let (sidecar, _) = self.opened.as_ref()?;
         self.take = Some(receiving.retain_taken_floor_capture_v2(main, sidecar));
@@ -156,7 +167,8 @@ impl StorageBrokerFloorCapturedJournalOpenV2 {
         error(&self.fixed).or_else(|| error(&self.preparation))
             .or_else(|| error(&self.limits)).or_else(|| error(&self.prefix))
             .or_else(|| error(&self.replay)).or_else(|| error(&self.take))
-            .or_else(|| self.inner.failure()).or_else(|| self.closed.as_ref().map(|cause| cause as _))
+            .or_else(|| self.residue.failure()).or_else(|| self.inner.failure())
+            .or_else(|| self.closed.as_ref().map(|cause| cause as _))
     }
 }
 

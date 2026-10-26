@@ -12,6 +12,7 @@ pub use storage_host::StorageHostSessionCapturedJournalOpenV1;
 mod controller;
 mod controller_floor;
 mod storage_floor;
+mod initial_checkpoint_residue;
 mod method46_initial;
 pub(crate) use method46_initial::Method46InitialMainWriterOriginalV1;
 pub use controller::{

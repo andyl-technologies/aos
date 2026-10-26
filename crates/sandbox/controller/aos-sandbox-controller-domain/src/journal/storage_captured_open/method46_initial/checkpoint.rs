@@ -18,7 +18,7 @@ use aos_sandbox_journal::transaction::{
 use aos_sandbox_linux::credential::FixedRoleCredentialReadV1;
 use aos_sandbox_model::RecordNamespace;
 use aos_sandbox_protocol::domain_ledger::floor_sidecar_geometry::{
-    CHECKPOINT_BYTES_V1, CHECKPOINT_KEY_V1,
+    CHECKPOINT_BYTES_V1, CHECKPOINT_KEY_V1, INITIAL_PENDING_NAME_V1 as STAGE,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -26,7 +26,6 @@ use super::*;
 
 mod publication;
 
-const STAGE: &str = "session-floor.journal.initial.pending";
 const INITIAL_DOMAIN: &[u8] = b"aos.sandbox.broker-session.tpm-floor.initial-sidecar.v1\0";
 // Three native headers, BEGIN count, one record header/key/value and COMMIT.
 const FRAMED_BYTES: usize =

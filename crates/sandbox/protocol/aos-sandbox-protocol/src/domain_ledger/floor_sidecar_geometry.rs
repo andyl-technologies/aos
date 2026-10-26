@@ -18,6 +18,8 @@ pub use capture::{FloorSidecarDecodeShapeV1, SIDECAR_DECODE_OBSERVATIONS_V1};
 
 /// Names the established protected floor sidecar, without selecting a directory.
 pub const SIDECAR_NAME_V1: &str = "session-floor.journal";
+/// Names the fixed initial checkpoint stage and displaced empty-file artifact.
+pub const INITIAL_PENDING_NAME_V1: &str = "session-floor.journal.initial.pending";
 /// Names the existing canonical checkpoint member.
 pub const CHECKPOINT_KEY_V1: &[u8] = b"checkpoint";
 /// Names the existing canonical intent member.
