@@ -91,6 +91,22 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 
 ## Implementation checkpoint (2026-10-26)
 
+The configured read-only service batch at `5a8beaee9a` fails in 325.226
+seconds. All 35 socket cases and the ten preceding service/direct-read cases
+pass; the new configured case fails in 1.30 seconds during native reopening
+with `Invalid(MalformedRequest)`, before service construction. The batch and
+remaining portable qualification are not accepted. Its source and raw failed
+controller records are preserved.
+
+The new fixture supplies a Read-only bootstrap ACL unlike its genuinely
+initialized repository's original full owner ACL. The correction restores those
+original trust inputs. It keeps the Read-only request token, requires Serve to
+refuse the independent writer's broad token, and preserves every backing-state,
+publication and historical-read assertion and the original thirty-second bound.
+Production code and all eleven selectors are unchanged. This is a targeted
+fixture correction; its diagnosis and read-only behavior require fresh native
+qualification before acceptance.
+
 The immutable-read refresh at `da9223ef67` passes its complete native batch
 in 366.684 seconds: all ten local service/direct-read cases, 35 distribution
 socket cases and 22 portable cases execute with their original thirty-second

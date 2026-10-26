@@ -61,6 +61,8 @@ fn observe(root: &Path) -> Result<BTreeMap<PathBuf, BackingEntry>, TestError> {
 }
 
 fn configuration(fixture: &Fixture) -> Result<Config, TestError> {
+    // Bootstrap trust describes the existing repository. Serve's read-only
+    // backend must refuse writes even with that original full owner policy.
     Ok(Config::parse(&format!(
         r#"role = "serve"
 store = "bucket(file://{})"
@@ -74,7 +76,7 @@ domain = "private:owner"
 default_private_domain = "private:owner"
 current_reference = "{MAIN}"
 policy_authority = "{MAIN}"
-acl = [{{ principal = "owner", verbs = ["read"] }}]
+acl = [{{ principal = "owner", verbs = ["read", "fork", "commit", "tag", "admin"] }}]
 [local_repository.timing]
 maximum_ms = 30000
 grace_ms = 60000
