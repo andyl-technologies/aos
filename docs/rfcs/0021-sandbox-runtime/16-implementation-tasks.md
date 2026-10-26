@@ -640,7 +640,10 @@ Recent committed startup fixes close narrower prerequisites:
   (`/nix/store/pz3mchi444yzcnw77fdm7s2jr4xcfgxd-aos-fleet-test-sandbox-initial-approval-exchange-0`).
   This non-enforcing component test exercises transport DATA without the
   genuine Source/Security join or installed provisioning. Complete application
-  target compilation remains pending for the combined exchange source.
+  unit and integration targets compile for the combined exchange source
+  (`/nix/store/5ccxldamh52n2yi7scs5b0aj27rf8mv7-aos-test-targets-0.1.0`),
+  without executing them and before the later normal-unit fragment and runtime
+  changes.
   This supplies signed comparison DATA, without full normal-image/kernel/device
   admission, Nix/Root key separation, Session schema, job exclusion, durable
   intent, authenticated TPM effects or installed producer qualification. Public
