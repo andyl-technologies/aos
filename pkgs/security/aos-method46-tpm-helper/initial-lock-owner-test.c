@@ -45,6 +45,7 @@ static void fixed_policy_cases(void)
     uint8_t hello[HELLO_BYTES];
     hello_for_profile(hello);
     REQUIRE(validate_hello(hello, &initial_profile) == 0);
+    REQUIRE(initial_profile_matches(&initial_profile));
 
     uint32_t opposite = initial_role.index == UINT32_C(0x0180a046)
         ? UINT32_C(0x0180a047) : UINT32_C(0x0180a046);
@@ -56,6 +57,8 @@ static void fixed_policy_cases(void)
      * use actual fchown, geteuid, fstat and fcntl through validate_locks. */
     struct aos_nv_custody_profile normal = initial_profile;
     normal.lock_owner = AOS_NV_LOCK_OWNER_SELF;
+    REQUIRE(!initial_profile_matches(&normal));
+    REQUIRE(!initial_profile_matches(NULL));
     const uint32_t identities[] = {0, 1000, 1001, UINT32_MAX};
     for (size_t owner = 0; owner < 4; ++owner) {
         for (size_t helper = 0; helper < 4; ++helper) {
@@ -71,12 +74,15 @@ static void fixed_policy_cases(void)
     struct aos_nv_custody_profile changed = initial_profile;
     changed.lock_owner = (enum aos_nv_lock_owner_policy)99;
     REQUIRE(!lock_owner_matches(&changed, 1000, 0));
+    REQUIRE(!initial_profile_matches(&changed));
     changed = initial_profile;
     changed.role_count = 2;
     REQUIRE(!lock_owner_matches(&changed, 1000, 0));
+    REQUIRE(!initial_profile_matches(&changed));
     changed = initial_profile;
     changed.roles = NULL;
     REQUIRE(!lock_owner_matches(&changed, 1000, 0));
+    REQUIRE(!initial_profile_matches(&changed));
     struct aos_nv_custody_role foreign_role = initial_role;
     foreign_role.index = UINT32_C(0x0180a055);
     foreign_role.salt = UINT32_C(0x8100a055);
@@ -84,6 +90,7 @@ static void fixed_policy_cases(void)
     changed.roles = &foreign_role;
     REQUIRE(!lock_owner_matches(&changed, 0, 0));
     REQUIRE(!lock_owner_matches(&changed, 1000, 0));
+    REQUIRE(!initial_profile_matches(&changed));
 }
 
 static void bind_lock_identity(uint8_t hello[HELLO_BYTES], size_t index, int file)

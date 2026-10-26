@@ -6,6 +6,24 @@
 #include <signal.h>
 #include <stdio.h>
 
+/* These are test-only fixed endpoint profiles, with no production Source or
+ * approval authority. The shared reader still selects its ordinary/initial
+ * behavior from the same closed build-time profile used by the real runner. */
+static const struct aos_nv_custody_role fixture_roles[] = {
+    { UINT32_C(0x0180a046), UINT32_C(0x8100a046), NULL },
+    { UINT32_C(0x0180a047), UINT32_C(0x8100a047), NULL },
+};
+static const struct aos_nv_custody_profile ordinary_fixture_profile = {
+    .roles = fixture_roles,
+    .role_count = 2,
+};
+static const struct aos_nv_custody_profile initial_fixture_profiles[] = {
+    { .roles = &fixture_roles[0], .role_count = 1,
+      .lock_owner = AOS_NV_LOCK_OWNER_INITIAL_CONTROLLER },
+    { .roles = &fixture_roles[1], .role_count = 1,
+      .lock_owner = AOS_NV_LOCK_OWNER_INITIAL_STORAGE },
+};
+
 struct fixture {
     uint8_t auth[32];
     uint8_t salt_name[34];
@@ -183,21 +201,10 @@ static void recover_initial(struct floor_context *context, unsigned role,
     require(authenticate(context, role, fixture) == 0,
         "authenticate initial recovery salt and index");
 
-    TPM2B_NV_PUBLIC *public = NULL;
-    TPM2B_NAME *name = NULL;
-    require(session_attributes(context, TPMA_SESSION_ENCRYPT) == TSS2_RC_SUCCESS
-        && Esys_NV_ReadPublic(context->esys, context->index, context->session,
-            ESYS_TR_NONE, ESYS_TR_NONE, &public, &name) == TSS2_RC_SUCCESS
-        && public != NULL && name != NULL && name->size == 34
-        && public->nvPublic.nvIndex == context->index_handle
-        && public->nvPublic.nameAlg == TPM2_ALG_SHA256
-        && (public->nvPublic.attributes == UINT32_C(0x00040044)
-            || public->nvPublic.attributes == WRITTEN_ATTRIBUTES)
-        && public->nvPublic.authPolicy.size == 0 && public->nvPublic.dataSize == 32,
-        "authenticate exact unwritten or written initial index");
-    int written = public->nvPublic.attributes == WRITTEN_ATTRIBUTES;
-    Esys_Free(public);
-    Esys_Free(name);
+    uint8_t before[RESPONSE_BYTES] = {0};
+    require(read_observation(context, before, &initial_fixture_profiles[role]) == 0,
+        "production authenticated unwritten or written initial observation");
+    int written = get_u32(before + 88) == WRITTEN_ATTRIBUTES;
 
     uint8_t input[64] = {0};
     uint8_t expected[32];
@@ -209,7 +216,7 @@ static void recover_initial(struct floor_context *context, unsigned role,
             "production encrypted recovered initial extend");
 
     uint8_t observation[RESPONSE_BYTES] = {0};
-    require(read_observation(context, observation) == 0
+    require(read_observation(context, observation, &ordinary_fixture_profile) == 0
         && memcmp(observation + 96, expected, sizeof(expected)) == 0,
         "authenticate exact initial recovery target");
     memcpy(fixture->checkpoint, expected, sizeof(expected));
@@ -251,6 +258,44 @@ int main(int argc, char **argv)
         return EXIT_SUCCESS;
     }
 
+    if (strcmp(argv[1], "initial-wrong-auth") == 0) {
+        fixture.auth[0] ^= 1;
+        require(authenticate(&context, role, &fixture) == 0,
+            "salted public session does not authenticate index auth");
+        uint8_t before[RESPONSE_BYTES] = {0};
+        require(read_observation(&context, before, &initial_fixture_profiles[role]) == 0
+            && get_u32(before + 88) == DEFINED_ATTRIBUTES,
+            "unwritten public observation is not index authorization");
+        uint8_t input[32];
+        memset(input, 0x61, sizeof(input));
+        require(extend_index(&context, input) != 0,
+            "first encrypted Extend rejects foreign index auth");
+        close_context(&context);
+        erase(&fixture, sizeof(fixture));
+        return EXIT_SUCCESS;
+    }
+
+    if (strcmp(argv[1], "observe-initial") == 0
+        || strcmp(argv[1], "observe-initial-crossed") == 0) {
+        require(authenticate(&context, role, &fixture) == 0,
+            "authenticate fixed initial observation session");
+        uint8_t observation[RESPONSE_BYTES];
+        memset(observation, 0xa5, sizeof(observation));
+        unsigned selected = strcmp(argv[1], "observe-initial-crossed") == 0 ? 1U - role : role;
+        require(read_observation(&context, observation, &initial_fixture_profiles[selected]) == 0,
+            "production initial public/value observation");
+        printf("%08x ", get_u32(observation + 88));
+        for (size_t byte = 52; byte < 86; ++byte)
+            printf("%02x", observation[byte]);
+        putchar(' ');
+        for (size_t byte = 96; byte < 128; ++byte)
+            printf("%02x", observation[byte]);
+        putchar('\n');
+        close_context(&context);
+        erase(&fixture, sizeof(fixture));
+        return EXIT_SUCCESS;
+    }
+
     if (initializing) {
         require(argc == 5, "initial cut input is required");
         require(!nonzero(fixture.checkpoint, sizeof(fixture.checkpoint))
@@ -259,18 +304,11 @@ int main(int argc, char **argv)
         require(authenticate(&context, role, &fixture) == 0,
             "authenticate prepared salt and index");
 
-        TPM2B_NV_PUBLIC *public = NULL;
-        TPM2B_NAME *unwritten_name = NULL;
-        require(session_attributes(&context, TPMA_SESSION_ENCRYPT) == TSS2_RC_SUCCESS
-            && Esys_NV_ReadPublic(context.esys, context.index, context.session,
-                ESYS_TR_NONE, ESYS_TR_NONE, &public, &unwritten_name) == TSS2_RC_SUCCESS
-            && public != NULL && unwritten_name != NULL && unwritten_name->size == 34
-            && public->nvPublic.nvIndex == context.index_handle
-            && public->nvPublic.nameAlg == TPM2_ALG_SHA256
-            && public->nvPublic.attributes == UINT32_C(0x00040044)
-            && public->nvPublic.authPolicy.size == 0 && public->nvPublic.dataSize == 32,
-            "refuse written or foreign initial index");
-        Esys_Free(public);
+        uint8_t before[RESPONSE_BYTES] = {0};
+        require(read_observation(&context, before, &initial_fixture_profiles[role]) == 0
+            && get_u32(before + 88) == DEFINED_ATTRIBUTES
+            && !nonzero(before + 96, 32),
+            "production authenticated unwritten initial observation");
 
         /* Installed-hook callers must derive this preimage with the canonical
          * Rust journal codec after learning the provisioned salt Name. This
@@ -299,11 +337,10 @@ int main(int argc, char **argv)
         require(EVP_Digest(digest_input, sizeof(digest_input), fixture.checkpoint,
             NULL, EVP_sha256(), NULL) == 1, "calculate initial checkpoint");
         uint8_t observation[RESPONSE_BYTES] = {0};
-        require(read_observation(&context, observation) == 0
-            && memcmp(observation + 52, unwritten_name->name, 34) != 0
+        require(read_observation(&context, observation, &ordinary_fixture_profile) == 0
+            && memcmp(observation + 52, before + 52, 34) != 0
             && memcmp(observation + 96, fixture.checkpoint, 32) == 0,
             "authenticate changed written Name and exact initial value");
-        Esys_Free(unwritten_name);
         /* Cut power after authenticated physical success, before publishing
          * a checkpoint. Cold recovery needs the separately retained intent;
          * a fresh initializer must refuse the now-written index. */
@@ -327,7 +364,7 @@ int main(int argc, char **argv)
         require(authenticate(&context, role, &fixture) == 0,
             "authenticate pinned salt session");
         uint8_t observation[RESPONSE_BYTES] = {0};
-        int result = read_observation(&context, observation);
+        int result = read_observation(&context, observation, &ordinary_fixture_profile);
         if (strcmp(argv[1], "wrong-auth") == 0) {
             require(result != 0, "reject foreign index credential");
         } else {

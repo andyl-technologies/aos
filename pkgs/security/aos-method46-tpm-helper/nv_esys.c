@@ -41,7 +41,8 @@
 #define AUTH_BYTES 80U
 #define REQUEST_BYTES 84U
 #define RESPONSE_BYTES 128U
-#define WRITTEN_ATTRIBUTES UINT32_C(0x20040044)
+#define DEFINED_ATTRIBUTES UINT32_C(0x00040044)
+#define WRITTEN_ATTRIBUTES (DEFINED_ATTRIBUTES | UINT32_C(0x20000000))
 #define FIXED_DEVICE "/dev/tpmrm0"
 
 /* Linux socket UAPI; older libc headers do not name generated record pidfds. */
@@ -247,6 +248,24 @@ static uint64_t get_u64(const uint8_t *bytes)
     return value;
 }
 
+/* Only the two fixed initial images may report an authenticated public area
+ * before its first write. Ordinary and Nix profiles remain WRITTEN-only. */
+static int initial_profile_matches(const struct aos_nv_custody_profile *profile)
+{
+    if (profile == NULL || profile->role_count != 1 || profile->roles == NULL)
+        return 0;
+    switch (profile->lock_owner) {
+    case AOS_NV_LOCK_OWNER_INITIAL_CONTROLLER:
+        return profile->roles[0].index == UINT32_C(0x0180a046)
+            && profile->roles[0].salt == UINT32_C(0x8100a046);
+    case AOS_NV_LOCK_OWNER_INITIAL_STORAGE:
+        return profile->roles[0].index == UINT32_C(0x0180a047)
+            && profile->roles[0].salt == UINT32_C(0x8100a047);
+    default:
+        return 0;
+    }
+}
+
 static int lock_owner_matches(const struct aos_nv_custody_profile *profile,
     uint32_t owner, uint32_t helper_uid)
 {
@@ -256,15 +275,9 @@ static int lock_owner_matches(const struct aos_nv_custody_profile *profile,
     case AOS_NV_LOCK_OWNER_SELF:
         return owner == helper_uid;
     case AOS_NV_LOCK_OWNER_INITIAL_CONTROLLER:
-        return helper_uid == 0 && owner != 0 && profile->role_count == 1
-            && profile->roles != NULL
-            && profile->roles[0].index == UINT32_C(0x0180a046)
-            && profile->roles[0].salt == UINT32_C(0x8100a046);
+        return helper_uid == 0 && owner != 0 && initial_profile_matches(profile);
     case AOS_NV_LOCK_OWNER_INITIAL_STORAGE:
-        return helper_uid == 0 && owner == 0 && profile->role_count == 1
-            && profile->roles != NULL
-            && profile->roles[0].index == UINT32_C(0x0180a047)
-            && profile->roles[0].salt == UINT32_C(0x8100a047);
+        return helper_uid == 0 && owner == 0 && initial_profile_matches(profile);
     default:
         return 0;
     }
@@ -571,7 +584,8 @@ static int open_context(struct floor_context *context, const uint8_t hello[HELLO
     return status == TSS2_RC_SUCCESS && same_device(context) == 0 ? 0 : -1;
 }
 
-static int read_observation(struct floor_context *context, uint8_t reply[RESPONSE_BYTES])
+static int read_observation(struct floor_context *context, uint8_t reply[RESPONSE_BYTES],
+    const struct aos_nv_custody_profile *profile)
 {
     TPM2B_NV_PUBLIC *public = NULL;
     TPM2B_NAME *name = NULL;
@@ -585,21 +599,34 @@ static int read_observation(struct floor_context *context, uint8_t reply[RESPONS
         || public == NULL || name == NULL || name->size != 34
         || public->nvPublic.nvIndex != context->index_handle
         || public->nvPublic.nameAlg != TPM2_ALG_SHA256
-        || public->nvPublic.attributes != WRITTEN_ATTRIBUTES
+        || (public->nvPublic.attributes != WRITTEN_ATTRIBUTES
+            && !(initial_profile_matches(profile)
+                && context->index_handle == profile->roles[0].index
+                && public->nvPublic.attributes == DEFINED_ATTRIBUTES))
         || public->nvPublic.dataSize != 32 || public->nvPublic.authPolicy.size != 0)
         goto finished;
-    if (session_attributes(context, TPMA_SESSION_ENCRYPT) != TSS2_RC_SUCCESS
-        || Esys_NV_Read(context->esys, context->index, context->index,
-            context->session, ESYS_TR_NONE, ESYS_TR_NONE, 32, 0, &value) != TSS2_RC_SUCCESS
-        || value == NULL || value->size != 32 || !nonzero(value->buffer, 32)
-        || same_device(context) != 0)
+    bool written = public->nvPublic.attributes == WRITTEN_ATTRIBUTES;
+    if (written
+        && (session_attributes(context, TPMA_SESSION_ENCRYPT) != TSS2_RC_SUCCESS
+            || Esys_NV_Read(context->esys, context->index, context->index,
+                context->session, ESYS_TR_NONE, ESYS_TR_NONE, 32, 0, &value) != TSS2_RC_SUCCESS
+            || value == NULL || value->size != 32 || !nonzero(value->buffer, 32)))
+        goto finished;
+    if (same_device(context) != 0)
         goto finished;
     memcpy(reply + 52, name->name, 34);
     put_u16(reply + 86, public->nvPublic.nameAlg);
     put_u32(reply + 88, public->nvPublic.attributes);
     put_u16(reply + 92, public->nvPublic.dataSize);
     put_u16(reply + 94, public->nvPublic.authPolicy.size);
-    memcpy(reply + 96, value->buffer, 32);
+    /* An unwritten index has no readable value. Only its salted-session
+     * authenticated public area was observed; zero is protocol comparison DATA,
+     * not a successful NV_Read or proof of the index credential. The first
+     * encrypted Extend must independently authenticate that credential. */
+    if (written)
+        memcpy(reply + 96, value->buffer, 32);
+    else
+        memset(reply + 96, 0, 32);
     valid = 1;
 finished:
     Esys_Free(public);
@@ -680,7 +707,7 @@ int aos_nv_custody_run(int argc, const struct aos_nv_custody_profile *profile)
         reply[10] = operation;
         memcpy(reply + 12, nonce, sizeof(nonce));
         memcpy(reply + 44, request + 44, 8);
-        if (read_observation(&context, reply) != 0
+        if (read_observation(&context, reply, profile) != 0
             || send_frame(reply, sizeof(reply)) != 0)
             break;
         ++sequence;

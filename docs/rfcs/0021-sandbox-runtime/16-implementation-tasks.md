@@ -31,6 +31,22 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The shared C TPM reader now admits the exact authenticated Defined public
+  area for the two fixed initial profiles and their matching indices. It
+  reports zero comparison DATA without attempting an unreadable NV value or
+  claiming index-auth success. Ordinary METHOD46, deployment and Nix helpers
+  retain their Written-only rule. Initial transport fixtures use this same
+  reader before the first encrypted Extend and during cold reconciliation.
+  All five helper packages, the ten cache/custody regressions and both fixed
+  initial-profile checks pass; final initial ELF and loader pins match. The
+  expanded QEMU/vTPM test is running on its audited source, with production
+  policy excluded from the 1,217-derivation closure. It checks exact Defined
+  and Written Names, wrong-profile refusal, wrong first-Extend authentication
+  without an NV change, and matching Written readback after power loss. This
+  remains transport component work; the Source/approval workflow, confined
+  initial helper exchange, canonical checkpoint and installed lifecycle remain
+  unqualified. Admission stays closed.
+
 - The initial Source can now lend its already-held private index auth only
   into the same acknowledged helper's native sender. A bounded AUTH send wait
   and held-child observation precede an independent Source currentness check;

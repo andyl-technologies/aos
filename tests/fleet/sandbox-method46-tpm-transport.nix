@@ -35,10 +35,18 @@ in {
   testScript = ''
     import hashlib
     import signal
+    import struct
     import time
 
     vm.wait_for_unit("multi-user.target", timeout=180)
     vm.succeed("test -c /dev/tpmrm0; mkdir -m 0700 /var/lib/method46-transport")
+
+    def initial_observation(role, attributes, value):
+        public = struct.pack(
+            ">IHIHH", 0x0180a046 + role, 0x000b, attributes, 0, 32
+        )
+        name = "000b" + hashlib.sha256(public).hexdigest()
+        return f"{attributes:08x} {name} {value.hex()}"
 
     for role in (0, 1):
         state = f"/var/lib/method46-transport/endpoint-{role}"
@@ -50,11 +58,21 @@ in {
         vm.succeed(f"${command} prepare {role} {state}")
         vm.succeed(f"cp {state} {state}.unwritten")
         vm.fail(f"${command} read {role} {state}")
+        defined = vm.succeed(f"${command} observe-initial {role} {state}").strip()
+        assert defined == initial_observation(role, 0x00040044, bytes(32)), defined
+        vm.fail(f"${command} observe-initial {1 - role} {state}")
+        vm.fail(f"${command} observe-initial-crossed {role} {state}")
+        vm.succeed(f"${command} initial-wrong-auth {role} {state}")
+        assert vm.succeed(f"${command} observe-initial {role} {state}").strip() == defined
         vm.succeed(f"printf short > {seed}")
         vm.fail(f"${command} initialize {role} {state} {seed}")
         vm.succeed(f"printf 0123456789abcdef0123456789abcdef > {seed}")
         vm.succeed(f"sync -f {seed}")
         vm.succeed(f"${command} initialize {role} {state} {seed}")
+        first_value = hashlib.sha256(bytes(32) + b"0123456789abcdef0123456789abcdef").digest()
+        written = vm.succeed(f"${command} observe-initial {role} {state}").strip()
+        assert written == initial_observation(role, 0x20040044, first_value), written
+        assert written.split()[1] != defined.split()[1], (defined, written)
         vm.fail(f"${command} initialize {role} {state} {seed}")
         vm.fail(f"${command} initialize {role} {state}.unwritten {seed}")
         vm.fail(f"${command} provision {role} {state}")
@@ -181,6 +199,8 @@ in {
     for role, state, seed, retained_hash in uncheckpointed:
         assert vm.succeed(f"sha256sum {state} {seed}") == retained_hash
         assert vm.succeed(f"${command} observe {role} {state}").strip() == expected_nv
+        cold_written = vm.succeed(f"${command} observe-initial {role} {state}").strip()
+        assert cold_written == initial_observation(role, 0x20040044, bytes.fromhex(expected_nv)), cold_written
         vm.fail(f"${command} initialize {role} {state} {seed}")
         vm.fail(f"${command} read {role} {state}")
         vm.fail(f"${command} recover {role} {state}")
