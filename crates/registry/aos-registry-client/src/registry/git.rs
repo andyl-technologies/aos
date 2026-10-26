@@ -159,7 +159,7 @@ pub async fn sync_git_with_continuity(
     progress.activity_phase("Preparing registry update");
     let key_store = KeyStore::new(trusted_keys_dirs.to_vec());
     let enforcing = signing_enforced(config);
-    let trusted_keys = assemble_trusted_set(&key_store, config);
+    let trusted_keys = assemble_trusted_set(&key_store, config)?;
     if enforcing && trusted_keys.is_empty() {
         return Err(RegistryVerificationError::MissingTrustedKey {
             registry: config.name.clone(),
@@ -619,18 +619,27 @@ fn signing_enforced(config: &RegistryConfig) -> bool {
 /// no keys for the registry at all, and is superseded once roster keys are
 /// pinned — a revoked key lingering in a config file must not stay
 /// trusted forever.
-fn assemble_trusted_set(store: &KeyStore, config: &RegistryConfig) -> Vec<String> {
+fn assemble_trusted_set(store: &KeyStore, config: &RegistryConfig) -> Result<Vec<String>> {
     let mut keys: Vec<String> = store
         .lookup_all(&config.name)
         .iter()
         .map(TrustedKey::key_line)
         .collect();
     if keys.is_empty()
+        && !store.bootstrap_disabled(&config.name)?
         && let Some(anchor) = config.signing.as_ref().and_then(|s| s.public_key.as_ref())
     {
-        keys.push(anchor.clone());
+        let (registry, algorithm, public_key) = security::parse_signing_key(anchor)
+            .context("parsing configured registry bootstrap key")?;
+        if registry != config.name {
+            bail!(
+                "configured bootstrap key belongs to registry '{registry}', expected '{}'",
+                config.name
+            );
+        }
+        keys.push(format!("{registry}:{algorithm}:{public_key}"));
     }
-    keys
+    Ok(keys)
 }
 
 /// Verify the new head commit's signature against the trusted set.
@@ -2136,6 +2145,88 @@ mod tests {
                 root_owner_signers: Vec::new(),
             }),
         }
+    }
+
+    #[test]
+    fn configured_bootstrap_is_used_only_before_explicit_removal() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let writable = tmp.path().join("writable");
+        let anchors = tmp.path().join("anchors");
+        std::fs::create_dir_all(&anchors).unwrap();
+        std::fs::write(anchors.join("core.pub"), "core:Ed25519:base64key\n").unwrap();
+        let dirs = vec![writable.clone(), anchors];
+        let configured = vec!["core:Ed25519:base64key".to_string()];
+        let config = channel_config(None);
+
+        let store = KeyStore::new(dirs.clone());
+        assert_eq!(assemble_trusted_set(&store, &config).unwrap(), configured);
+
+        assert!(
+            store
+                .remove_with_bootstrap_keys("core", &configured)
+                .unwrap()
+        );
+
+        let restarted = KeyStore::new(dirs);
+        assert!(
+            assemble_trusted_set(&restarted, &config)
+                .unwrap()
+                .is_empty()
+        );
+
+        restarted
+            .store(&TrustedKey {
+                registry: "core".into(),
+                algorithm: "Ed25519".into(),
+                public_key: "base64key".into(),
+                fingerprint: key_fingerprint("base64key"),
+                source: crate::security::KeySource::Tofu,
+            })
+            .unwrap();
+        assert_eq!(
+            assemble_trusted_set(&restarted, &config).unwrap(),
+            configured
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_rejects_removed_configuration_only_bootstrap_before_origin_access() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let writable = tmp.path().join("writable");
+        let dirs = vec![writable];
+        let store = KeyStore::new(dirs.clone());
+        let configured = vec!["core:Ed25519:base64key".to_string()];
+        store
+            .remove_with_bootstrap_keys("core", &configured)
+            .unwrap();
+
+        let mut config = channel_config(None);
+        config.url = "http://127.0.0.1:9/must-not-be-contacted".to_string();
+        let cache = tmp.path().join("cache");
+        let registries = tmp.path().join("registries");
+        let mut state = RegistryState::default();
+        let observer = aos_transfer::progress::NoopObserver;
+
+        let error = sync_git(
+            &config,
+            &TrackingMode::Channel("stable".to_string()),
+            &cache,
+            &registries,
+            &dirs,
+            &mut state,
+            &observer,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires signed metadata but no trusted key is available"),
+            "{error:#}"
+        );
+        assert!(!cache.exists());
+        assert!(!registries.exists());
     }
 
     #[test]
