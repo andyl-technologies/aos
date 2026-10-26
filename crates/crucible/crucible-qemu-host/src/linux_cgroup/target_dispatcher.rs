@@ -150,11 +150,11 @@ pub(super) struct TargetWatchJob {
 pub(super) enum TargetJobSubmitError {
     Unsubmitted {
         control: LinuxQemuCgroupControl,
-        source: LinuxQemuCgroupError,
+        source: control_check::ControlCheckError,
     },
     Staged {
         job: TargetWatchJob,
-        source: LinuxQemuCgroupError,
+        source: control_check::ControlCheckError,
     },
 }
 
@@ -710,14 +710,14 @@ impl TargetDispatcher {
         let checked = self
             .purpose
             .as_ref()
-            .ok_or_else(|| failure(&control.path, "Target dispatcher payer is absent"))
+            .ok_or_else(|| admission_failure(&control.path, "Target dispatcher payer is absent"))
             .and_then(|purpose| {
                 purpose
                     .verify_original(original.operation())
-                    .map_err(|source| failure(&control.path, source))
+                    .map_err(|source| admission_failure(&control.path, source))
             })
             .and_then(|()| {
-                verify_directory_identity(
+                control_check::verify_directory_identity(
                     &control.parent_directory,
                     &control.name,
                     &control.directory,
@@ -725,13 +725,13 @@ impl TargetDispatcher {
                 )?;
                 original
                     .verify_control(&control.parent_directory, &control.directory)
-                    .map_err(|source| failure(&control.path, source))
+                    .map_err(|source| admission_failure(&control.path, source))
             });
         if let Err(source) = checked {
             return Err(TargetJobSubmitError::Unsubmitted { control, source });
         }
         let Some(state) = self.state.as_ref() else {
-            let source = failure(&control.path, "Target dispatcher has no actual worker");
+            let source = admission_failure(&control.path, "Target dispatcher has no actual worker");
             return Err(TargetJobSubmitError::Unsubmitted { control, source });
         };
         if self.failed
@@ -739,24 +739,24 @@ impl TargetDispatcher {
             || self.worker.is_none()
             || state.worker_exited.load(Ordering::Acquire)
         {
-            let source = failure(&control.path, "Target dispatcher is retired or failed");
+            let source = admission_failure(&control.path, "Target dispatcher is retired or failed");
             return Err(TargetJobSubmitError::Unsubmitted { control, source });
         }
         let Ok(mut slots) = state.slots.lock() else {
-            let source = failure(&control.path, "Target job custody is poisoned");
+            let source = admission_failure(&control.path, "Target job custody is poisoned");
             return Err(TargetJobSubmitError::Unsubmitted { control, source });
         };
         let Some((index, slot)) = slots.iter_mut().enumerate().find(|(_, slot)| {
             slot.phase == JobPhase::Idle && slot.control.is_none() && slot.original.is_none()
         }) else {
-            let source = failure(
+            let source = admission_failure(
                 &control.path,
                 "All paid Target slots still own actual incarnations",
             );
             return Err(TargetJobSubmitError::Unsubmitted { control, source });
         };
         let Some(epoch) = slot.epoch.checked_add(1) else {
-            let source = failure(&control.path, "Target job epoch is exhausted");
+            let source = admission_failure(&control.path, "Target job epoch is exhausted");
             return Err(TargetJobSubmitError::Unsubmitted { control, source });
         };
         slot.epoch = epoch;
@@ -780,11 +780,22 @@ impl TargetDispatcher {
             self.failed = true;
             return Err(TargetJobSubmitError::Staged {
                 job,
-                source: failure(&state.path, source),
+                source: admission_failure(&state.path, source),
             });
         }
         Ok(job)
     }
+}
+
+fn admission_failure(
+    path: &Path,
+    source: impl std::fmt::Display,
+) -> control_check::ControlCheckError {
+    control_check::ControlCheckError::io(
+        control_check::ControlCheckOperation::MaintainTargetDispatcher,
+        path.to_owned(),
+        io::Error::other(source.to_string()),
+    )
 }
 
 fn retirement_failure(

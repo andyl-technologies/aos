@@ -238,7 +238,8 @@ impl LinuxQemuAttemptProcessOwner {
         original: crate::linux_attempt_host::TargetWatcherOriginal,
     ) -> Result<Self, LinuxQemuAttemptProcessOwnerStartError> {
         let watcher = match group.control() {
-            Ok(control) => LinuxQemuCgroupWatcher::start_target(control, dispatcher, original),
+            Ok(control) => LinuxQemuCgroupWatcher::start_target(control, dispatcher, original)
+                .map_err(|(watcher, source)| (watcher, source.into())),
             Err(source) => Err((None, source)),
         };
         Self::seal_start(group, watcher, file_limits, credentials, None)

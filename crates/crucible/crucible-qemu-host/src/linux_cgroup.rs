@@ -25,7 +25,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use rustix::fs::{
-    AtFlags, FlockOperation, Mode, OFlags, flock, fstat, fstatfs, mkdirat, open, openat, unlinkat,
+    AtFlags, FlockOperation, Mode, OFlags, flock, fstatfs, mkdirat, open, openat, unlinkat,
 };
 use thiserror::Error;
 
@@ -33,6 +33,7 @@ use crate::spawn::{QemuChildCredentials, QemuChildProcessContract};
 use crate::{QemuNodeChild, QemuProcessIdentity, linux_process_identity};
 
 mod attempt_owner;
+mod control_check;
 mod dispatcher_error;
 pub use dispatcher_error::LinuxQemuTargetDispatcherError;
 #[cfg(feature = "private-measurement-domain")]
@@ -496,11 +497,11 @@ enum LinuxQemuCgroupWatcherAttempt {
 }
 
 impl LinuxQemuCgroupWatcher {
-    pub(super) fn start_target(
+    fn start_target(
         control: LinuxQemuCgroupControl,
         dispatcher: &mut target_dispatcher::TargetDispatcher,
         original: crate::linux_attempt_host::TargetWatcherOriginal,
-    ) -> Result<Self, (Option<Self>, LinuxQemuCgroupError)> {
+    ) -> Result<Self, (Option<Self>, control_check::ControlCheckError)> {
         let path = control.path.clone();
         if control
             .watcher_state
@@ -512,12 +513,14 @@ impl LinuxQemuCgroupWatcher {
             )
             .is_err()
         {
-            return Err((None, LinuxQemuCgroupError::WatcherAlreadyStarted { path }));
+            return Err((
+                None,
+                control_check::ControlCheckError::watcher_already_started(path),
+            ));
         }
         let watcher_state = Arc::clone(&control.watcher_state);
-        let cancellation_event = match duplicate_fd(
+        let cancellation_event = match control_check::retain_target_cancellation(
             control.cancellation_event.as_raw_fd(),
-            "retain pooled Target cancellation",
             &path,
         ) {
             Ok(fd) => fd,
@@ -1455,23 +1458,7 @@ fn verify_directory_identity(
     expected: &OwnedFd,
     path: &Path,
 ) -> Result<(), LinuxQemuCgroupError> {
-    let named = open_directory_at(parent, name, path)?;
-    let expected = fstat(expected).map_err(|source| LinuxQemuCgroupError::Io {
-        operation: "identify pinned QEMU attempt cgroup",
-        path: path.to_owned(),
-        source: source.into(),
-    })?;
-    let actual = fstat(&named).map_err(|source| LinuxQemuCgroupError::Io {
-        operation: "identify named QEMU attempt cgroup",
-        path: path.to_owned(),
-        source: source.into(),
-    })?;
-    if expected.st_dev != actual.st_dev || expected.st_ino != actual.st_ino {
-        return Err(LinuxQemuCgroupError::DirectoryIdentity {
-            path: path.to_owned(),
-        });
-    }
-    Ok(())
+    control_check::verify_directory_identity(parent, name, expected, path).map_err(Into::into)
 }
 
 fn validate_cgroup_name(name: &str) -> Result<(), LinuxQemuCgroupError> {
@@ -1631,17 +1618,7 @@ fn open_directory_at(
     name: &str,
     path: &Path,
 ) -> Result<OwnedFd, LinuxQemuCgroupError> {
-    openat(
-        parent,
-        name,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )
-    .map_err(|source| LinuxQemuCgroupError::Io {
-        operation: "pin QEMU attempt cgroup directory",
-        path: path.to_owned(),
-        source: source.into(),
-    })
+    control_check::open_directory_at(parent, name, path).map_err(Into::into)
 }
 
 fn create_cancellation_eventfd(path: &Path) -> Result<OwnedFd, LinuxQemuCgroupError> {
@@ -1667,16 +1644,20 @@ fn duplicate_fd(
     operation: &'static str,
     path: &Path,
 ) -> Result<OwnedFd, LinuxQemuCgroupError> {
+    duplicate_descriptor(descriptor).map_err(|source| LinuxQemuCgroupError::Io {
+        operation,
+        path: path.to_owned(),
+        source,
+    })
+}
+
+fn duplicate_descriptor(descriptor: i32) -> io::Result<OwnedFd> {
     let duplicated = unsafe {
         // SAFETY: fcntl reads a live fd and returns a fresh descriptor.
         libc::fcntl(descriptor, libc::F_DUPFD_CLOEXEC, 0)
     };
     if duplicated < 0 {
-        return Err(LinuxQemuCgroupError::Io {
-            operation,
-            path: path.to_owned(),
-            source: io::Error::last_os_error(),
-        });
+        return Err(io::Error::last_os_error());
     }
     Ok(unsafe {
         // SAFETY: successful F_DUPFD_CLOEXEC returned unique ownership.
