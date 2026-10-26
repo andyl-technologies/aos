@@ -5,12 +5,16 @@
 //! independently; reusing one would erase the authenticated prepare history.
 
 use super::*;
+
 use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use crucible_node_transport::reference_packet::service::complete_restore::transfer::{
     MAXIMUM_COMPLETE_RESTORE_TRANSFER_CONTEXT_BYTES, MAXIMUM_COMPLETE_RESTORE_TRANSFER_PROOF_BYTES,
     MAXIMUM_COMPLETE_RESTORE_TRANSFER_RECEIPT_BYTES,
     MAXIMUM_COMPLETE_RESTORE_TRANSFER_REQUEST_BYTES,
 };
+
+#[path = "restore_transfer_banks/capacities.rs"]
+mod capacities;
 
 pub(super) struct OriginalRestoreTransferBanks {
     pub(super) prepare: [Vec<u8>; 5],

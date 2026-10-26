@@ -5,7 +5,11 @@
 //! private Source wrapper may populate it after consuming a genuine claim.
 
 use super::*;
+
 use std::io;
+
+#[path = "owner/capacities.rs"]
+mod capacities;
 
 const PHASES: usize = 2;
 const BANKS: usize = 4;

@@ -24,6 +24,9 @@ use crucible_node_transport::{
     },
 };
 
+#[path = "association/restoration_capacities.rs"]
+mod restoration_capacities;
+
 #[path = "association/protocol_capacities.rs"]
 mod protocol_capacities;
 

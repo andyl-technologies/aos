@@ -111,6 +111,9 @@ pub use retained::{
     restoration_activation_retained_native_evidence_counter_scratch_data,
     restoration_activation_retained_native_evidence_data,
 };
+pub(crate) use retained::{
+    observe_restoration_native_capacity_data, restoration_native_capacity_counter_scratch_data,
+};
 pub use selection::authenticate_restoration_activation_selection_data;
 pub use storage::{
     OriginalInstalledRestorationActivationConstructionData,

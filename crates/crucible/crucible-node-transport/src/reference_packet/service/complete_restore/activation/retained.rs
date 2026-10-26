@@ -427,6 +427,13 @@ fn observe_native_evidence_metadata_data(
     observer.observe(restore_response)?;
     observer.observe(context_digest)?;
     observer.observe(physical_gate_held)?;
+    observe_underlying_capacity_data(underlying, observer)
+}
+
+fn observe_underlying_capacity_data(
+    underlying: Option<&PacketNative5UnderlyingRecord>,
+    observer: &mut MetadataObserver<'_>,
+) -> Result<(), ProviderError> {
     match underlying {
         None => {}
         Some(PacketNative5UnderlyingRecord::Producer(record)) => {
@@ -439,6 +446,47 @@ fn observe_native_evidence_metadata_data(
         }
     }
     Ok(())
+}
+
+/// Observes independently retained native partials without an eligibility check.
+///
+/// An underlying model without a receipt remains capacity DATA. It cannot pass
+/// the existing native-history or restoration authentication gates.
+///
+/// # Errors
+/// Refuses row/depth exhaustion or checked requested-layout overflow.
+pub(crate) fn observe_restoration_native_capacity_data(
+    record: Option<&PacketNativeRestoredRecord>,
+    underlying: Option<&PacketNative5UnderlyingRecord>,
+    observer: &mut MetadataObserver<'_>,
+) -> Result<(), ProviderError> {
+    if let Some(record) = record {
+        observe_native_evidence_metadata_data(record, None, observer)?;
+    }
+    observe_underlying_capacity_data(underlying, observer)
+}
+
+/// Names the borrowed controls for independently retained native partials.
+pub(crate) fn restoration_native_capacity_counter_scratch_data() -> usize {
+    size_of::<Option<&PacketNativeRestoredRecord>>()
+        + size_of::<Option<&PacketNative5UnderlyingRecord>>()
+        + size_of::<(
+            &String,
+            &crate::reference_packet::control::PacketNative5Record,
+            &crucible_node_format::ContentRef,
+            &crucible_node_format::ContentRef,
+            &crucible_node_format::ContentRef,
+            &crucible_node_format::ContentRef,
+            &crucible_node_format::ContentRef,
+            &crucible_node_format::Bytes,
+            &bool,
+        )>()
+        + size_of::<&Box<crate::reference_packet::control::PacketNativeRecord>>()
+        + size_of::<&crate::reference_packet::control::PacketNativeRecord>()
+        + size_of::<&Box<crate::reference_packet::connected::PacketConnectedNativeRecord>>()
+        + size_of::<&crate::reference_packet::connected::PacketConnectedNativeRecord>()
+        + size_of::<&mut MetadataObserver<'_>>()
+        + size_of::<Result<(), ProviderError>>()
 }
 
 /// Records the actual restored receipt and optional underlying proof capacities.

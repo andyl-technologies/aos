@@ -558,6 +558,10 @@ impl PacketControl {
 }
 
 #[cfg(test)]
+#[path = "native5/restoration_capacity_tests.rs"]
+mod restoration_capacity_tests;
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]

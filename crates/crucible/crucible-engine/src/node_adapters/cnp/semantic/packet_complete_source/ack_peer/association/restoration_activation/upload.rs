@@ -253,6 +253,34 @@ pub(super) struct UploadOrder {
 }
 
 impl UploadOrder {
+    /// Keeps the complete fixed upload ledger in its enclosing capacity roster.
+    pub(super) fn record_inline_capacity_data(
+        &self,
+        census: &crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<
+            '_,
+        >,
+    ) {
+        let Self {
+            next,
+            in_flight,
+            failed,
+        } = self;
+        census.observe_inline_data(next);
+        census.observe_inline_data(in_flight);
+        census.observe_inline_data(failed);
+    }
+
+    /// Names the exact borrowed fixed upload ledger fields.
+    pub(super) fn capacity_counter_scratch_data() -> usize {
+        size_of::<(&usize, &bool, &bool)>()
+            + size_of::<&Self>()
+            + size_of::<
+                &crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<
+                    '_,
+                >,
+            >()
+    }
+
     pub(super) fn new() -> Self {
         Self {
             next: 0,

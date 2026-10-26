@@ -5,10 +5,14 @@
 //! claim, publish a request, verify native custody or construct a final context.
 
 use super::*;
+
 use crate::node_adapters::cnp::semantic::packet_complete_source::{
     retained_values::{sum_with_error, value_storage_with_error},
     storage_error::StorageError,
 };
+
+#[path = "owner/capacities.rs"]
+mod capacities;
 
 pub(in crate::node_adapters::cnp::semantic::packet_complete_source::ack_peer::association) struct OriginalSourceRestoreTransferAttempt
 {

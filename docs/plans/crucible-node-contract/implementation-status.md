@@ -215,6 +215,20 @@ supply no native or Source18 permission. All eight new controls pass in both
 codec configurations. Input-emitter native issuance and the full restored-owner
 census remain separate qualification obligations.
 
+Restoration-phase capacity DATA now keeps the ten independent transfer banks,
+both signer phases and their retained IDs/normalized bodies, all four activation
+and upload bank groups, every retained native receipt/model partial, and both
+World payloads with their ContentRefs. The SDK visits actual producer/reactive
+Box geometry even when the matching receipt is absent; failed partials remain
+DATA without passing the existing native-history eligibility checks. Creator
+checks precede the component bank loan. Non-owning source/controller pointers
+stay outside capacity rows, and phase/upload flags remain inline Copy fields.
+Legacy restoration tickets/mappings and observation/producer/Capture/input/suffix
+histories still need their own complete census. All eight new controls pass in
+both codec configurations. Native model DTOs and deliberately unreserved failed
+activation partials establish retained backing only; they issue no restoration
+claim, private Source/native owner or publication permission.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its twelve
@@ -224,23 +238,20 @@ Core walks omit scalar visits, so these component facts cannot establish a
 whole-Source traversal-work restriction. Other Source owners still need their own
 actual census before the genuine one-use handoff can be admitted.
 
-Both codec configurations pass 81 Engine census/installation/holder/startup
+Both codec configurations pass 87 Engine census/installation/holder/startup
 controls, eight execution reservation controls and four Import18 bank constructor
-controls. Complete Engine suites pass 2,152 tests each with thirty-four ignored,
+controls. Complete Engine suites pass 2,158 tests each with thirty-four ignored,
 using matching source-built installed packet fixtures. Current Transport suites
-pass 2,335 tests and 135 focused controls each, with twenty ignored; HostResources
+pass 2,337 tests and 137 focused controls each, with twenty ignored; HostResources
 suites pass all 37 tests each, including both descriptor capacity controls.
-Six-package all-feature/all-target checks, fourteen-file scoped Rust formatting,
+Six-package all-feature/all-target checks, seventeen-file scoped Rust formatting,
 all six architecture gates and the RFC requirement-map gate pass. Required
 application test-target compilation passes with 185 artifacts across 58 packages
-and 76 integration targets; all 4,928 selected frozen Rust/Cargo inputs match
+and 76 integration targets; all 4,936 selected frozen Rust/Cargo inputs match
 current and captured source. User-owned changes are preserved. These are component
 results; the requirement map records planning coverage, and no latest-source
-strict lint or native lifecycle qualification is claimed. Validation exposed
-transient Linux executable-busy errors during native fixture startup; that setup
-now retries only this pre-execution refusal within five seconds. Both Engine
-suites pass with the corrected fixture. The independent Transport/HostResources
-suites use unchanged, digest-verified executables from the completed prior run.
+strict lint or native lifecycle qualification is claimed. Native executable
+fixtures retain the five-second deadline for transient pre-execution spawn refusal.
 
 The genuine same-Source one-use admission and funded move, completed Initial and
 address-bound claim retirement checks, integration of the physical bank into
