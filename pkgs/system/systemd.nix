@@ -343,6 +343,7 @@ in
       ./patches/0039-nsresourced-retirement-fentry.patch
       ./patches/0040-separate-switch-root-selinux-permission.patch
       ./patches/0041-method46-initial-parent06.patch
+      ./patches/0042-method46-initial-job-exclusion.patch
     ];
 
     buildDeps = [

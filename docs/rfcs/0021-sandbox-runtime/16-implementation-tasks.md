@@ -31,6 +31,23 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- PID1 now excludes competing normal Controller/Storage starts and the other
+  manual initializer while an initial job is queued or its service remains
+  active, stopping or failed. Initial start also requires both normal owners
+  to be loaded, inactive and without jobs. The check runs at transaction
+  admission and native start dispatch, so a mixed transaction cannot bypass
+  it. Canonical units and merged aliases share the same comparison. The native
+  process-migration boundary refuses both AttachProcesses APIs and transient
+  scope adoption during that interval, including moves to unrelated destinations;
+  ordinary child birth keeps its separate exec path. These fixed comparisons
+  allocate no new custody, descriptor or authority. The hermetic systemd package
+  and all twelve fixed-profile regressions pass
+  (`/nix/store/5w4h4yamvb0i92y0rhg1cvn3y5lwb0cs-systemd-261.2`). The focused
+  AOS Nix QEMU test is running. It queues each manual job before producer birth,
+  checks conflicting starts and process migration, and checks migration after
+  cancellation. Its closure contains no production policy. It supplies no
+  installed producer, Source admission, durable intent or TPM qualification.
+
 - The complete read-only Session schema recipe runs through a borrowed context
   engine. The ordinary adapter keeps its native namespace claims, endpoint
   revalidation bookends, canonical traffic decoder, six archive-family checks,
