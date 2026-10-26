@@ -2312,6 +2312,43 @@ Live DBus manager effects, TPM credential encryption, image staging, nonempty
 installed store restoration, foreign hosts, numeric performance acceptance,
 production default cutover and repository-wide Cargo removal remain separate gates.
 
+## Native BPF policy artifacts
+
+`checks.build.bazel.bpf-native.check` qualifies the existing LSM and network
+BPF C sources and their userspace C loaders. The same check is available with
+`nix-build tools/bazel/tests/bpf-native.nix -A check --no-out-link`.
+
+The BPF rule declares source-built AOS Clang and llvm-strip, the native target
+architecture, Linux and libbpf headers, and their realized closure identity.
+Compilation and DWARF stripping are separate sandbox actions. Loader compilation
+uses the ordinary AOS C toolchain and declared libbpf/json-c imports. Unused
+C++ default libraries are discarded so the C loaders retain their original
+dynamic imports and resolved AOS libraries. Both BPF objects preserve their
+original `Dual BSD/GPL` kernel license section.
+Analysis probes reject both a different Linux CPU and a non-Linux target;
+the native binding cannot silently reuse the wrong tracing register layout.
+
+An independent oracle runs the original native recipe commands. Instructions,
+maps, ELF relocations, BTF types, function records, source-line records, and
+CO-RE records compare exactly, with only the explicitly recognized source-file
+locations mapped from `/build/` to repository-relative paths. The current two
+programs have no CO-RE relocation records; focused decoder tests also cover a
+nonempty CO-RE record and malformed/truncated data. Private sandbox directories
+and retained DWARF fail qualification.
+
+All eight compiler/linker/strip actions must execute freshly in Linux sandboxes
+with exact source, tool, closure and library input digests. Altered source or
+tool identity digests, cache hits and local-runner records must fail the proof.
+Thirty-six validation and rejection cases compare both loaders against both
+object builders, including foreign, absent and truncated objects. Precise and
+conservative inventories agree on six roots, six reports and four C sources.
+The retained receipt is `tests/evidence/bpf-native-artifacts.json`.
+
+This checkpoint qualifies native artifacts and userspace validation. The Rust
+provider packages, installed runtime closures, kernel attachment and effects,
+foreign-host execution, performance acceptance and production default cutover
+remain required separately. Both production packages retain their Cargo builders.
+
 ## Storage/campaign compilation measurements
 
 `tests/evidence/store-performance-v3.json` identifies a frozen compilation trial

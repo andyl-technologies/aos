@@ -96,6 +96,8 @@ aos_tools(name = "aos_cli_runtime")
 aos_tools(name = "aos_cli_test_sources")
 aos_tools(name = "aos_codegen")
 aos_tools(name = "aos_wasm_tools")
+aos_tools(name = "aos_bpf_tools")
+aos_tools(name = "aos_bpf_native")
 aos_tools(name = "aos_worker_tools")
 aos_tools(name = "aos_console_assets")
 

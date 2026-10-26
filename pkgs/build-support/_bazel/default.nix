@@ -68,6 +68,21 @@
   aosBazelCodegenTools = import ./codegen-tools.nix {inherit pkgs;};
   aosBazelQemuPluginAbi = import ./qemu-plugin-abi.nix {inherit pkgs;};
   aosBazelWasmTools = import ./wasm-tools.nix {inherit pkgs;};
+  aosBazelBpfTools = import ./bpf-tools.nix {inherit pkgs;};
+  aosBazelBpfLibraries = mkAosBazelNativeLibraries {
+    libraries = {
+      bpf = {
+        package = pkgs.libbpf;
+        libraryFile = "lib/libbpf.so";
+        licenseDomain = "permissive-protocol";
+      };
+      json = {
+        package = pkgs.json-c;
+        libraryFile = "lib/libjson-c.so";
+        licenseDomain = "permissive-protocol";
+      };
+    };
+  };
   aosBazelWorkerTools = import ./worker-tools.nix {inherit pkgs;};
   aosBazelConsoleAssets = import ./console-assets.nix {
     inherit pkgs;

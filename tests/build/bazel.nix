@@ -141,6 +141,7 @@ in
         printf 'PASS\n' > "$out/result"
       '')
       // {inherit shared static;};
+    bpf-native = import ./_bazel-bpf-native.nix {inherit pkgs;};
     pilot = import ./_bazel-pilot.nix {inherit pkgs;};
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
@@ -549,6 +550,7 @@ in
             sysroot-metadata
             manifest-extractor
             native-libraries
+            bpf-native.check
             native-xz-source
             static-runtime.all
             precision-parity

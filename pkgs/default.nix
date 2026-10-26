@@ -1896,6 +1896,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit (bazelSupport) aosBazelDependencyGenerator aosBazelDependencyUpdater aosBazelCodegenTools aosBazelConfigurationTools;
       inherit (bazelSupport) aosBazelQemuPluginAbi;
       inherit (bazelSupport) aosBazelWasmTools aosBazelWorkerTools aosBazelConsoleAssets;
+      inherit (bazelSupport) aosBazelBpfTools aosBazelBpfLibraries;
       inherit (bazelSupport) aosBazelRepositories aosBazelRustRepositories;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;

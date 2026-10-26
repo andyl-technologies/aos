@@ -1,0 +1,65 @@
+load("//tools/bazel/rules:bpf.bzl", "aos_bpf_object")
+load("//tools/bazel/rules:compile.bzl", "cc_binary")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+
+package(default_visibility = ["//visibility:public"])
+
+# Both kernel sources retain their original "Dual BSD/GPL" license section.
+# Their userspace loaders are separate executables, linked to AOS libraries.
+aos_bpf_object(
+    name = "aos-ebpf-lsm-policy.bpf",
+    src = "aos-ebpf-lsm-policy.bpf.c",
+    license_domain = "permissive-protocol",
+)
+
+aos_bpf_object(
+    name = "aos-ebpf-net-policy.bpf",
+    src = "aos-ebpf-net-policy.bpf.c",
+    license_domain = "permissive-protocol",
+)
+
+cc_binary(
+    name = "aos-ebpf-lsm-loader",
+    srcs = ["aos-ebpf-lsm-policy.c"],
+    copts = ["-O2", "-Wall", "-Wextra", "-Werror"],
+    # The C++ toolchain's default libraries are unused by this C executable.
+    linkopts = ["-Wl,--as-needed"],
+    deps = ["@aos_bpf_tools//:kernel_headers", "@aos_bpf_native//:bpf", "@aos_bpf_native//:json"],
+)
+
+cc_binary(
+    name = "aos-ebpf-net-policy-loader",
+    srcs = ["aos-ebpf-net-policy.c"],
+    copts = ["-O2", "-Wall", "-Wextra", "-Werror"],
+    linkopts = ["-Wl,--as-needed"],
+    deps = ["@aos_bpf_tools//:kernel_headers", "@aos_bpf_native//:bpf", "@aos_bpf_native//:json"],
+)
+
+aos_license_check(
+    name = "bpf_native_license_closure",
+    roots = [
+        ":aos-ebpf-lsm-loader",
+        ":aos-ebpf-net-policy-loader",
+        ":aos-ebpf-lsm-policy.bpf",
+        ":aos-ebpf-net-policy.bpf",
+    ],
+    license_domain = "apache-host",
+)
+
+# Qualification export only. Provider package identities and default builders
+# remain unchanged until their complete Rust/native installation is qualified.
+aos_package(
+    name = "bpf_native_artifacts",
+    package_name = "aos-bpf-native-artifacts",
+    version = "1",
+    license_expression = "Apache-2.0 AND LicenseRef-Dual-BSD-GPL",
+    license_domain = "apache-host",
+    artifacts = {
+        ":aos-ebpf-lsm-loader": "libexec/aos-ebpf-lsm-loader",
+        ":aos-ebpf-net-policy-loader": "libexec/aos-ebpf-net-policy-loader",
+        ":aos-ebpf-lsm-policy.bpf": "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o",
+        ":aos-ebpf-net-policy.bpf": "lib/bpf/aos-ebpf-net-policy.bpf.o",
+    },
+    executables = ["libexec/aos-ebpf-lsm-loader", "libexec/aos-ebpf-net-policy-loader"],
+)
