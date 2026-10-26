@@ -87,6 +87,18 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    preparation-provider = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "preparation-provider";
+    };
+
+    preparation-provider-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "preparation-provider-tests";
+    };
+
     aos-cli-tests = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;

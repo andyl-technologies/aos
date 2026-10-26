@@ -322,6 +322,18 @@ config_setting(
 )
 
 config_setting(
+    name = "preparation_provider_dependencies",
+    flag_values = {":dependency_profile": "preparation-provider"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "preparation_provider_tests_dependencies",
+    flag_values = {":dependency_profile": "preparation-provider-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
     name = "boot_preparation_minimal_dependencies",
     flag_values = {":dependency_profile": "boot-preparation-minimal"},
     visibility = ["//visibility:public"],

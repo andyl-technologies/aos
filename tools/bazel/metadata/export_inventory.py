@@ -6,10 +6,13 @@ new Rust/C/C++ implementation files without requiring evaluation-time builds.
 """
 
 import argparse
+import ast
 import hashlib
+import io
 import json
 import re
 from pathlib import Path, PurePosixPath
+import tokenize
 from urllib.parse import unquote, urlparse
 
 
@@ -23,6 +26,60 @@ def reports_from_events(events):
                     raise ValueError("source inventory requires local aspect reports")
                 reports.add(Path(unquote(uri.path)))
     return [json.loads(report.read_text()) for report in sorted(reports)]
+
+
+def owning_build(root, path):
+    """Finds the package that owns a checked-in file, including subdirectories."""
+    for directory in PurePosixPath(path).parents:
+        for name in ["BUILD.bazel", "BUILD"]:
+            candidate = directory / name
+            if (root / candidate).is_file():
+                return candidate
+    raise ValueError("local Starlark input has no owning BUILD file: " + path)
+
+
+def local_loads(root, filename):
+    """Reads literal imports without interpreting comments or example strings."""
+    tokens = [token for token in tokenize.generate_tokens(io.StringIO((root / filename).read_text()).readline)
+              if token.type not in {tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE}]
+    for index, token in enumerate(tokens[:-2]):
+        if (token.type != tokenize.NAME or token.string != "load" or token.start[1] != 0
+                or tokens[index + 1].string != "(" or tokens[index + 2].type != tokenize.STRING):
+            continue
+        label = ast.literal_eval(tokens[index + 2].string)
+        if not isinstance(label, str):
+            raise ValueError("Starlark load requires a string label: " + filename)
+        if label.startswith("@"):
+            continue
+        if label.startswith("//"):
+            package, separator, name = label[2:].partition(":")
+            if not separator:
+                package, separator, name = label[2:].rpartition("/")
+            path = PurePosixPath(package, name)
+        else:
+            package = owning_build(root, filename).parent
+            path = package / label.removeprefix(":")
+        if path.is_absolute() or ".." in path.parts or not path.name.endswith(".bzl"):
+            raise ValueError("invalid local Starlark load: " + label)
+        if not (root / path).is_file():
+            raise ValueError("missing local Starlark load: " + path.as_posix())
+        yield path.as_posix()
+
+
+def declaration_closure(root, contracts):
+    """Includes local loads needed when shared declarations gain new imports."""
+    contracts = set(contracts)
+    pending = list(contracts)
+    while pending:
+        filename = pending.pop()
+        if not filename.endswith((".bzl", ".bazel")) and PurePosixPath(filename).name != "BUILD":
+            continue
+        for loaded in local_loads(root, filename):
+            for name in [loaded, owning_build(root, loaded).as_posix()]:
+                if name not in contracts:
+                    contracts.add(name)
+                    pending.append(name)
+    return contracts
 
 
 def inventory(root, targets, reports, declarations=()):
@@ -78,6 +135,7 @@ def inventory(root, targets, reports, declarations=()):
         for path in (root / "tools/bazel" / name).rglob("*"):
             if path.name.endswith((".bzl", ".bazel")):
                 contracts.add(path.relative_to(root).as_posix())
+    contracts = declaration_closure(root, contracts)
     return {
         "schema_version": 1,
         "generator_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),

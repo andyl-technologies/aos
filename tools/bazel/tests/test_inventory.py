@@ -80,6 +80,43 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("crates/example/deps.MODULE.bazel", result["contracts"])
         self.assertIn("crates/example/macros.bzl", result["contracts"])
 
+    def test_new_shared_imports_and_transitive_relative_loads_are_fingerprinted(self):
+        package = self.root / "crates/example"
+        (package / "BUILD.bazel").write_text('load(":aliases.bzl", "CRATES")\n')
+        (package / "aliases.bzl").write_text('load("//deps:nested/actual.bzl", "CRATES")\n')
+        (self.root / "deps/nested").mkdir(parents=True)
+        (self.root / "deps/BUILD.bazel").write_text("# dependency package\n")
+        (self.root / "deps/nested/actual.bzl").write_text('load(":shared.bzl", "CRATES")\n')
+        shared = self.root / "deps/shared.bzl"
+        shared.write_text("CRATES = {}\n")
+
+        before = self.inventory()
+
+        for name in ["crates/example/aliases.bzl", "deps/BUILD.bazel", "deps/nested/actual.bzl", "deps/shared.bzl"]:
+            self.assertIn(name, before["contracts"])
+        shared.write_text('CRATES = {"new": "dependency"}\n')
+        self.assertNotEqual(before["contracts"], self.inventory()["contracts"])
+
+    def test_import_cycles_terminate_and_strings_comments_and_external_loads_are_ignored(self):
+        package = self.root / "crates/example"
+        (package / "BUILD.bazel").write_text('load(":macros.bzl", "rule")\n')
+        (package / "macros.bzl").write_text(
+            '\'\'\'Example:\nload("//absent:example.bzl", "example")\n\'\'\'\n'
+            '# load(":absent.bzl", "comment")\n'
+            'load("@external//:rules.bzl", "external")\n'
+            'load(":macros.bzl", "cycle")\n'
+        )
+
+        self.assertIn("crates/example/macros.bzl", self.inventory()["contracts"])
+
+    def test_missing_and_escaping_local_loads_fail_closed(self):
+        build = self.root / "crates/example/BUILD.bazel"
+        for label, diagnostic in [(":missing.bzl", "missing local"), (":../outside.bzl", "invalid local")]:
+            with self.subTest(label=label):
+                build.write_text(f'load("{label}", "rule")\n')
+                with self.assertRaisesRegex(ValueError, diagnostic):
+                    self.inventory()
+
 
 if __name__ == "__main__":
     unittest.main()

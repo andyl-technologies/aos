@@ -29,6 +29,8 @@ def _dependency_profile_impl(ctx):
         "package-manager-tests",
         "configuration-image",
         "configuration-image-tests",
+        "preparation-provider",
+        "preparation-provider-tests",
         "boot-preparation",
         "boot-preparation-minimal",
         "release-coordination",

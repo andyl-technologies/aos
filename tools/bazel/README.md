@@ -316,6 +316,11 @@ and pass its path as `sourceInventory` to `mkAosBazelWorkspace`. The function
 reads that checked-in JSON during pure evaluation; it never runs Bazel or
 realizes an inventory derivation. Hashes cover module/BUILD/shared policy
 declarations and the exporter. Graph changes reject the stale inventory.
+The exporter follows local Starlark `load` declarations recursively and retains
+their owning BUILD packages. Newly loaded shared dependency aliases therefore
+enter refreshed inventories even when the selected implementation graph stays
+the same. Comments, example strings and external repository loads do not become
+local source paths.
 Implementation contents stay ordinary source inputs. Discovery roots under
 owned `src`, `tests`, and `benches` trees include new files while unrelated
 documentation, other worktrees, Cargo outputs, and Bazel outputs stay outside
@@ -2949,6 +2954,24 @@ while all five test binaries use its optimized release profile. Precise and
 conservative inventories agree on nine roots, 157 configured reports and 52 source
 files. The 65 existing dependency specifications and their 16,104 generated and
 lock files remain unchanged apart from source-contract hash refreshes.
+
+`pkgs.aos-boot-preparation-provider.withBuildDriver "bazel"` selects the static
+preparation handler without enabling the other boot programs. Cargo remains the
+default and `"cargo"` selects its rollback. Dedicated `preparation-provider` and
+`preparation-provider-tests` profiles retain the exact native dependency features,
+including Rustix event, filesystem and network support without process support.
+They pin 41 and 70 source crates respectively.
+
+`checks.build.bazel.preparation-provider-production.all`, also exposed through
+`tools/bazel/tests/preparation-provider-production.nix`, checks independent driver
+selection, installed static ELF contracts, runtime closures, actual production
+and release-test features, and target and procedural-macro compilation profiles.
+Its retained qualification in
+`tests/evidence/preparation-provider-production-package.json` passes three library
+cases, an empty command-test target, an empty doctest target, and eight installed
+input-rejection comparisons. It does not exercise live authenticated dispatch.
+Precise and conservative source inventories agree; foreign hosts, performance
+acceptance and default cutover remain separate gates.
 
 Host deadline and observation timestamp exceptions are function-scoped. Two
 metadata fixture maps use ordered lookup maps; EFI decoding retains its checked

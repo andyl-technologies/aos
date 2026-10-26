@@ -254,6 +254,81 @@ aos_license_check(
     license_domain = RUST_PACKAGE.license_domain,
 )
 
+# The installed preparation handler excludes boot-tools and uses the static
+# runtime. Its profile must stay independent of the image tooling above.
+PREPARATION_DEPENDENCIES = [
+    "//crates/activation/aos-activation:lib",
+    "//crates/core/aos-core:lib",
+    "//third_party/rust:core_anyhow",
+    "//third_party/rust:core_serde",
+    "//third_party/rust:core_serde_json",
+]
+
+rust_library(
+    name = "lib_preparation",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_boot_runtime",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**/*.rs"], allow_empty = True),
+    deps = PREPARATION_DEPENDENCIES,
+    link_deps = ["@aos_native//:static_runtime"],
+)
+
+rust_binary(
+    name = "static_preparation_provider",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_boot_preparation_provider",
+    crate_root = "src/bin/aos-boot-preparation-provider.rs",
+    srcs = ["src/bin/aos-boot-preparation-provider.rs"],
+    deps = [":lib_preparation"] + PREPARATION_DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "preparation_unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib_preparation",
+    deps = ["//third_party/rust:core_tempfile"],
+    tags = ["manual"],
+)
+
+aos_rust_test(
+    name = "preparation_bin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":static_preparation_provider",
+    allow_empty = True,
+    tags = ["manual"],
+)
+
+rust_doc_test(name = "doc_preparation", crate = ":lib_preparation", tags = ["manual"])
+
+aos_license_check(
+    name = "preparation_production_license_closure",
+    roots = [":lib_preparation", ":static_preparation_provider"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "preparation_license_closure",
+    testonly = True,
+    roots = [":preparation_unit_binary", ":preparation_bin_binary"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_package(
+    name = "preparation_package",
+    package_name = "aos-boot-preparation-provider",
+    version = RUST_PACKAGE.version,
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {":static_preparation_provider": "bin/aos-boot-preparation-provider"},
+    executables = ["bin/aos-boot-preparation-provider"],
+    visibility = ["//visibility:public"],
+)
+
 aos_source_package(
     name = "source_package",
     package = RUST_PACKAGE,
