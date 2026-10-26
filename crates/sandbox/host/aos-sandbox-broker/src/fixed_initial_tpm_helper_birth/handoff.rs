@@ -14,8 +14,12 @@ use rustix::event::PollFlags;
 use zeroize::Zeroizing;
 
 mod auth;
+mod cleanup;
+mod finish;
 mod nv;
 use auth::InitialHelperAuthOriginalV1;
+use cleanup::InitialHelperCleanupOriginalV1;
+use finish::InitialHelperFinishOriginalV1;
 use nv::InitialHelperNvOriginalV1;
 
 use super::*;
@@ -48,10 +52,20 @@ enum Phase {
     NvReceiveReady,
     NvReceiving,
     NvObserved,
+    ContextClosed,
+    FinishPreparing,
+    FinishReady,
+    Finishing,
+    FinishSent,
+    CleanupAdvancing,
+    CleanupNeedsWait,
+    CleanupAdvanceReady,
+    Cleaned,
 }
 
 enum ChildPostV1 {
     BeforeHello,
+    BeforeFinish,
     AfterAck,
     BeforeAuth,
     AfterAuth,
@@ -64,6 +78,8 @@ pub(super) struct InitialHelperHandoffOriginalV1 {
     phase: Phase,
     auth: InitialHelperAuthOriginalV1,
     nv: InitialHelperNvOriginalV1,
+    finish: InitialHelperFinishOriginalV1,
+    cleanup: InitialHelperCleanupOriginalV1,
     entropy: [RetainedKernelNonceOriginalV1; 2],
     nonce: Option<[u8; 32]>,
     hello: Option<Result<Zeroizing<[u8; HELLO_BYTES]>, TpmHelperFrameErrorV2>>,
@@ -84,6 +100,8 @@ impl InitialHelperHandoffOriginalV1 {
             phase: Phase::Fresh,
             auth: InitialHelperAuthOriginalV1::new(),
             nv: InitialHelperNvOriginalV1::new(),
+            finish: InitialHelperFinishOriginalV1::new(),
+            cleanup: InitialHelperCleanupOriginalV1::new(),
             entropy: std::array::from_fn(|_| RetainedKernelNonceOriginalV1::new()),
             nonce: None,
             hello: None,
@@ -106,7 +124,9 @@ impl InitialHelperHandoffOriginalV1 {
             .checked_add(PidFdProcOriginalsV1::receiving_bytes_v1()?.checked_mul(4)?)?
             .checked_add(8192)?
             .checked_add(InitialHelperAuthOriginalV1::receiving_bytes_v1()?)?
-            .checked_add(InitialHelperNvOriginalV1::receiving_bytes_v1()?)
+            .checked_add(InitialHelperNvOriginalV1::receiving_bytes_v1()?)?
+            .checked_add(InitialHelperFinishOriginalV1::receiving_bytes_v1()?)?
+            .checked_add(InitialHelperCleanupOriginalV1::receiving_bytes_v1()?)
     }
 
     pub(super) fn receiving_files_v1() -> Option<usize> {
@@ -129,7 +149,8 @@ impl InitialHelperHandoffOriginalV1 {
             .checked_add(HELLO_BYTES)?
             .checked_add(LOCK_ACK_BYTES.checked_mul(2)?)?
             .checked_add(InitialHelperAuthOriginalV1::traffic_bytes_v1()?)?
-            .checked_add(InitialHelperNvOriginalV1::traffic_bytes_v1()?)
+            .checked_add(InitialHelperNvOriginalV1::traffic_bytes_v1()?)?
+            .checked_add(InitialHelperFinishOriginalV1::traffic_bytes_v1()?)
     }
 
     fn sample(&mut self, index: usize, cut: FixedProcessBoottimeCutV1) -> bool {
@@ -401,6 +422,7 @@ impl InitialTpmHelperDrivingLoanV1<'_> {
 
     fn observe_child(&mut self, phase: ChildPostV1) -> Result<(), InitialTpmHelperBirthClosedV1> {
         let (originals, offset): (&mut [PidFdProcOriginalsV1], usize) = match phase {
+            ChildPostV1::BeforeFinish => (&mut self.handoff.finish.child_posts, 0),
             ChildPostV1::BeforeHello => (&mut self.handoff.proc_posts, 0),
             ChildPostV1::AfterAck => (&mut self.handoff.proc_posts, 2),
             ChildPostV1::BeforeAuth => (&mut self.handoff.auth.child_posts, 0),

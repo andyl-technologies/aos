@@ -59,9 +59,43 @@ impl Method46InitialTpmHelperDrivingLoanV1<'_> {
         self.drive_prepared_nv_data()
     }
 
-    fn drive_prepared_nv_data(
+    /// Closes this helper's TPM context and reaps the original child once.
+    ///
+    /// The close ACK remains resident and is admitted as a distinct record from
+    /// the same original child. The original supervisor must then reach clean
+    /// exit zero with no cause or cleanup debt. Ambiguous failure grants no
+    /// whole-unit drain or retry claim; checkpoint authority remains separate.
+    ///
+    /// # Errors
+    /// Refuses missing final Read, reentry, changed Source, elapsed cut, native
+    /// transport or child/record admission failure. Failed prefixes remain held.
+    pub fn close_and_reap_initial_helper_once_v1(
         &mut self,
-    ) -> Result<HelperObservationV1, Method46InitialStartupClosedV1> {
+    ) -> Result<(), Method46InitialStartupClosedV1> {
+        require_current(self.startup)?;
+        let action = self.native.prepare_initial_close_once_v1();
+        observe_after(self.startup, action)?;
+        self.drive_prepared_exchange()?;
+
+        let action = self.native.wait_initial_finish_once_v1();
+        observe_after(self.startup, action)?;
+        let action = self.native.send_initial_finish_once_v1();
+        observe_after(self.startup, action)?;
+
+        loop {
+            // Native custody permits at most its fixed prepaid turn count.
+            let action = self.native.advance_initial_cleanup_once_v1();
+            let complete = action.as_ref().copied().unwrap_or(false);
+            observe_after(self.startup, action.map(|_| ()))?;
+            if complete {
+                return Ok(());
+            }
+            let action = self.native.wait_initial_cleanup_once_v1();
+            observe_after(self.startup, action)?;
+        }
+    }
+
+    fn drive_prepared_exchange(&mut self) -> Result<(), Method46InitialStartupClosedV1> {
         // Each wait's independent Source post precedes the next native effect.
         // A failed action still owes that same Source observation.
         let action = self.native.wait_nv_send_once_v1();
@@ -72,7 +106,13 @@ impl Method46InitialTpmHelperDrivingLoanV1<'_> {
         let action = self.native.wait_nv_receive_once_v1();
         observe_after(self.startup, action)?;
         let action = self.native.receive_nv_once_v1();
-        observe_after(self.startup, action)?;
+        observe_after(self.startup, action)
+    }
+
+    fn drive_prepared_nv_data(
+        &mut self,
+    ) -> Result<HelperObservationV1, Method46InitialStartupClosedV1> {
+        self.drive_prepared_exchange()?;
 
         let observed = self
             .native

@@ -324,9 +324,9 @@ impl FixedInitialTpmHelperBirthOriginalV1 {
     }
 }
 
-/// Keeps the exact native child borrowed across its pre-authentication checks.
+/// Keeps the exact native child borrowed through handoff, NV and cleanup.
 ///
-/// This loan exports no auth destination, credential bytes, channel or TPM API.
+/// This loan exports no auth destination, credential bytes or channel.
 /// Its private fields can be obtained only from the retained fixed-image owner.
 #[must_use = "keep the actual child borrow through carrier disposition"]
 pub struct InitialTpmHelperDrivingLoanV1<'owner> {

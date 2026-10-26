@@ -765,6 +765,20 @@ pub struct FixedProcessDrivingLoanV1<'a> {
 }
 
 impl FixedProcessDrivingLoanV1<'_> {
+    /// Borrows the original outcome only after Ended without cause or cleanup debt.
+    ///
+    /// This is native mechanics DATA, not device drain or application authority.
+    /// The same resident supervisor still owns the capture and terminal result.
+    #[must_use]
+    pub fn clean_ended_outcome_v1(&self) -> Option<&FixedProcessRetainedSessionOutcome<()>> {
+        if self.owner.phase != Phase::Ended || self.owner.cause.is_some()
+            || self.owner.debt.is_some()
+        {
+            return None;
+        }
+        self.owner.outcome.as_ref()
+    }
+
     /// Borrows the resident original child and its first kernel observation.
     ///
     /// The tuple is observation DATA, not current liveness, image admission or

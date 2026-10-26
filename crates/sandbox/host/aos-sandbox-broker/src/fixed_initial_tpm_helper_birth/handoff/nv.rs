@@ -1,22 +1,24 @@
-//! Retains three bounded exchanges on the original authenticated initial child.
+//! Retains finite NV and close exchanges on the original authenticated child.
 //!
-//! The finite recipe is Read, optional one Extend, final Read. These mechanics
-//! confer no approval, NV-public interpretation or checkpoint authority. Security
+//! The finite recipe is Read, optional one Extend, final Read, then close ACK.
+//! These mechanics confer no approval, NV-public or checkpoint authority. Security
 //! makes those decisions while the genuine Source keeps this same loan alive.
 
 use super::*;
 use crate::fixed_tpm_helper_wire::{
     HelperObservationV1, HelperOperationV1, REQUEST_BYTES, RESPONSE_BYTES, decode_response_v2,
-    encode_request_v2,
+    encode_initial_close_request_v2, encode_request_v2, require_initial_closed_ack_v2,
 };
 
 pub(super) struct InitialHelperNvOriginalV1 {
     active: Option<usize>,
-    pub(super) slots: [ExchangeOriginalV1; 3],
+    pub(super) slots: [ExchangeOriginalV1; 4],
 }
 
 pub(super) struct ExchangeOriginalV1 {
     operation: Option<HelperOperationV1>,
+    pub(super) sequence: Option<u64>,
+    closed_ack: Option<Result<(), TpmHelperFrameErrorV2>>,
     frame: Option<Result<[u8; REQUEST_BYTES], TpmHelperFrameErrorV2>>,
     readiness: [SeqpacketReadinessOriginalV1; 2],
     pub(super) child_posts: [PidFdProcOriginalsV1; 6],
@@ -39,7 +41,7 @@ impl InitialHelperNvOriginalV1 {
     }
 
     pub(super) fn receiving_bytes_v1() -> Option<usize> {
-        // Construction covers the three fixed owners. Native receive/proc
+        // Construction covers all four fixed owners. Native receive/proc
         // suppliers and bounded DATA-return overlap are paid separately.
         let (receive, _) =
             SeqpacketSocket::closed_zero_rights_receive_obligations_v1(RESPONSE_BYTES)?;
@@ -47,13 +49,13 @@ impl InitialHelperNvOriginalV1 {
             .checked_add(PidFdProcOriginalsV1::receiving_bytes_v1()?.checked_mul(6)?)?
             .checked_add(8192)?
             .checked_add(std::mem::size_of::<HelperObservationV1>().checked_mul(2)?)?
-            .checked_mul(3)
+            .checked_mul(4)
     }
 
     pub(super) fn receiving_files_v1() -> Option<usize> {
         SeqpacketSocket::closed_zero_rights_receive_obligations_v1(RESPONSE_BYTES)?
             .1
-            .checked_mul(3)
+            .checked_mul(4)
     }
 
     pub(super) fn traffic_bytes_v1() -> Option<usize> {
@@ -62,7 +64,7 @@ impl InitialHelperNvOriginalV1 {
             .checked_mul(3)?
             .checked_add(REQUEST_BYTES)?
             .checked_add(RESPONSE_BYTES.checked_mul(2)?)?
-            .checked_mul(3)
+            .checked_mul(4)
     }
 }
 
@@ -70,6 +72,8 @@ impl ExchangeOriginalV1 {
     fn new() -> Self {
         Self {
             operation: None,
+            sequence: None,
+            closed_ack: None,
             frame: None,
             readiness: std::array::from_fn(|_| SeqpacketReadinessOriginalV1::new()),
             child_posts: std::array::from_fn(|_| PidFdProcOriginalsV1::new()),
@@ -151,11 +155,52 @@ impl InitialTpmHelperDrivingLoanV1<'_> {
             self.handoff.nv.active = Some(index);
             let slot = &mut self.handoff.nv.slots[index];
             slot.operation = Some(operation);
+            slot.sequence = Some(index as u64 + 1);
             slot.frame = Some(encode_request_v2(
                 operation,
                 self.handoff.nonce.ok_or(InitialTpmHelperBirthClosedV1)?,
-                index as u64 + 1,
+                slot.sequence.ok_or(InitialTpmHelperBirthClosedV1)?,
                 input,
+            ));
+            if !matches!(slot.frame, Some(Ok(_))) {
+                return Err(InitialTpmHelperBirthClosedV1);
+            }
+            self.handoff.phase = Phase::NvPrepared;
+            Ok(())
+        })();
+        self.retain_refusal(result)
+    }
+
+    /// Prepares initial-only context closure after the admitted final Read.
+    ///
+    /// The same exchange carrier retains the close ACK before subject, original
+    /// child and framing admission. This grants no process-cleanup or checkpoint
+    /// authority; the helper remains alive holding both locks until finish.
+    ///
+    /// # Errors
+    /// Refuses a missing final Read, reuse, prior failure or invalid correlation.
+    pub fn prepare_initial_close_once_v1(&mut self) -> Result<(), InitialTpmHelperBirthClosedV1> {
+        let result = (|| {
+            self.require_phase(Phase::NvObserved)?;
+            let previous = self
+                .handoff
+                .nv
+                .active
+                .ok_or(InitialTpmHelperBirthClosedV1)?;
+            if !matches!(previous, 1 | 2)
+                || self.handoff.nv.slots[previous].operation != Some(HelperOperationV1::Read)
+                || !matches!(self.handoff.nv.slots[previous].decoded, Some(Ok(_)))
+            {
+                return Err(InitialTpmHelperBirthClosedV1);
+            }
+            self.handoff.phase = Phase::NvPreparing;
+            let sequence = previous as u64 + 2;
+            self.handoff.nv.active = Some(3);
+            let slot = &mut self.handoff.nv.slots[3];
+            slot.sequence = Some(sequence);
+            slot.frame = Some(encode_initial_close_request_v2(
+                self.handoff.nonce.ok_or(InitialTpmHelperBirthClosedV1)?,
+                sequence,
             ));
             if !matches!(slot.frame, Some(Ok(_))) {
                 return Err(InitialTpmHelperBirthClosedV1);
@@ -322,16 +367,30 @@ impl InitialTpmHelperDrivingLoanV1<'_> {
                 child,
                 self.identity.ok_or(InitialTpmHelperBirthClosedV1)?.pid(),
             )?;
-            slot.decoded = Some(decode_response_v2(
-                record.payload(),
-                slot.operation.ok_or(InitialTpmHelperBirthClosedV1)?,
-                self.handoff.nonce.ok_or(InitialTpmHelperBirthClosedV1)?,
-                index as u64 + 1,
-            ));
-            if !matches!(slot.decoded, Some(Ok(_))) || !slot.sample(4, self.cut) {
-                return Err(InitialTpmHelperBirthClosedV1);
+            let nonce = self.handoff.nonce.ok_or(InitialTpmHelperBirthClosedV1)?;
+            let sequence = slot.sequence.ok_or(InitialTpmHelperBirthClosedV1)?;
+            if index == 3 {
+                slot.closed_ack = Some(require_initial_closed_ack_v2(
+                    record.payload(),
+                    nonce,
+                    sequence,
+                ));
+                if !matches!(slot.closed_ack, Some(Ok(()))) || !slot.sample(4, self.cut) {
+                    return Err(InitialTpmHelperBirthClosedV1);
+                }
+                self.handoff.phase = Phase::ContextClosed;
+            } else {
+                slot.decoded = Some(decode_response_v2(
+                    record.payload(),
+                    slot.operation.ok_or(InitialTpmHelperBirthClosedV1)?,
+                    nonce,
+                    sequence,
+                ));
+                if !matches!(slot.decoded, Some(Ok(_))) || !slot.sample(4, self.cut) {
+                    return Err(InitialTpmHelperBirthClosedV1);
+                }
+                self.handoff.phase = Phase::NvObserved;
             }
-            self.handoff.phase = Phase::NvObserved;
             Ok(())
         })();
         self.retain_refusal(result)

@@ -32,6 +32,7 @@ use aos_sandbox_linux::process::{
 };
 use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
 
+const DRIVEN_CHILD_ARGUMENT: &str = "--driven-terminal-child";
 const CHILD_ARGUMENT: &str = "--fixed-session-child";
 const DESCRIPTOR_CHILD_ARGUMENT: &str = "--fixed-descriptor-child";
 const RETAINED_CHILD_ARGUMENT: &str = "--retained-capture-child";
@@ -39,6 +40,15 @@ const RETAINED_STDOUT: &[u8] = b"stdout\0tail";
 const RETAINED_STDERR: &[u8] = b"stderr\0tail";
 
 fn main() {
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(DRIVEN_CHILD_ARGUMENT))
+    {
+        let case = std::env::args().nth(2).unwrap();
+        if case == "timeout" {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        std::process::exit(if case == "nonzero" { 7 } else { 0 });
+    }
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new(RETAINED_CHILD_ARGUMENT))
     {
@@ -77,6 +87,9 @@ fn main() {
         retained_output_case(case);
     }
     retained_exec_errno_has_original_cause();
+    for case in ["success", "nonzero", "timeout"] {
+        driven_terminal_custody_case(case);
+    }
 }
 
 fn descriptor_execution_ignores_path_substitution() {
@@ -795,4 +808,89 @@ fn retained_child() {
         )
         .unwrap();
     }
+}
+
+fn driven_terminal_custody_case(case: &str) {
+    use aos_sandbox_linux::process::{
+        FixedProcessBoottimeCutV1, FixedProcessDrivenInputsV1, FixedProcessDrivenProgressV1,
+        FixedProcessDrivenSessionV1, prepare_fixed_process_driven_invocation_v1,
+    };
+    use rustix::event::{PollFd, PollFlags, poll};
+
+    // This owns an actual mechanical child, not a Source or admitted helper.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("driven-helper");
+    std::fs::copy(std::env::current_exe().unwrap(), &path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let executable = File::open(&path).unwrap();
+    let arguments = [OsString::from(DRIVEN_CHILD_ARGUMENT), OsString::from(case)];
+    let prepared = prepare_fixed_process_driven_invocation_v1(FixedProcessRequest {
+        executable: &path,
+        arguments: &arguments,
+        timeout: Duration::from_secs(1),
+        maximum_stdout_bytes: 128,
+        maximum_stderr_bytes: 128,
+    })
+    .unwrap();
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let now =
+        u64::try_from(now.tv_sec).unwrap() * 1_000_000_000 + u64::try_from(now.tv_nsec).unwrap();
+    let cut = FixedProcessBoottimeCutV1::new(
+        now + if case == "timeout" {
+            100_000_000
+        } else {
+            1_000_000_000
+        },
+    )
+    .unwrap();
+    let mut owner = FixedProcessDrivenSessionV1::park_path_retaining_spawn_v2(
+        prepared,
+        FixedProcessDrivenInputsV1 {
+            executable: executable.into(),
+            stdin: None,
+            inherited: Vec::new(),
+            capture: FixedProcessCaptureV1::new(),
+        },
+        cut,
+    );
+    let mut driving = owner.drive();
+    assert!(driving.clean_ended_outcome_v1().is_none());
+
+    let mut ended = false;
+    for _ in 0..128 {
+        match driving.advance_once() {
+            FixedProcessDrivenProgressV1::Ended => {
+                ended = true;
+                break;
+            }
+            FixedProcessDrivenProgressV1::Debt => panic!("original cleanup stopped with debt"),
+            FixedProcessDrivenProgressV1::Progressed => {}
+            FixedProcessDrivenProgressV1::Waiting => {
+                assert!(driving.clean_ended_outcome_v1().is_none());
+                let view = driving.wait_view().unwrap();
+                let mut polls = view
+                    .descriptors()
+                    .map(|fd| PollFd::from_borrowed_fd(fd, PollFlags::IN))
+                    .collect::<Vec<_>>();
+                poll(&mut polls, None).unwrap();
+            }
+        }
+    }
+    assert!(ended, "original child did not reach Ended");
+    if case == "timeout" {
+        assert!(driving.clean_ended_outcome_v1().is_none());
+    } else {
+        assert!(matches!(driving.clean_ended_outcome_v1(),
+            Some(FixedProcessRetainedSessionOutcome::Completed {
+                exit_code: Some(code), signal: None, ..
+            }) if *code == if case == "nonzero" { 7 } else { 0 }));
+    }
+    drop(driving);
+
+    assert!(owner.cleanup_debt().is_none());
+    assert_eq!(owner.cause().is_some(), case == "timeout");
+    assert!(
+        current_children().is_empty(),
+        "original child was not reaped"
+    );
 }

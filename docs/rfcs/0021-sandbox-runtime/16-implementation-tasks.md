@@ -31,6 +31,26 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The original Source-held helper now retains parent-side close and finish
+  custody on the same authenticated carrier. A fourth prepaid exchange slot
+  admits the distinct close ACK only after the original final Read, with the
+  same native subject, held-child, socket and deadline checks. The finish send
+  permits immediate child exit; its socket post does not demand later child
+  liveness. A fixed 128-turn reservoir then drives the original supervisor,
+  retaining actual progress, poll results, event flags and clock samples.
+  Source currentness independently separates every wait from its next effect,
+  including after failed native work. Success requires actual Ended, exit zero,
+  no original cause and no cleanup debt. Ambiguous failure grants no whole-unit
+  drain or retry claim. Non-test online Security compilation, 430 Broker tests
+  and the harness-free single-thread native process suite pass; the latter
+  exercises actual zero/nonzero exits, timeout, retained outcomes and reaping.
+  All 125 focused Source, 428 ordinary Security and 437 online-Nix Security
+  tests also pass; one Broker case and two cases in each Security suite remain
+  ignored. Full application target compilation is running on the audited
+  74-source snapshot, whose 833-derivation closure excludes production policy. Security's complete approved workflow, fresh
+  native main-currentness checks, canonical checkpoint and installed enforcing
+  lifecycle/recovery qualification remain open. Admission stays closed.
+
 - The shared C engine now gives only the two fixed initial helper profiles a
   finite initial Read, optional sole Extend, final Written Read and close/finish
   route. After the final Read it closes its actual ESYS/TCTI/device before a
@@ -44,9 +64,10 @@ Recent committed startup fixes close narrower prerequisites:
   428 ordinary Security and 437 online-Nix Security tests pass. One Broker case
   and two cases in each Security suite remain ignored. The close component's
   QEMU test and full application target compilation are running on audited
-  sources; their closures exclude production policy. Native parent close/finish
-  custody, actual original process cleanup, Security's approved workflow and
-  canonical checkpoint remain open. This does not qualify installed producer
+  sources; their closures exclude production policy. Parent close/finish and
+  original process cleanup now have the Source-owned mechanics above; their
+  installed composition, Security's approved workflow and canonical checkpoint
+  remain open. This does not qualify installed producer
   or lifecycle behavior; admission stays closed.
 
 - The same Source-held, authenticated helper now has bounded native mechanics
