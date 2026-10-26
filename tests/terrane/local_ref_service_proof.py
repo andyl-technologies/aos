@@ -10,6 +10,8 @@ from sdk_contract_proof import require, run_sdk_contract
 
 
 CASES = [
+    "stream_checks::changed_publications_refuse_prepared_reflog_rows_and_listing_completion",
+    "stream_checks::identity_expiry_refuses_prepared_empty_listing_completion",
     "guarded_point_reads_preserve_whole_records_and_observe_actual_publication",
     "genuine_signatures_and_broad_grants_do_not_override_repository_acl",
     "finite_listing_and_reflog_match_the_actual_committed_whole_records",

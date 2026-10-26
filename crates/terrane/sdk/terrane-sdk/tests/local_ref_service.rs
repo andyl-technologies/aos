@@ -53,6 +53,9 @@ use terrane_sdk::{
     },
 };
 
+#[path = "local_ref_service/stream_checks.rs"]
+mod stream_checks;
+
 type NativeService = LocalRefService<
     terrane_sdk::bucket::FileBucket<
         TokioLocalFs,

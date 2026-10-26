@@ -114,6 +114,16 @@ is a local read-service component, not production role deployment, remote/home
 routing, CAS publication, resumable watch or full protocol acceptance. Task
 acceptance remains 28/64.
 
+Two further deterministic stream controls pause actual authenticated response
+polling without replacing the original repository guard. A genuine writer
+publication must prevent a prepared reflog row and refuse completion after a
+previously disclosed listing row. Separately, a prepared empty listing must
+refuse completion after its genuine token expires. Both native SDK profiles
+pass strict all-target Clippy; exact registration retains all original seven
+cases in order and adds these two controls with the unchanged thirty-second
+per-case bound. Their actual AOS execution remains pending. No production code
+changes or additional task acceptance are inferred from these fixtures.
+
 The native client now receives finite `ListRefs` streams under explicit row,
 content, message, element-memory and whole-call bounds. It validates root-free
 ref patterns using the existing guarded-enumeration grammar, checks canonical
@@ -134,7 +144,10 @@ portable executable hash is recorded without retaining its bytes. The fresh
 nonce-bound sandbox proof confirms ext4, a capability-free build user and AOS
 kernel 7.2.3. Exactly the three reviewed derivations execute remotely, and owned
 terminal VM scratch is removed after preserving all raw records and hashes.
-Required application compilation remains pending; no task is accepted.
+Required application-target compilation at the same revision passes in 1,461.800
+seconds. Independent review matches all 8,278 immutable source files and 190
+test-executable records across 59 packages. This is compilation only, without
+retained executable bytes; no task is accepted.
 
 The native client now stages finite `GetRefLog` responses behind explicit
 entry/content bounds and a whole-call deadline through protocol termination.
@@ -253,7 +266,8 @@ is disabled and no nested KVM is required. No matrix success or additional task
 acceptance is claimed. The later reflog client at `8c10438255` passes its separate
 30-socket/22-portable execution and required application compilation as recorded
 above. The listing increment at `71c29c7675` passes
-its fresh 35-socket/22-portable run; required application compilation is running.
+its fresh 35-socket/22-portable run and its separate required application
+compilation as recorded above.
 Neither later increment is qualified by the older feature matrix.
 
 Required application-target compilation at `e6f214f3ce` passes in 1,498.897
