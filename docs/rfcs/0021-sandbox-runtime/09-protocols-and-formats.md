@@ -64,6 +64,25 @@ publish; original writer custody, fresh publication checks and durability are
 still required. Stages and conflicting files must never be silently truncated
 or removed.
 
+After the final authenticated target comparison and actual orderly helper
+retirement, the same Source completes and fsyncs the captured stage while
+holding both original exclusive writer locks. It ends the old empty-floor
+metadata intervals before its own namespace mutation, without releasing the
+locks or adopting the old open inode as the installed checkpoint. Fresh stage,
+empty-final and original-main checks precede `RENAME_EXCHANGE`; the exchange
+preserves the displaced empty inode under the pending name. Directory fsync
+and independent main/name posts remain owed even after an earlier failure.
+Successful readback must identify the completed stage at the final name and the
+original empty inode at the pending name. Neither ambiguity nor a foreign file
+permits automatic removal, rollback or a successful provisioning claim.
+
+Normal startup must freshly open the completed final journal after manual-unit
+drain. A pending initial artifact is acceptable only when absent or a safe empty
+file; a nonempty or unsafe pending artifact fences normal startup. Interrupted
+publication with an empty final and a matching Written NV value belongs to
+manual checkpoint-only recovery under the original approved intent. These
+requirements still need installed enforcing and power-loss qualification.
+
 The canonical records, signature verification and recovery comparison are
 implemented as DATA operations. They do not establish original funding,
 independence of a supplied key pin, stopped owners, protected file custody,

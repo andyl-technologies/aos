@@ -313,6 +313,24 @@ impl<'owner, P> CanonicalWriterNativeOperationsV1<'owner, P> {
         result
     }
 
+    /// Exchanges two existing names in the same held protected directory.
+    ///
+    /// Original publication, funding and semantic gates remain with the upper
+    /// owner. Both names survive; neither cleanup nor durability is implied.
+    ///
+    /// # Errors
+    /// Preserves the original errno or rejects absent/closed native custody.
+    #[cfg(target_os = "linux")]
+    pub fn exchange_named_children(self, first: &str, second: &str) -> Result<(), rustix::io::Errno> {
+        let mut guard = enter_root_read(self.invocation).map_err(|_| rustix::io::Errno::PERM)?;
+        let result = self.location.ok_or(rustix::io::Errno::PERM)?
+            .exchange_named_children(first, second);
+        if result.is_err() {
+            if let Some(guard) = guard.as_mut() { guard.refuse(); }
+        }
+        result
+    }
+
     /// Delegates the existing `sync_directory` syscall frontier to the same directory.
     ///
     /// Actual upper publication, financial and recipient gates stay unchanged.

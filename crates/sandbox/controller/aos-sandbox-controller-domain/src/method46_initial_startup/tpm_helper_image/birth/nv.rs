@@ -88,6 +88,7 @@ impl Method46InitialTpmHelperDrivingLoanV1<'_> {
             let complete = action.as_ref().copied().unwrap_or(false);
             observe_after(self.startup, action.map(|_| ()))?;
             if complete {
+                self.helper_retired = true;
                 return Ok(());
             }
             let action = self.native.wait_initial_cleanup_once_v1();

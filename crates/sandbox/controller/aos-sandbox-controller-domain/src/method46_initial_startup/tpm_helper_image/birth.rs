@@ -41,6 +41,7 @@ pub struct Method46InitialTpmHelperDrivingLoanV1<'owner> {
     native: InitialTpmHelperDrivingLoanV1<'owner>,
     endpoint: FixedTpmEndpointV2,
     salt_name: [u8; 34],
+    helper_retired: bool,
 }
 
 fn require_current(
@@ -184,6 +185,7 @@ impl Method46InitialTpmHelperBirthLoanV1<'_> {
             native,
             endpoint,
             salt_name,
+            helper_retired: false,
         })
     }
 }

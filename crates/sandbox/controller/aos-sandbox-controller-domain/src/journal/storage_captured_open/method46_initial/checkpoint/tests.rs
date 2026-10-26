@@ -9,7 +9,7 @@ use aos_sandbox_journal::transaction::{NativePendingTransaction, decode_begin_co
 
 use super::*;
 
-fn fixture() -> (
+pub(super) fn fixture() -> (
     tempfile::TempDir,
     Journal,
     FileIdentity,

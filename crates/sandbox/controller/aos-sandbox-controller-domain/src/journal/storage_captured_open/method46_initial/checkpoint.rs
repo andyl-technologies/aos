@@ -24,6 +24,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::*;
 
+mod publication;
+
 const STAGE: &str = "session-floor.journal.initial.pending";
 const INITIAL_DOMAIN: &[u8] = b"aos.sandbox.broker-session.tpm-floor.initial-sidecar.v1\0";
 // Three native headers, BEGIN count, one record header/key/value and COMMIT.
@@ -43,6 +45,7 @@ pub(super) struct InitialCheckpointOriginal {
     capture: Option<Result<(), JournalError>>,
     after: Option<Result<(), JournalError>>,
     closed: Option<JournalError>,
+    publication: publication::InitialCheckpointPublicationOriginal,
 }
 
 impl InitialCheckpointOriginal {
@@ -60,6 +63,7 @@ impl InitialCheckpointOriginal {
             capture: None,
             after: None,
             closed: None,
+            publication: publication::InitialCheckpointPublicationOriginal::new(),
         }
     }
 
@@ -244,6 +248,7 @@ impl InitialCheckpointOriginal {
             .or_else(|| self.main.after_failure())
             .or_else(|| error(&self.after))
             .or_else(|| self.closed.as_ref().map(|cause| cause as _))
+            .or_else(|| self.publication.failure())
     }
 }
 
@@ -288,7 +293,117 @@ impl Method46InitialMainWriterOriginalV1 {
             .original
             .journal_data_v1()
             .ok_or(JournalError::ProtectedBoundary)?;
-        self.checkpoint.finish_after_owed(main)
+        let capture = self.checkpoint.finish_after_owed(main);
+        let sync = self.checkpoint.publication.sync_after_owed(main);
+        let publication = if let Some(expected) = self.checkpoint.expected.as_ref() {
+            self.checkpoint
+                .publication
+                .finish_after_owed(main, expected)
+        } else {
+            Ok(())
+        };
+        if capture.is_err() || sync.is_err() || publication.is_err() {
+            Err(JournalError::ProtectedBoundary)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn quote_initial_checkpoint_publication_once(&mut self) -> Option<ResourceVector> {
+        if self.failure().is_some()
+            || self.post.is_some()
+            || !self.tpm_locks.ready()
+            || !self.initial_floor.ready()
+            || !self.checkpoint.ready()
+        {
+            self.closed.get_or_insert(JournalError::ProtectedBoundary);
+            return None;
+        }
+        let replayed = self
+            .inner
+            .original
+            .captured_replay_file_identity_data_v1()?;
+        self.checkpoint
+            .publication
+            .quote_once(self.inner.original.journal_data_v1()?, replayed)
+    }
+
+    pub(crate) fn prepare_initial_checkpoint_publication_once(
+        &mut self,
+    ) -> Result<(), JournalError> {
+        if self.failure().is_some()
+            || self.post.is_some()
+            || !self.tpm_locks.ready()
+            || !self.initial_floor.ready()
+            || !self.checkpoint.ready()
+        {
+            self.closed.get_or_insert(JournalError::ProtectedBoundary);
+            return Err(JournalError::ProtectedBoundary);
+        }
+        // These original paid intervals end before our own namespace mutation.
+        // Both posts remain independent, and neither releases either flock.
+        let locks = self.finish_initial_tpm_locks_after_owed();
+        let floor = self.finish_initial_floor_after_owed();
+        if locks.is_err() || floor.is_err() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let (_, empty) = self
+            .initial_floor
+            .journal_and_replayed_data()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        let captured = self.checkpoint.metadata[1]
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map(FileIdentity::from_metadata_data_v1);
+        let expected = self
+            .checkpoint
+            .expected
+            .as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        self.checkpoint.publication.prepare_once(
+            self.inner
+                .original
+                .journal_data_v1()
+                .ok_or(JournalError::ProtectedBoundary)?,
+            empty,
+            expected,
+            captured,
+            self.checkpoint.bytes.as_deref(),
+        )
+    }
+
+    pub(crate) fn validate_initial_checkpoint_publication_once(
+        &mut self,
+    ) -> Result<(), JournalError> {
+        let main = self
+            .inner
+            .original
+            .journal_data_v1()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        let expected = self
+            .checkpoint
+            .expected
+            .as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        self.checkpoint.publication.validate_once(main, expected)
+    }
+
+    pub(crate) fn exchange_initial_checkpoint_once(&mut self) -> Result<(), JournalError> {
+        let main = self
+            .inner
+            .original
+            .journal_data_v1()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        self.checkpoint.publication.exchange_once(main)
+    }
+
+    pub(crate) fn sync_initial_checkpoint_after_owed(&mut self) -> Result<(), JournalError> {
+        let main = self
+            .inner
+            .original
+            .journal_data_v1()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        self.checkpoint.publication.sync_after_owed(main)
     }
 }
 

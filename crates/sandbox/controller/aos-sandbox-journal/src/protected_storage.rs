@@ -740,6 +740,29 @@ impl<P> ProtectedJournalLocation<P> {
         )
     }
 
+    /// Exchanges two existing names while preserving both directory entries.
+    ///
+    /// The caller retains name validation, original file custody, publication
+    /// admission and independent postchecks. This atomic namespace operation
+    /// does not remove either displaced file or synchronize the directory.
+    ///
+    /// # Errors
+    /// Returns the original rename errno, including unsupported exchange.
+    #[cfg(target_os = "linux")]
+    pub fn exchange_named_children(
+        &self,
+        first: &str,
+        second: &str,
+    ) -> Result<(), rustix::io::Errno> {
+        rustix::fs::renameat_with(
+            &self.directory,
+            first,
+            &self.directory,
+            second,
+            rustix::fs::RenameFlags::EXCHANGE,
+        )
+    }
+
     /// Synchronizes the original directory at the caller's publication frontier.
     ///
     /// # Errors

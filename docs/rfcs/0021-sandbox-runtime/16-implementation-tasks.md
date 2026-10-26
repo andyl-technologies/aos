@@ -31,6 +31,29 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The checkpoint publisher now uses the same Source/helper loan only after
+  final approved target comparison and actual clean helper reaping. A prepaid
+  native reservoir freshly compares the captured stage, preserves/resumes its
+  exact canonical prefix without truncation, normalizes the fixed owner when
+  needed, writes only its bounded suffix, fsyncs and reads back the complete
+  transaction. Original empty-floor and two-lock metadata intervals finish
+  independently before the publisher's own namespace mutation; both exclusive
+  locks and the old inode remain held. Fresh original-main and both-name checks
+  precede atomic exchange, which preserves the displaced empty inode. Directory
+  fsync and independent main/both-name posts remain owed even on failure. The
+  old open empty Journal is never adopted as the installed completed floor.
+  Eight real-file regressions cover payment, exact canonical ordinary-reader
+  replay, both actual flocks, partial/full prefix recovery, changed capture,
+  changed main after stage fsync, both-name races and retained native exchange
+  failure with owed posts. Non-test online Security compilation, 430 Broker,
+  142 focused Source, 431 ordinary Security and 440 online-Nix Security tests
+  pass; one Broker case and two cases in each Security suite remain ignored.
+  Full application target compilation is running on the audited 81-source snapshot, with both
+  deleted modules absent and production policy excluded from its 833-derivation
+  closure. Normal cold startup's pending-artifact fence, installed genuine
+  Source/helper behavior, both journal hooks and enforcing publication
+  crash/power-loss/lifecycle qualification remain open. Admission stays closed.
+
 - Before any initial NV request, Security now derives the checkpoint from
   its resident approved request and asks the same Source to prepay and capture
   the fixed checkpoint stage. The sole native journal encoder produces the

@@ -2,7 +2,8 @@
 //!
 //! The resident approval and actual main original are rejoined before effects.
 //! Native replies remain in Source custody; these retained projections support
-//! semantic comparison only. Success does not publish a canonical checkpoint.
+//! semantic comparison only. The same loan publishes only after final target
+//! comparison and actual orderly helper retirement.
 
 use crate::method46_initial_provisioning::{
     Method46InitialNvDataV1, Method46InitialRecoveryDataV1,
@@ -18,6 +19,7 @@ pub(super) struct InitialNvInitializationOriginalV1 {
     reads: [Option<Result<HelperObservationV1, Method46InitialStartupClosedV1>>; 3],
     decision: Option<Result<Method46InitialRecoveryDataV1, Method46InitialDataErrorV1>>,
     closed: Option<Result<(), Method46InitialStartupClosedV1>>,
+    published: Option<Result<(), Method46InitialStartupClosedV1>>,
     result: Option<Result<(), Method46InitialDataErrorV1>>,
 }
 
@@ -29,6 +31,7 @@ impl InitialNvInitializationOriginalV1 {
             reads: std::array::from_fn(|_| None),
             decision: None,
             closed: None,
+            published: None,
             result: None,
         }
     }
@@ -43,9 +46,10 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
     /// area and Name. Source additionally compares fresh native main metadata
     /// immediately before each request after readiness waiting.
     ///
-    /// Success retains the initial target in the same originals; canonical
-    /// checkpoint publication and its independent currentness/durability frontier
-    /// remain required. No caller supplies observed NV, approval, auth or channel.
+    /// The same Source then publishes the canonical checkpoint through fresh
+    /// currentness, atomic exchange and file/directory durability frontiers while
+    /// retaining both writer locks. No caller supplies observed NV, approval,
+    /// auth, checkpoint or channel. Installed qualification remains separate.
     ///
     /// # Errors
     /// Refuses foreign/ended originals, missing durable approval/helper/locks,
@@ -120,6 +124,12 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
                 require_initial_target(request, read_data(&nv.reads[2])?)?;
                 nv.closed = Some(driver.close_and_reap_initial_helper_once_v1());
                 require_native_step(nv.closed)?;
+                let (current, _) = self.current_approved_initial_request(main)?;
+                if current != request {
+                    return Err(Method46InitialDataErrorV1::Conflict);
+                }
+                nv.published = Some(driver.publish_initial_checkpoint_once_v1());
+                require_native_step(nv.published)?;
                 let (current, _) = self.current_approved_initial_request(main)?;
                 if current != request {
                     return Err(Method46InitialDataErrorV1::Conflict);
