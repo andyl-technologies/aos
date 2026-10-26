@@ -31,6 +31,27 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Initial approval exclusion now retains four independently delivered normal
+  manifest copies: Host's Controller-facing broker, the Nix owner's public
+  catalog and ONLINE broker, and Controller's ONLINE Nix client. The existing
+  two native delivery samples for each owner must match its selected external
+  source. Public copies may use different sources; same-protocol sharing is
+  permitted only in the fixed public alias groups. Missing, duplicate,
+  substituted or alternative delivery refuses. Host is mandatory; all three
+  Nix copies join the complete optional Nix roster. The same genuine Source
+  prepays the thirty-six-file maximum, 184 descriptor carriers and all reached
+  native posts. Security retains each canonical manifest and its comparison,
+  excludes every active, revoked and superseded pin from approval, and requires
+  every read/result before schema or signature admission. Its real prepaid
+  decode allowance is now 52 KiB; bank capacities and native-call counts remain
+  unchanged. All 433 ordinary and 442 online-Nix Security tests pass, with two
+  existing ignored cases in each suite. All 90 focused initializer tests pass,
+  including the four-endpoint regression and all 4,096 native directory rosters.
+  Complete application unit/integration target compilation is running on the
+  expanded roster. Offline Nix approval, other endpoint contexts, complete
+  runtime/loader provenance, installed initial effects and public lifecycle
+  qualification remain open.
+
 - The initial Source now also prepays actual normal Host configuration samples
   before and after its interval. Each native sample must match the NoApply public
   source selected by the initial job and Root, or its configured absence. Both

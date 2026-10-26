@@ -11,6 +11,7 @@ use aos_systemd_client::{OwnedValue, Value};
 use super::super::credentials::{
     METHOD46_INITIAL_ROOT_POLICY_PUBLIC_KEY_MEMBERS_V1 as ROOT_POLICY_MEMBERS,
     Method46InitialGenesisPublicPinV1 as GenesisMember,
+    Method46InitialOwnerManifestV1 as OwnerManifest,
     Method46InitialPublicPinMemberV1 as PublicMember,
     Method46InitialPublicPinOwnerV1 as PublicOwner, NAMES, REQUIRED_CREDENTIAL_SLOTS,
 };
@@ -97,6 +98,8 @@ fn selected_sources(
                 *value == source
                     && !matches!((previous, index), (9, 15) | (27, 29) | (28, 30))
                     && !((16..27).contains(&previous) && (16..27).contains(&index))
+                    && !([8, 32, 33, 34].contains(&previous) && [8, 32, 33, 34].contains(&index))
+                    && !(previous == 4 && index == 35)
             })
         {
             return Err(Method46InitialStartupClosedV1);
@@ -109,6 +112,9 @@ fn selected_sources(
         || selected[8].is_empty() != selected[15].is_empty()
         || selected[8].is_empty() != selected[16].is_empty()
         || selected[20..24]
+            .iter()
+            .any(|source| source.is_empty() != selected[8].is_empty())
+        || selected[32..35]
             .iter()
             .any(|source| source.is_empty() != selected[8].is_empty())
         || selected[27].is_empty() != selected[28].is_empty()
@@ -206,6 +212,7 @@ pub(super) fn require_other_normal_manifest_sources(
     {
         require_source(values, name, (!expected.is_empty()).then_some(*expected))?;
     }
+    require_owner_manifest_source(values, &sources, OwnerManifest::ControllerNixOnlineClient)?;
     require_policy_public_sources(values, fragment, PublicOwner::Controller)?;
     for member in GenesisMember::CONTROLLER {
         let expected = sources[member.slot()];
@@ -286,14 +293,16 @@ pub(super) fn require_normal_root_public_sources(
     Ok(())
 }
 
-pub(super) fn require_normal_host_noapply_source(
+pub(super) fn require_normal_host_public_sources(
     values: &[OwnedValue],
     fragment: &[u8],
 ) -> Result<(), Method46InitialStartupClosedV1> {
     // Root receives this public source from the existing Host credential option.
     // The native Host sample must agree independently; Nix evaluation alone
     // cannot establish the live manager's actual credential configuration.
-    let expected = selected_sources(fragment)?[31];
+    let sources = selected_sources(fragment)?;
+    require_owner_manifest_source(values, &sources, OwnerManifest::HostControllerBroker)?;
+    let expected = sources[31];
     require_source(
         values,
         ROOT_NOAPPLY_PUBLIC,
@@ -314,7 +323,24 @@ pub(super) fn require_normal_nix_owner_source(
         return Err(Method46InitialStartupClosedV1);
     }
     require_named_source(values, "nix-online-floor-issuer-v1", expected)?;
+    let sources = selected_sources(fragment)?;
+    for member in OwnerManifest::NIX_OWNER {
+        require_owner_manifest_source(values, &sources, member)?;
+    }
     require_policy_public_sources(values, fragment, PublicOwner::NixBroker)
+}
+
+fn require_owner_manifest_source(
+    values: &[OwnedValue],
+    sources: &[&str; NAMES.len()],
+    member: OwnerManifest,
+) -> Result<(), Method46InitialStartupClosedV1> {
+    let expected = sources[member.slot()];
+    require_source(
+        values,
+        member.name(),
+        (!expected.is_empty()).then_some(expected),
+    )
 }
 
 fn require_policy_public_sources(
@@ -568,6 +594,9 @@ mod tests {
             )
         })
         .collect::<Vec<_>>();
+        rows.extend(owner_manifest_rows([
+            OwnerManifest::ControllerNixOnlineClient,
+        ]));
         rows.extend(policy_rows(PublicOwner::Controller));
         rows.extend(GenesisMember::CONTROLLER.into_iter().map(|member| {
             (
@@ -618,13 +647,95 @@ mod tests {
             .collect()
     }
 
+    fn owner_manifest_rows(
+        members: impl IntoIterator<Item = OwnerManifest>,
+    ) -> Vec<(String, String)> {
+        members
+            .into_iter()
+            .map(|member| {
+                (
+                    member.name().to_owned(),
+                    format!("/run/credentials/@system/external-{}", member.slot()),
+                )
+            })
+            .collect()
+    }
+
     fn nix_owner_rows() -> Vec<(String, String)> {
         let mut rows = vec![(
             "nix-online-floor-issuer-v1".to_owned(),
             "/run/credentials/@system/external-15".to_owned(),
         )];
+        rows.extend(owner_manifest_rows(OwnerManifest::NIX_OWNER));
         rows.extend(policy_rows(PublicOwner::NixBroker));
         rows
+    }
+
+    #[test]
+    fn owner_manifest_delivery_rejects_missing_duplicate_substituted_and_alternate_sources() {
+        for member in OwnerManifest::ALL {
+            let (rows, check): (
+                _,
+                fn(&[OwnedValue], &[u8]) -> Result<(), Method46InitialStartupClosedV1>,
+            ) = match member {
+                OwnerManifest::NixOwnerCatalog | OwnerManifest::NixOwnerOnlineBroker => {
+                    (nix_owner_rows(), require_normal_nix_owner_source)
+                }
+                OwnerManifest::ControllerNixOnlineClient => {
+                    (other_normal_rows(), require_other_normal_manifest_sources)
+                }
+                OwnerManifest::HostControllerBroker => {
+                    let mut rows = owner_manifest_rows([member]);
+                    rows.push((
+                        ROOT_NOAPPLY_PUBLIC.to_owned(),
+                        "/run/credentials/@system/external-31".to_owned(),
+                    ));
+                    (rows, require_normal_host_public_sources)
+                }
+            };
+            let fragment = fragment();
+            assert!(check(&normal_properties(rows.clone()), fragment.as_bytes()).is_ok());
+            let index = rows
+                .iter()
+                .position(|(name, _)| name == member.name())
+                .unwrap();
+            let row = rows[index].clone();
+
+            let mut missing = rows.clone();
+            missing.remove(index);
+            let mut duplicate = rows.clone();
+            duplicate.push(row.clone());
+            let mut substituted = rows.clone();
+            substituted[index].1 = "/run/credentials/@system/foreign".to_owned();
+            for changed in [missing, duplicate, substituted.clone()] {
+                assert!(
+                    check(&normal_properties(changed), fragment.as_bytes()).is_err(),
+                    "{member:?}"
+                );
+            }
+
+            // External copies need not share a source. The genuine initial
+            // selection must instead match that owner's actual delivery.
+            let changed_fragment = fragment.replace(
+                &format!("@system/external-{}\n", member.slot()),
+                "@system/foreign\n",
+            );
+            assert!(check(&normal_properties(substituted), changed_fragment.as_bytes()).is_ok());
+            for (index, alternate) in [
+                (1, value(vec![row.clone()])),
+                (2, value(vec![(row.0.clone(), vec![1_u8])])),
+                (3, value(vec![(row.0.clone(), vec![1_u8])])),
+                (4, value(vec!["*".to_owned()])),
+                (5, value(vec![("*".to_owned(), "*".to_owned())])),
+            ] {
+                let mut properties = normal_properties(rows.clone());
+                properties[index] = alternate;
+                assert!(
+                    check(&properties, fragment.as_bytes()).is_err(),
+                    "{member:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -838,9 +949,12 @@ mod tests {
         for present in [false, true] {
             let selected = if present { &fragment } else { &without_pin };
             for delivered in [false, true] {
-                let rows = if delivered { vec![row.clone()] } else { vec![] };
+                let mut rows = owner_manifest_rows([OwnerManifest::HostControllerBroker]);
+                if delivered {
+                    rows.push(row.clone());
+                }
                 assert_eq!(
-                    require_normal_host_noapply_source(
+                    require_normal_host_public_sources(
                         &normal_properties(rows),
                         selected.as_bytes(),
                     )
@@ -849,12 +963,12 @@ mod tests {
                 );
             }
             let duplicate = normal_properties(vec![row.clone(), row.clone()]);
-            assert!(require_normal_host_noapply_source(&duplicate, selected.as_bytes()).is_err());
+            assert!(require_normal_host_public_sources(&duplicate, selected.as_bytes()).is_err());
             let substituted = normal_properties(vec![(
                 ROOT_NOAPPLY_PUBLIC.to_owned(),
                 "/run/credentials/@system/foreign-pin".to_owned(),
             )]);
-            assert!(require_normal_host_noapply_source(&substituted, selected.as_bytes()).is_err());
+            assert!(require_normal_host_public_sources(&substituted, selected.as_bytes()).is_err());
             for (index, alternate) in [
                 (1, value(vec![row.clone()])),
                 (2, value(vec![(ROOT_NOAPPLY_PUBLIC.to_owned(), vec![1_u8])])),
@@ -862,11 +976,14 @@ mod tests {
                 (4, value(vec!["*".to_owned()])),
                 (5, value(vec![("*".to_owned(), "*".to_owned())])),
             ] {
-                let mut properties =
-                    normal_properties(if present { vec![row.clone()] } else { vec![] });
+                let mut rows = owner_manifest_rows([OwnerManifest::HostControllerBroker]);
+                if present {
+                    rows.push(row.clone());
+                }
+                let mut properties = normal_properties(rows);
                 properties[index] = alternate;
                 assert!(
-                    require_normal_host_noapply_source(&properties, selected.as_bytes()).is_err()
+                    require_normal_host_public_sources(&properties, selected.as_bytes()).is_err()
                 );
             }
         }
@@ -963,7 +1080,10 @@ mod tests {
                     matches!(
                         (source, destination),
                         (9, 15) | (15, 9) | (27, 29) | (29, 27) | (28, 30) | (30, 28)
-                    ) || ((16..27).contains(&source) && (16..27).contains(&destination)),
+                    ) || ((16..27).contains(&source) && (16..27).contains(&destination))
+                        || ([8, 32, 33, 34].contains(&source)
+                            && [8, 32, 33, 34].contains(&destination))
+                        || matches!((source, destination), (4, 35) | (35, 4)),
                     "source {source} destination {destination}",
                 );
             }
@@ -1050,7 +1170,7 @@ mod tests {
 
     #[test]
     fn configured_nix_requires_its_controller_floor_issuer_source() {
-        for missing in [8, 9, 15, 16, 20, 21, 22, 23] {
+        for missing in [8, 9, 15, 16, 20, 21, 22, 23, 32, 33, 34] {
             let text = fragment();
             let mismatched = text
                 .lines()
@@ -1088,7 +1208,7 @@ mod tests {
                 .is_ok()
         );
 
-        for index in 0..5 {
+        for index in 0..nix_owner_rows().len() {
             let mut missing = nix_owner_rows();
             missing.remove(index);
             let mut duplicate = nix_owner_rows();
@@ -1122,7 +1242,7 @@ mod tests {
         let fragment = fragment()
             .lines()
             .filter(|line| {
-                ![8, 9, 15, 16, 20, 21, 22, 23]
+                ![8, 9, 15, 16, 20, 21, 22, 23, 32, 33, 34]
                     .into_iter()
                     .any(|index| line.starts_with(&format!("LoadCredential={}:", NAMES[index])))
             })
@@ -1147,6 +1267,7 @@ mod tests {
                 selected[15] = nix;
                 selected[16] = nix;
                 selected[20..24].fill(nix);
+                selected[32..35].fill(nix);
                 let fragment = NAMES
                     .iter()
                     .enumerate()
@@ -1174,7 +1295,8 @@ mod tests {
                         "mount-fuse-manifest" => mount_fuse,
                         "nix-broker-session-manifest-v1"
                         | "nix-online-floor-issuer-v1"
-                        | "nix-recipe-issuer-v2" => nix,
+                        | "nix-recipe-issuer-v2"
+                        | "nix-online-client-manifest" => nix,
                         _ => true,
                     })
                     .collect::<Vec<_>>();

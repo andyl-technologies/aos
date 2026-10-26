@@ -18,8 +18,9 @@ use aos_sandbox_broker::receiving::{
 use aos_sandbox_controller_domain::method46_initial_startup::{
     METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, METHOD46_INITIAL_ROOT_POLICY_PUBLIC_KEY_MEMBERS_V1,
     METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1, Method46InitialGenesisPublicPinV1,
-    Method46InitialProvisionReadbackLoanV1, Method46InitialPublicPinMemberV1,
-    Method46InitialPublicPinOwnerV1, Method46InitialStartupClosedV1,
+    Method46InitialOwnerManifestV1, Method46InitialProvisionReadbackLoanV1,
+    Method46InitialPublicPinMemberV1, Method46InitialPublicPinOwnerV1,
+    Method46InitialStartupClosedV1,
 };
 
 mod root_public;
@@ -72,6 +73,8 @@ pub struct Method46InitialProvisionDecodeOriginalV1<'owner> {
     normal: NormalManifestOriginal,
     other_normal_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; PROTOCOLS.len()],
     other_normal: [OtherNormalManifestOriginal; PROTOCOLS.len()],
+    owner_manifest_reads: [Option<Result<(), Method46InitialStartupClosedV1>>; 4],
+    owner_manifests: [OtherNormalManifestOriginal; 4],
     controller_nix_floor_read: Option<Result<(), Method46InitialStartupClosedV1>>,
     controller_nix_floor: OnlineFloorIssuerOriginal,
     owner_nix_floor_read: Option<Result<(), Method46InitialStartupClosedV1>>,
@@ -130,6 +133,8 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             normal: NormalManifestOriginal::new(),
             other_normal_reads: std::array::from_fn(|_| None),
             other_normal: std::array::from_fn(|_| OtherNormalManifestOriginal::new()),
+            owner_manifest_reads: std::array::from_fn(|_| None),
+            owner_manifests: std::array::from_fn(|_| OtherNormalManifestOriginal::new()),
             controller_nix_floor_read: None,
             controller_nix_floor: OnlineFloorIssuerOriginal::new(),
             owner_nix_floor_read: None,
@@ -254,6 +259,33 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
                 None => self.other_normal[index].observe_optional_absence_once(protocol),
             }
             if !self.other_normal[index].admitted() {
+                return;
+            }
+        }
+
+        for (index, member) in Method46InitialOwnerManifestV1::ALL.into_iter().enumerate() {
+            let bytes = match self.readback.normal_owner_manifest_bytes_v1(member) {
+                Ok(bytes) => {
+                    self.owner_manifest_reads[index] = Some(Ok(()));
+                    bytes
+                }
+                Err(error) => {
+                    self.owner_manifest_reads[index] = Some(Err(error));
+                    return;
+                }
+            };
+            match bytes {
+                Some(bytes) => self.owner_manifests[index].observe_once(
+                    &bytes,
+                    member.protocol(),
+                    origin.node,
+                    approval,
+                ),
+                None => {
+                    self.owner_manifests[index].observe_optional_absence_once(member.protocol())
+                }
+            }
+            if !self.owner_manifests[index].admitted() {
                 return;
             }
         }
@@ -412,6 +444,14 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
             && self.normal.admitted()
             && matches!(self.controller_nix_floor_read, Some(Ok(())))
             && self.controller_nix_floor.admitted()
+            && self
+                .owner_manifest_reads
+                .iter()
+                .all(|read| matches!(read, Some(Ok(()))))
+            && self
+                .owner_manifests
+                .iter()
+                .all(OtherNormalManifestOriginal::admitted)
             && matches!(self.owner_nix_floor_read, Some(Ok(())))
             && self.owner_nix_floor.admitted()
             && self

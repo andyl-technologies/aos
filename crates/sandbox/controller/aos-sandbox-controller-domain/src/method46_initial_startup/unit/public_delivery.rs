@@ -143,7 +143,7 @@ impl PublicDeliveryOriginal {
         match self.owner {
             PublicOwner::Root => delivery::require_normal_root_public_sources(values, fragment)?,
             PublicOwner::Nix => delivery::require_normal_nix_owner_source(values, fragment)?,
-            PublicOwner::Host => delivery::require_normal_host_noapply_source(values, fragment)?,
+            PublicOwner::Host => delivery::require_normal_host_public_sources(values, fragment)?,
         }
 
         if round == 1 {

@@ -18,10 +18,12 @@ use super::*;
 mod entries;
 mod genesis_public;
 mod observation;
+mod owner_manifests;
 mod provisioning_readback;
 mod public_pins;
 
 pub use genesis_public::Method46InitialGenesisPublicPinV1;
+pub use owner_manifests::Method46InitialOwnerManifestV1;
 pub use public_pins::{
     METHOD46_INITIAL_ROOT_POLICY_PUBLIC_KEY_MEMBERS_V1, Method46InitialPublicPinMemberV1,
     Method46InitialPublicPinOwnerV1,
@@ -35,8 +37,9 @@ pub use provisioning_readback::{
 use entries::Entries;
 use observation::Observation;
 
-pub(super) const REQUIRED_CREDENTIAL_SLOTS: [usize; 12] = [0, 1, 2, 3, 4, 5, 6, 10, 11, 17, 18, 19];
-pub(super) const NAMES: [&str; 32] = [
+pub(super) const REQUIRED_CREDENTIAL_SLOTS: [usize; 13] =
+    [0, 1, 2, 3, 4, 5, 6, 10, 11, 17, 18, 19, 35];
+pub(super) const NAMES: [&str; 36] = [
     "broker-method46-tpm-provision-v1",
     "broker-method46-tpm-index-auth-v1",
     "method46-initial-approval-public-key-v1",
@@ -69,6 +72,10 @@ pub(super) const NAMES: [&str; 32] = [
     "method46-normal-controller-source-seed-issuer-v1",
     "method46-normal-controller-project-authorization-issuer-v2",
     "method46-normal-root-noapply-public-key-v2",
+    "method46-normal-owner-nix-catalog-manifest-v1",
+    "method46-normal-owner-nix-online-manifest-v1",
+    "method46-normal-controller-nix-online-manifest-v1",
+    "method46-normal-owner-host-manifest-v1",
 ];
 const MANIFEST_BYTES: usize =
     aos_sandbox_broker_session_protocol::manifest::BROKER_SESSION_MANIFEST_BYTES;
@@ -105,6 +112,10 @@ const LENGTHS: [usize; NAMES.len()] = [
     80,
     80,
     80,
+    MANIFEST_BYTES,
+    MANIFEST_BYTES,
+    MANIFEST_BYTES,
+    MANIFEST_BYTES,
 ];
 
 struct Credential {

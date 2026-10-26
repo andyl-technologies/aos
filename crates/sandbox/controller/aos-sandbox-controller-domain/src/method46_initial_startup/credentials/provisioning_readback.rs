@@ -15,12 +15,13 @@ use super::*;
 ///
 /// Security checks its compiled retained layouts and fixed wire carriers
 /// against this prepaid bound, including four mandatory and two optional
-/// normal public manifests, the signature and public pin.
+/// normal public manifests, four independent owner copies, the signature and
+/// public pin.
 /// Actual credential buffers and original native observations are paid by the
 /// enclosing file owner separately. This size alone authenticates no payer.
-// Root NoApply adds a separate canonical frame, strict point result and
-// retained comparison. The genuine Source prepays this expanded carrier.
-pub const METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1: usize = 36 * 1024;
+// Independent Host and Nix endpoint copies retain their own canonical results.
+// The genuine Source prepays the expanded carrier before issuing its loan.
+pub const METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1: usize = 52 * 1024;
 
 /// Lists the existing normal-Root public signer members in their fixed read order.
 ///
@@ -297,6 +298,22 @@ impl Method46InitialProvisionReadbackLoanV1<'_> {
         self.optional_public_bytes(10 + index)
     }
 
+    /// Borrows a fixed normal owner's original public manifest readback.
+    ///
+    /// Each owner has independently compared native delivery samples. Nix
+    /// members are absent only with the complete compared Nix roster; Host is
+    /// mandatory. This loan exposes no private endpoint key or effect proof.
+    ///
+    /// # Errors
+    /// Refuses ended Source custody, incomplete credential admission, a busy
+    /// original owner or an entered post. No file is reopened or copied.
+    pub fn normal_owner_manifest_bytes_v1(
+        &self,
+        member: Method46InitialOwnerManifestV1,
+    ) -> Result<Option<Ref<'_, [u8]>>, Method46InitialStartupClosedV1> {
+        self.optional_public_bytes(member.slot())
+    }
+
     fn optional_public_bytes(
         &self,
         slot: usize,
@@ -492,6 +509,9 @@ mod tests {
         }
         for member in Method46InitialPublicPinMemberV1::ALL {
             assert!(loan.normal_root_policy_public_key_bytes_v1(member).is_err());
+        }
+        for member in Method46InitialOwnerManifestV1::ALL {
+            assert!(loan.normal_owner_manifest_bytes_v1(member).is_err());
         }
         for member in Method46InitialGenesisPublicPinV1::ALL {
             assert!(loan.normal_genesis_public_key_bytes_v1(member).is_err());

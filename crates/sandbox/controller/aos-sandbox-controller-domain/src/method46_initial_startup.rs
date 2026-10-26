@@ -33,8 +33,8 @@ mod credentials;
 pub use credentials::{
     METHOD46_INITIAL_PROVISION_DECODE_BYTES_V1, METHOD46_INITIAL_ROOT_POLICY_PUBLIC_KEY_MEMBERS_V1,
     METHOD46_INITIAL_ROOT_PUBLIC_KEY_MEMBERS_V1, Method46InitialGenesisPublicPinV1,
-    Method46InitialProvisionReadbackLoanV1, Method46InitialPublicPinMemberV1,
-    Method46InitialPublicPinOwnerV1,
+    Method46InitialOwnerManifestV1, Method46InitialProvisionReadbackLoanV1,
+    Method46InitialPublicPinMemberV1, Method46InitialPublicPinOwnerV1,
 };
 mod images;
 mod main_writer;

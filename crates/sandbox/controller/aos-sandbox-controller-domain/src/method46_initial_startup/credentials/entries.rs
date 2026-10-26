@@ -39,6 +39,7 @@ impl Entries {
             || selected[8] != selected[15]
             || selected[8] != selected[16]
             || selected[20..24].iter().any(|value| *value != selected[8])
+            || selected[32..35].iter().any(|value| *value != selected[8])
             || selected[27] != selected[28]
             || !REQUIRED_CREDENTIAL_SLOTS
                 .iter()
@@ -164,6 +165,7 @@ mod tests {
             selected[15] = selected[8];
             selected[16] = selected[8];
             selected[20..24].fill(mask & 2 != 0);
+            selected[32..35].fill(mask & 2 != 0);
             selected[12] = mask & 4 != 0;
             selected[13] = mask & 8 != 0;
             selected[14] = mask & 16 != 0;
