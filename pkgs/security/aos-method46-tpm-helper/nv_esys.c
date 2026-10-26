@@ -41,6 +41,8 @@
 #define AUTH_BYTES 80U
 #define REQUEST_BYTES 84U
 #define RESPONSE_BYTES 128U
+#define INITIAL_TERMINAL_BYTES 52U
+#define INITIAL_CLOSE_OPERATION 3U
 #define DEFINED_ATTRIBUTES UINT32_C(0x00040044)
 #define WRITTEN_ATTRIBUTES (DEFINED_ATTRIBUTES | UINT32_C(0x20000000))
 #define FIXED_DEVICE "/dev/tpmrm0"
@@ -647,6 +649,133 @@ static int extend_index(struct floor_context *context, const uint8_t input[32])
         && same_device(context) == 0 ? 0 : -1;
 }
 
+/* Ordinary V2 traffic is unchanged. Only a fixed initial image admits the
+ * finite Read / optional first Extend / final Read / close recipe. The state
+ * advances from the actual completed TPM observation, never request DATA. */
+enum initial_exchange_phase {
+    INITIAL_FIRST_READ,
+    INITIAL_CLASSIFIED,
+    INITIAL_EXTENDED,
+    INITIAL_FINAL_READ,
+};
+
+struct initial_exchange_recipe {
+    enum initial_exchange_phase phase;
+    bool unwritten;
+};
+
+static int initial_operation_allowed(const struct initial_exchange_recipe *recipe,
+    uint8_t operation)
+{
+    switch (recipe->phase) {
+    case INITIAL_FIRST_READ:
+    case INITIAL_EXTENDED:
+        return operation == 1;
+    case INITIAL_CLASSIFIED:
+        return operation == (recipe->unwritten ? 2 : 1);
+    case INITIAL_FINAL_READ:
+        return operation == INITIAL_CLOSE_OPERATION;
+    default:
+        return 0;
+    }
+}
+
+static int initial_observation_completed(struct initial_exchange_recipe *recipe,
+    const uint8_t reply[RESPONSE_BYTES])
+{
+    uint32_t attributes = get_u32(reply + 88);
+    switch (recipe->phase) {
+    case INITIAL_FIRST_READ:
+        if (attributes != DEFINED_ATTRIBUTES && attributes != WRITTEN_ATTRIBUTES)
+            return -1;
+        recipe->unwritten = attributes == DEFINED_ATTRIBUTES;
+        recipe->phase = INITIAL_CLASSIFIED;
+        return 0;
+    case INITIAL_CLASSIFIED:
+    case INITIAL_EXTENDED:
+        if (attributes != WRITTEN_ATTRIBUTES)
+            return -1;
+        recipe->phase = recipe->phase == INITIAL_CLASSIFIED && recipe->unwritten
+            ? INITIAL_EXTENDED : INITIAL_FINAL_READ;
+        return 0;
+    default:
+        return -1;
+    }
+}
+
+static int validate_initial_finish(const uint8_t bytes[INITIAL_TERMINAL_BYTES],
+    const uint8_t nonce[32], uint64_t sequence)
+{
+    return (sequence == 3 || sequence == 4) && nonzero(nonce, 32)
+        && memcmp(bytes, "AOSBTF02", 8) == 0
+        && bytes[8] == 0 && bytes[9] == 2 && bytes[10] == 0 && bytes[11] == 0
+        && memcmp(bytes + 12, nonce, 32) == 0
+        && get_u64(bytes + 44) == sequence ? 0 : -1;
+}
+
+static int close_initial_exchange(struct floor_context *context,
+    const uint8_t nonce[32], uint64_t sequence, pid_t parent, int locks[2])
+{
+    if ((sequence != 3 && sequence != 4) || !nonzero(nonce, 32) || getppid() != parent)
+        return -1;
+
+    /* The acknowledged child stays alive with both writer loans. Its actual
+     * ESYS/TCTI/device is retired before the close ACK; no later branch opens
+     * a device or executes a TPM command. Only the exact finish frame may let
+     * the child exit normally. Losing this ACK grants no drain/retry claim. */
+    close_context(context);
+    uint8_t acknowledgment[INITIAL_TERMINAL_BYTES] = {0};
+    memcpy(acknowledgment, "AOSBTC02", 8);
+    acknowledgment[9] = 2;
+    memcpy(acknowledgment + 12, nonce, 32);
+    for (size_t byte = 0; byte < 8; ++byte)
+        acknowledgment[51 - byte] = (uint8_t)(sequence >> (byte * 8));
+    if (send_frame(acknowledgment, sizeof(acknowledgment)) != 0)
+        return -1;
+
+    uint8_t finish[INITIAL_TERMINAL_BYTES] = {0};
+    return receive_frame(finish, sizeof(finish), parent, 0U, locks) == 0
+        && validate_initial_finish(finish, nonce, sequence) == 0 ? 0 : -1;
+}
+
+static int run_index_exchange(struct floor_context *context, const uint8_t nonce[32],
+    pid_t parent, const struct aos_nv_custody_profile *profile, int locks[2])
+{
+    bool initial = initial_profile_matches(profile);
+    struct initial_exchange_recipe recipe = { .phase = INITIAL_FIRST_READ };
+    uint64_t sequence = 1;
+    for (;;) {
+        uint8_t request[REQUEST_BYTES] = {0};
+        uint8_t reply[RESPONSE_BYTES] = {0};
+        if (receive_frame(request, sizeof(request), parent, 0U, locks) != 0)
+            return -1;
+        uint8_t operation = request[10];
+        if (memcmp(request, "AOSBTQ02", 8) != 0 || request[8] != 0 || request[9] != 2
+            || request[11] != 0 || memcmp(request + 12, nonce, 32) != 0
+            || get_u64(request + 44) != sequence || sequence == UINT64_MAX
+            || (initial ? !initial_operation_allowed(&recipe, operation)
+                        : operation != 1 && operation != 2)
+            || ((operation == 1 || operation == INITIAL_CLOSE_OPERATION)
+                && nonzero(request + 52, 32))
+            || (operation == 2 && !nonzero(request + 52, 32)))
+            return -1;
+        if (operation == INITIAL_CLOSE_OPERATION)
+            return close_initial_exchange(context, nonce, sequence, parent, locks);
+        if (operation == 2 && extend_index(context, request + 52) != 0)
+            return -1;
+        memcpy(reply, "AOSBTR02", 8);
+        reply[9] = 2;
+        reply[10] = operation;
+        memcpy(reply + 12, nonce, 32);
+        memcpy(reply + 44, request + 44, 8);
+        if (read_observation(context, reply, profile) != 0
+            || (initial && initial_observation_completed(&recipe, reply) != 0)
+            || send_frame(reply, sizeof(reply)) != 0)
+            return -1;
+        ++sequence;
+    }
+}
+
 int aos_nv_custody_run(int argc, const struct aos_nv_custody_profile *profile)
 {
     struct floor_context context = {
@@ -657,7 +786,6 @@ int aos_nv_custody_run(int argc, const struct aos_nv_custody_profile *profile)
     uint8_t hello[HELLO_BYTES] = {0};
     uint8_t authentication[AUTH_BYTES] = {0};
     uint8_t nonce[32] = {0};
-    uint64_t sequence = 1;
     int status = EXIT_FAILURE;
     int locks[2] = {-1, -1};
     pid_t parent = getppid();
@@ -687,31 +815,8 @@ int aos_nv_custody_run(int argc, const struct aos_nv_custody_profile *profile)
     erase(authentication, sizeof(authentication));
     erase(hello, sizeof(hello));
 
-    for (;;) {
-        uint8_t request[REQUEST_BYTES] = {0};
-        uint8_t reply[RESPONSE_BYTES] = {0};
-        if (receive_frame(request, sizeof(request), parent, 0U, locks) != 0)
-            break;
-        uint8_t operation = request[10];
-        if (memcmp(request, "AOSBTQ02", 8) != 0 || request[8] != 0 || request[9] != 2
-            || request[11] != 0 || memcmp(request + 12, nonce, sizeof(nonce)) != 0
-            || get_u64(request + 44) != sequence || sequence == UINT64_MAX
-            || (operation != 1 && operation != 2)
-            || (operation == 1 && nonzero(request + 52, 32))
-            || (operation == 2 && !nonzero(request + 52, 32)))
-            break;
-        if (operation == 2 && extend_index(&context, request + 52) != 0)
-            break;
-        memcpy(reply, "AOSBTR02", 8);
-        reply[9] = 2;
-        reply[10] = operation;
-        memcpy(reply + 12, nonce, sizeof(nonce));
-        memcpy(reply + 44, request + 44, 8);
-        if (read_observation(&context, reply, profile) != 0
-            || send_frame(reply, sizeof(reply)) != 0)
-            break;
-        ++sequence;
-    }
+    if (run_index_exchange(&context, nonce, parent, profile, locks) == 0)
+        status = EXIT_SUCCESS;
 finished:
     erase(authentication, sizeof(authentication));
     erase(hello, sizeof(hello));

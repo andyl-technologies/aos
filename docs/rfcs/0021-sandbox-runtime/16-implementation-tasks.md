@@ -31,6 +31,24 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The shared C engine now gives only the two fixed initial helper profiles a
+  finite initial Read, optional sole Extend, final Written Read and close/finish
+  route. After the final Read it closes its actual ESYS/TCTI/device before a
+  distinct nonce/sequence-bound closed-context ACK, retains both writer loans
+  while awaiting finish, and exits successfully only for that exact finish.
+  Ordinary helper operations remain Read/Extend and reject initial-only close.
+  Shared Rust codecs distinguish NV observations, close ACKs and finish frames;
+  malformed/crossed inputs and both finite sequence routes have regressions.
+  All five helper packages build, both final initial image/loader pins match,
+  and non-test online Security compilation plus 430 Broker, 125 focused Source,
+  428 ordinary Security and 437 online-Nix Security tests pass. One Broker case
+  and two cases in each Security suite remain ignored. The close component's
+  QEMU test and full application target compilation are running on audited
+  sources; their closures exclude production policy. Native parent close/finish
+  custody, actual original process cleanup, Security's approved workflow and
+  canonical checkpoint remain open. This does not qualify installed producer
+  or lifecycle behavior; admission stays closed.
+
 - The same Source-held, authenticated helper now has bounded native mechanics
   for initial Read, at most one Extend and final Read. Three prepaid reservoirs
   retain the actual request, send/socket/held-child posts, zero-rights reply,
@@ -60,8 +78,10 @@ Recent committed startup fixes close narrower prerequisites:
   reader before the first encrypted Extend and during cold reconciliation.
   All five helper packages, the ten cache/custody regressions and both fixed
   initial-profile checks pass; final initial ELF and loader pins match. The
-  expanded QEMU/vTPM test is running on its audited source, with production
-  policy excluded from the 1,217-derivation closure. It checks exact Defined
+  expanded QEMU/vTPM test passes on its audited source at
+  `/nix/store/yw0j8bp2yl0d969mk22gb9fxi0y1qcfh-aos-fleet-test-sandbox-method46-tpm-transport-0`,
+  with the exact derivation independently verified and production policy
+  excluded from the 1,217-derivation closure. It checks exact Defined
   and Written Names, wrong-profile refusal, wrong first-Extend authentication
   without an NV change, and matching Written readback after power loss. This
   remains transport component work; the Source/approval workflow, confined
@@ -81,9 +101,11 @@ Recent committed startup fixes close narrower prerequisites:
   Non-test Security library compilation, the nine existing native transport
   regressions, 427 Broker, 125 focused Source, 428 ordinary Security and 437
   online-Nix Security tests pass. One Broker case and two cases in each Security
-  suite remain ignored. Full application compilation is running on the audited
-  68-source snapshot, with both deleted-module absences checked and production
-  policy excluded from its 833-derivation closure. This still supplies no TPM
+  suite remain ignored. Full application compilation passes on the audited
+  68-source snapshot at
+  `/nix/store/77ipznnyipnqyqhdx442yb3dv1dsqlrd-aos-test-targets-0.1.0`,
+  with its exact derivation independently verified, both deleted-module absences
+  checked and production policy excluded from its 833-derivation closure. This still supplies no TPM
   request or observation API. Security's complete approved initial NV workflow,
   positive installed Source/helper AUTH, canonical checkpoint and lifecycle and
   recovery qualification remain open. Admission stays closed.

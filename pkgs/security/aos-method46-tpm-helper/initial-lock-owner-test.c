@@ -93,6 +93,49 @@ static void fixed_policy_cases(void)
     REQUIRE(!initial_profile_matches(&changed));
 }
 
+static void fixed_initial_exchange_cases(void)
+{
+    /* Recipe/framing DATA only. The QEMU transport probe executes the actual
+     * runner with its own provisioned device; neither test makes a Source. */
+    for (size_t written = 0; written < 2; ++written) {
+        struct initial_exchange_recipe recipe = { .phase = INITIAL_FIRST_READ };
+        for (uint8_t operation = 0; operation < 5; ++operation)
+            REQUIRE(initial_operation_allowed(&recipe, operation) == (operation == 1));
+        uint8_t reply[RESPONSE_BYTES] = {0};
+        put_u32(reply + 88, written ? WRITTEN_ATTRIBUTES : DEFINED_ATTRIBUTES);
+        REQUIRE(initial_observation_completed(&recipe, reply) == 0);
+        for (uint8_t operation = 0; operation < 5; ++operation)
+            REQUIRE(initial_operation_allowed(&recipe, operation) == (operation == (written ? 1 : 2)));
+        if (!written) {
+            put_u32(reply + 88, WRITTEN_ATTRIBUTES);
+            REQUIRE(initial_observation_completed(&recipe, reply) == 0);
+            for (uint8_t operation = 0; operation < 5; ++operation)
+                REQUIRE(initial_operation_allowed(&recipe, operation) == (operation == 1));
+        }
+        REQUIRE(initial_observation_completed(&recipe, reply) == 0);
+        for (uint8_t operation = 0; operation < 5; ++operation)
+            REQUIRE(initial_operation_allowed(&recipe, operation) == (operation == INITIAL_CLOSE_OPERATION));
+        REQUIRE(initial_observation_completed(&recipe, reply) != 0);
+    }
+    for (uint64_t sequence = 3; sequence <= 4; ++sequence) {
+        uint8_t nonce[32];
+        memset(nonce, 0x67, sizeof(nonce));
+        uint8_t finish[INITIAL_TERMINAL_BYTES] = {0};
+        memcpy(finish, "AOSBTF02", 8);
+        finish[9] = 2;
+        memcpy(finish + 12, nonce, 32);
+        finish[51] = (uint8_t)sequence;
+        REQUIRE(validate_initial_finish(finish, nonce, sequence) == 0);
+        for (size_t offset = 0; offset < INITIAL_TERMINAL_BYTES; ++offset) {
+            finish[offset] ^= 1;
+            REQUIRE(validate_initial_finish(finish, nonce, sequence) != 0);
+            finish[offset] ^= 1;
+        }
+        REQUIRE(validate_initial_finish(finish, nonce, 2) != 0);
+        REQUIRE(validate_initial_finish(finish, nonce, 5) != 0);
+    }
+}
+
 static void bind_lock_identity(uint8_t hello[HELLO_BYTES], size_t index, int file)
 {
     struct stat metadata;
@@ -190,6 +233,7 @@ static void native_lock_cases(void)
 int main(void)
 {
     fixed_policy_cases();
+    fixed_initial_exchange_cases();
     native_lock_cases();
     REQUIRE(puts("fixed initial METHOD46 helper lock-owner checks PASS") >= 0);
     return EXIT_SUCCESS;

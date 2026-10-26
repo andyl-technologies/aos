@@ -5,6 +5,13 @@
 #include "nv_esys.c"
 #include <signal.h>
 #include <stdio.h>
+#include <dirent.h>
+#include <sys/file.h>
+#include <sys/wait.h>
+
+#ifndef SO_PASSPIDFD
+#define SO_PASSPIDFD 76
+#endif
 
 /* These are test-only fixed endpoint profiles, with no production Source or
  * approval authority. The shared reader still selects its ordinary/initial
@@ -224,6 +231,173 @@ static void recover_initial(struct floor_context *context, unsigned role,
     save_fixture(path, fixture);
 }
 
+/* Exercises the SAME private runner/close recipe with a test-only provisioned
+ * context. It bypasses production entry/MAC/Source admission and proves none of
+ * them. Parent and child exchange actual socket records and real writer OFDs. */
+static void fixture_sequence(uint8_t *bytes, uint64_t sequence)
+{
+    for (size_t byte = 0; byte < 8; ++byte)
+        bytes[7 - byte] = (uint8_t)(sequence >> (byte * 8));
+}
+
+static void fixture_request(const struct private_channel *channel,
+    uint8_t operation, const uint8_t nonce[32], uint64_t sequence)
+{
+    uint8_t request[REQUEST_BYTES] = {0};
+    memcpy(request, "AOSBTQ02", 8);
+    request[9] = 2;
+    request[10] = operation;
+    memcpy(request + 12, nonce, 32);
+    fixture_sequence(request + 44, sequence);
+    require(send_frame_on(channel, request, sizeof(request)) == 0, "send fixture request");
+}
+
+static ssize_t fixture_reply(int socket, uint8_t *bytes, size_t length)
+{
+    struct pollfd wait = { .fd = socket, .events = POLLIN };
+    require(poll(&wait, 1, 30000) == 1, "bounded fixture reply wait");
+    /* The test parent compares DATA from its private forked child. This is not
+     * the production native record-subject admission or a substitute for it. */
+    return recv(socket, bytes, length, MSG_TRUNC);
+}
+
+static void require_child_device(pid_t child, bool expected)
+{
+    char path[64];
+    require(snprintf(path, sizeof(path), "/proc/%ld/fd", (long)child) > 0,
+        "child descriptor directory path");
+    DIR *directory = opendir(path);
+    require(directory != NULL, "open live test child descriptor directory");
+    bool found = false;
+    for (;;) {
+        errno = 0;
+        struct dirent *entry = readdir(directory);
+        require(entry != NULL || errno == 0, "read test child descriptors");
+        if (entry == NULL)
+            break;
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+        char target[512];
+        ssize_t count = readlinkat(dirfd(directory), entry->d_name, target, sizeof(target));
+        require(count >= 0 && (size_t)count < sizeof(target), "read actual child descriptor target");
+        found |= count == (ssize_t)strlen(FIXED_DEVICE)
+            && memcmp(target, FIXED_DEVICE, (size_t)count) == 0;
+    }
+    require(closedir(directory) == 0 && found == expected,
+        "actual test child device custody matches close frontier");
+}
+
+static void close_probe(unsigned role, const char *path,
+    const struct fixture *fixture, const char *mode)
+{
+    char *paths[2] = {NULL, NULL};
+    int locks[2];
+    for (size_t index = 0; index < 2; ++index) {
+        require(asprintf(&paths[index], "%s.close-lock-%zu", path, index) >= 0,
+            "allocate close fixture lock path");
+        locks[index] = open(paths[index], O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        require(locks[index] >= 3 && flock(locks[index], LOCK_EX | LOCK_NB) == 0,
+            "hold actual close fixture lock");
+    }
+    int sockets[2];
+    require(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) == 0,
+        "private close fixture channel");
+    int enabled = 1;
+    for (size_t index = 0; index < 2; ++index)
+        require(setsockopt(sockets[index], SOL_SOCKET, SO_PASSCRED, &enabled, sizeof(enabled)) == 0
+            && setsockopt(sockets[index], SOL_SOCKET, SO_PASSPIDFD, &enabled, sizeof(enabled)) == 0,
+            "actual kernel socket identity options");
+    uint8_t nonce[32];
+    memset(nonce, 0x67, sizeof(nonce));
+    pid_t parent = getpid();
+    pid_t child = fork();
+    require(child >= 0, "fork private transport fixture child");
+    if (child == 0) {
+        require(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0 && getppid() == parent,
+            "test child parent lifetime");
+        require(dup2(sockets[1], STDIN_FILENO) == STDIN_FILENO
+            && close(sockets[0]) == 0 && close(sockets[1]) == 0,
+            "install sole test child carrier");
+        struct floor_context context = {.salt = ESYS_TR_NONE,
+            .index = ESYS_TR_NONE, .session = ESYS_TR_NONE};
+        require(open_direct_device(&context) == 0 && authenticate(&context, role, fixture) == 0,
+            "authenticate actual child device context");
+        const struct aos_nv_custody_profile *profile = strcmp(mode, "ordinary-close") == 0
+            ? &ordinary_fixture_profile : &initial_fixture_profiles[role];
+        int result = run_index_exchange(&context, nonce, parent, profile, locks);
+        close_context(&context);
+        for (size_t index = 0; index < 2; ++index)
+            require(close(locks[index]) == 0, "close test child writer loan");
+        _exit(result == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
+    }
+    require(close(sockets[1]) == 0, "close parent copy of child endpoint");
+    const struct private_channel channel = {.fd = sockets[0], .cut = 0};
+    for (uint64_t sequence = 1; sequence <= 2; ++sequence) {
+        fixture_request(&channel, 1, nonce, sequence);
+        uint8_t reply[RESPONSE_BYTES];
+        require(fixture_reply(channel.fd, reply, sizeof(reply)) == (ssize_t)sizeof(reply)
+            && memcmp(reply, "AOSBTR02", 8) == 0 && reply[9] == 2 && reply[10] == 1
+            && memcmp(reply + 12, nonce, 32) == 0 && get_u64(reply + 44) == sequence
+            && get_u32(reply + 88) == WRITTEN_ATTRIBUTES
+            && memcmp(reply + 96, fixture->checkpoint, 32) == 0,
+            "same actual child initial/final Written reads");
+    }
+    require_child_device(child, true);
+    fixture_request(&channel, INITIAL_CLOSE_OPERATION, nonce, 3);
+    uint8_t acknowledgment[INITIAL_TERMINAL_BYTES];
+    ssize_t received = fixture_reply(channel.fd, acknowledgment, sizeof(acknowledgment));
+    bool ordinary = strcmp(mode, "ordinary-close") == 0;
+    if (ordinary) {
+        require(received == 0, "ordinary runner refuses initial-only close without ACK");
+    } else {
+        uint8_t finish[INITIAL_TERMINAL_BYTES] = {0};
+        memcpy(finish, "AOSBTC02", 8);
+        finish[9] = 2;
+        memcpy(finish + 12, nonce, 32);
+        fixture_sequence(finish + 44, 3);
+        require(received == (ssize_t)sizeof(finish)
+            && memcmp(acknowledgment, finish, sizeof(finish)) == 0,
+            "exact original closed-context acknowledgment");
+        require_child_device(child, false);
+        int status;
+        require(waitpid(child, &status, WNOHANG) == 0,
+            "actual child stays alive awaiting finish");
+        for (size_t index = 0; index < 2; ++index) {
+            require(close(locks[index]) == 0, "retire only parent test lock duplicate");
+            locks[index] = -1;
+            int foreign = open(paths[index], O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+            require(foreign >= 3, "open foreign test lock description");
+            errno = 0;
+            require(flock(foreign, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK,
+                "child retains BOTH original writer loans after closing TPM");
+            require(close(foreign) == 0, "close refused foreign lock");
+        }
+        if (strcmp(mode, "close-extra-request") == 0) {
+            fixture_request(&channel, 1, nonce, 4);
+        } else {
+            memcpy(finish, "AOSBTF02", 8);
+            if (strcmp(mode, "close-wrong-finish") == 0)
+                finish[12] ^= 1;
+            require(send_frame_on(&channel, finish, sizeof(finish)) == 0,
+                "send actual test finish frame");
+        }
+    }
+    int status;
+    require(waitpid(child, &status, 0) == child && WIFEXITED(status), "reap original fixture child");
+    require(WEXITSTATUS(status) == (strcmp(mode, "close") == 0 ? EXIT_SUCCESS : EXIT_FAILURE),
+        "only exact initial close/finish exits successfully");
+    require(close(channel.fd) == 0, "close final parent test channel");
+    for (size_t index = 0; index < 2; ++index) {
+        if (locks[index] >= 0)
+            require(close(locks[index]) == 0, "close parent test lock");
+        int foreign = open(paths[index], O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+        require(foreign >= 3 && flock(foreign, LOCK_EX | LOCK_NB) == 0,
+            "actual child exit retires its lock descriptions");
+        require(close(foreign) == 0 && unlink(paths[index]) == 0, "remove owned fixture lock");
+        free(paths[index]);
+    }
+}
+
 int main(int argc, char **argv)
 {
     int resumable = argc > 1 && (strcmp(argv[1], "initialize-resumable") == 0
@@ -239,6 +413,13 @@ int main(int argc, char **argv)
     struct fixture fixture = {0};
     struct floor_context context = {.salt = ESYS_TR_NONE,
         .index = ESYS_TR_NONE, .session = ESYS_TR_NONE};
+    if (strcmp(argv[1], "close") == 0 || strcmp(argv[1], "close-wrong-finish") == 0
+        || strcmp(argv[1], "close-extra-request") == 0 || strcmp(argv[1], "ordinary-close") == 0) {
+        load_fixture(argv[3], &fixture);
+        close_probe(role, argv[3], &fixture, argv[1]);
+        erase(&fixture, sizeof(fixture));
+        return EXIT_SUCCESS;
+    }
     require(open_direct_device(&context) == 0, "production device TCTI");
 
     if (strcmp(argv[1], "provision") == 0 || strcmp(argv[1], "prepare") == 0) {

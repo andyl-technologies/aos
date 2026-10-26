@@ -73,6 +73,12 @@ in {
         written = vm.succeed(f"${command} observe-initial {role} {state}").strip()
         assert written == initial_observation(role, 0x20040044, first_value), written
         assert written.split()[1] != defined.split()[1], (defined, written)
+        retained = vm.succeed(f"sha256sum {state}")
+        for mode in ("close", "close-wrong-finish", "close-extra-request", "ordinary-close"):
+            vm.succeed(f"${command} {mode} {role} {state}")
+            assert vm.succeed(f"sha256sum {state}") == retained
+            vm.succeed(f"${command} read {role} {state}")
+        vm.succeed("test -z \"$(find /var/lib/method46-transport -name '*.close-lock-*' -print -quit)\"")
         vm.fail(f"${command} initialize {role} {state} {seed}")
         vm.fail(f"${command} initialize {role} {state}.unwritten {seed}")
         vm.fail(f"${command} provision {role} {state}")

@@ -15,6 +15,9 @@
 //! AOSBTR02 | version:2u16be | op:u8 | reserved:0u8 | nonce:32 |
 //! sequence:u64be | NV-Name:34 | name-alg:u16be | attrs:u32be |
 //! size:u16be | policy-length:u16be | value:32
+//! Initial-only close: AOSBTQ02 above, op:3, input:zero, sequence:3|4
+//! AOSBTC02 | version:2u16be | reserved:0u16be | nonce:32 | sequence:3|4u64be
+//! AOSBTF02 | version:2u16be | reserved:0u16be | nonce:32 | same-sequence:u64be
 //! ```
 //!
 //! HELLO carries no secret. The child validates its two empty lock loans and
@@ -75,6 +78,8 @@ pub const AUTH_BYTES: usize = 80;
 pub const REQUEST_BYTES: usize = 84;
 /// Bounds a correlated TPM response DATA frame.
 pub const RESPONSE_BYTES: usize = 128;
+/// Bounds an initial-only closed-context acknowledgement or finish frame.
+pub const INITIAL_TERMINAL_BYTES: usize = 52;
 
 /// Selects one existing helper wire operation as nonauthorizing DATA.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -194,14 +199,100 @@ pub fn encode_request_v2(
     {
         return Err(TpmHelperFrameErrorV2::Encoding);
     }
+    request_frame_v2(operation as u8, nonce, sequence, input)
+}
+
+fn request_frame_v2(
+    operation: u8,
+    nonce: [u8; 32],
+    sequence: u64,
+    input: [u8; 32],
+) -> Result<[u8; REQUEST_BYTES], TpmHelperFrameErrorV2> {
+    if nonce == [0; 32] || sequence == 0 || sequence == u64::MAX {
+        return Err(TpmHelperFrameErrorV2::Encoding);
+    }
     let mut bytes = [0; REQUEST_BYTES];
     bytes[..8].copy_from_slice(b"AOSBTQ02");
     bytes[8..10].copy_from_slice(&2_u16.to_be_bytes());
-    bytes[10] = operation as u8;
+    bytes[10] = operation;
     bytes[12..44].copy_from_slice(&nonce);
     bytes[44..52].copy_from_slice(&sequence.to_be_bytes());
     bytes[52..84].copy_from_slice(&input);
     Ok(bytes)
+}
+
+/// Encodes the initial-only request to close the held helper's TPM context.
+///
+/// Ordinary helpers reject operation 3. A fixed initial helper accepts it only
+/// after its actual initial Read, optional sole Extend and final Written Read.
+/// Encoding grants no drain claim; the genuine owner must independently admit
+/// the same child's closed-context ACK before sending its finish frame.
+///
+/// # Errors
+/// Rejects a sentinel nonce or a sequence outside the two finite initial routes.
+pub fn encode_initial_close_request_v2(
+    nonce: [u8; 32],
+    sequence: u64,
+) -> Result<[u8; REQUEST_BYTES], TpmHelperFrameErrorV2> {
+    require_initial_terminal_inputs(nonce, sequence)?;
+    request_frame_v2(3, nonce, sequence, [0; 32])
+}
+
+/// Compares the fixed initial closed-context acknowledgement as DATA only.
+///
+/// The child emits this distinct frame after closing its actual ESYS/TCTI/device
+/// while retaining both writer loans and awaiting finish. It is not an NV
+/// observation. The genuine owner separately checks record subject, same held
+/// child, Source currentness and deadline; copied bytes grant no drain authority.
+///
+/// # Errors
+/// Rejects wrong length, header, nonce, finite sequence or crossed frame kind.
+pub fn require_initial_closed_ack_v2(
+    bytes: &[u8],
+    nonce: [u8; 32],
+    sequence: u64,
+) -> Result<(), TpmHelperFrameErrorV2> {
+    require_initial_terminal_inputs(nonce, sequence)?;
+    if bytes.len() != INITIAL_TERMINAL_BYTES
+        || &bytes[..8] != b"AOSBTC02"
+        || bytes[8..12] != [0, 2, 0, 0]
+        || bytes[12..44] != nonce
+        || bytes[44..52] != sequence.to_be_bytes()
+    {
+        return Err(TpmHelperFrameErrorV2::Encoding);
+    }
+    Ok(())
+}
+
+/// Encodes finish after the original initial child's closed-context ACK.
+///
+/// This distinct frame lets that same child close its writer loans and exit
+/// normally. Encoding provides no proof of ACK, child exit, reaping or drain.
+///
+/// # Errors
+/// Rejects a sentinel nonce or a sequence outside the two finite initial routes.
+pub fn encode_initial_finish_v2(
+    nonce: [u8; 32],
+    sequence: u64,
+) -> Result<[u8; INITIAL_TERMINAL_BYTES], TpmHelperFrameErrorV2> {
+    require_initial_terminal_inputs(nonce, sequence)?;
+    let mut bytes = [0; INITIAL_TERMINAL_BYTES];
+    bytes[..8].copy_from_slice(b"AOSBTF02");
+    bytes[8..12].copy_from_slice(&[0, 2, 0, 0]);
+    bytes[12..44].copy_from_slice(&nonce);
+    bytes[44..52].copy_from_slice(&sequence.to_be_bytes());
+    Ok(bytes)
+}
+
+fn require_initial_terminal_inputs(
+    nonce: [u8; 32],
+    sequence: u64,
+) -> Result<(), TpmHelperFrameErrorV2> {
+    if nonce == [0; 32] || !matches!(sequence, 3 | 4) {
+        Err(TpmHelperFrameErrorV2::Encoding)
+    } else {
+        Ok(())
+    }
 }
 
 /// Decodes only exact response shape and channel correlation as DATA.
@@ -298,6 +389,41 @@ mod tests {
             assert_eq!(deployment[..44], method46[..44]);
             assert_eq!(deployment[52..], method46[52..]);
         }
+    }
+
+    #[test]
+    fn initial_close_is_distinct_from_nv_data_and_binds_both_finite_routes() {
+        for sequence in [3, 4] {
+            let close = encode_initial_close_request_v2([7; 32], sequence).unwrap();
+            assert_eq!(close[10], 3);
+            assert_eq!(&close[44..52], &sequence.to_be_bytes());
+            assert_eq!(close[52..], [0; 32]);
+
+            let finish = encode_initial_finish_v2([7; 32], sequence).unwrap();
+            assert!(require_initial_closed_ack_v2(&finish, [7; 32], sequence).is_err());
+            let mut ack = finish;
+            ack[..8].copy_from_slice(b"AOSBTC02");
+            assert!(require_initial_closed_ack_v2(&ack, [7; 32], sequence).is_ok());
+            assert!(decode_response_v2(&ack, HelperOperationV1::Read, [7; 32], sequence).is_err());
+            for offset in 0..INITIAL_TERMINAL_BYTES {
+                let mut changed = ack;
+                changed[offset] ^= 1;
+                assert!(require_initial_closed_ack_v2(&changed, [7; 32], sequence).is_err());
+            }
+            assert!(require_initial_closed_ack_v2(&ack[..51], [7; 32], sequence).is_err());
+            assert!(
+                require_initial_closed_ack_v2(&[ack.as_slice(), &[0]].concat(), [7; 32], sequence)
+                    .is_err()
+            );
+            assert!(require_initial_closed_ack_v2(&ack, [6; 32], sequence).is_err());
+            assert!(require_initial_closed_ack_v2(&ack, [7; 32], 7 - sequence).is_err());
+        }
+        for sequence in [0, 1, 2, 5, u64::MAX] {
+            assert!(encode_initial_close_request_v2([7; 32], sequence).is_err());
+            assert!(encode_initial_finish_v2([7; 32], sequence).is_err());
+        }
+        assert!(encode_initial_close_request_v2([0; 32], 3).is_err());
+        assert!(encode_initial_finish_v2([0; 32], 4).is_err());
     }
 
     fn response() -> [u8; RESPONSE_BYTES] {
