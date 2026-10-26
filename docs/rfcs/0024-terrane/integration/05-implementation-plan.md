@@ -177,14 +177,25 @@ its earlier failed run and qualifies the scoped/held backend components; fresh
 per-request service authorization, configured GC deployment and whole-role
 acceptance remain separate.
 
-Renewed native cache prerequisites are running at `e6f214f3ce`. The complete
-preflight classifies all 22 missing prerequisites: two compile-only retained
-images, twelve image-assembly derivations, six actual AOS KVM checks and two
-result aggregates. Their constructors and drivers are unchanged from qualified
-`31aa0ae05f`; every guest retains its 870-second bound, 1,024 MiB and one CPU.
-The remaining matrix and fresh private-builder probe will run only after these
-prerequisites complete and are independently reviewed. No matrix success or
-additional task acceptance is claimed.
+Renewed native cache prerequisites at `e6f214f3ce` pass in 3,125.088 seconds.
+Independent review checks both retained images and all six original AOS guests,
+8,272 immutable source files and 5,513 bound inputs per image, with four retained
+Cargo executables per profile. The base/all-features rows execute their original
+130/258 ordinary cases and five creator cases each. Original listener retirement,
+five mount-factory controls per profile, finite consumer expiry and measured
+physical-release witnesses pass. Every guest retains its 870-second bound,
+1,024 MiB and one CPU. This remains component evidence, not full role acceptance.
+
+The full feature matrix at that same frozen revision is now running in the
+isolated 32 GiB AOS builder. The post-prerequisite preflight has exactly two
+missing derivations: the unchanged matrix and a fresh nonce-bound sandbox probe.
+Both reviewed cache outputs are bound to the actual request. All aggregate,
+per-feature, intentional-incompatibility and doctest commands remain, including
+the SDK's one-thread execution and removal of DAC bypass. Host-native fallback
+is disabled and no nested KVM is required. No matrix success or additional task
+acceptance is claimed. The later reflog client at `8c10438255` has separate fresh
+30-socket/22-portable and required application-compilation runs in progress; the
+older matrix does not qualify those later changes.
 
 Required application-target compilation at `e6f214f3ce` passes in 1,498.897
 seconds. Independent review matches all 8,272 immutable source files and 190
