@@ -70,6 +70,45 @@ def check_publisher_mount_policy(proof, domains):
             "managed publisher can read private cache state")
 
 
+def check_gc_ordering(records, active_enter, boot_id, runs):
+    """Requires complete same-boot PID 1 start/finish pairs after Serve readiness."""
+    require(type(active_enter) is int and active_enter > 0
+            and type(runs) is int and runs > 0, "invalid managed readiness observation")
+    require(isinstance(boot_id, str) and len(boot_id) == 32
+            and all(character in "0123456789abcdef" for character in boot_id),
+            "invalid managed boot identity")
+    messages = ["Starting Terrane gc role...", "Finished Terrane gc role."]
+    events = []
+    for row in records:
+        if (row.get("_PID") != "1" or row.get("UNIT") != "terrane-gc.service"
+                or row.get("MESSAGE") not in messages):
+            continue
+        timestamp = row.get("__MONOTONIC_TIMESTAMP")
+        require(row.get("_BOOT_ID") == boot_id and isinstance(timestamp, str)
+                and timestamp.isdecimal() and int(timestamp) > 0,
+                "managed GC journal lacks trusted same-boot timing")
+        events.append({key: row[key] for key in
+                       ["_PID", "UNIT", "MESSAGE", "_BOOT_ID", "__MONOTONIC_TIMESTAMP"]})
+
+    require([row["MESSAGE"] for row in events] == messages * runs,
+            "managed GC manager start/finish records are incomplete")
+    previous = active_enter
+    for row in events:
+        timestamp = int(row["__MONOTONIC_TIMESTAMP"])
+        require(timestamp >= previous, "managed GC ran before serving readiness or out of order")
+        previous = timestamp
+    return events
+
+
+def gc_journal(driver, serve, runs):
+    """Reads trusted manager timing retained after a one-shot completes."""
+    boot_id = pathlib.Path("/proc/sys/kernel/random/boot_id").read_text().strip().replace("-", "")
+    output = command(driver, ["journalctl", "--boot=0", "--no-pager", "--output=json",
+                              "--unit=terrane-gc.service"])
+    records = [json.loads(line) for line in output.splitlines()]
+    return check_gc_ordering(records, int(serve["ActiveEnterTimestampMonotonic"]), boot_id, runs)
+
+
 def verify_publisher_mounts():
     """Observes one actual publication mount while requiring protected parents."""
     domains = tomllib.loads(CONFIG.read_text())["host_tier"]["domains"]
@@ -252,9 +291,11 @@ def run(driver, image):
         driver.require(serve["Type"] == "notify" and serve["NotifyAccess"] == "main"
                        and serve["ActiveState"] == "active" and int(serve["MainPID"]) > 0,
                        "managed Serve did not become ready through main-process notification")
-        driver.require(gc["ExecMainStatus"] == "0" and gc["Result"] == "success"
-                       and int(gc["ExecMainStartTimestampMonotonic"]) >= int(serve["ActiveEnterTimestampMonotonic"]) > 0,
-                       "managed GC ran before serving readiness")
+        driver.require(gc["ExecMainStatus"] == "0" and gc["Result"] == "success",
+                       "managed GC did not complete successfully")
+        # Completed one-shots can report a zero retained exec start property.
+        # PID 1's same-boot journal must still prove the actual start ordering.
+        original_gc_events = gc_journal(driver, serve, 1)
         common["verify_owner_locks"](driver, True, original_state)
         original_inodes = [(path.stat().st_dev, path.stat().st_ino) for path in sockets]
         for path in sockets:
@@ -266,6 +307,9 @@ def run(driver, image):
         command(driver, ["systemctl", "start", "terrane-gc.service"])
         driver.require(properties(driver, "gc", ["ExecMainStatus", "Result"]) == {"ExecMainStatus": "0", "Result": "success"},
                        "second managed GC failed")
+        gc_events = gc_journal(driver, serve, 2)
+        driver.require(gc_events[:2] == original_gc_events,
+                       "managed GC replaced its original manager timing")
         common["verify_owner_locks"](driver, True, original_state)
         gc_log = command(driver, ["journalctl", "--no-pager", "--output=cat", "--unit=terrane-gc.service"])
         identities = [json.loads(line.removeprefix("TERRANE_MANAGED_ACTOR_IDENTITY ")) for line in gc_log.splitlines()
@@ -348,6 +392,7 @@ def run(driver, image):
             "units_sha256": {name: hashlib.sha256(text.encode()).hexdigest() for name, text in expected["units"].items()},
             "systemd_pid1": True, "restart_recovery": False, "physical_release": False,
             "publisher_mount_policy": publisher_policy[0], "publisher_identity": publisher_identity[0],
+            "gc_manager_journal": gc_events,
         }, sort_keys=True), flush=True)
         print("PASS actual systemd starts GC only after original Serve owners and listeners are ready; fresh confined roles preserve custody and acknowledge shutdown", flush=True)
         completed = True

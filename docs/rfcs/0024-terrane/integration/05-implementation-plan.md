@@ -104,6 +104,17 @@ and mandatory application-target compilation remain required. Strict SDK
 all-target Clippy, Rust formatting, proof parsing and plan coverage pass. The production
 Distribution backend, remote store and T-PROTO-1 acceptance remain open.
 
+The unchanged manager-ordering diagnostic confirms that successful one-shot
+GC returns `ExecMainStartTimestampMonotonic=0` while Serve has a positive
+activation timestamp. It fails the original assertion in 183.570 seconds;
+the full guest logs, exact property records and unchanged manifest are retained,
+and its terminal scratch is removed. The supervisor now requires same-boot
+PID 1 journal start/finish pairs for both GC invocations, each ordered after
+Serve readiness. It retains the original first pair through the second run,
+the completion status assertions and every other original control. Pure
+verification accepts the complete two-run observation and rejects eight invalid
+records. This corrects the timing oracle; native qualification remains required.
+
 The empty-reference copied collection fixture at `80cf0444bf` fails its focused
 qualification in 1,523.633 seconds. The first actual selector fails during
 positive fixture checkpoint encoding with `PublicationError::Contradiction`,
