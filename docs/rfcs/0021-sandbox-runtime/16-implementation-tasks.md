@@ -49,6 +49,9 @@ Recent committed startup fixes close narrower prerequisites:
   retaining that input in the guest image corrects the test closure. This
   non-enforcing component test excludes the pending production policy and
   establishes no installed Host or TPM qualification.
+  The private Host startup-canary route uses the same held-descriptor check;
+  its current-source isolated Host suite passes 409 tests, with four skipped.
+  Complete current-source Rust target compilation remains pending.
   The enforcing combined Host candidate previously refused with retained Linux
   error class 213; this result alone does not identify its syscall or errno.
   A corrected enforcing run remains a separate gate, and admission stays closed.

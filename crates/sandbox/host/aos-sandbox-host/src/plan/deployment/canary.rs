@@ -14,7 +14,7 @@ use std::time::Duration;
 use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::inherited_fd::HostCanaryInitialActivationTableV1;
-use aos_sandbox_linux::inventory::{MountId, MountNamespace};
+use aos_sandbox_linux::inventory::DescriptorMountObservation;
 use aos_sandbox_linux::pidfd::{CurrentSelfPidFdCustodyV1, PidFdProcessIdentity};
 use aos_sandbox_linux::protected_file::{ExactReadFailure, read_exact_positioned_retaining_cause};
 use aos_sandbox_linux::seqpacket::{
@@ -418,8 +418,9 @@ impl HostCanaryStartupV1 {
         {
             return Err(StartupFailure::Original);
         }
-        let mount = MountId::from_fd(file.as_fd()).map_err(|_| StartupFailure::Original)?;
-        if !MountNamespace::current().observe(mount).map_err(|_| StartupFailure::Original)?.is_read_only() {
+        let mount = DescriptorMountObservation::capture(file.as_fd())
+            .map_err(|_| StartupFailure::Original)?;
+        if !mount.is_read_only() {
             return Err(StartupFailure::Original);
         }
         Ok(())
