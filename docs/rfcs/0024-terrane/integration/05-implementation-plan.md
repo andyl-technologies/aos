@@ -196,8 +196,19 @@ publisher barriers, recovery and Resume remain separate observations; no stage
 contains a path, domain, credential or underlying error text. Public native
 openers retain their original I/O errors and the operation ordering is unchanged.
 The existing complete-source-chain redaction case covers the new cause and its
-I/O category. Native execution and mandatory application-target qualification
-of this diagnostic extension remain pending; no recovery fix is claimed.
+I/O category. Both native all-target profiles pass strict AOS-built Clippy:
+Tokio alone in 39.10 seconds and the production FUSE/SDK profile in 13.53 seconds.
+
+At `67f207bc11`, all twelve configured SDK unit cases pass in a fresh isolated
+AOS guest in 90.301 seconds. Independent review binds 8,295 immutable source
+files, 5,516 image inputs and four actual retained Cargo executables. The
+extended complete-source-chain redaction case passes; its selector and the
+other eleven selectors are unchanged. A fresh capability-free AOS ext4 sandbox,
+both remotely dispatched native derivations, disabled host-native fallback and
+clean shutdown are independently reviewed. Seven raw controller records are
+preserved and owned scratch is removed. These are unit results: renewed managed
+restart-stage diagnosis and mandatory application-target compilation remain
+pending, no recovery fix is claimed, and trunk acceptance remains 27/64.
 
 The actual service-manager fixture now declares the public issuer file and
 independent startup Read required by the configured SDK launcher. Its guest
