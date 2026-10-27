@@ -39,9 +39,16 @@ Recent committed startup fixes close narrower prerequisites:
   before-command/after-response holds, fixed-index selection, failed replies,
   malformed frames, descriptor cleanup and worker reaping. The relay wraps the
   harness's existing swtpm control/data transport and adds no production callback
-  or guest TPM observation. It is not yet connected to a VM crash test; actual
-  interrupted initialization, authenticated TPM readback and cold recovery
-  remain unqualified.
+  or guest TPM observation. Both installed initializers are now wired into
+  `checks.fleet.sandbox-method46-initial-before-command-power-loss` and
+  `checks.fleet.sandbox-method46-initial-after-response-power-loss`. Full fleet
+  derivation evaluation and generated-Python checks pass for both variants.
+  They kill/reap QEMU and swtpm, authenticate the retained NV state before the
+  replacement boot, then require the same signed intent and cold completion
+  without a new approval peer. Final sidecar/NV comparisons and completed-state
+  repeat refusal remain required. These variants have not executed; the baseline
+  installed provisioning run is still building. Actual interrupted initialization,
+  authenticated TPM readback and cold recovery remain unqualified.
 
 - Installed initial-producer qualification exposed stale manager validation:
   it required a oneshot invocation with an obsolete selector argument and zero
