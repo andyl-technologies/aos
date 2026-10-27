@@ -76,13 +76,12 @@ pub(super) fn begin(
         owner: pin_owner.clone(),
         expires: RETAINED_LEASE_DEADLINE,
     });
-    next.pins.push(PinRecord {
-        owner: pin_owner.clone(),
-        hash: hex(job.claim.descriptor().digest()),
-        expires: RETAINED_LEASE_DEADLINE,
-    });
-    if let Some(input) = &job.manifest {
-        input.pin_backings(owner, &mut next, &pin_owner)?;
+    for hash in backing_hashes(owner, job)? {
+        next.pins.push(PinRecord {
+            owner: pin_owner.clone(),
+            hash,
+            expires: RETAINED_LEASE_DEADLINE,
+        });
     }
     next.encoded_len(owner.preparation.config.state)
         .map_err(io::Error::other)?;
@@ -114,6 +113,7 @@ pub(super) fn complete(
         job.generation,
     )?;
     check_dictionary(executor, owner, job)?;
+    check_producer_pins(owner, job)?;
     super::completion::check(job)?;
     let body = job
         .body
@@ -310,13 +310,13 @@ fn check_dictionary(
         .codec;
     match (codec, &job.dictionary) {
         (Codec::ZstdDictionary(digest), Some(original)) => {
-            let (_, current) =
-                super::super::admission::chunk::dictionary(executor, None, owner, &digest)?;
-            if !Arc::ptr_eq(original, &current) {
+            if original.identity().digest() != digest {
                 return Err(invalid(
-                    "publication dictionary changed actual owner source",
+                    "publication dictionary differs from its original envelope",
                 ));
             }
+            original.check_registered(executor, owner)?;
+            drop(original.read_verified()?);
             Ok(())
         }
         (Codec::ZstdDictionary(_), None) | (_, Some(_)) => Err(invalid(
@@ -324,6 +324,55 @@ fn check_dictionary(
         )),
         (_, None) => Ok(()),
     }
+}
+
+/// Collects the exact producer and grace protection for the retained input.
+///
+/// # Errors
+/// Refuses changed manifest backing or exhausted allocation capacity.
+pub(super) fn backing_hashes(owner: &Custody, job: &PublicationJob) -> io::Result<Vec<String>> {
+    let mut hashes = job
+        .manifest
+        .as_ref()
+        .map(|input| input.backing_hashes(owner))
+        .transpose()?
+        .unwrap_or_default();
+    if let Some(dictionary) = &job.dictionary {
+        for digest in dictionary.digests() {
+            hashes.try_reserve_exact(1).map_err(io::Error::other)?;
+            hashes.push(hex(digest));
+        }
+    }
+    hashes.try_reserve_exact(1).map_err(io::Error::other)?;
+    hashes.push(hex(job.claim.descriptor().digest()));
+    hashes.sort();
+    hashes.dedup();
+    Ok(hashes)
+}
+
+/// Checks the complete durable closure while original producer custody remains.
+///
+/// # Errors
+/// Refuses absent, duplicate or altered dictionary/container and content pins.
+pub(super) fn check_producer_pins(owner: &Custody, job: &PublicationJob) -> io::Result<()> {
+    let hashes = backing_hashes(owner, job)?;
+    let producer = format!("publication:{}", job.token);
+    if owner
+        .state
+        .pins
+        .iter()
+        .filter(|pin| pin.owner == producer)
+        .count()
+        != hashes.len()
+        || hashes.iter().any(|hash| {
+            !owner.state.pins.iter().any(|pin| {
+                pin.owner == producer && &pin.hash == hash && pin.expires == RETAINED_LEASE_DEADLINE
+            })
+        })
+    {
+        return Err(invalid("publication original backing pins changed"));
+    }
+    Ok(())
 }
 
 /// Encodes a canonical digest or random physical operation identifier.

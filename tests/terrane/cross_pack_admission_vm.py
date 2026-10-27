@@ -1,6 +1,9 @@
 """Observes original cross-pack dictionary ranges, funding and cache handoff."""
 
+import os
+import signal
 import struct
+import time
 import tomllib
 
 from encoded_eviction_vm import Original
@@ -236,3 +239,199 @@ def run_standalone(driver, uuid):
             process.wait(timeout=5)
         for original in originals:
             original.close()
+
+
+def run_publications(driver, uuid, processes):
+    """Checks real packed-dictionary publication, handoff and waiter cancellation."""
+    for cancelled in (False, True):
+        case = "publication-packed-dictionary" + ("-cancel" if cancelled else "")
+        mode = "publish-packed-dictionary" + ("-cancel" if cancelled else "")
+        publisher = processes[driver.CASES.index(case) // driver.CASES_PER_PARTITION][1]
+        root = driver.root(case)
+        snapshot = root / "state/cache/records.toml"
+        process = driver.controlled_actor(case, mode, uuid)
+        lines = driver.Lines(process)
+        originals = []
+        stopped = False
+
+        def control(value):
+            process.stdin.write((value + "\n").encode())
+            process.stdin.flush()
+
+        def wait_for(predicate, message):
+            deadline = time.monotonic() + 30
+            while not predicate():
+                driver.require(process.poll() is None and publisher.poll() is None
+                               and time.monotonic() < deadline, message)
+                time.sleep(0.02)
+
+        def policy():
+            return tomllib.loads(snapshot.read_text())
+
+        def pins(state, prefix):
+            groups = {}
+            for row in state.get("pins", []):
+                if row["owner"].startswith(prefix):
+                    groups.setdefault(row["owner"], []).append(row)
+            return groups
+
+        def protected(state, prefix, hashes):
+            groups = pins(state, prefix)
+            driver.require(len(groups) == 1, "packed publication lost its original promise")
+            purpose, rows = next(iter(groups.items()))
+            leases = [row for row in state.get("leases", []) if row["owner"] == purpose]
+            driver.require(len(rows) == len(hashes) and {row["hash"] for row in rows} == hashes
+                           and len(leases) == 1
+                           and all(row["expires"] == leases[0]["expires"] for row in rows),
+                           "packed publication lost exact original dictionary/container pins")
+            if prefix == "publication:":
+                driver.require(leases[0]["expires"] == 2**63 - 1,
+                               "packed producer promise unexpectedly expires")
+            else:
+                driver.require(time.time() < leases[0]["expires"] <= time.time() + 31,
+                               "packed publication handoff lacks bounded synchronized grace")
+            return purpose
+
+        def descriptors(expected):
+            for original in originals[:2]:
+                count = 0
+                for path in (driver.pathlib.Path("/proc") / str(process.pid) / "fd").iterdir():
+                    try:
+                        value = path.stat()
+                    except FileNotFoundError:
+                        continue
+                    count += (value.st_dev, value.st_ino) == original.key[:2]
+                driver.require(count == expected,
+                               "independent observer found changed original dictionary descriptors")
+
+        try:
+            lines.until("READY inline packed dictionaries retain original funded pair", timeout=30)
+            driver.require(lines.bytes.decode().splitlines().count(
+                "ACK actual empty recovery Resume; no Ready") == 1,
+                "packed publication lacks genuine empty recovery and Resume")
+            print(driver.process_status(process, 840), flush=True)
+            paths = sorted((root / "objects/pack").glob("*/*"))
+            driver.require(len(paths) == 2, "packed publication lacks original dictionary pair")
+            for path in paths:
+                originals.append(Original(driver, case, path, 840))
+            pair, index, entries = records(driver, root, 122, 2)
+            terminal = b"producer packed terminal vocabulary " * 16
+            middle = b"producer packed terminal vocabulary intermediate " * 64
+            content = b"producer packed terminal vocabulary intermediate content " * 128
+            by_length = {length: (digest, codec, body)
+                         for digest, (length, codec, body) in entries.items()}
+            driver.require(set(by_length) == {len(terminal), len(middle)},
+                           "packed publication dictionary record lengths differ")
+            terminal_id, terminal_codec, terminal_body = by_length[len(terminal)]
+            middle_id, middle_codec, middle_body = by_length[len(middle)]
+            driver.require(terminal_codec == 0 and terminal_body == b"\0" + terminal
+                           and middle_codec == 2 and middle_body[1:33].hex() == terminal_id,
+                           "packed publication observer found another original dictionary graph")
+            state = policy()
+            groups = pins(state, "admission:")
+            driver.require(len(groups) == 1, "packed publication original admission absent")
+            source_pins = {row["hash"] for row in next(iter(groups.values()))}
+            containers = source_pins - set(entries)
+            driver.require(len(source_pins) == 3 and len(containers) == 1
+                           and set(entries) <= source_pins,
+                           "original dictionary producer omits its container")
+            source_hold = 262144 + len(pair) + len(index)
+            driver.require(sorted(row["bytes"] for row in state["reservations"])
+                           == [262144, source_hold] and not state.get("residences")
+                           and not files(root / "chunks") and not files(root / "sealed"),
+                           "packed publication original namespace or funding differs")
+            before = files(root / "objects/pack")
+
+            if cancelled:
+                os.kill(publisher.pid, signal.SIGSTOP)
+                stopped = True
+                wait_for(lambda: "\nState:\tT" in (
+                    driver.pathlib.Path("/proc") / str(publisher.pid) / "status").read_text(),
+                    "actual partition publisher did not stop")
+            control("publish-packed")
+            if cancelled:
+                lines.until("QUEUED inline packed dictionary publication", timeout=30)
+                wait_for(lambda: len(pins(policy(), "publication:")) == 1,
+                         "stopped packed publication did not synchronize funding")
+                state = policy()
+                rows = next(iter(pins(state, "publication:").values()))
+                driver.require(len(rows) == 4 and source_pins < {row["hash"] for row in rows},
+                               "pending physical publication lacks original complete dictionary closure")
+                closure = {row["hash"] for row in rows}
+                protected(state, "publication:", closure)
+                holds = [262144, source_hold, 262144 + 2 * len(content)]
+                driver.require(sorted(row["bytes"] for row in state["reservations"]) == sorted(holds)
+                               and quota(driver, case) + sum(holds) <= 6 * 1024 * 1024
+                               and not state.get("residences") and not files(root / "sealed"),
+                               "stopped packed publication lost funded overlap or published early")
+                descriptors(2)
+                control("cancel-packed")
+                lines.until("CANCELLED inline packed dictionary waiter; physical custody retained", timeout=10)
+                driver.require(policy() == state,
+                               "dropping packed waiter changed synchronized physical promises")
+                os.kill(publisher.pid, signal.SIGCONT)
+                stopped = False
+                wait_for(lambda: len(policy().get("residences", [])) == 1
+                         and len(files(root / "sealed")) == 1
+                         and sorted(row["bytes"] for row in policy()["reservations"])
+                         == sorted([262144, source_hold, 262144]),
+                         "abandoned physical packed publication did not finish")
+                control("resumed-packed")
+
+            lines.until("READY inline packed publication retains original descriptors and four pins", timeout=30)
+            state = policy()
+            sealed = list((root / "sealed").glob("*/*"))
+            driver.require(len(sealed) == 1 and sealed[0].read_bytes() == content
+                           and sealed[0].stat().st_mode & 0o7777 == 0o400,
+                           "packed publication did not create the actual sealed plaintext inode")
+            originals.append(Original(driver, case, sealed[0], 841))
+            driver.require(len({original.key[:2] for original in originals}) == 3,
+                           "packed publication aliases original dictionary inodes")
+            root_id = sealed[0].name
+            closure = source_pins | {root_id}
+            protected(state, "publication:", closure)
+            driver.require(len(closure) == 4 and not pins(state, "admission:")
+                           and sorted(row["bytes"] for row in state["reservations"]) == [262144] * 2
+                           and state["residences"] == [{"chunk": root_id, "object": root_id,
+                                                       "offset": 0, "length": len(content)}],
+                           "packed publication source handoff changed settled native ownership")
+            descriptors(2)
+            control("handoff-packed-publication")
+            lines.until("READY inline packed publication consumer and original custody verified", timeout=30)
+            state = policy()
+            protected(state, "publication:" if cancelled else "publication-grace:", closure)
+            driver.require(cancelled or not pins(state, "publication:"),
+                           "successful handoff retained obsolete producer promise")
+            holds = [262144] * (2 if cancelled else 1)
+            driver.require(sorted(row["bytes"] for row in state["reservations"]) == holds
+                           and quota(driver, case) + sum(holds) <= 6 * 1024 * 1024
+                           and files(root / "objects/pack") == before
+                           and not files(root / "chunks") and not files(root / "pending-delete"),
+                           "packed handoff lost funding, original pair or extraction freedom")
+            descriptors(2 if cancelled else 1)
+            for original in originals:
+                original.check(1)
+            control("packed-publication-observed")
+            remaining, error = process.communicate(timeout=10)
+            driver.require(process.returncode == 0 and not error and remaining.decode().splitlines() == [
+                "PASS actual inline publication retains original packed dictionary closure through cancellation or synchronized cache handoff; no Ready"
+            ], "packed publication native actor did not complete")
+            print("PASS independent packed publication observer verifies original dictionary descriptors, exact closure, physical completion and "
+                  + ("abandoned-waiter custody" if cancelled else "synchronized cache grace"), flush=True)
+        except BaseException:
+            print(lines.bytes[lines.printed:].decode(), end="", flush=True)
+            if process.poll() is None:
+                process.kill()
+            remaining, error = process.communicate(timeout=5)
+            print(remaining.decode(), end="", flush=True)
+            if error:
+                print(error.decode(), end="", flush=True)
+            raise
+        finally:
+            if stopped:
+                os.kill(publisher.pid, signal.SIGCONT)
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            for original in originals:
+                original.close()

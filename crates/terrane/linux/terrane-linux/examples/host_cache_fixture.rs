@@ -62,6 +62,8 @@ fn main() -> std::process::ExitCode {
             "admit-external-data-pack",
             "admit-cross-pack",
             "admit-packed-dictionary",
+            "publish-packed-dictionary",
+            "publish-packed-dictionary-cancel",
             "admit-cancel",
             "cache-admission-handoff",
             "dictionary-custody",

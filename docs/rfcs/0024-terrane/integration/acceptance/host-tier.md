@@ -416,6 +416,43 @@ Combined ordering code and graph checks do not prove physical cold recovery.
 Inline publication with packed dictionaries, cyclic units, metadata-only GC
 tracing and full T2–T6 qualification remain open. No task is newly accepted.
 
+## Inline publication with original packed dictionaries
+
+Inline publication now retains the same verified dictionary read plan used by
+native standalone consumers. Selection captures the actual admission jobs,
+original read-only descriptors, dictionary identities and whole-pack container
+identities. Preparation and completion recheck that retained closure; they do
+not select a replacement by digest. Standalone residence transfer refuses a
+dictionary still retained by any actual publication, including an abandoned
+waiter's physical job. Checked memory arithmetic includes every publication's
+independent descriptor and header plan.
+
+Producer funding pins the root, every dictionary and its original containing
+pack. Completed producer reads check that exact pin set. Cache handoff replaces
+the complete set with synchronized bounded grace before closing the dictionary
+descriptors outside the job and custody locks. The original admission remains
+independently owned. Dropping a publication response waiter supplies no handoff
+receipt and does not release the physical job's promises or descriptors.
+
+Two appended native scenarios exercise normal handoff and cancellation against
+an actual stopped partition publisher. Both start with genuine empty recovery
+and acknowledged Resume, admit the original two-record dictionary pair, then
+publish its dependent root directly into a sealed plaintext inode. There is no
+standalone root or dictionary extraction. The actor checks original descriptor
+counts, verity, native custody, complete pins and consumer reads. The independent
+supervisor checks original pair bytes and edges, all three inode identities,
+four publication pins including the container, overlap funding before copy,
+physical completion after cancellation and exact protection after handoff. It
+stops the publisher belonging to the scenario's partition. All 111 previous
+project assignments remain fixed; 113 domains use 1,020 and 110 scaffold slots.
+
+Feature-enabled and minimal all-target Clippy and source checks are required.
+Exact-source application-target compilation and both native scenarios remain
+pending. These implementation and fixture changes do not establish physical
+publication or cancellation success. Cyclic allocation-unit lifetime,
+metadata-only GC tracing, remaining host integration and full T2–T6 acceptance
+remain open. No task is newly accepted; trunk acceptance remains 28/64.
+
 ## Clause coverage
 
 | Requirements | Inspected implementation | Required physical evidence and remaining limits |

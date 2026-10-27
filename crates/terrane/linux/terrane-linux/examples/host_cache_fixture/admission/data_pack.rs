@@ -6,6 +6,9 @@ mod cross_pack;
 #[path = "data_pack/standalone.rs"]
 mod standalone;
 
+#[path = "data_pack/publication.rs"]
+mod publication;
+
 use super::*;
 use std::time::UNIX_EPOCH;
 use terrane_linux::host_cache::NativeDataPackAdmissionError;
@@ -17,6 +20,19 @@ use terrane_sdk::{
 struct Chunk {
     plaintext: Vec<u8>,
     encoded: Vec<u8>,
+}
+
+/// Exercises native inline publication with original packed dictionaries.
+///
+/// # Errors
+/// Refuses failed publication, original source custody, cancellation or handoff.
+pub(super) fn run_publication(
+    cancelled: bool,
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+) -> io::Result<()> {
+    publication::run(cancelled, owner, runtime, inputs)
 }
 
 /// Exercises original packed dictionary custody through both cache handoffs.

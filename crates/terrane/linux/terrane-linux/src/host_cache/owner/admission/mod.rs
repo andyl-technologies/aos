@@ -10,7 +10,7 @@ mod backing;
 mod cache_error;
 pub(super) mod chunk;
 pub(in crate::host_cache::owner) mod data_pack;
-mod dictionary_read;
+pub(in crate::host_cache::owner) mod dictionary_read;
 mod error;
 pub(in crate::host_cache::owner) mod eviction;
 pub(super) mod handoff;

@@ -227,32 +227,6 @@ impl ManifestInput {
         Ok(hashes.into_iter().collect())
     }
 
-    /// Pins the actual reused backing objects before the new producer begins copying.
-    ///
-    /// # Errors
-    /// Refuses changed original source protection or exhausted policy storage.
-    pub(super) fn pin_backings(
-        &self,
-        owner: &Custody,
-        next: &mut terrane_sdk::host::cache::CacheState,
-        producer: &str,
-    ) -> io::Result<()> {
-        for hash in self.backing_hashes(owner)? {
-            if !next
-                .pins
-                .iter()
-                .any(|pin| pin.owner == producer && pin.hash == hash)
-            {
-                next.pins.push(terrane_sdk::host::cache::PinRecord {
-                    owner: producer.to_owned(),
-                    hash,
-                    expires: super::super::RETAINED_LEASE_DEADLINE,
-                });
-            }
-        }
-        Ok(())
-    }
-
     fn prepare(
         executor: &NativeOwnerExecutor,
         owner: &Custody,

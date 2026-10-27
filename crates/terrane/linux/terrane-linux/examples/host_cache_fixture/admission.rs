@@ -68,6 +68,8 @@ pub(super) fn run(
         "admit-external-data-pack" => "tenant:admission-external-data-pack",
         "admit-cross-pack" => "tenant:admission-cross-pack",
         "admit-packed-dictionary" => "tenant:admission-packed-dictionary",
+        "publish-packed-dictionary" => "tenant:publication-packed-dictionary",
+        "publish-packed-dictionary-cancel" => "tenant:publication-packed-dictionary-cancel",
         "admit-cancel" => "tenant:admission-cancel",
         _ => return Err(invalid("unknown admission selector")),
     };
@@ -89,6 +91,9 @@ pub(super) fn run(
         "admit-external-data-pack" => data_pack::run_external(owner, runtime, inputs),
         "admit-cross-pack" => data_pack::run_cross_pack(owner, runtime, inputs),
         "admit-packed-dictionary" => data_pack::run_standalone(owner, runtime, inputs),
+        "publish-packed-dictionary" | "publish-packed-dictionary-cancel" => {
+            data_pack::run_publication(mode.ends_with("-cancel"), owner, runtime, inputs)
+        }
         "admit-cancel" => cancelled(owner, runtime, inputs),
         _ => Err(invalid("unreachable admission selector")),
     }

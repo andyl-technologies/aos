@@ -254,15 +254,7 @@ pub(in crate::host_cache::owner) async fn execute(
         }
         let body = Arc::clone(residence::registered_body(&owner, &job)?);
         let sources = retirement::closed_funding(executor, &owner, &job)?;
-        let mut hashes = job
-            .manifest
-            .as_ref()
-            .map(|input| input.backing_hashes(&owner))
-            .transpose()?
-            .unwrap_or_default();
-        hashes.push(super::state::hex(job.claim.descriptor().digest()));
-        hashes.sort();
-        hashes.dedup();
+        let hashes = super::state::backing_hashes(&owner, &job)?;
         let grace = Grace {
             owner: format!("publication-grace:{}", job.token),
             expires: clock::grace_end(None, owner.preparation.config.policy.release_grace)?,
@@ -363,10 +355,12 @@ pub(in crate::host_cache::owner) async fn execute(
         job.cached = Some(cached);
         job.encoded.clear();
         job.encoded.shrink_to_fit();
-        job.dictionary = None;
-        job.manifest
+        let dictionary = job.dictionary.take();
+        let manifest = job
+            .manifest
             .as_mut()
-            .map(|manifest| manifest.take_copy_inputs())
+            .map(|manifest| manifest.take_copy_inputs());
+        (dictionary, manifest)
     };
     // Private copy inputs no longer serve the completed body. Drop their actual
     // descriptions outside both locks while durable grace still protects them.

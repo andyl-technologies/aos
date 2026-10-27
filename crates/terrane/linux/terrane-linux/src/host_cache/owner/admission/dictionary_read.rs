@@ -31,7 +31,7 @@ use terrane_format::{
 use terrane_sdk::host::cache::HostDomainLocation;
 
 /// Retains the original native source closure for one external dictionary.
-pub(super) struct DictionaryRead {
+pub(in crate::host_cache::owner) struct DictionaryRead {
     layout: Arc<NativeHostLayout<HostDomainLocation>>,
     identity: Identity,
     sources: Vec<Source>,
@@ -62,6 +62,42 @@ struct Node {
 }
 
 impl DictionaryRead {
+    /// Selects and retains one actual original dictionary source closure.
+    ///
+    /// # Errors
+    /// Refuses unavailable dictionaries, foreign custody or invalid source graphs.
+    pub(in crate::host_cache::owner) fn select(
+        executor: &NativeOwnerExecutor,
+        owner: &Custody,
+        digest: &Digest,
+    ) -> io::Result<Self> {
+        let source = selection::find(executor, None, digest, None)?;
+        Self::prepare(executor, owner, &source, digest)
+    }
+
+    /// Checks that every retained original still belongs to this physical worker.
+    ///
+    /// # Errors
+    /// Refuses another worker, a missing original registry entry or lost protection.
+    pub(in crate::host_cache::owner) fn check_registered(
+        &self,
+        executor: &NativeOwnerExecutor,
+        owner: &Custody,
+    ) -> io::Result<()> {
+        executor.check_physical_worker()?;
+        if self.sources.iter().any(|source| {
+            !executor
+                .admission_jobs()
+                .iter()
+                .any(|registered| Arc::ptr_eq(registered, &source.job))
+        }) {
+            return Err(invalid(
+                "dictionary read lost its original physical registry",
+            ));
+        }
+        self.check_protected(owner)
+    }
+
     /// Retains a verified external dependency under the actual physical turn.
     ///
     /// # Errors
@@ -90,7 +126,7 @@ impl DictionaryRead {
     }
 
     /// Borrows the actual dictionary identity selected from original inputs.
-    pub(super) fn identity(&self) -> &Identity {
+    pub(in crate::host_cache::owner) fn identity(&self) -> &Identity {
         &self.identity
     }
 
@@ -136,7 +172,7 @@ impl DictionaryRead {
     ///
     /// # Errors
     /// Refuses changed bytes or codec edges, invalid content and exceeded bounds.
-    pub(super) fn read_verified(&self) -> io::Result<Vec<u8>> {
+    pub(in crate::host_cache::owner) fn read_verified(&self) -> io::Result<Vec<u8>> {
         self.read(false)
     }
 
@@ -265,14 +301,17 @@ impl DictionaryRead {
     }
 
     /// Recognizes actual retained source jobs until the last consumer closes.
-    pub(super) fn retains(&self, resource: &Arc<Mutex<AdmissionJob>>) -> bool {
+    pub(in crate::host_cache::owner) fn retains(
+        &self,
+        resource: &Arc<Mutex<AdmissionJob>>,
+    ) -> bool {
         self.sources
             .iter()
             .any(|source| Arc::ptr_eq(&source.job, resource))
     }
 
     /// Includes every dictionary identity and its original whole-pack container.
-    pub(super) fn digests(&self) -> impl Iterator<Item = &[u8]> {
+    pub(in crate::host_cache::owner) fn digests(&self) -> impl Iterator<Item = &[u8]> {
         self.nodes.iter().map(|node| node.identity.digest()).chain(
             self.sources
                 .iter()

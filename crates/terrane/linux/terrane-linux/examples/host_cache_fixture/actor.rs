@@ -45,6 +45,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "admit-external-data-pack"
             | "admit-cross-pack"
             | "admit-packed-dictionary"
+            | "publish-packed-dictionary"
+            | "publish-packed-dictionary-cancel"
             | "admit-cancel"
             | "cache-admission-handoff"
             | "dictionary-custody"
@@ -277,6 +279,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         | "admit-external-data-pack"
         | "admit-cross-pack"
         | "admit-packed-dictionary"
+        | "publish-packed-dictionary"
+        | "publish-packed-dictionary-cancel"
         | "admit-cancel" => {
             super::admission::run(mode, &owner, &runtime, &inputs, original)?;
         }

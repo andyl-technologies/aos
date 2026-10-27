@@ -362,6 +362,12 @@ impl TransferSource {
     ) -> io::Result<()> {
         executor.check_physical_worker()?;
         self.check_current(owner)?;
+        if super::super::publication::retains_dictionary(executor, &self.job)? {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "standalone dictionary remains retained by an actual publication",
+            ));
+        }
         for consumer in executor.consumer_jobs() {
             if consumer
                 .lock()

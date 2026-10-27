@@ -32,7 +32,7 @@ pub(super) use resident::run as run_resident_inline;
 pub use retirement::NativeSourceCleanupReport;
 
 use super::{
-    admission::{AdmissionJob, NativeChunkAdmissionError, TransferSource},
+    admission::{NativeChunkAdmissionError, TransferSource, dictionary_read::DictionaryRead},
     retention::{Command, Custody, NativeMetadataOwner, NativeOwnerExecutor},
 };
 use crate::publisher_local::{client::PeerPublishedObject, socket::ReceivedPacket};
@@ -62,7 +62,7 @@ pub(super) struct PublicationJob {
     encoded: Vec<u8>,
     plaintext: Vec<u8>,
     claim: PublicationClaim,
-    dictionary: Option<Arc<Mutex<AdmissionJob>>>,
+    dictionary: Option<DictionaryRead>,
     manifest: Option<manifest::ManifestInput>,
     transfer: Option<TransferSource>,
     transfer_observation:
@@ -493,8 +493,8 @@ fn prepare(
     bounds.check(encoded.capacity(), length)?;
     let envelope = terrane_format::codec::parse_envelope(&encoded).map_err(std_io::Error::other)?;
     let (dictionary, dependency) = if let Codec::ZstdDictionary(digest) = envelope.codec {
-        let (plaintext, actual) =
-            super::admission::chunk::dictionary(executor, None, &owner, &digest)?;
+        let actual = DictionaryRead::select(executor, &owner, &digest)?;
+        let plaintext = actual.read_verified()?;
         (Some(plaintext), Some(actual))
     } else {
         (None, None)
@@ -731,6 +731,31 @@ async fn execute(
         future,
         cleanup_not_before,
     })
+}
+
+/// Recognizes original dictionary jobs retained by a publication copy plan.
+///
+/// # Errors
+/// Refuses another physical worker or poisoned publication custody. This check
+/// runs during input preparation, before the new publication is registered.
+pub(in crate::host_cache::owner) fn retains_dictionary(
+    executor: &NativeOwnerExecutor,
+    resource: &Arc<Mutex<super::admission::AdmissionJob>>,
+) -> std_io::Result<bool> {
+    executor.check_physical_worker()?;
+    for publication in executor.publication_jobs() {
+        let job = publication
+            .lock()
+            .map_err(|_| invalid("dictionary publication poisoned"))?;
+        if job
+            .dictionary
+            .as_ref()
+            .is_some_and(|dictionary| dictionary.retains(resource))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Counts retained manifest headers and actual per-source ownership slots.

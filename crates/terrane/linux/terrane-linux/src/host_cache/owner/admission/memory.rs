@@ -157,10 +157,20 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
                 + 4 * size_of::<super::super::recovery_metadata::order::Source>(),
         )
         .ok_or_else(overflow)?;
+    // Each retained inline publication can own one complete original dictionary
+    // read plan. Payload Arcs are shared, while native descriptors and headers
+    // remain independent until its synchronized handoff closes the plan.
+    let publication_dictionaries = jobs
+        .checked_mul(super::dictionary_read::DictionaryRead::storage_bytes(
+            config.location.domain().len(),
+            config.state.records,
+        )?)
+        .ok_or_else(overflow)?;
     total
         .checked_add(dictionary_walk)
         .and_then(|bytes| bytes.checked_add(recovery_edges))
         .and_then(|bytes| bytes.checked_add(recovery_headers))
+        .and_then(|bytes| bytes.checked_add(publication_dictionaries))
         .and_then(|bytes| {
             bytes.checked_add(
                 super::dictionary_read::DictionaryRead::storage_bytes(

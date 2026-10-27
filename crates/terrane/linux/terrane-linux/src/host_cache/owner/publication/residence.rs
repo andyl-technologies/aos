@@ -580,6 +580,7 @@ pub(super) fn registered_body<'job>(
             "resident publication lost its original durable funding",
         ));
     }
+    state::check_producer_pins(owner, job)?;
     let body = job
         .body
         .as_ref()

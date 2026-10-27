@@ -102,6 +102,17 @@ scope, unchanged production source and retained evidence. T-HOST-1, global
 NativeReady and complete Serve restart remain unaccepted. Counts in earlier
 checkpoints below describe acceptance at their respective sources.
 
+Inline publication now retains the actual original packed-dictionary read plan,
+pins its complete identity/container closure and transfers those pins into
+bounded synchronized grace before closing copy descriptors. Native normal and
+cancelled-waiter scenarios and an independent original-inode/policy observer are
+added; their physical qualification and exact-source application compilation
+remain pending. Feature-enabled and minimal all-target Clippy and source
+inventory checks pass. The [host-tier audit](acceptance/host-tier.md#inline-publication-with-original-packed-dictionaries)
+records the implementation and remaining acceptance limits. No task is newly
+accepted. Cyclic allocation-unit lifetime, metadata-only GC tracing and the
+remaining T2–T6 obligations remain open.
+
 Complete `shared-dir-read-only` and `dom-host-isolation` renewal at
 `806f6b98a5` passes in 220.802 seconds after 3,426.661 seconds of guest-only
 prerequisite construction. Independent review matches 9,597 tracked files,

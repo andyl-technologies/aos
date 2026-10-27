@@ -123,6 +123,7 @@ CASES += ["admission-cross-pack"]
 CASES += ["encoded-cross-pack"]
 CASES += ["admission-packed-dictionary"]
 CASES += ["encoded-mixed-sources"]
+CASES += ["publication-packed-dictionary", "publication-packed-dictionary-cancel"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -1734,6 +1735,8 @@ def main():
         exclusive_case(uuid)
         actor("edquot", "edquot", uuid)
         admission_cases(helper, uuid)
+        runpy.run_path(str(IMAGE / "share/cross_pack_admission_vm.py"))["run_publications"](
+            sys.modules[__name__], uuid, processes)
         output = actor("read-through", "read-through-chunk", uuid)
         expected = b"\0actual verified native read-through content"
         candidates = [path for path in (root("read-through") / "chunks").rglob("*") if path.is_file()]
