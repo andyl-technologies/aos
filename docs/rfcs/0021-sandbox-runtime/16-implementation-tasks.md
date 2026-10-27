@@ -31,6 +31,15 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The user approved PID 1's `start/status` access to the image-labeled networkd
+  socket/service, clearing the approval blocker recorded in the checkpoints
+  below. The focused regression requires both startup permissions and rejects
+  PID 1 stop/reload or foreign-owner start/stop/reload grants. It passes on the
+  approved source. Linked production policy and the actual parent image with
+  both initializer profiles are now building through AOS Nix. This approval
+  and negative regression establish no installed startup, TPM provisioning or
+  lifecycle completion; admission remains closed.
+
 - Production policy build/checker inputs now exclude local `__pycache__`
   directories. Evaluation reads retain their original repository paths, so
   pure selection does not require reading an unregistered filtered store path.

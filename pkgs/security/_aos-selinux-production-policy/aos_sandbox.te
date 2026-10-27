@@ -10,6 +10,7 @@ require {
     type init_t;
     type init_tmpfs_t;
     type systemd_unit_t;
+    type systemd_networkd_unit_t;
     type dbusd_unit_t;
     type dbusd_exec_t;
     type system_dbusd_t;
@@ -75,6 +76,9 @@ allow init_t self:system { reload status };
 # soft-reboot and kexec retain their independent, denied reboot permission.
 allow init_t self:system aos_switch_root;
 allow init_t systemd_unit_t:service { reload start status stop };
+# Initrd's native network handler starts and observes the image-labeled
+# networkd socket/service before SwitchRoot and agent startup.
+allow init_t systemd_networkd_unit_t:service { start status };
 # Native activation adopts the image's already labeled D-Bus socket/service.
 allow init_t dbusd_unit_t:service { start status };
 # Native D-Bus starts from PID 1 on the immutable nosuid image. Keep its

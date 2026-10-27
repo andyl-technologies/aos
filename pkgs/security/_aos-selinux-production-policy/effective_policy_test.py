@@ -472,6 +472,21 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(source, "sshd_unit_t", "service", permission)
                     )
 
+    def test_native_manager_networkd_access_stays_with_startup(self) -> None:
+        for permission in ("start", "status"):
+            with self.subTest(permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access("init_t", "systemd_networkd_unit_t", "service", permission)
+                )
+
+        for source in ("init_t", *effective_policy.owner_policy.OWNER_DOMAINS):
+            permissions = ("stop", "reload") if source == "init_t" else ("start", "stop", "reload")
+            for permission in permissions:
+                with self.subTest(source=source, permission=permission):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(source, "systemd_networkd_unit_t", "service", permission)
+                    )
+
     def test_normal_owner_logs_preserve_inherited_manager_streams(self) -> None:
         for domain in effective_policy.owner_policy.OWNER_DOMAINS:
             for permission in ("read", "write"):
