@@ -70,10 +70,13 @@ Recent committed startup fixes close narrower prerequisites:
   the rendered TE. The broader working-tree checker passes all 179 regressions.
   Actual module evaluation retains missing Parent06/credential rejection and
   the 32 listener/output mutations; pure evaluation verifies all four production
-  selections and their matching checker routes. The earlier full application
-  compile through fixed output delivery now passes; the newer intent-label
-  source gate is still running. Linked production policy, genuine funded Source
-  entry and installed journal/lifecycle/crash/power-loss qualification remain
+  selections and their matching checker routes. The full application
+  test-target compile now passes through the intent-label changes, including
+  the separate manual-initializer feature invocation. Its audited closure has
+  833 derivations without production policy; all 8,863 Rust/Cargo source files
+  match, and the exact output derivation is independently verified. Linked
+  production policy, genuine funded Source entry and installed
+  journal/lifecycle/crash/power-loss qualification remain
   open while the prior networkd approval is pending. Admission stays closed.
 
 The older checkpoints below retain their original narrower status. Their
@@ -2005,34 +2008,31 @@ single-node profile, with additional gates when later profiles are enabled.
 The production composition is not complete. The following entry points make
 the outstanding work concrete:
 
-The closed `AOSCFB01` failed-Create transaction atomically writes the exact
-Effect, `FAILED_BEFORE_COMMIT` Operation, and `FAILED` execution projection;
-cold replay rejects partial and mismatched dispositions. Protected H custody
-reauthenticates the original signed method-37 request. A distinct archive
-atomically retains a successful signed method-39 terminal across session
-rollover, and a typed join checks its marker against the original H identity.
-Both archives are historical, not a production settlement proof. A protected
-Controller `AOSCFP01` prepare floor now binds the exact H/T identities, Host
-marker and intended three-record CAS. Cold replay quarantines a prepared
-Applying Create instead of redispatching it; the floor alone cannot authorize
-settlement. No constructor yet holds a current Host lease/marker under the
-cross-owner anti-rollback barrier, and no authenticated acknowledgment permits
-H archive retirement.
-Public Create and production methods 39/40 therefore remain closed.
+The earlier `AOSCFB01`, `AOSCFP01` and `AOSCSC01` records retain failed-Create
+dispositions, prepared floors and signed cursor history. Those records alone
+remain historical DATA and cannot establish a current two-owner settlement.
+They no longer describe the extent of the source implementation.
 
-The protected `AOSCSC01` cursor retains the exact signed method-42 request and
-a signed method-42/43 preliminary observation, but only as historical custody.
-A Host owner-local scope can keep its exclusive writer claim while a bounded
-callback runs and reject a changed protected Effect sequence or digest before
-returning success. This scope has no Controller writer and is not the missing
-two-owner cut. A production continuation must either keep the Host claim held
-through an authenticated, versioned Controller floor exchange and its durable
-compare-and-swap, or install a durable Host fence that excludes competing
-writes and can be recovered after transport loss. The floor must bind both
-exact protected heads and reject rollback or uncertain release on cold replay
-before FloorSeal, failed-Create CAS, or ACK can be enabled.
+The V2 active continuation in
+`aos-sandbox-controller-runtime/src/controller_service/execution_output_effect/no_apply.rs`
+borrows the actual Host Session and the same live Source/C18 receiving loan.
+It drives terminal NoApply, the preliminary observation, Controller cut,
+independent Root nonce/floor exchange, Controller prepare, Host FloorSeal,
+Controller compare-and-swap, authenticated ACK and causal Root confirmation.
+Host's `broker/argument_handoff/availability/held_settlement.rs` retains its
+actual writer claim, current lease challenge, Root trust and prepared recovery
+state through the four Host turns. The upper continuation requires the owed
+Source posts and positive disposal before retiring retained inputs and
+publishing its sealed completion; a diagnostic error cannot substitute for
+that proof. The separate operator recovery continuation in
+`controller_service/effects/operator_create_recovery/execution_no_apply.rs`
+uses fresh cleanup Source custody and a cold Session rather than treating old
+history as a renewed grant. These source connections still need installed
+currentness, interrupted-exchange, rollback, crash and power-loss qualification
+with genuine floor provisioning and both normal journal hooks. Public
+execution creation remains unavailable before admission.
 
-- `crates/sandbox/security/aos-sandbox-broker-session-security/src/controller_service.rs` now
+- `crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service.rs` now
   constructs `NodeController<ProductionOperationCompilerV1,
   ProductionEffectExecutor>` with one protected journal writer. Public admission
   carries live TLS peer evidence into the compiler, binds principal/project
@@ -2054,11 +2054,13 @@ before FloorSeal, failed-Create CAS, or ACK can be enabled.
   original C18 and Source custody through output reservation, Host argument
   preparation and acceptance, specification admission, first observation and
   completion. The public `create_execution` RPC still returns `Unavailable`
-  before admission. A genuine initial physical floor producer remains missing;
-  both installed journal hooks and the complete held continuation require
-  qualification before a public RUNNING projection can be advertised. Attach verifies
-  the holder proof and queries Host readiness before reserving a pending
-  operation. Public admission and OpenSSH route issuance require a signed Host
+  before admission. The genuine initial physical floor producer is assembled
+  in source with manual unit, credential, policy and funding definitions;
+  its positive installed execution, both journal hooks and the held
+  continuation require qualification before a public RUNNING projection can
+  be advertised. Attach verifies the holder proof and queries Host readiness
+  before reserving a pending operation. Public admission and OpenSSH route
+  issuance require a signed Host
   install and matching physical route readback; the production route remains
   unavailable without a guest session and RUNNING execution.
   `CreateExecution` now verifies the holder proof over the complete command
@@ -2095,8 +2097,10 @@ before FloorSeal, failed-Create CAS, or ACK can be enabled.
   use fixed root-owned Host execution journals, and recover durable outcomes.
   The controller completes Resize, Signal, and Cancel only from exact Host
   completion evidence; it publishes RUNNING or CANCELED control observations
-  after signed success. An EXITED observation still needs authenticated
-  terminal-result fields before it can satisfy the public Execution schema.
+  after signed success. The original terminal-result path retains authenticated
+  Linux status and cancellation, projects exit code or signal, and preserves
+  the first durable `exited_at` across replay. That source behavior still needs
+  installed public execution qualification.
   The connected CreateExecution continuation in
   `aos-sandbox-controller-runtime/src/controller_service/execution_output_effect.rs`
   calls the Host authorization/observation bridge after retaining the actual
@@ -2174,9 +2178,9 @@ before FloorSeal, failed-Create CAS, or ACK can be enabled.
   request path. The packaged broker entry points accept sessions through
   `ProductionBrokerSessionActivationV1::accept_authenticated`. End-to-end
   production qualification and restart recovery remain incomplete.
-  The production runtime now lives in the session-security crate, above the
-  controller core, so those protected owners can be connected without a crate
-  cycle. Mount, destination-slot, Storage, and Network inventory now use retained
+  The production runtime lives in `aos-sandbox-controller-runtime`, above the
+  controller domain and broker-session security crates. Mount,
+  destination-slot, Storage, and Network inventory now use retained
   fixed protected sessions, check
   the controller's node identity, and fence snapshot commits against intervening
   controller-journal changes. Network also rejects existing checkpoint history.
