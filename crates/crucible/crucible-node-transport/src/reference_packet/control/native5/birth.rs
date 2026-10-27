@@ -154,9 +154,12 @@ impl PacketControl {
         ))
     }
 
-    // All validation has completed while the caller still owned each input.
-    // This transfer has no fallible model, socket or selected-scope operation.
-    fn from_checked_complete_birth(
+    /// Transfers the checked selected scope and program into an unused Control.
+    ///
+    /// The caller completes all validation while retaining its inputs. The
+    /// distinct18 installer supplies a model-absent program and immediately
+    /// fences the target; this constructor grants no restoration admission.
+    pub(in crate::reference_packet::control) fn from_checked_complete_birth(
         selection: PacketControlSelection,
         program: NativeProgram,
         coordinator: PacketNative5CoordinatorInstallation,

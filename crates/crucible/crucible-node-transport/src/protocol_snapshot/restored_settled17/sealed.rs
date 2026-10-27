@@ -424,6 +424,25 @@ impl SealedHistoricalRestoredSettledNative17 {
             .current_position_data())
     }
 
+    /// Derives the current inventory boundary before its model leaves the archive.
+    ///
+    /// The genuine installer independently admits complete graph/model validation
+    /// and canonical inventory work. This DATA does not authenticate fresh Source
+    /// custody, issue native credit or replace the original restoration boundary.
+    ///
+    /// # Errors
+    /// Refuses an incomplete archive, invalid current graph or inventory encoding.
+    pub(crate) fn installation_boundary18_data(
+        &self,
+    ) -> Result<
+        crate::reference_packet::continuation_models::PacketModelCaptureBoundaryData,
+        ProviderError,
+    > {
+        self.validated_native_graph_data()?
+            .current_model17_data()?
+            .installation_boundary18_data()
+    }
+
     /// Compares the complete pre-Capture checkpoint with the retained model.
     ///
     /// The Source supplies its actually retained latest retired Observe proof;

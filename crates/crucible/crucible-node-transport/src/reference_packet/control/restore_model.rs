@@ -13,6 +13,8 @@ use crate::reference_packet::continuation_models::{
 };
 use std::{cell::Cell, os::unix::net::UnixDatagram, rc::Rc, thread::ThreadId};
 
+pub(crate) mod native18;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HoldPhase {
     Preparing,

@@ -8,6 +8,7 @@ use super::*;
 use crate::protocol_snapshot::owned11::typed::{
     Fields, HistoricalType, Ledger, historical_struct, invalid, plain_string,
 };
+use crate::reference_packet::continuation_models::PacketModelCaptureBoundaryData;
 
 pub(in crate::reference_packet) struct ReactiveModel17Data(ConnectedState);
 
@@ -31,6 +32,40 @@ historical_struct!(OriginalCommit {
 });
 
 impl ReactiveModel17Data {
+    /// Hashes the same current inventory without rebuilding an old snapshot.
+    ///
+    /// The enclosing model already authenticated the decoded current fields.
+    /// Canonicalization and formatter work are separately admitted by the
+    /// installer. Historical PID, failed state and incomplete grants are not
+    /// replaced or promoted to a live effect permission.
+    ///
+    /// # Errors
+    /// Refuses an invalid pending completion or canonical serialization.
+    pub(in crate::reference_packet) fn installation_boundary18_data(
+        &self,
+    ) -> Result<PacketModelCaptureBoundaryData, ProviderError> {
+        let state = &self.0;
+        let mut earliest = state.publications.iter().map(|row| row.publication).min();
+        for reaction in &state.reactions {
+            let completion = if state.definition.output.is_some() {
+                reaction.evaluation.reaction_publication(U64::new(16))?
+            } else {
+                reaction.evaluation
+            };
+            earliest = Some(earliest.map_or(completion, |prior| prior.min(completion)));
+        }
+        Ok(PacketModelCaptureBoundaryData {
+            local_cursor: state.reached,
+            gate_closed: state.gate_closed,
+            retained_outputs: state.outputs.len(),
+            earliest_pending_completion: earliest,
+            inventory_hash: canonical::json_hash(
+                "source-owned.packet-connected-inventory/4",
+                &ConnectedInventoryData(state),
+            )?,
+        })
+    }
+
     /// Matches the complete actual fresh definition without constructing a DTO.
     ///
     /// # Errors
