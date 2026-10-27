@@ -175,7 +175,7 @@ fn pack_indexer_rejects_delta_results_beyond_its_object_limit() {
 fn vendored_library_retains_repository_formats_and_static_object_parity() {
     let version = git2::Version::get().libgit2_version();
     assert!(
-        version >= (1, 9, 5),
+        version >= (1, 9, 7),
         "unexpected libgit2 version {version:?}"
     );
 

@@ -39,9 +39,11 @@ in
           cp ${../../security/advisories/snapshot.json} "$repository/security/advisories/snapshot.json"
           cp ${../../tools/advisory-gate.py} "$repository/tools/advisory-gate.py"
           cp ${./test_advisory_gate.py} "$repository/tests/advisory-gate/test_advisory_gate.py"
+          cp ${./test_libgit2_ssh_command.py} "$repository/tests/advisory-gate/test_libgit2_ssh_command.py"
           chmod -R u+w "$repository"
 
           cd "$repository"
+          export AOS_CARGO_VENDOR=${cargoVendor}
           python3 -m unittest discover -s tests/advisory-gate -p 'test_*.py'
           export CARGO_HOME="$TMPDIR/cargo-home"
           mkdir -p "$CARGO_HOME" .cargo
