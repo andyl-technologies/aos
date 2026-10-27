@@ -111,13 +111,33 @@ cases in the base profile, and 273 ordinary and five creator cases with FUSE.
 These are compilation and artifact observations; guest execution is checked
 separately against those exact inventories.
 
-The original all-features eviction guest passes at this source. Its retained
-serial output checks all five pack-pair, raw, dependent, unread and dictionary
-last-description charge-release witnesses. The other seven original guests and
-three aggregates remain pending. All eight guest recipes retain their original
-1-GiB memory limits, ext4 project-quota/verity setup and 870-second cache or
-300-second SDK deadlines. Full runtime review and nested-chain lifecycle
-qualification are still required; trunk acceptance remains 28/64.
+All six original cache guests pass at this source: base and FUSE units, recovery
+and eviction. Independent review checks the actual output derivers, original
+image inputs, exact unit inventories and capability-free identities, and
+preserves their raw records. Both eviction guests retain all five pack-pair,
+raw, dependent, unread and dictionary last-description release controls.
+
+The overall run fails after 2,059.360 seconds. The configured SDK guest's
+`inline-dictionaries` actor exits with status 1; its supervisor records
+`TEST_RESULT:FAIL`. The fixture redacts the internal error, so this observation
+does not prove its exact cause. The separate SDK refusal guest is cancelled
+without a completed output, and the three aggregates do not complete. Original
+failure serial, configuration and Firecracker records are hash-preserved.
+All guest recipes retain their original 1-GiB memory limits, ext4 project-quota
+and verity setup, and 870-second cache or 300-second SDK deadlines. This failed
+run cannot qualify nested-chain lifecycle or advance acceptance.
+
+At `1393b054fc`, a bounded reader returns original encoded chunks and descriptors
+from genuinely verified pack custody. Its native fixture selects a three-chunk
+packed dictionary chain while checking unchanged source bytes, cursor and cold
+policy. At `0353648de6`, final admission reconciliation replaces its remaining
+one-hop restriction with bounded iterative verification of the actual older
+dependency jobs, original envelope edges, native bytes and retained protection.
+Both increments pass feature-enabled all-target Clippy with warnings denied.
+Their required application compilation and guest qualification remain pending;
+the earlier run does not qualify either later source. Whole-pack admission,
+direct consumer reads and unit eviction remain separate implementation work.
+Trunk acceptance remains 28/64.
 
 ## Clause coverage
 
