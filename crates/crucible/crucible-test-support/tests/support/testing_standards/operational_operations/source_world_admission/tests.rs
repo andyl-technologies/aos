@@ -263,6 +263,21 @@ fn source_world_admission_preserves_actual_publication_and_initial_custody()
         ),
         (
             &NATIVE_WORLD,
+            r#"Ok(RetainedWorldAdmission { index, refusal: Some(first), })"#,
+            r#"Ok(RetainedWorldAdmission { index, refusal: None, })"#,
+        ),
+        (
+            &NATIVE_WORLD,
+            r#"Ok(RetainedWorldAdmission { index, refusal: Some(first), })"#,
+            r#"Ok(RetainedWorldAdmission { index: foreign_index, refusal: Some(first), })"#,
+        ),
+        (
+            &NATIVE_WORLD,
+            r#"admission_failure.take(), retained,"#,
+            r#"None, retained,"#,
+        ),
+        (
+            &NATIVE_WORLD,
             r#"first.retain_world_delivery_error(delivery);"#,
             r#"drop(delivery);"#,
         ),

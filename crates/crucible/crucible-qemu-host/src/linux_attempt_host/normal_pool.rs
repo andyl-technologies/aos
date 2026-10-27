@@ -63,12 +63,14 @@ fn complete_world_admission<E>(
     prepare()
 }
 
-enum WorldClaimFailure {
-    NoHolder(OriginalActorAccountError),
-    Retained {
-        first: NativePoolRefusal,
-        index: usize,
-    },
+/// Names actual retained custody even when its admission postcut refused.
+///
+/// A retained World must deliver its existing cleanup holders before reporting
+/// the refusal. This outcome permits no preparation; `complete_world_admission`
+/// checks the saved refusal after that custody transfer.
+struct RetainedWorldAdmission {
+    index: usize,
+    refusal: Option<NativePoolRefusal>,
 }
 
 pub(super) struct NormalNativePool {
@@ -175,17 +177,16 @@ impl NormalNativePool {
         populate: impl FnOnce(
             &mut dyn FnMut(NativeNodeReservation) -> Result<(), ServiceBirthError>,
         ) -> Result<(), ServiceBirthError>,
-    ) -> Result<usize, WorldClaimFailure> {
-        let index =
-            self.worlds
-                .iter()
-                .position(Option::is_none)
-                .ok_or(WorldClaimFailure::NoHolder(
-                    OriginalActorAccountError::Unavailable,
-                ))?;
-        let purpose = self.purpose.as_ref().ok_or(WorldClaimFailure::NoHolder(
-            OriginalActorAccountError::Unavailable,
-        ))?;
+    ) -> Result<RetainedWorldAdmission, OriginalActorAccountError> {
+        let index = self
+            .worlds
+            .iter()
+            .position(Option::is_none)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let purpose = self
+            .purpose
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
         match purpose.claim_world_from(
             identity,
             consumer_control_bytes,
@@ -195,16 +196,22 @@ impl NormalNativePool {
         ) {
             Ok(world) => {
                 self.worlds[index] = Some(world);
-                Ok(index)
+                Ok(RetainedWorldAdmission {
+                    index,
+                    refusal: None,
+                })
             }
             Err(mut first) => {
                 let Some(world) = first.take_retained_world() else {
-                    return Err(WorldClaimFailure::NoHolder(first.into()));
+                    return Err(first.into());
                 };
                 // A negative descriptor/postcut can follow actual publication.
                 // Keep that SAME claim canonical before propagating its report.
                 self.worlds[index] = Some(world);
-                Err(WorldClaimFailure::Retained { first, index })
+                Ok(RetainedWorldAdmission {
+                    index,
+                    refusal: Some(first),
+                })
             }
         }
     }
@@ -671,15 +678,18 @@ impl LinuxQemuAttemptHostFactory {
                 proven_unassigned = true;
                 return Err(missing_authority("normal World capacity is occupied"));
             }
-            let (world, mut admission_failure) = match pool.claim_world(
+            let RetainedWorldAdmission {
+                index: world,
+                refusal: mut admission_failure,
+            } = match pool.claim_world(
                 identity,
                 consumer_control_bytes,
                 &original,
                 || preparation.commit_world(|| before_effects.entered_world()),
                 populate,
             ) {
-                Ok(world) => (world, None),
-                Err(WorldClaimFailure::NoHolder(source)) => {
+                Ok(retained) => retained,
+                Err(source) => {
                     proven_unassigned = matches!(
                         &source,
                         OriginalActorAccountError::NativePool(refusal)
@@ -687,7 +697,6 @@ impl LinuxQemuAttemptHostFactory {
                     );
                     return Err(original_roster::original_error(source));
                 }
-                Err(WorldClaimFailure::Retained { first, index }) => (index, Some(first)),
             };
             let claim = pool.worlds[world]
                 .as_mut()

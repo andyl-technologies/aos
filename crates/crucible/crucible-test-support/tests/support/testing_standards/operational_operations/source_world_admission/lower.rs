@@ -8,10 +8,10 @@ pub(in super::super) const NATIVE_WORLD: Companion = Companion {
         (r#"self.worlds[index] = Some(world);"#, 2),
         (
             r#"let Some(world) = first.take_retained_world() else {
-    return Err(WorldClaimFailure::NoHolder(first.into()));
+    return Err(first.into());
 };
 self.worlds[index] = Some(world);
-Err(WorldClaimFailure::Retained { first, index })"#,
+Ok(RetainedWorldAdmission { index, refusal: Some(first), })"#,
             1,
         ),
         (
@@ -36,15 +36,18 @@ before_effects.prepare_world()"#,
             1,
         ),
         (
-            r#"match pool.claim_world(
+            r#"let RetainedWorldAdmission {
+                index: world,
+                refusal: mut admission_failure,
+            } = match pool.claim_world(
                 identity,
                 consumer_control_bytes,
                 &original,
                 || preparation.commit_world(|| before_effects.entered_world()),
                 populate,
             ) {
-                Ok(world) => (world, None),
-                Err(WorldClaimFailure::NoHolder(source)) => {
+                Ok(retained) => retained,
+                Err(source) => {
                     proven_unassigned = matches!(
                         &source,
                         OriginalActorAccountError::NativePool(refusal)
@@ -52,7 +55,6 @@ before_effects.prepare_world()"#,
                     );
                     return Err(original_roster::original_error(source));
                 }
-                Err(WorldClaimFailure::Retained { first, index }) => (index, Some(first)),
             };"#,
             1,
         ),
