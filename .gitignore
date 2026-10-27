@@ -15,6 +15,8 @@ crates/target/
 # Nix build results
 result
 result-*
+# Source modules named result are not build results.
+!/crates/crucible/crucible-daemon/src/executor_worker/result/
 
 # Direnv
 .direnv/
