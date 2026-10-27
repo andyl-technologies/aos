@@ -31,6 +31,63 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Runtime external credential preparation passes at
+  `/nix/store/8slkspm4ybnkv19q89s6aybn478k108r-sandbox-method46-external-credentials-check`
+  (NAR hash `sha256-2qbUhg+VVoIDdn8PfJz1PPEFnC0mRqLVjaz6UVDv8dc=`).
+  Fresh normal keys and canonical public manifests cover both actual 29-member
+  initializer delivery rosters, with paired endpoint manifests and distinct
+  client/broker signing keys. Separate operator public pins, external TPM
+  preparation records and a native-history comparison cut supply the fixed
+  public provision and expected checkpoint DATA. Checks reject shared purpose
+  pins, empty history, invalid node inputs, unsafe private-record modes and
+  replacement of earlier output. Secrets are runtime inputs/outputs outside the
+  Nix store; neither host-only fixture source enters ordinary production Rust
+  source. This prepares comparisons and credentials; it supplies no live normal
+  authority, authenticated TPM observation or installed Source execution.
+
+- The lifecycle-funded startup VM passes at
+  `/nix/store/lr34ng58q5h7cyhn5vy6whgps8p66cq4-aos-fleet-test-sandbox-lifecycle-funded-startup-0`
+  (NAR hash `sha256-Gm6i67hCFJPXD46VFkjQ+lLAGp1MlHkU9oXa+iX7yQg=`).
+  The actual enforcing installed system passes its startup assertions before
+  and after killing QEMU and the vTPM and relaunching their same backing state.
+  Execution, deletion and recovery reservations are selected, but no external
+  credentials, initial floors or public operation authority are supplied.
+  This is startup qualification, not connected lifecycle or journal recovery.
+
+- External native-history preparation now passes at
+  `/nix/store/i8xqx9257xsbphwrnrlgp8yqvdrlpy14-sandbox-method46-external-history-check`
+  (NAR hash `sha256-n01DnuyyBcDF4oS6L9xdjaMfqIh5dHItj3IbDURES+U=`).
+  A host-only fixture uses the ordinary Journal engine to commit and delete a
+  broker-session record, then replays the existing history and exports its
+  empty-map comparison cut. The check also installs the exact native journal
+  and lock bytes into an offset ext4 filesystem within one raw image, without mounts,
+  and verifies byte, owner, group, mode and SELinux-label readbacks plus unchanged
+  sentinels outside the partition. The fixture's debug-only opener omits trusted
+  root ancestry; only the installed Source can qualify that boundary. This
+  supplies preparation DATA and offline mechanics, not installed journal custody
+  or initial producer execution.
+
+- The rebuilt Controller package now passes every isolated role selection at
+  `/nix/store/fg0mafqvshr5zha1rb980jk9w2w41iwc-aos-sandboxd-0.1.0`
+  (NAR hash `sha256-RqwE75+NzQ64O+apvwDsGwIE+W/H51RLSZqtWuiGVMQ=`).
+  The selected production policy also passes its own complete linked-policy
+  gate at
+  `/nix/store/7q7p63izadzbmp946n8p1hgi7jx2xm8w-aos-selinux-production-policy-1`
+  (NAR hash `sha256-v2qQTuPQkqgLRx+4zYyh7KrF1eJPTBPpc5ZxZfvyeSw=`),
+  including 179 checker regressions, native query comparisons, the linked scan,
+  negative fixtures and ordered kernel class-map checks. These are the rebuilt
+  package and policy selected after the native-fixture routing fix. The parent
+  image and installed producer execution remain pending. The parent compiler
+  subsequently rejected the fixture's copied eight-operation receiving
+  reservation: each manual initializer requires one original operation. The
+  fixture now selects one operation while preserving its helper PID, CPU and
+  memory bounds. The compiler's cardinality check remains intact. The corrected
+  standalone parent passes at
+  `/nix/store/d7cjy7krd4h5pcl4w3bbh3nz3i0wrnjy-aos-resource-parent-enclosure-v6`
+  (NAR hash `sha256-JQdJktn1d2FLGbpSplA7m229x0B3cbMmqoyk5SfzDAE=`).
+  The selected-initializer VM's parent also passes, with identical content;
+  that VM's image assembly and startup qualification remain in progress.
+
 - A host-only independent-approval fixture now uses the production request and
   provisioning decoders before signing either fixed purpose. It compares the
   producer's complete request with separately supplied provisioning/checkpoint

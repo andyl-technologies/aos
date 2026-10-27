@@ -14,7 +14,9 @@
   parent = funded.config.aos.sandbox.resourceBank.parentEnclosure;
   # Equal quantities become separate named subdivisions in the original M/F
   # compiler. They do not borrow the Source signer's live claim or add a bank.
-  receiving = parent.sourceSignerReceiving;
+  # Each manual invocation owns one original operation; its helper processes
+  # still consume the copied PID and memory bounds within that same interval.
+  receiving = parent.sourceSignerReceiving // {concurrent-operations = 1;};
   sender = parent.sourceSignerSender;
   additionalBacking = 2 * 5 * 1048576;
   floor = purpose: {

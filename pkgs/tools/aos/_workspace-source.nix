@@ -110,6 +110,8 @@ in
         || pathString == "${repoRootString}/tests/sandbox/method46-tpm-transport-probe.c"
         || pathString == "${repoRootString}/tests/sandbox/method46-external-tpm-prepare.c"
         || pathString == "${repoRootString}/tests/sandbox/method46-independent-approval.rs"
+        || pathString == "${repoRootString}/tests/sandbox/method46-external-history.rs"
+        || pathString == "${repoRootString}/tests/sandbox/method46-external-credentials.rs"
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/flake.nix"
         || pathString == "${repoRootString}/justfile";
