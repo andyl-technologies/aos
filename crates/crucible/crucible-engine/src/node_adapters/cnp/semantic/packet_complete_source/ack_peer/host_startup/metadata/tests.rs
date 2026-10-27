@@ -22,7 +22,13 @@ fn uninitialized_host_marker_has_no_phantom_origin_allocation() {
 
     let facts = marker.retained_capacity_data(None).unwrap();
 
-    assert_eq!(facts, RetainedProtocolMetadataFacts::default());
+    assert_eq!(
+        facts,
+        RetainedProtocolMetadataFacts {
+            observed_nodes: 4, // The four fixed marker fields.
+            ..Default::default()
+        }
+    );
     assert_eq!(marker.retained_storage_data().unwrap(), 0);
     assert!(!marker.complete);
     assert!(!marker.initial_lifecycle_issued);
@@ -53,7 +59,7 @@ fn expired_origin_preserves_the_actual_shell_without_renewing_host_lifecycle() {
         std::mem::align_of::<OriginalHostSdkOrigin>()
     );
     assert_eq!(expired.capacity_records, 1);
-    assert_eq!(expired.observed_nodes, 0);
+    assert_eq!(expired.observed_nodes, 4);
     let admitted = OriginalHostStartupMarker::origin_capacity_requested_bound_data().unwrap();
     assert!(admitted >= original);
     assert_eq!(marker.retained_storage_data().unwrap(), admitted);

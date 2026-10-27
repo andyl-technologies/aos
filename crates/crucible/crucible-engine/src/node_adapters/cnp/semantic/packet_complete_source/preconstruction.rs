@@ -240,8 +240,8 @@ impl PacketCompleteSemanticSource {
             controller_bank,
         }) = original.as_ref()
         {
-            census.observe_inline_data(source_banks);
-            census.observe_inline_data(controller_bank);
+            census.observe_inline_data(source_banks)?;
+            census.observe_inline_data(controller_bank)?;
             native.record_capacity_data(&mut census)?;
         }
         self.storage_origin_with_error::<RuntimeError>()?;

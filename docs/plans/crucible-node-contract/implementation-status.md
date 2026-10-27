@@ -77,6 +77,14 @@ capacity after unlink, and non-UTF-8 path backing as DATA. Receiver-group storag
 and nested dynamic fields remain independent components. Census controls are
 included in the Source's original precredit observation demand.
 
+Common typed-owner walks report traversal work separately from allocation rows,
+including empty wrappers and initialized inline elements. Source component rosters
+also count their fixed Copy and Cell fields with checked overflow; Cell visits
+neither read nor change the stored lifecycle state. Historical capacity-row bytes
+and alias rules are unchanged. Allocation-only helpers and the remaining custom
+rosters still need their own work accounting before whole-Source admission and
+the genuine one-use handoff can be established.
+
 The Source18 phase bank now retains its enclosing Box and spare owner-vector
 geometry, independent SDK owners and input DTOs, encoded buffers and flat literal
 banks. A closed borrowed SDK roster uses the same defining walks for capacity
@@ -102,10 +110,12 @@ production byte query consumes those same facts; the walk can also append to the
 admitted packet bank without replacing the retained body. Independent views keep
 all their rows. Selected-row and depth refusal preserve the recorded prefix, and
 the original depth limit remains 64. The Source observation demand includes the
-bounded cursor/iterator controls and the first refused child cursor. Five controls
+bounded cursor/iterator controls and the first refused child cursor. Six controls
 compare against the independent original byte walk, exact and short credit,
 empty-object layout, refused prefixes and repeated views. These capacity facts
-do not establish scalar traversal work or finalization eligibility.
+also count each visited JSON node, including allocation-free scalars, and the
+separately visited String owners. These facts do not establish whole-Source
+admission or finalization eligibility.
 
 The complete private-birth capacity DATA query now composes the actual retained
 ContentRef/Id/input banks, all three finalization families, the original host

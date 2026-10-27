@@ -25,10 +25,10 @@ impl CaptureSigningOwners {
             upload_contexts,
             upload_artifacts,
         } = self;
-        census.observe_inline_data(capture_attempted);
-        census.observe_inline_data(capture_sealed);
-        census.observe_inline_data(upload_attempted);
-        census.observe_inline_data(upload_sealed);
+        census.observe_inline_data(capture_attempted)?;
+        census.observe_inline_data(capture_sealed)?;
+        census.observe_inline_data(upload_attempted)?;
+        census.observe_inline_data(upload_sealed)?;
 
         if let Some(context) = capture_context {
             record_typed_capture_data(

@@ -65,8 +65,8 @@ impl Observation17CapacityView<'_> {
         census: &mut OriginalOwnerCapacityMetadataData<'_>,
     ) -> Result<(), RuntimeError> {
         self.check_creator_data()?;
-        census.observe_inline_data(&self.owner.process);
-        census.observe_inline_data(&self.owner.thread);
+        census.observe_inline_data(&self.owner.process)?;
+        census.observe_inline_data(&self.owner.thread)?;
         census.observe_vector_allocation_data(&self.completed)?;
         for attempt in self.completed.iter().chain(self.pending.iter()) {
             attempt.record_capacity_data(census)?;
@@ -130,11 +130,11 @@ impl Observation17Attempt {
             signature,
             stage,
         } = self;
-        census.observe_inline_data(ordinal);
-        census.observe_inline_data(previous_frontier);
-        census.observe_inline_data(previous);
-        census.observe_inline_data(signature);
-        census.observe_inline_data(stage);
+        census.observe_inline_data(ordinal)?;
+        census.observe_inline_data(previous_frontier)?;
+        census.observe_inline_data(previous)?;
+        census.observe_inline_data(signature)?;
+        census.observe_inline_data(stage)?;
 
         census.observe(id)?;
         if let Some(body) = body {

@@ -50,13 +50,13 @@ impl CaptureAdminBridge {
             frontier,
             signature,
         } = self;
-        census.observe_inline_data(process);
-        census.observe_inline_data(thread);
-        census.observe_inline_data(original);
-        census.observe_inline_data(controller);
-        census.observe_inline_data(prefix_frontier);
-        census.observe_inline_data(frontier);
-        census.observe_inline_data(signature);
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(thread)?;
+        census.observe_inline_data(original)?;
+        census.observe_inline_data(controller)?;
+        census.observe_inline_data(prefix_frontier)?;
+        census.observe_inline_data(frontier)?;
+        census.observe_inline_data(signature)?;
 
         census.observe(world)?;
         census.observe(measurement)?;

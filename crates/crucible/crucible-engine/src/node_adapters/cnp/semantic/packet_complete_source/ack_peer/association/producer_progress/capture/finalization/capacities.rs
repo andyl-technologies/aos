@@ -17,8 +17,8 @@ impl Component {
             bytes,
             reference,
         } = self;
-        census.observe_inline_data(started);
-        census.observe_inline_data(completed);
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(completed)?;
 
         if let Some(value) = value {
             record_value_data(value, census)?;
@@ -63,8 +63,8 @@ impl FinalizationOwners {
             proof,
             proof_reference,
         } = self;
-        census.observe_inline_data(started);
-        census.observe_inline_data(completed);
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(completed)?;
 
         controller.record_capacity_data(census)?;
         journal.record_capacity_data(census)?;

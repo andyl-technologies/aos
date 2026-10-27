@@ -36,7 +36,7 @@ impl CaptureSdkOwners {
             bodies,
             stage,
         } = self;
-        census.observe_inline_data(stage);
+        census.observe_inline_data(stage)?;
 
         census.observe(request_id)?;
         census.observe(operation_id)?;

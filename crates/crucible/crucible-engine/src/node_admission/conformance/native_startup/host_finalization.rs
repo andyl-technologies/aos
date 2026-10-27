@@ -354,6 +354,7 @@ mod tests {
 
         assert_eq!(expected.shared_backing_views, 1);
         assert_eq!(expected.capacity_records, 1);
+        assert_eq!(expected.observed_nodes, 5); // Origin and three phase fields.
         assert_eq!(
             expected.shared_value_bytes,
             size_of::<OriginalHostFinalizationBarrier>()
@@ -372,7 +373,14 @@ mod tests {
 
         alias.record_retained_capacity_data(&mut expired).unwrap();
 
-        assert_eq!(expired.finish(), expected);
+        // The expired alias visits its index without reading the destroyed phase.
+        assert_eq!(
+            expired.finish(),
+            crucible_node_transport::retained_metadata::RetainedProtocolMetadataFacts {
+                observed_nodes: 1,
+                ..expected
+            }
+        );
         assert!(alias.barrier.upgrade().is_none());
     }
 
@@ -490,13 +498,11 @@ impl OriginalHostFinalizationBarrier {
             aborted,
         } = phase;
 
-        fn fixed_cell<T: Copy>(_: &Cell<T>) {}
-
-        census.observe_inline_data(process);
-        census.observe_inline_data(thread);
-        fixed_cell(completed);
-        fixed_cell(active);
-        fixed_cell(aborted);
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(thread)?;
+        census.observe_inline_cell_data(completed)?;
+        census.observe_inline_cell_data(active)?;
+        census.observe_inline_cell_data(aborted)?;
 
         census.observe_shared_allocation_data(self)?;
         plan.record_retained_capacity_data(census)?;
@@ -517,7 +523,7 @@ impl OriginalHostFinalizationSource {
         census: &mut crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData<'_>,
     ) -> Result<(), RuntimeError> {
         let Self { barrier, index } = self;
-        census.observe_inline_data(index);
+        census.observe_inline_data(index)?;
         census.observe_weak_allocation_data(barrier)
     }
 }

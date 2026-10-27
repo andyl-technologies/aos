@@ -148,8 +148,8 @@ fn native_read_capacity_keeps_genuinely_issued_complete_byte_custody_after_revoc
     assert_eq!(before.shared_backing_views, 5);
     assert_eq!(before.vector_banks, 2);
     assert!(before.vector_capacity_bytes > 0);
-    // The SDK saved epoch and the executable full reference's seven visits.
-    assert_eq!(before.observed_nodes, 8);
+    // Eight SDK/reference visits, five read-owner fields and seven executable fields.
+    assert_eq!(before.observed_nodes, 20);
     assert!(before.string_capacity_bytes > 0);
     assert!(
         crate::node_adapters::cnp::CnpSemanticSourceRead::retained_capacity_counter_scratch_data()

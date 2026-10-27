@@ -52,22 +52,22 @@ impl OriginalSourceRestorationActivationAttempt {
             upload_order,
         } = self;
 
-        census.observe_inline_data(process);
-        census.observe_inline_data(thread);
-        census.observe_inline_data(source);
-        census.observe_inline_data(controller);
-        census.observe_inline_data(binding);
-        census.observe_inline_data(reserved);
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(thread)?;
+        census.observe_inline_data(source)?;
+        census.observe_inline_data(controller)?;
+        census.observe_inline_data(binding)?;
+        census.observe_inline_data(reserved)?;
 
         let ActivationOrder {
             started,
             verified,
             failed,
         } = order;
-        census.observe_inline_data(started);
-        census.observe_inline_data(verified);
-        census.observe_inline_data(failed);
-        upload_order.record_inline_capacity_data(census);
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(verified)?;
+        census.observe_inline_data(failed)?;
+        upload_order.record_inline_capacity_data(census)?;
 
         for phase in phases.iter().chain(uploads) {
             let ActivationPhase {

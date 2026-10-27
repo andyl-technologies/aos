@@ -82,7 +82,10 @@ fn reservation_capacity_keeps_missing_empty_and_spent_source_holders_distinct() 
             .original_complete_capture_banks_capacity_data(None)
             .unwrap();
 
-        assert_eq!(empty, missing);
+        // Present empty banks also visit protocol_detached and transferred.
+        let mut expected = missing;
+        expected.observed_nodes += 2;
+        assert_eq!(empty, expected);
         let slot = source.native_import18_bank_reservation.borrow();
         let history = slot.as_ref().unwrap().history_data();
         assert_eq!(history.partial_capacities, Some([0; 7]));

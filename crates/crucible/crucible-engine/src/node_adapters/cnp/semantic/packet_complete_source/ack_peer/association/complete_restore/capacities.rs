@@ -51,13 +51,13 @@ impl OriginalCompleteRestoreAttempt {
             publishing_started,
             frame_maximum,
         } = self;
-        census.observe_inline_data(assigned_digest);
-        census.observe_inline_data(prepared);
-        census.observe_inline_data(ready);
-        census.observe_inline_data(signing_started);
-        census.observe_inline_data(sealed);
-        census.observe_inline_data(publishing_started);
-        census.observe_inline_data(frame_maximum);
+        census.observe_inline_data(assigned_digest)?;
+        census.observe_inline_data(prepared)?;
+        census.observe_inline_data(ready)?;
+        census.observe_inline_data(signing_started)?;
+        census.observe_inline_data(sealed)?;
+        census.observe_inline_data(publishing_started)?;
+        census.observe_inline_data(frame_maximum)?;
 
         // Raw, normalized and typed owners coexist; none replaces another row.
         for bank in banks {

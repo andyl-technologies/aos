@@ -60,13 +60,13 @@ impl OriginalAckPeerAssociation {
             publication_attempted,
             completed_mechanism,
         } = self;
-        census.observe_inline_data(attempted);
-        census.observe_inline_data(ready);
-        census.observe_inline_data(failed);
-        census.observe_inline_data(signing_attempted);
-        census.observe_inline_data(sealed);
-        census.observe_inline_data(publication_attempted);
-        census.observe_inline_data(&completed_mechanism.get());
+        census.observe_inline_data(attempted)?;
+        census.observe_inline_data(ready)?;
+        census.observe_inline_data(failed)?;
+        census.observe_inline_data(signing_attempted)?;
+        census.observe_inline_data(sealed)?;
+        census.observe_inline_data(publication_attempted)?;
+        census.observe_inline_data(&completed_mechanism.get())?;
         for bank in banks {
             census.observe(bank)?;
         }

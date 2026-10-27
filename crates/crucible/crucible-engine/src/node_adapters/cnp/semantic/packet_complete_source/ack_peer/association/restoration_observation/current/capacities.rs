@@ -34,9 +34,9 @@ impl CurrentObservationHistory {
             failed,
             attempts,
         } = self;
-        census.observe_inline_data(process);
-        census.observe_inline_data(thread);
-        census.observe_inline_data(failed);
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(thread)?;
+        census.observe_inline_data(failed)?;
         census.observe_vector_allocation_data(attempts)?;
         for attempt in attempts {
             attempt.record_capacity_data(census)?;
@@ -90,10 +90,10 @@ impl CurrentObservationAttempt {
             signature,
             stage,
         } = self;
-        census.observe_inline_data(row);
-        census.observe_inline_data(previous);
-        census.observe_inline_data(signature);
-        census.observe_inline_data(stage);
+        census.observe_inline_data(row)?;
+        census.observe_inline_data(previous)?;
+        census.observe_inline_data(signature)?;
+        census.observe_inline_data(stage)?;
 
         census.observe(id)?;
         if let Some(body) = body {

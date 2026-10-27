@@ -111,13 +111,13 @@ impl OriginalRestoredSuffixSeed {
             signature,
             stage,
         } = self;
-        census.observe_inline_data(process);
-        census.observe_inline_data(thread);
-        census.observe_inline_data(original);
-        census.observe_inline_data(controller);
-        census.observe_inline_data(checkpoint);
-        census.observe_inline_data(signature);
-        census.observe_inline_data(stage);
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(thread)?;
+        census.observe_inline_data(original)?;
+        census.observe_inline_data(controller)?;
+        census.observe_inline_data(checkpoint)?;
+        census.observe_inline_data(signature)?;
+        census.observe_inline_data(stage)?;
 
         self.check_capacity_creator_data(source)
     }

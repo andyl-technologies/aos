@@ -66,21 +66,19 @@ impl OriginalAckPeerBirth {
             changed,
         } = host_revision;
 
-        fn fixed_cell<T: Copy>(_: &std::cell::Cell<T>) {}
-
-        census.observe_inline_data(key);
-        census.observe_inline_data(birth_id);
-        census.observe_inline_data(device);
-        census.observe_inline_data(inode);
-        census.observe_inline_data(length);
-        census.observe_inline_data(uid);
-        census.observe_inline_data(mode);
-        census.observe_inline_data(modified);
-        census.observe_inline_data(changed);
-        fixed_cell(boot_started);
-        census.observe_inline_data(ready);
-        census.observe_inline_data(failed);
-        census.observe_inline_data(report_startup_required);
+        census.observe_inline_data(key)?;
+        census.observe_inline_data(birth_id)?;
+        census.observe_inline_data(device)?;
+        census.observe_inline_data(inode)?;
+        census.observe_inline_data(length)?;
+        census.observe_inline_data(uid)?;
+        census.observe_inline_data(mode)?;
+        census.observe_inline_data(modified)?;
+        census.observe_inline_data(changed)?;
+        census.observe_inline_cell_data(boot_started)?;
+        census.observe_inline_data(ready)?;
+        census.observe_inline_data(failed)?;
+        census.observe_inline_data(report_startup_required)?;
 
         census.observe(host_executable)?;
         census.observe(private_launch)?;

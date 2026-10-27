@@ -696,16 +696,16 @@ impl OriginalNativeImport18StartupMember {
             wire_body_maximum,
             launch_digest,
         } = quote;
-        census.observe_inline_data(process);
-        census.observe_inline_data(thread);
-        census.observe_inline_data(index);
-        census.observe_inline_data(host_launch_requested_bytes);
-        census.observe_inline_data(recipe);
-        census.observe_inline_data(initial);
-        census.observe_inline_data(host);
-        census.observe_inline_data(wire_body_maximum);
-        census.observe_inline_data(launch_digest);
-        baseline.observe_inline_capacity_data(census);
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(thread)?;
+        census.observe_inline_data(index)?;
+        census.observe_inline_data(host_launch_requested_bytes)?;
+        census.observe_inline_data(recipe)?;
+        census.observe_inline_data(initial)?;
+        census.observe_inline_data(host)?;
+        census.observe_inline_data(wire_body_maximum)?;
+        census.observe_inline_data(launch_digest)?;
+        baseline.observe_inline_capacity_data(census)?;
 
         plan.record_retained_capacity_data(census)?;
         census.observe_weak_allocation_data(source)?;

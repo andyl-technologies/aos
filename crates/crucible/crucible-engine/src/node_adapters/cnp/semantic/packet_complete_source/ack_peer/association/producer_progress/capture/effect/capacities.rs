@@ -26,7 +26,7 @@ impl FrozenCheckpoint {
             scope,
             frontier,
         } = self;
-        census.observe_inline_data(frontier);
+        census.observe_inline_data(frontier)?;
 
         census.observe_capture_protocol_data(
             RetainedCaptureProtocolData::RestorationNativeEvidence(Some(record), Some(underlying)),
@@ -90,8 +90,8 @@ impl CaptureConstructionOwners {
             node_bytes,
             node_reference,
         } = self;
-        census.observe_inline_data(started);
-        census.observe_inline_data(final_started);
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(final_started)?;
 
         if let Some(frozen) = frozen {
             frozen.record_capacity_data(census)?;

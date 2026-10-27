@@ -22,8 +22,8 @@ impl CnpSemanticSnapshotReservation {
             started,
         } = self;
         storage_origin.check_precredit_data()?;
-        census.observe_inline_data(maximum);
-        census.observe_inline_data(started);
+        census.observe_inline_data(maximum)?;
+        census.observe_inline_data(started)?;
         census.observe(bytes)?;
         storage_origin.check_precredit_data()
     }

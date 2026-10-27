@@ -17,8 +17,8 @@ impl BornRow {
             reference,
             dependencies,
         } = self;
-        census.observe_inline_data(started);
-        census.observe_inline_data(completed);
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(completed)?;
 
         census.observe(reference)?;
         census.observe(dependencies)
@@ -58,8 +58,8 @@ impl CaptureBornOwner {
             index_output,
             rows,
         } = self;
-        census.observe_inline_data(index_started);
-        census.observe_inline_data(index_completed);
+        census.observe_inline_data(index_started)?;
+        census.observe_inline_data(index_completed)?;
 
         if let Some(value) = index_dom {
             record_value_data(value, census)?;

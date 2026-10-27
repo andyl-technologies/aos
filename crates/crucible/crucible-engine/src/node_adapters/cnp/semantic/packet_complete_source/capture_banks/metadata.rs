@@ -46,8 +46,8 @@ impl PacketCompleteCaptureBanks {
             native_after_bank,
             native_after_object,
         } = self;
-        census.observe_inline_data(protocol_detached);
-        census.observe_inline_data(transferred);
+        census.observe_inline_data(protocol_detached)?;
+        census.observe_inline_data(transferred)?;
 
         for reservation in [semantic, ancestry, journal, native_after_bank]
             .into_iter()

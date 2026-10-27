@@ -421,3 +421,49 @@ fn repeated_shared_scalar_views_count_each_visit_without_alias_discount() {
     assert_eq!(Rc::strong_count(&original), 1);
     assert_eq!(*original, U64::new(41));
 }
+
+#[test]
+fn inline_copy_fields_add_work_without_changing_capacity_geometry() {
+    let values = vec![U64::new(1), U64::new(2)];
+    let mut census = OriginalOwnerCapacityMetadataData::new(1, None);
+    census.observe(&values).unwrap();
+    let before = census.facts;
+
+    census.observe_inline_data(&false).unwrap();
+    census.observe_inline_data(&Some(17usize)).unwrap();
+    census.observe_inline_data(&[3u8; 32]).unwrap();
+    let mut expected = before;
+    expected.observed_nodes += 3;
+
+    assert_eq!(census.facts, expected);
+
+    census.facts.observed_nodes = usize::MAX;
+    let before_refusal = census.facts;
+    assert_eq!(
+        census.observe_inline_data(&false),
+        Err(RuntimeError::ResourceLimit)
+    );
+    assert_eq!(census.finish(), before_refusal);
+    assert_eq!(values, [U64::new(1), U64::new(2)]);
+}
+
+#[test]
+fn inline_cell_visit_preserves_the_original_lifecycle_flag_on_success_and_refusal() {
+    let flag = std::cell::Cell::new(Some(17usize));
+    let mut census = OriginalOwnerCapacityMetadataData::new(0, None);
+
+    census.observe_inline_cell_data(&flag).unwrap();
+
+    assert_eq!(census.facts.observed_nodes, 1);
+    assert_eq!(census.facts.capacity_records, 0);
+    assert_eq!(flag.get(), Some(17));
+
+    census.facts.observed_nodes = usize::MAX;
+    let previous = census.facts;
+    assert_eq!(
+        census.observe_inline_cell_data(&flag),
+        Err(RuntimeError::ResourceLimit)
+    );
+    assert_eq!(census.finish(), previous);
+    assert_eq!(flag.get(), Some(17));
+}

@@ -78,8 +78,8 @@ fn ack_protocol_capacity_keeps_real_reserved_banks_for_all_three_source_declarat
         assert_eq!(facts.vector_banks, 5);
         assert_eq!(facts.capacity_records, 5);
         assert_eq!(facts.vector_capacity_bytes, expected);
-        // Each of the five original empty Vec owners contributes one visit.
-        assert_eq!(facts.observed_nodes, 5);
+        // Five original empty Vec owners and seven fixed protocol fields.
+        assert_eq!(facts.observed_nodes, 12);
         assert!(source.ack_peer_birth.borrow().is_none());
         assert!(source.authenticate_current_native().is_err());
     }

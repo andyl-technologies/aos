@@ -57,9 +57,9 @@ impl ProducerProgressHistory {
             failed,
             attempts,
         } = self;
-        census.observe_inline_data(process);
-        census.observe_inline_data(thread);
-        census.observe_inline_data(failed);
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(thread)?;
+        census.observe_inline_data(failed)?;
         census.observe_vector_allocation_data(attempts)?;
         for attempt in attempts {
             attempt.record_capacity_data(census)?;
@@ -133,11 +133,11 @@ impl ProducerProgressAttempt {
             stage,
         } = self;
         let root = durable_root_loan_data(durable_root)?;
-        census.observe_inline_data(row);
-        census.observe_inline_data(slot);
-        census.observe_inline_data(previous);
-        census.observe_inline_data(signature);
-        census.observe_inline_data(&stage.get());
+        census.observe_inline_data(row)?;
+        census.observe_inline_data(slot)?;
+        census.observe_inline_data(previous)?;
+        census.observe_inline_data(signature)?;
+        census.observe_inline_data(&stage.get())?;
 
         census.observe(admission)?;
         census.observe(authorization)?;

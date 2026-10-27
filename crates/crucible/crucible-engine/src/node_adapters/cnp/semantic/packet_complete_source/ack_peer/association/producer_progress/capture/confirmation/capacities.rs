@@ -23,7 +23,7 @@ impl CaptureConfirmationOwners {
             terminal_bytes,
             request,
         } = self;
-        census.observe_inline_data(attempted);
+        census.observe_inline_data(attempted)?;
 
         census.observe(request_id)?;
         if let Some(value) = terminal_value {

@@ -40,10 +40,10 @@ impl OriginalExecutable {
             return Err(RuntimeError::UnsupportedFacet);
         }
 
-        census.observe_inline_data(creator);
-        census.observe_inline_data(thread);
-        census.observe_inline_data(&revoked.get());
-        census.observe_inline_data(bounded_birth);
+        census.observe_inline_data(creator)?;
+        census.observe_inline_data(thread)?;
+        census.observe_inline_data(&revoked.get())?;
+        census.observe_inline_data(bounded_birth)?;
         let FileRevision {
             device,
             inode,
@@ -55,9 +55,9 @@ impl OriginalExecutable {
             modified,
             changed,
         } = revision;
-        census.observe_inline_data(&(*device, *inode, *length, *mode, *uid, *gid, *links));
-        census.observe_inline_data(modified);
-        census.observe_inline_data(changed);
+        census.observe_inline_data(&(*device, *inode, *length, *mode, *uid, *gid, *links))?;
+        census.observe_inline_data(modified)?;
+        census.observe_inline_data(changed)?;
 
         // Unix PathBuf capacity is the original OsString byte bank, including
         // spare capacity. No lossy text projection or serialized length is used.

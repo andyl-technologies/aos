@@ -243,11 +243,9 @@ impl OriginalNativeImport18Finalization {
             wire,
         } = self;
 
-        fn fixed_cell<T: Copy>(_: &Cell<T>) {}
-
-        census.observe_inline_data(prepared);
-        census.observe_inline_data(complete);
-        fixed_cell(wire);
+        census.observe_inline_data(prepared)?;
+        census.observe_inline_data(complete)?;
+        census.observe_inline_cell_data(wire)?;
         member.record_retained_capacity_data(census)?;
         census.observe(replacement)?;
         for value in [baseline, additions, wrapper].into_iter().flatten() {

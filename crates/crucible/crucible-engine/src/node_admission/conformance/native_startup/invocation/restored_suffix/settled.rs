@@ -561,11 +561,9 @@ impl OriginalRestoredSettledStartupMember {
             construction,
         } = rows;
 
-        fn fixed_cell<T: Copy>(_: &Cell<T>) {}
-
-        fixed_cell(wire_attempted);
-        fixed_cell(wire_completed);
-        census.observe_inline_data(construction);
+        census.observe_inline_cell_data(wire_attempted)?;
+        census.observe_inline_cell_data(wire_completed)?;
+        census.observe_inline_data(construction)?;
         if storage.retained_metadata_data() != Default::default() {
             return Err(RuntimeError::UnsupportedFacet);
         }

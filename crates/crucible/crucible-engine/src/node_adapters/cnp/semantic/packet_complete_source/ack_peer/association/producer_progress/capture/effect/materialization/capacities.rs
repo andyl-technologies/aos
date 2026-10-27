@@ -21,8 +21,8 @@ impl PayloadCopy {
             reference,
             bytes,
         } = self;
-        census.observe_inline_data(started);
-        census.observe_inline_data(completed);
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(completed)?;
 
         census.observe(reference)?;
         census.observe(bytes)
@@ -64,9 +64,9 @@ impl CaptureMaterializationOwner {
             evidence,
             born,
         } = self;
-        census.observe_inline_data(started);
-        census.observe_inline_data(failed);
-        census.observe_inline_data(transferred);
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(failed)?;
+        census.observe_inline_data(transferred)?;
 
         census.observe(owner)?;
         census.observe(participants)?;

@@ -545,10 +545,10 @@ impl OriginalReportStartupMember {
             rows,
             finalization_bytes,
         } = self;
-        census.observe_inline_data(process);
-        census.observe_inline_data(thread);
-        census.observe_inline_data(rows);
-        census.observe_inline_data(finalization_bytes);
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(thread)?;
+        census.observe_inline_data(rows)?;
+        census.observe_inline_data(finalization_bytes)?;
         plan.record_retained_capacity_data(census)?;
         census.observe_weak_allocation_data(source)
     }

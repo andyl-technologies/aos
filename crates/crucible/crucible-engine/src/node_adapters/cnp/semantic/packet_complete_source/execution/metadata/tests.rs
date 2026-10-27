@@ -242,7 +242,8 @@ fn execution_capacity_reservations_keep_all_three_original_sources_and_exact_cre
         assert_eq!(facts.vector_banks, 5);
         assert_eq!(facts.vector_capacity_bytes, bytes);
         // Five empty reserved Vecs and six independently absent optional owners.
-        assert_eq!(facts.observed_nodes, 11);
+        // Eleven common owner visits, five execution fields and two bank flags.
+        assert_eq!(facts.observed_nodes, 18);
         assert_eq!(
             execution.retained_storage_with_error::<RuntimeError>(bytes),
             Ok(bytes)

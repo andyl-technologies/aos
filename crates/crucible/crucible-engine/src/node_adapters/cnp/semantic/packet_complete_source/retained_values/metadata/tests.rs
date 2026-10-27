@@ -63,9 +63,8 @@ fn private_json_geometry_keeps_actual_spare_backing_at_exact_and_short_credit() 
             }
     );
     assert_eq!(facts.capacity_records, 5);
-    // These are the two common String visits; the private JSON traversal
-    // still needs its independent complete work census.
-    assert_eq!(facts.observed_nodes, 2);
+    // Seven JSON values, the retained key and the independently visited String.
+    assert_eq!(facts.observed_nodes, 9);
     assert_eq!(
         value_storage_with_error::<RuntimeError>(&value, 0, expected),
         Ok(expected)
@@ -78,6 +77,19 @@ fn private_json_geometry_keeps_actual_spare_backing_at_exact_and_short_credit() 
     assert!(super::super::value_storage(&value, 0, expected - 1).is_err());
     assert_eq!(key.as_ptr(), key_pointer);
     assert_eq!(string.as_ptr(), string_pointer);
+}
+
+#[test]
+fn private_json_scalars_report_work_without_allocation_rows() {
+    for value in [Value::Null, Value::Bool(true), Value::from(73)] {
+        let facts = value_capacity_data_with_error::<RuntimeError>(&value, 0, None).unwrap();
+
+        assert_eq!(facts.observed_nodes, 1);
+        assert_eq!(facts.capacity_records, 0);
+        assert_eq!(facts.string_banks, 0);
+        assert_eq!(facts.vector_banks, 0);
+        assert_eq!(facts.tree_containers, 0);
+    }
 }
 
 #[test]
@@ -165,7 +177,8 @@ fn private_json_keeps_its_original_depth_fence_and_refused_prefix() {
 
     assert_eq!(prefix.vector_banks, MAXIMUM_DEPTH + 1);
     assert_eq!(prefix.capacity_records, MAXIMUM_DEPTH + 1);
-    assert_eq!(prefix.observed_nodes, 0);
+    // Every accepted array cursor is visited before its deeper child refuses.
+    assert_eq!(prefix.observed_nodes, MAXIMUM_DEPTH + 1);
     assert!(
         value_capacity_data_with_error::<RuntimeError>(&Value::Null, MAXIMUM_DEPTH + 1, None)
             .is_err()

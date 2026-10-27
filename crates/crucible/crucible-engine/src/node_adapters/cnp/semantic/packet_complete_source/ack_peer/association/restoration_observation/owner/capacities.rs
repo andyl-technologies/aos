@@ -43,13 +43,13 @@ impl OriginalSourceRestorationObservationAttempt {
             underlying,
             scheduling,
         } = self;
-        census.observe_inline_data(process);
-        census.observe_inline_data(thread);
-        census.observe_inline_data(source);
-        census.observe_inline_data(controller);
-        census.observe_inline_data(binding);
-        census.observe_inline_data(reserved);
-        census.observe_inline_data(verified);
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(thread)?;
+        census.observe_inline_data(source)?;
+        census.observe_inline_data(controller)?;
+        census.observe_inline_data(binding)?;
+        census.observe_inline_data(reserved)?;
+        census.observe_inline_data(verified)?;
 
         for bank in banks {
             census.observe(bank)?;

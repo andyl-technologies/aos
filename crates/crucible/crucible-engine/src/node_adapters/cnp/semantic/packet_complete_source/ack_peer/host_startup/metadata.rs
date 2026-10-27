@@ -57,10 +57,10 @@ impl OriginalHostStartupMarker {
             initial_lifecycle_completed,
             launch,
         } = self;
-        census.observe_inline_data(complete);
-        census.observe_inline_data(initial_lifecycle_issued);
-        census.observe_inline_data(initial_lifecycle_quote);
-        census.observe_inline_data(initial_lifecycle_completed);
+        census.observe_inline_data(complete)?;
+        census.observe_inline_data(initial_lifecycle_issued)?;
+        census.observe_inline_data(initial_lifecycle_quote)?;
+        census.observe_inline_data(initial_lifecycle_completed)?;
         census.observe_weak_allocation_data(origin)?;
         if let Some(launch) = launch {
             launch.record_retained_capacity_data(census)?;

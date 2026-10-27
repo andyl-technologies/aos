@@ -34,11 +34,11 @@ impl OriginalCompleteRegistryCapture {
             attempted,
             failed,
         } = self;
-        census.observe_inline_data(maximum_encoded_bytes);
-        census.observe_inline_data(maximum_rows);
-        census.observe_inline_data(reserved);
-        census.observe_inline_data(attempted);
-        census.observe_inline_data(failed);
+        census.observe_inline_data(maximum_encoded_bytes)?;
+        census.observe_inline_data(maximum_rows)?;
+        census.observe_inline_data(reserved)?;
+        census.observe_inline_data(attempted)?;
+        census.observe_inline_data(failed)?;
 
         census.observe(encoded)?;
         if let Some(records) = records {

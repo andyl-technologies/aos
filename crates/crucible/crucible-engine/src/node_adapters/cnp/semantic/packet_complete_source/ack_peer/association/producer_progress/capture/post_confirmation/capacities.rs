@@ -39,7 +39,7 @@ impl CapturePostConfirmationOwners {
             native_output,
             bridge,
         } = self;
-        census.observe_inline_data(stage);
+        census.observe_inline_data(stage)?;
 
         confirmation.record_capacity_data(census)?;
         if let Some(attempt) = native_attempt {

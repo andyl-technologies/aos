@@ -97,7 +97,7 @@ impl CaptureCapacityRead<'_> {
         // guard below; its inline RefCell header belongs to the Source root.
         let _original_cell: &RefCell<super::super::effect::CaptureMaterializationOwner> =
             original_cell;
-        census.observe_inline_data(stage);
+        census.observe_inline_data(stage)?;
 
         construction.record_capacity_data(census)?;
         prefix.record_capacity_data(census)?;

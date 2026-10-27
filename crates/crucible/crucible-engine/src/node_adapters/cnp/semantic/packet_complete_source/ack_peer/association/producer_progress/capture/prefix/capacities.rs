@@ -22,7 +22,7 @@ impl CapturePrefixOwners {
             bytes,
             reference,
         } = self;
-        census.observe_inline_data(attempted);
+        census.observe_inline_data(attempted)?;
 
         if let Some(value) = checkpoint_value {
             record_value_data(value, census)?;

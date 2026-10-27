@@ -47,7 +47,7 @@ fn static_capacity_matches_original_backing_without_duplicating_inline_header() 
             + original.rows[0].1.capacity() * size_of::<ContentRef>()
     );
     // Three full references, one payload header and its two child Vecs.
-    assert_eq!(facts.observed_nodes, 24 + original.rows[0].0.bytes.len());
+    assert_eq!(facts.observed_nodes, 26 + original.rows[0].0.bytes.len());
     assert_eq!(
         PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
             &facts, bytes

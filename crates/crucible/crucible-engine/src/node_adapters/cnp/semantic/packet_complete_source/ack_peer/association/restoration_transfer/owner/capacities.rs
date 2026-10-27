@@ -32,11 +32,11 @@ impl OriginalSourceRestoreTransferAttempt {
 
         census.observe(prepare_id)?;
         census.observe(commit_id)?;
-        census.observe_inline_data(nonce);
-        census.observe_inline_data(generation);
-        census.observe_inline_data(inputs_started);
-        census.observe_inline_data(inputs_verified);
-        census.observe_inline_data(failed);
+        census.observe_inline_data(nonce)?;
+        census.observe_inline_data(generation)?;
+        census.observe_inline_data(inputs_started)?;
+        census.observe_inline_data(inputs_verified)?;
+        census.observe_inline_data(failed)?;
 
         prepare.record_capacity_data(census)?;
         commit.record_capacity_data(census)
@@ -78,10 +78,10 @@ impl SourceTransferPhase {
             verified,
         } = self;
 
-        census.observe_inline_data(started);
-        census.observe_inline_data(sealed);
-        census.observe_inline_data(publishing_started);
-        census.observe_inline_data(verified);
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(sealed)?;
+        census.observe_inline_data(publishing_started)?;
+        census.observe_inline_data(verified)?;
         for value in normalized.iter().flatten() {
             record_value_capacity_data_with_error::<RuntimeError>(value, 0, census)?;
         }

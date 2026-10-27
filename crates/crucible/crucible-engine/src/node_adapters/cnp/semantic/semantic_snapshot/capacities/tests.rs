@@ -17,7 +17,8 @@ fn semantic_capacity_preserves_spare_and_failed_original_bank() {
     assert_eq!(facts.capacity_records, 1);
     assert_eq!(facts.vector_banks, 1);
     assert_eq!(facts.vector_capacity_bytes, bank.allocated_bytes());
-    assert_eq!(facts.observed_nodes, 1); // The retained empty byte Vec.
+    // The byte Vec, fixed maximum and started flag.
+    assert_eq!(facts.observed_nodes, 3); // The retained empty byte Vec.
     assert_eq!(bank.bytes.as_ptr(), pointer);
     assert!(bank.started);
     assert!(bank.bytes.is_empty());

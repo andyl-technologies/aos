@@ -497,14 +497,12 @@ impl OriginalRestoredSuffixStartupMember {
             construction,
         } = rows;
 
-        fn fixed_cell<T: Copy>(_: &Cell<T>) {}
-
-        census.observe_inline_data(process);
-        census.observe_inline_data(thread);
-        census.observe_inline_data(reservation);
-        census.observe_inline_data(construction);
-        fixed_cell(wire_attempted);
-        fixed_cell(wire_completed);
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(thread)?;
+        census.observe_inline_data(reservation)?;
+        census.observe_inline_data(construction)?;
+        census.observe_inline_cell_data(wire_attempted)?;
+        census.observe_inline_cell_data(wire_completed)?;
         plan.record_retained_capacity_data(census)?;
         census.observe_weak_allocation_data(source)?;
         if let Some(settled) = settled {

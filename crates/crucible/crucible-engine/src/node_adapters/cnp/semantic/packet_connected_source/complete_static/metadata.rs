@@ -24,8 +24,8 @@ impl CompleteInputStaticRows {
             complete,
             failed,
         } = self;
-        census.observe_inline_data(complete);
-        census.observe_inline_data(failed);
+        census.observe_inline_data(complete)?;
+        census.observe_inline_data(failed)?;
         census.record(MetadataCapacityRecord {
             kind: MetadataRecordKind::Vector,
             extent: rows.capacity(),

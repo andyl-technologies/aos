@@ -2,8 +2,9 @@
 //!
 //! Arrays retain their spare slots, objects retain their compiled key/value
 //! layout even when empty, and strings retain their original byte capacity.
-//! Capacity rows contain no pointers or alias discounts. Scalar traversal work
-//! and the enclosing Source's other owners remain independent restrictions.
+//! Capacity rows contain no pointers or alias discounts. Each visited JSON value
+//! also reports work, including scalar leaves with no allocation. These facts
+//! establish no admission for the enclosing Source's other owners.
 
 use super::{StorageError, Value};
 use crate::node_contract::{
@@ -32,7 +33,7 @@ struct ValueCapacityCursor<'a> {
 /// Existing rows survive refusal; no replacement Value is encoded or allocated.
 ///
 /// # Errors
-/// Refuses the original depth restriction, invalid or overflowing geometry,
+/// Refuses the original depth restriction, checked work or geometry overflow,
 /// unavailable physical backing or exhausted selected capacity rows.
 pub(in crate::node_adapters::cnp::semantic) fn value_capacity_data_with_error<E: StorageError>(
     value: &Value,
@@ -51,7 +52,7 @@ pub(in crate::node_adapters::cnp::semantic) fn value_capacity_data_with_error<E:
 /// calls retain every view's rows, and failures leave earlier rows appended.
 ///
 /// # Errors
-/// Refuses the original depth restriction, invalid geometry, selected row
+/// Refuses the original depth restriction, work overflow, invalid geometry, selected row
 /// exhaustion or unavailable physical backing without changing the Value.
 pub(in crate::node_adapters::cnp::semantic) fn record_value_capacity_data_with_error<
     E: StorageError,
@@ -70,6 +71,8 @@ fn walk<E: StorageError>(
     if cursor.depth > MAXIMUM_DEPTH {
         return Err(E::refused("retained private JSON depth unsupported"));
     }
+
+    census.observe_work_data(1).map_err(E::runtime)?;
 
     match cursor.value {
         Value::Null | Value::Bool(_) | Value::Number(_) => {}

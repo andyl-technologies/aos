@@ -39,11 +39,11 @@ impl Import18CaptureBankReservation {
         })?;
         // Copy rows cannot silently acquire owned backing. The raw source
         // binding identifies no additional allocation owned by this reservation.
-        census.observe_inline_data(row);
-        census.observe_inline_data(started);
-        census.observe_inline_data(complete);
-        census.observe_inline_data(failed);
-        census.observe_inline_data(published);
+        census.observe_inline_data(row)?;
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(complete)?;
+        census.observe_inline_data(failed)?;
+        census.observe_inline_data(published)?;
 
         if let Some(banks) = banks {
             banks.record_capacity_data(census)?;

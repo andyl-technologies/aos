@@ -23,8 +23,8 @@ impl OriginalRestoreTransferBanks {
             mapping_complete,
         } = self;
 
-        census.observe_inline_data(mapping_attempted);
-        census.observe_inline_data(mapping_complete);
+        census.observe_inline_data(mapping_attempted)?;
+        census.observe_inline_data(mapping_complete)?;
 
         for bank in prepare.iter().chain(commit) {
             census.observe(bank)?;

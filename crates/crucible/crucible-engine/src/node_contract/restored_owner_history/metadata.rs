@@ -102,12 +102,42 @@ impl<'a> OriginalOwnerCapacityMetadataData<'a> {
         merge_capacity_metadata_data(&mut self.facts, &additional)
     }
 
-    /// Keeps a Copy field in the defining allocation-free roster.
+    /// Counts one inspected Copy field in the defining allocation-free roster.
     ///
     /// This compile-time bound prevents a fixed field from silently acquiring an
-    /// owned String, Vec, Box, Rc or Weak. It adds no allocation or scalar-work
-    /// row; borrowed references and external resources remain separate owners.
-    pub(crate) const fn observe_inline_data<T: Copy>(&self, _value: &T) {}
+    /// owned String, Vec, Box, Rc or Weak. The visit adds no allocation row;
+    /// borrowed references and external resources remain separate owners.
+    ///
+    /// # Errors
+    /// Refuses checked traversal-work overflow without changing prior facts.
+    pub(crate) fn observe_inline_data<T: Copy>(&mut self, _value: &T) -> Result<(), RuntimeError> {
+        self.observe_work_data(1)
+    }
+
+    /// Counts a fixed Cell field without reading or changing its stored value.
+    ///
+    /// The Copy bound excludes dynamically owning payloads from this inline
+    /// roster. The visit lends no lifecycle state or currentness permission.
+    ///
+    /// # Errors
+    /// Refuses checked traversal-work overflow without changing prior facts.
+    pub(crate) fn observe_inline_cell_data<T: Copy>(
+        &mut self,
+        _value: &std::cell::Cell<T>,
+    ) -> Result<(), RuntimeError> {
+        self.observe_work_data(1)
+    }
+
+    /// Counts actual visits made by a component's defining custom walker.
+    ///
+    /// This reports work separately from allocation rows. It issues no bounded
+    /// Source admission and does not substitute for other owners' field rosters.
+    ///
+    /// # Errors
+    /// Refuses checked traversal-work overflow without changing prior facts.
+    pub(crate) fn observe_work_data(&mut self, visits: usize) -> Result<(), RuntimeError> {
+        add(&mut self.facts.observed_nodes, visits)
+    }
 
     /// Records the actual Vec allocation before its initialized child owners.
     ///
@@ -272,7 +302,7 @@ impl OriginalRestoredOwnerCapacitySink for OriginalOwnerCapacityMetadataData<'_>
     }
 
     fn visit_work(&mut self, visits: usize) -> Result<(), RuntimeError> {
-        add(&mut self.facts.observed_nodes, visits)
+        self.observe_work_data(visits)
     }
 }
 

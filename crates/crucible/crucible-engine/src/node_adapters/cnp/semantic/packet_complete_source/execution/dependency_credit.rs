@@ -583,7 +583,7 @@ impl OriginalDependencyPlan {
         census: &mut OriginalOwnerCapacityMetadataData<'_>,
     ) -> Result<(), RuntimeError> {
         let Self { runtime, data } = self;
-        census.observe_inline_data(data);
+        census.observe_inline_data(data)?;
         census.observe(runtime)
     }
 

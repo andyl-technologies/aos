@@ -73,17 +73,17 @@ impl CnpSemanticSourceRead {
             kernel,
             executable,
         } = self;
-        census.observe_inline_data(process);
-        census.observe_inline_data(kernel);
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(kernel)?;
         census.observe_shared_allocation_data(owner)?;
         let ReadOwner {
             identity,
             current,
             busy,
         } = owner.as_ref();
-        census.observe_inline_data(identity);
-        census.observe_inline_data(&current.get());
-        census.observe_inline_data(&busy.get());
+        census.observe_inline_data(identity)?;
+        census.observe_inline_data(&current.get())?;
+        census.observe_inline_data(&busy.get())?;
         census.observe_registrar_read_data(registration)?;
         census.observe_shared_allocation_data(executable)?;
         executable.record_capacity_data(census)?;

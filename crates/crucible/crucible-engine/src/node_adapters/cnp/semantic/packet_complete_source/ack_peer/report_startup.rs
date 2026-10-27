@@ -566,7 +566,7 @@ impl OriginalReportStartupFinalization {
             additions,
             complete,
         } = self;
-        census.observe_inline_data(complete);
+        census.observe_inline_data(complete)?;
         member.record_retained_capacity_data(census)?;
         census.observe(replacement)?;
         for value in [body, additions].into_iter().flatten() {

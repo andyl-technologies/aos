@@ -61,11 +61,11 @@ impl OriginalCompleteCaptureExecution {
             failed,
             transferred,
         } = self;
-        census.observe_inline_data(allocation_selected);
-        census.observe_inline_data(started);
-        census.observe_inline_data(wire_attempted);
-        census.observe_inline_data(failed);
-        census.observe_inline_data(transferred);
+        census.observe_inline_data(allocation_selected)?;
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(wire_attempted)?;
+        census.observe_inline_data(failed)?;
+        census.observe_inline_data(transferred)?;
 
         if let Some(bank) = backend_bank {
             bank.record_capacity_data(census)?;
@@ -99,7 +99,7 @@ impl OriginalCompleteCaptureExecution {
             census.observe(implementation)?;
             census.observe(profile)?;
             census.observe(id)?;
-            census.observe_inline_data(version);
+            census.observe_inline_data(version)?;
             census.observe(definition)?;
             census.observe(extensions)?;
         }
