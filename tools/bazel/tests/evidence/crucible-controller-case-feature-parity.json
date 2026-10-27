@@ -29,5 +29,13 @@
   "public_controller_cutover_qualified": false,
   "schema_version": 1,
   "scope": "Standard controller Cargo case and compiled-feature comparison, captured before the feature-audit runtime migration. This does not qualify current controller test execution.",
+  "source_verifier": {
+    "focused_tests": 8,
+    "frozen_sandbox_output": "/nix/store/pp3f1zr959icfqisq5ay7ci80w29wmnk-aos-bazel-crucible-controller-frozen-source-check",
+    "full_python_helper_tests": 489,
+    "path": "tools/bazel/tests/verify_compiler_sources.py",
+    "sha256": "5163f1d80c3a05d2aaa661109882c21a6c3280a9506dad4845b2b4256dae4030",
+    "sources_json_sha256": "c29c004fc558cf353c75c4e3bbd16c1efd003139a9ace1ea892b343b28e6baf3"
+  },
   "test_execution_qualified": false
 }
