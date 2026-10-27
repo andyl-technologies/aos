@@ -77,3 +77,11 @@ filegroup(
     ],
     visibility = ["//crates/crucible/crucible-qemu-plugin:__pkg__"],
 )
+
+filegroup(
+    name = "harness_lint_inputs",
+    testonly = True,
+    # Preserve the recursive gate scan, including the tracked hidden Nix helper.
+    srcs = glob(["**/*.nix", "**/*.toml", "**/*.json", "**/*.txt", "**/*.md", "**/*.patch", "**/*.rs", ".validate-enumerate.nix"], allow_empty = True),
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)

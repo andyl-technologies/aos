@@ -1,3 +1,4 @@
+load("//tools/bazel/rules:clippy.bzl", "aos_package_clippy")
 load("//tools/bazel/rules:compile.bzl", "rust_library")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:package.bzl", "aos_package")
@@ -116,6 +117,9 @@ aos_rust_test(
             "AOS_BAZEL_LICENSE_CLOSURES": "@aos_architecture//:license-closures.json",
         } if source == "tests/gate_license_boundary.rs" else {
             "AOS_BAZEL_ARCHITECTURE": "@aos_architecture//:architecture.json",
+            "AOS_BAZEL_CLIPPY_CONFIG": "//tools/bazel/rules:clippy_config",
+        } if source == "tests/harness_lint.rs" else {
+            "AOS_BAZEL_ARCHITECTURE": "@aos_architecture//:architecture.json",
         } if source in [
             "tests/control_plane_boundary.rs",
             "tests/crate_layer_graph.rs",
@@ -135,7 +139,27 @@ aos_rust_test(
             "//crates/crucible/crucible-qemu-shmem:license_boundary_audit_inputs",
         ] if source == "tests/gate_license_boundary.rs" else []) + ([
             "//tests/crucible:campaign_traceability_inputs",
-        ] if source == "tests/campaign_gate_traceability.rs" else []),
+        ] if source == "tests/campaign_gate_traceability.rs" else []) + ([
+            "//:harness_lint_audit_inputs",
+            "//tests/crucible:harness_lint_inputs",
+            "//docs/rfcs/0014-signal-driven-fault-model:harness_lint_inputs",
+            "//docs/users/crucible:harness_lint_inputs",
+            "//crates:harness_lint_inputs",
+            "//crates/crucible/crucible-qemu-shmem:license_boundary_audit_inputs",
+            "//crates:gate_manifest_reference",
+            "//crates/crucible/crucible-cli:gate_manifest_reference",
+            "//crates/crucible/crucible-control-api:gate_manifest_reference",
+            "//crates/crucible/crucible-control-server:gate_manifest_reference",
+            "//crates/crucible/crucible-daemon:gate_manifest_reference",
+            "//crates/crucible/crucible-device:gate_manifest_reference",
+            "//crates/crucible/crucible-engine:gate_manifest_reference",
+            "//crates/crucible/crucible-guest:gate_manifest_reference",
+            "//crates/crucible/crucible-qemu-host:gate_manifest_reference",
+            "//crates/crucible/crucible-qemu-plugin:gate_manifest_reference",
+            "//crates/crucible/crucible-qemu-protocol:gate_manifest_reference",
+            "//crates/crucible/crucible-session:gate_manifest_reference",
+            "//crates/crucible/crucible-store:gate_manifest_reference",
+        ] if source == "tests/harness_lint.rs" else []),
         deps = [":lib"] + CONTROLLER_DEVELOPMENT_DEPENDENCIES,
     )
     for source in CONTROLLER_INTEGRATIONS
@@ -313,3 +337,5 @@ aos_source_package(
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
 )
+
+aos_package_clippy(name = "clippy_all")

@@ -1,3 +1,4 @@
+load("//tools/bazel/rules:clippy.bzl", "aos_package_clippy")
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_library")
 load("//tools/bazel/rules:controller_graph.bzl", "controller_dependencies", "controller_library", "controller_tests")
@@ -173,3 +174,14 @@ daemon_dependency_libraries(
     common_deps = COMMON_DEPENDENCIES,
     compile_data = [],
 )
+
+filegroup(
+    name = "gate_manifest_reference",
+    testonly = True,
+    # Nix source gates still name this file; retain their existence assertions
+    # until those consumers have migrated to declared Bazel contracts.
+    srcs = ["Cargo.toml"],
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)
+
+aos_package_clippy(name = "clippy_all")

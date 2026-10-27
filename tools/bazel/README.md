@@ -4503,3 +4503,33 @@ requires its mandatory suite tests, Clippy, documentation, doctests, installed
 metadata and closure checks, and the applicable ABI and license gates. Native
 serialization of an AArch64 scenario does not qualify an AArch64 executable or a
 live debugger. Cargo remains the public controller's build driver.
+
+The controller harness lint reads source ownership, dependency identities, lint
+bindings, selector branches, and package Clippy roots from the declared Bazel
+graph. Its configured Clippy TOML comes from the same filegroup selected for
+compiler actions, through an explicit test runfile. The package `clippy_all`
+roots include controller and feature copies in addition to ordinary libraries,
+examples, and test compilations. The controller lint also retains the quota
+package's existing complete Clippy root; GPL components keep their separate
+build and qualification profiles.
+
+```sh
+nix-build tools/bazel/tests/crucible-controller.nix -A test-harness-lint-parity --no-out-link
+nix-build tools/bazel/tests/crucible-controller.nix -A lint --no-out-link
+```
+
+The harness comparison preserves all 26 original cases, the complete recursive
+Nix scan including its tracked hidden helper, both RFC task inventories, the
+source references, and the existing lint baseline. It checks independent strict
+and broad sandbox executions against the Cargo oracle. Policy controls exercise
+weakened selector branches, ordered dictionary overrides, missing compilation
+coverage, skip tags and flags, renamed erased-error dependencies, forbidden
+engine edges, and missing source evidence. Actual Clippy execution remains a
+separate qualification from declared lint coverage and harness test execution.
+
+Thirteen real Cargo manifests remain explicit source evidence because 32 Nix
+gate files still assert their contents. The harness preserves those file-existence
+checks while its dependency and lint policy uses Bazel declarations. These
+transitional inputs must be removed after the Nix gate consumers migrate; this
+checkpoint does not qualify first-party manifest retirement or public controller
+cutover.

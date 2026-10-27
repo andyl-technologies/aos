@@ -1,3 +1,4 @@
+load("//tools/bazel/rules:clippy.bzl", "aos_package_clippy")
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_library")
 load("//tools/bazel/rules:controller_graph.bzl", "controller_dependencies", "controller_library", "controller_tests")
@@ -130,3 +131,5 @@ daemon_dependency_libraries(
     common_deps = DEPENDENCIES,
     compile_data = [],
 )
+
+aos_package_clippy(name = "clippy_all")

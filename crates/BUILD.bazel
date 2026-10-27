@@ -94,3 +94,19 @@ aos_package(
     license_domain = "apache-host",
     artifacts = {":source_catalog": "share/aos/source-catalog.json"},
 )
+
+filegroup(
+    name = "harness_lint_inputs",
+    testonly = True,
+    srcs = ["clippy.toml"],
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)
+
+filegroup(
+    name = "gate_manifest_reference",
+    testonly = True,
+    # Nix source gates still name this file; retain their existence assertions
+    # until those consumers have migrated to declared Bazel contracts.
+    srcs = ["Cargo.toml"],
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)

@@ -18,6 +18,37 @@ in
       inherit pkgs;
       sourceInventory = null;
     };
+    lint = test-graph.lint;
+    lint-conservative = test-graph-conservative.lint;
+    test-harness-lint = test-graph.harness-lint;
+    test-harness-lint-cargo = import ../../../tests/build/_bazel-crucible-controller-harness-lint-cargo.nix {inherit pkgs;};
+    test-harness-lint-parity = let
+      helpers = builtins.path {
+        path = ./.;
+        name = "aos-controller-harness-lint-qualification-tools";
+        filter = path: type:
+          type
+          == "regular"
+          && builtins.elem (baseNameOf path) [
+            "verify_controller_harness_lint.py"
+            "verify_controller_architecture.py"
+            "verify_cache.py"
+            "verify_compiler_sources.py"
+            "verify_pilot.py"
+            "verify_source_audits.py"
+          ];
+      };
+    in
+      pkgs.runCommand "aos-bazel-crucible-controller-harness-lint-parity" {
+        buildDeps = [pkgs.python3];
+        sharedBuildCache = false;
+      } ''
+        PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 ${helpers}/verify_controller_harness_lint.py \
+          --strict ${test-graph.harness-lint} --strict-root ${test-graph.workspace.source} \
+          --conservative ${test-graph-conservative.harness-lint} --conservative-root ${test-graph-conservative.workspace.source} \
+          --oracle ${test-harness-lint-cargo} --cargo-root ${test-harness-lint-cargo.src} \
+          --graph ${pkgs.aosBazelArchitecture}/architecture.json --output "$out"
+      '';
     test-feature-policy = test-graph.feature-policy;
     test-architecture = test-graph.architecture;
     test-dependencies = test-graph.dependencies;

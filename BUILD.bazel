@@ -74,3 +74,32 @@ filegroup(
     ] + glob(["pkgs/emulation/qemu-patches/*.patch"], allow_empty = True),
     visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
 )
+
+# Runtime source evidence remains data, independent of the Rust build graph.
+filegroup(
+    name = "harness_lint_audit_inputs",
+    testonly = True,
+    srcs = [
+        "modules/base/build.nix",
+        "modules/profiles/ability-crucible.nix",
+        "pkgs/default.nix",
+        "pkgs/emulation/crucible-qemu-plugin.nix",
+        "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch",
+        "pkgs/emulation/qemu.nix",
+        "pkgs/kernel/linux-crucible.nix",
+        "pkgs/kernel/linux.nix",
+        "pkgs/tools/aos-ability-crucible.nix",
+        "pkgs/tools/crucible-fixtures.nix",
+        "pkgs/tools/crucible-fleet-store.nix",
+        "pkgs/tools/crucible-guest.nix",
+        "pkgs/tools/crucible/_cargo-source.nix",
+        "pkgs/tools/crucible/_packages.nix",
+        "pkgs/tools/crucible/_release-manifest.nix",
+        "pkgs/tools/crucible/_source.nix",
+        "pkgs/tools/crucible/crucible.nix",
+        "stdenv/phases.nix",
+        "//tests/build:_bazel-crucible-controller-tests.nix",
+        "tools/bazel/launcher.py",
+    ],
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)

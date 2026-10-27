@@ -1,3 +1,4 @@
+load("//tools/bazel/rules:clippy.bzl", "aos_package_clippy")
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
@@ -107,3 +108,5 @@ aos_source_package(
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
 )
+
+aos_package_clippy(name = "clippy_all")

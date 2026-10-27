@@ -133,6 +133,13 @@ pub(super) const LINT_RULES: &[&str] = &[
 ];
 
 pub(super) fn workspace_root() -> PathBuf {
+    if std::env::var_os("AOS_BAZEL_ARCHITECTURE").is_some()
+        || std::env::var_os("AOS_SOURCE_CATALOG").is_some()
+    {
+        return std::env::current_dir()
+            .unwrap_or_else(|error| panic!("declared harness source root is unavailable: {error}"))
+            .join("crates");
+    }
     workspace::crates_directory()
 }
 

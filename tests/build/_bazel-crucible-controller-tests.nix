@@ -71,7 +71,49 @@
       else "license_closure"
     ))
   names;
+  nativeConstraints = [
+    "@platforms//cpu:${
+      if pkgs.stdenv.hostPlatform.isx86_64
+      then "x86_64"
+      else "aarch64"
+    }"
+    "@platforms//os:linux"
+  ];
   targets = map (target: target + "_binary") testTargets ++ licenseTargets;
+  clippyTargets = map (name:
+    if name == "aos-linux-project-quota"
+    then "//${packages.${name}}:clippy"
+    else "//${packages.${name}}:clippy_all")
+  names;
+  # All-target lint analysis includes the guest's static production copies.
+  # Keep the controller's shared SQLite provider and expose the guest runtime
+  # as a separate provider; host targets do not acquire static link flags.
+  nativeLibraries =
+    pkgs.runCommand "aos-bazel-controller-native-libraries" {
+      sharedBuildCache = false;
+    } ''
+      mkdir -p "$out"
+      for entry in ${pkgs.aosBazelStoreLibraries}/*; do
+        name="''${entry##*/}"
+        case "$name" in
+          BUILD.bazel|nix-support) ;;
+          *) ln -s "$entry" "$out/$name" ;;
+        esac
+      done
+      cp ${pkgs.aosBazelStoreLibraries}/BUILD.bazel "$out/BUILD.bazel"
+      chmod u+w "$out/BUILD.bazel"
+      ln -s ${pkgs.aosBazelGuestLibraries}/static "$out/static"
+      cat >> "$out/BUILD.bazel" <<'BUILD'
+
+      cc_library(
+          name = "static_runtime",
+          additional_linker_inputs = ["static/closure.json"] + glob(["static/lib/*.a"]),
+          linkopts = ["-L${pkgs.aosBazelGuestLibraries}/static/lib", "-static", "-no-pie"],
+          tags = ["aos-license:apache-host"],
+          target_compatible_with = ${builtins.toJSON nativeConstraints},
+      )
+      BUILD
+    '';
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
     inherit sourceInventory toolchains;
@@ -89,6 +131,24 @@
       "tests/crucible"
       "tests/build/BUILD.bazel"
       "tests/build/_bazel-guest.nix"
+      "docs/rfcs/0014-signal-driven-fault-model"
+      "docs/users/crucible"
+      "modules/base/build.nix"
+      "modules/profiles/ability-crucible.nix"
+      "pkgs/kernel/linux-crucible.nix"
+      "pkgs/kernel/linux.nix"
+      "pkgs/tools/aos-ability-crucible.nix"
+      "pkgs/tools/crucible-fixtures.nix"
+      "pkgs/tools/crucible-fleet-store.nix"
+      "pkgs/tools/crucible-guest.nix"
+      "pkgs/tools/crucible/_cargo-source.nix"
+      "pkgs/tools/crucible/_packages.nix"
+      "pkgs/tools/crucible/_release-manifest.nix"
+      "pkgs/tools/crucible/_source.nix"
+      "pkgs/tools/crucible/crucible.nix"
+      "stdenv/phases.nix"
+      "tests/build/_bazel-crucible-controller-tests.nix"
+      "tools/bazel/launcher.py"
       "pkgs/default.nix"
       "pkgs/emulation/qemu.nix"
       "pkgs/emulation/qemu-patches"
@@ -111,21 +171,26 @@
       pkgs.aosBazelRepositories
       // pkgs.aosBazelRustRepositories.controller-tests
       // {
-        aos_native = pkgs.aosBazelStoreLibraries;
+        aos_native = nativeLibraries;
         aos_cli_runtime = pkgs.aosBazelCrucibleCliRuntime;
         aos_controller_features = import ./_bazel-crucible-controller-feature-evidence.nix {inherit pkgs;};
         aos_architecture = import ./_bazel-crucible-controller-audit-inputs.nix {inherit pkgs;};
       };
-    analysisTargets = targets ++ testTargets;
+    analysisTargets = targets ++ testTargets ++ clippyTargets;
   };
 in {
-  inherit packages targets testTargets licenseTargets workspace;
-  inventory = pkgs.mkAosBazelBuild {
-    pname = "aos-bazel-crucible-controller-test-inventory";
-    inherit workspace;
-    targets = targets ++ testTargets;
-    inventoryOnly = true;
-  };
+  inherit packages targets testTargets licenseTargets clippyTargets workspace;
+  inventory =
+    (pkgs.mkAosBazelBuild {
+      pname = "aos-bazel-crucible-controller-test-inventory";
+      inherit workspace;
+      targets = targets ++ testTargets ++ clippyTargets;
+      inventoryOnly = true;
+    }).overrideAttrs (_: {
+      # Repeating the complete test and lint selection exceeds execve's
+      # per-argument limit when the generated phase script is passed inline.
+      passBuildScriptAsFile = true;
+    });
   compilation =
     (pkgs.mkAosBazelBuild {
       pname = "aos-bazel-crucible-controller-test-compilation";
@@ -154,6 +219,20 @@ in {
     pname = "aos-bazel-crucible-controller-tests";
     inherit workspace;
     targets = testTargets ++ licenseTargets;
+    retainActionGraph = true;
+    sharedBuildCache = false;
+  };
+  lint = pkgs.mkAosBazelBuild {
+    pname = "aos-bazel-crucible-controller-clippy";
+    inherit workspace;
+    targets = clippyTargets;
+    retainActionGraph = true;
+    sharedBuildCache = false;
+  };
+  harness-lint = pkgs.mkAosBazelCheck {
+    pname = "aos-bazel-crucible-controller-harness-lint";
+    inherit workspace;
+    targets = ["//crates/crucible/crucible-test-support:harness_lint_controller"];
     retainActionGraph = true;
     sharedBuildCache = false;
   };

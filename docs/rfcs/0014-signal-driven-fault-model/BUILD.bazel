@@ -6,3 +6,10 @@ filegroup(
     ],
     visibility = ["//crates/crucible/crucible-engine:__pkg__"],
 )
+
+filegroup(
+    name = "harness_lint_inputs",
+    testonly = True,
+    srcs = glob(["*.md"], allow_empty = True),
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)
