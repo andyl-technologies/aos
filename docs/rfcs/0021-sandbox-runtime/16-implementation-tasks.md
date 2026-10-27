@@ -31,6 +31,20 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Installed initial-producer qualification exposed stale manager validation:
+  it required a oneshot invocation with an obsolete selector argument and zero
+  capabilities, while the fixed units use argument-free `Type=exec` with only
+  `CAP_CHOWN` and `CAP_DAC_OVERRIDE` bounded and no ambient capabilities. The
+  manager now checks that exact launch grammar and capability profile. Native
+  regressions reject the obsolete invocation, added arguments, command
+  substitution, missing/extra capabilities and automatic directories/helpers;
+  existing original admission, activation and exclusion checks remain in place.
+  The full AOS systemd package and its native profile regressions pass at
+  `/nix/store/ld5lr5qnaawvhhfmfvf1r4k8kykg30jz-systemd-261.2`
+  (NAR hash `sha256-oc6JmU8BvTL3y5G8jUIk5UxtQTx69HMcdZw2ceoXmlk=`).
+  The enforcing installed producer retest is pending. This package receipt
+  supplies no completed initial floor, normal journal-hook or lifecycle proof.
+
 - Runtime external credential preparation passes at
   `/nix/store/zzxfj9g43h30iqi3mhiz5mmqjj6xirzf-sandbox-method46-external-credentials-check`
   (NAR hash `sha256-2qbUhg+VVoIDdn8PfJz1PPEFnC0mRqLVjaz6UVDv8dc=`).
@@ -109,7 +123,13 @@ Recent committed startup fixes close narrower prerequisites:
   selected parent/startup derivations are unchanged. The installed startup graph
   excludes the signer. These DATA tests establish no key provenance, independent
   history readback, genuine Source, live approval exchange or installed producer
-  execution. The complete Rust test-target compile is running separately.
+  execution. The complete Rust application unit/integration test-target compile
+  now passes at
+  `/nix/store/w7fjrnfw5g6xs7wvvbcp851bvhff7lkv-aos-test-targets-0.1.0`
+  (NAR hash `sha256-PnRcIQAOz2GZ4daFtdiwmM+JBve5ujQa+8w0XhPqxw0=`).
+  This includes the current external Rust fixtures and predates the subsequent
+  systemd initial-launch profile repair; it is compile coverage, not installed
+  producer or lifecycle qualification.
 
 - Host-only preparation of both fixed TPM purposes now passes QEMU/vTPM
   qualification at

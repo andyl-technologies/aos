@@ -344,6 +344,7 @@ in
       ./patches/0040-separate-switch-root-selinux-permission.patch
       ./patches/0041-method46-initial-parent06.patch
       ./patches/0042-method46-initial-job-exclusion.patch
+      ./patches/0043-method46-initial-launch-profile.patch
     ];
 
     buildDeps = [
