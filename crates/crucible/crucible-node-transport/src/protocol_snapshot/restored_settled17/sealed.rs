@@ -5,6 +5,9 @@
 //! checks. These types contain no stream, private key issuer, physical Hold,
 //! registrar, native reservation or Source Capture claim.
 
+#[path = "sealed/capacities.rs"]
+mod capacities;
+
 use super::*;
 use crate::reference_packet::continuation_models::settled_reader::PacketSettledModel17Data;
 use crate::reference_packet::control::PacketNative5UnderlyingRecord;

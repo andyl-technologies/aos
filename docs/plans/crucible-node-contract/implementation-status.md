@@ -305,6 +305,20 @@ genuine native input claim. Production Input17 issuance, complete Source work
 and the one-use handoff remain separate unfinished requirements.
 All twelve new controls pass in both codec configurations.
 
+Native Capture decoder capacity DATA now walks both independent lazy graph
+caches, their actual slot-vector spares and every initialized failed child. The
+SDK defining walk keeps raw and before-encoded banks, full reference slots,
+immutable object banks, alias summaries, typed attempts, promotion slots and
+completed graph DTO backing. Selected-extension Arc slices emit real shared
+payload geometry and their independently retained typed fields for every view;
+no legacy requested-byte sum substitutes for physical capacity rows. Existing
+native eligibility checks and legacy requested-byte queries keep their separate
+contracts. Controls use actual failed readers, additional inert spare DATA and
+repeated shared views; they issue no native claim or validated Capture output.
+The complete Source-side Capture construction, materialization, transport and
+post-confirmation census, whole-Source work and one-use handoff remain unfinished.
+All eight new native decoder controls pass in both codec configurations.
+
 The common-owner adapter preserves actual tuple padding, empty and zero-sized
 layouts, alignment and repeated shared views. Pointer observations and alias labels
 stay outside the four-field rows; repeated views receive no discount. Its twelve
@@ -318,12 +332,12 @@ Both codec configurations pass 123 Engine census/installation/holder/startup
 controls, eight execution reservation controls and four Import18 bank constructor
 controls. Complete Engine suites pass 2,194 tests each with thirty-four ignored,
 using matching source-built installed packet fixtures. Current Transport suites
-pass 2,356 tests and 156 focused controls each, with twenty ignored; HostResources
+pass 2,364 tests and 164 focused controls each, with twenty ignored; HostResources
 suites pass all 37 tests each, including both descriptor capacity controls.
-Six-package all-feature/all-target checks, seven-file scoped Rust formatting,
+Six-package all-feature/all-target checks, eleven-file scoped Rust formatting,
 all six architecture gates and the RFC requirement-map gate pass. Required
 application test-target compilation passes with 185 artifacts across 58 packages
-and 76 integration targets; all 4,963 selected frozen Rust/Cargo inputs match
+and 76 integration targets; all 4,969 selected frozen Rust/Cargo inputs match
 current and captured source. User-owned changes are preserved. These are component
 results; the requirement map records planning coverage, and no latest-source
 strict lint or native lifecycle qualification is claimed. Native executable

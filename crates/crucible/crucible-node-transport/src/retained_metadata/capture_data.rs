@@ -65,6 +65,19 @@ pub enum RetainedCaptureProtocolData<'a> {
     ///
     /// The enclosing Source checks its creator. No input custody is authenticated.
     RestoredInputResult(&'a InputResult),
+    /// Borrows actual Capture/native decoder partials, including both graph caches.
+    ///
+    /// Historical creator labels and failed stages remain DTO data. The enclosing
+    /// original Source checks its own creator before lending physical rows.
+    RestoredNative17Decode(
+        &'a crate::protocol_snapshot::restored_settled17::RestoredSettledNative17DecodeAttempt,
+    ),
+    /// Borrows independently retained post-confirmation native Capture outputs.
+    ///
+    /// Capacity observation neither validates them nor grants output eligibility.
+    RestoredNative17CaptureOutputs(
+        &'a crate::protocol_snapshot::restored_settled17::ValidatedRestoredSettledNative17CaptureOutputs,
+    ),
     /// Borrows independent restored receipt and underlying model partials.
     ///
     /// Missing or inconsistent partners remain DATA without acquiring native
@@ -130,6 +143,8 @@ impl RetainedCaptureProtocolData<'_> {
             + crate::client::OriginalRestoredSuffixBody::capacity_counter_scratch_data()
             + size_of::<(&IdSet, &U64, &ContentRef, &HashRef)>()
             + size_of::<&InputResult>()
+            + crate::protocol_snapshot::restored_settled17::RestoredSettledNative17DecodeAttempt::capacity_counter_scratch_data()
+            + crate::protocol_snapshot::restored_settled17::ValidatedRestoredSettledNative17CaptureOutputs::capacity_counter_scratch_data()
             + size_of::<Self>()
             + size_of::<&Self>()
             + size_of::<MetadataObserver<'static>>()
@@ -158,7 +173,9 @@ impl RetainedCaptureProtocolData<'_> {
             | Self::RestoredInputReactive17(_)
             | Self::RestoredProducerTyped(_)
             | Self::RestoredSuffixBody(_)
-            | Self::RestoredInputResult(_) => Ok(()),
+            | Self::RestoredInputResult(_)
+            | Self::RestoredNative17Decode(_)
+            | Self::RestoredNative17CaptureOutputs(_) => Ok(()),
             Self::SnapshotReservation(value) => value.check_capacity_creator_data(),
             Self::Snapshot(value) => value.check_capacity_creator_data(),
             Self::PayloadOwner(value) => value.check_capacity_creator_data(),
@@ -187,6 +204,8 @@ impl RetainedCaptureProtocolData<'_> {
             Self::RestoredProducerTyped(value) => value.observe_capacity_data(observer),
             Self::RestoredSuffixBody(value) => value.observe_capacity_data(observer),
             Self::RestoredInputResult(value) => observer.observe(*value),
+            Self::RestoredNative17Decode(value) => value.observe_capacity_data(observer),
+            Self::RestoredNative17CaptureOutputs(value) => value.observe_capacity_data(observer),
             Self::RestorationNativeEvidence(record, underlying) => {
                 crate::reference_packet::service::complete_restore::activation::observe_restoration_native_capacity_data(
                     *record, *underlying, observer,

@@ -303,6 +303,25 @@ pub struct ValidatedRestoredSettledNative17CaptureOutputs {
 }
 
 impl ValidatedRestoredSettledNative17CaptureOutputs {
+    /// Observes its actual decoder without revalidating or issuing output rights.
+    ///
+    /// # Errors
+    /// Refuses checked allocation geometry overflow or bounded observer exhaustion.
+    pub(crate) fn observe_capacity_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        let Self { decoded } = self;
+        decoded.observe_capacity_data(observer)
+    }
+
+    /// Names the actual decoder loan independently of output eligibility.
+    pub(crate) fn capacity_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<&RestoredSettledNative17DecodeAttempt>()
+            + RestoredSettledNative17DecodeAttempt::capacity_counter_scratch_data()
+    }
+
     /// Borrows the exact retained native-before protocol body.
     ///
     /// The complete output reader independently retained these bytes from the

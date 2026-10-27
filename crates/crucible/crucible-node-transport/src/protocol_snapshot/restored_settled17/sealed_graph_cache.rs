@@ -6,6 +6,9 @@
 //! This spine retains zero or one actual child, including a reserved empty slot
 //! or a failed child. It changes no modeled state or historical wire format.
 
+#[path = "sealed_graph_cache/capacities.rs"]
+mod capacities;
+
 use super::super::cold_admission::NativeCold17GraphAdmission;
 use crate::ProviderError;
 use crate::protocol_snapshot::native_wholegraph17::{
