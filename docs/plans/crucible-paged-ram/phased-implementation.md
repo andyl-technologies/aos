@@ -135,9 +135,14 @@ that neither a target nor staging residue survives, then authenticates a success
 retry. All twenty-two daemon transfer controls, ninety policy controls and five
 hygiene controls pass after preserving ordinary store-error classification; the
 corruption control also requires the exact damaged object ID before repair/retry.
-Mandatory application compilation is running. The inventory contains 659 model,
-25 format and nineteen native bindings,
-with no qualified or advertised capability.
+Required application-target compilation passes for the frozen `41a50e6b8e`
+source at `mymqgcdnbj9npgify2v2py215y0f0w7m-aos-test-targets-0.1.0`:
+185 executable test artifacts from all 58 selected application packages. All
+7,941 frozen input files, including 5,476 Rust/TOML/lock inputs, match the
+immutable build source. This build predates metadata staging, the original-account
+adapter corrections and checked inspection; it does not validate those later
+components. The inventory for this copying component contains 659 model,
+25 format and nineteen native bindings, with no qualified or advertised capability.
 
 Blocked-I/O deadlines remain unqualified. Private export and finding-midpoint
 callers retain paired outer GC guards. Those callers need a destination publication
