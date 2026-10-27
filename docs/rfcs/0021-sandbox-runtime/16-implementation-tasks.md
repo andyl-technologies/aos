@@ -31,6 +31,18 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The host-only initial-Extend command gate passes its registered AOS Nix
+  mechanics check at
+  `/nix/store/sgxkf4f740yyc96h2nd4zf6fsr4a7z57-sandbox-method46-tpm-command-gate-check`
+  (NAR hash `sha256-E7KZ0tKaXJ8e3bLE4iWcc8VYcahy6+SO40cgYbrBv3I=`). Its eight cases cover
+  byte-preserving forwarding, SCM_RIGHTS transfer and fragmentation, exact
+  before-command/after-response holds, fixed-index selection, failed replies,
+  malformed frames, descriptor cleanup and worker reaping. The relay wraps the
+  harness's existing swtpm control/data transport and adds no production callback
+  or guest TPM observation. It is not yet connected to a VM crash test; actual
+  interrupted initialization, authenticated TPM readback and cold recovery
+  remain unqualified.
+
 - Installed initial-producer qualification exposed stale manager validation:
   it required a oneshot invocation with an obsolete selector argument and zero
   capabilities, while the fixed units use argument-free `Type=exec` with only
@@ -127,9 +139,10 @@ Recent committed startup fixes close narrower prerequisites:
   now passes at
   `/nix/store/w7fjrnfw5g6xs7wvvbcp851bvhff7lkv-aos-test-targets-0.1.0`
   (NAR hash `sha256-PnRcIQAOz2GZ4daFtdiwmM+JBve5ujQa+8w0XhPqxw0=`).
-  This includes the current external Rust fixtures and predates the subsequent
-  systemd initial-launch profile repair; it is compile coverage, not installed
-  producer or lifecycle qualification.
+  Its source snapshot includes the current external Rust fixtures; their helper
+  binaries have separate command-line checks above. The workspace compile
+  predates the subsequent systemd initial-launch profile repair and establishes
+  no installed producer or lifecycle qualification.
 
 - Host-only preparation of both fixed TPM purposes now passes QEMU/vTPM
   qualification at
