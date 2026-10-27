@@ -38,9 +38,17 @@ Recent committed startup fixes close narrower prerequisites:
   Native compiled-policy tests preserve ordinary-domain observation and reject
   restoration of the foreign producer observation; all four selected-role cases
   and the custody/rendering suites pass. All ordered refpolicy patches apply
-  without fuzz to the pinned source. The updated production policy is building;
-  no installed provisioning or connected lifecycle result follows from these
-  native checks. Admission remains closed.
+  without fuzz to the pinned source. Committed source `287c1fc982` passes the
+  complete selected production-policy gate: 179 checker regressions, native
+  query comparisons, the linked scan, all eight negative fixtures and ordered
+  kernel class-map checks. The output is
+  `/nix/store/6sw7d4y64lcsk3h6cs05dd8jfiy0krz8-aos-selinux-production-policy-1`
+  (NAR hash `sha256-sdPn3AtiCHpHgoJH4qSadhZrWYNbfdP1Lyg4Su+2NXM=`).
+  Its installed report retains both helper ioctl exclusions. The standalone
+  parent and enforcing VM select that exact policy and both initial profiles;
+  their builds remain pending. No installed producer entry, TPM provisioning
+  or connected lifecycle result follows from policy qualification. Admission
+  remains closed.
 
 - The first selected-initializer VM build stopped before boot: the merged
   policy inherited `domain self:file manage_file_perms` for the fixed helpers,
@@ -48,8 +56,9 @@ Recent committed startup fixes close narrower prerequisites:
   only those two helpers from that blanket grant; their explicit reads remain.
   The native custody/rendering check passes, including real compiled policies
   that reproduce the failure when the upstream grant is restored. The narrowed
-  selected policy and VM are rebuilding. This establishes no installed producer
-  entry or TPM provisioning; admission remains closed.
+  selected policy now passes the gate above; its VM is rebuilding. This
+  establishes no installed producer entry or TPM provisioning; admission
+  remains closed.
 
 - The user approved PID 1's `start/status` access to the image-labeled networkd
   socket/service, clearing the approval blocker recorded in the checkpoints
