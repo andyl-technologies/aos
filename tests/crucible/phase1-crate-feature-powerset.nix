@@ -241,7 +241,7 @@
     }
     ++ assertFeatureSet "crucible-qemu-host" {
       default = [];
-      test-support = ["crucible-engine/test-double"];
+      test-support = ["crucible-engine/test-double" "crucible-qemu-shmem/test-support"];
     }
     ++ assertFeatureSet "crucible-device" {
       default = [];

@@ -142,7 +142,7 @@
       }
       {
         label = "guest-host protocol mutation";
-        needle = "run_identity.guest_host_protocol_version = String::from";
+        needle = "run_identity.guest_host_protocol_version =\n        (crucible_test_support::e2e::CANONICAL_GUEST_HOST_PROTOCOL_VERSION + 1).to_string();";
       }
       {
         label = "fresh-lineage event assertion";

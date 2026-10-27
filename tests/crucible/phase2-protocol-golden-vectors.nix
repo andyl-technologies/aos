@@ -30,7 +30,7 @@
     ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/golden_vectors.rs" goldenLib [
       {
         label = "literal frozen protocol version";
-        needle = "pub const GOLDEN_VECTOR_PROTOCOL_VERSION: u32 = 3;";
+        needle = "pub const GOLDEN_VECTOR_PROTOCOL_VERSION: u32 = 4;";
       }
       {
         label = "regeneration rule";
@@ -74,7 +74,7 @@
       }
       {
         label = "current version in Hello bytes";
-        needle = "frame: &[0, 0, 0, 9, 0xF0, 0, 0, 0, 3, 0, 0, 0, 1]";
+        needle = "frame: &[0, 0, 0, 9, 0xF0, 0, 0, 0, 4, 0, 0, 0, 1]";
       }
       {
         label = "Setup payload bytes";
