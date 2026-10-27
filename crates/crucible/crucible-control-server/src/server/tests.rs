@@ -19,10 +19,10 @@ use rcgen::{
 };
 use tokio::io::AsyncReadExt;
 
-use crate::lifecycle::{
-    QuiescentLifecycleLoop, RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES,
-    RESUME_REPLAY_CLOSURE_MAX_FRAMES, ResumeObservationSource, ResumeReplayClosure,
-    ResumeSessionRequest,
+use crate::lifecycle::QuiescentLifecycleLoop;
+use crucible_control_api::{
+    RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES, RESUME_REPLAY_CLOSURE_MAX_FRAMES,
+    ResumeObservationSource, ResumeReplayClosure, ResumeSessionRequest,
 };
 use crucible_engine::{
     Checkpoint, CheckpointKind, Configuration, Decision, DeliveryOrderDecision, Schedule,

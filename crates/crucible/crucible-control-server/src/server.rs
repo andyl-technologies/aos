@@ -712,7 +712,7 @@ where
         Ok(body) => body,
         Err(response) => return *response,
     };
-    if body.as_ref() != b"crucible.rpc/list-scenarios-request\n" {
+    if body.as_slice() != b"crucible.rpc/list-scenarios-request\n" {
         return http2_response(StatusCode::BAD_REQUEST, "unexpected list scenarios request");
     }
     let response = state.control_plane.lock().await.list_scenarios();
@@ -872,7 +872,7 @@ where
         Ok(body) => body,
         Err(response) => return *response,
     };
-    if body.as_ref() != b"crucible.rpc/list-sessions-request\n" {
+    if body.as_slice() != b"crucible.rpc/list-sessions-request\n" {
         return http2_response(StatusCode::BAD_REQUEST, "unexpected list sessions request");
     }
     let response = state.control_plane.lock().await.list_sessions();

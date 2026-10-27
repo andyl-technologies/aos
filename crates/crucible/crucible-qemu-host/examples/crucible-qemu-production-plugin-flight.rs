@@ -37,10 +37,7 @@ use crucible_qemu_host::{
     QemuNodeIdleState, QemuProductionFreshLaunchAdmission, QemuShutdownReport,
     QemuVirtualTimerFireWitness, QmpHotForkTemplateOutcome, launch_qemu_production_fresh_node,
 };
-use crucible_qemu_protocol::selectable_catalog_plan::{
-    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectableCatalogPlan, SelectablePlanContinuation,
-    SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPresence,
-};
+use crucible_qemu_protocol::selectable_catalog_plan::SELECTABLE_NATIVE_HANDOFF_TICKS_PS;
 use crucible_qemu_protocol::{SelectionReply, SelectionReplyStatus};
 use crucible_qemu_shmem::FingerprintSample;
 

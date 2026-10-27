@@ -49,7 +49,7 @@ use super::{
     RpcStatusCode, http2_response, parse_content_hash_line, parse_seed_line, parse_u64_line,
     typed_rpc_status_response,
 };
-use crate::lifecycle::{
+use crucible_control_api::{
     RESUME_OBSERVATION_SOURCE_MAX_BYTES, RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES,
     RESUME_REPLAY_CLOSURE_MAX_BYTES, RESUME_REPLAY_CLOSURE_MAX_FRAMES, ResumeObservationSource,
     ResumeReplayClosure, ResumeSessionRequest,

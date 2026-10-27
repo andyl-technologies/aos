@@ -23,6 +23,8 @@ use crucible_qemu_protocol::{
     HostMsg, PluginMsg, SETUP_ACK_STATUS_READY, SetupDescriptorFds, control_decode_host_msg,
     control_encode_plugin_msg, read_control_frame,
 };
+#[cfg(unix)]
+use crucible_qemu_shmem::ABI_VERSION;
 
 #[cfg(unix)]
 #[test]

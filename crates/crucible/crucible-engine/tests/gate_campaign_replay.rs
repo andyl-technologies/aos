@@ -27,8 +27,9 @@ use crucible_campaign::{
     FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition, FindingKind,
     FindingMinimizationAttempt, FindingMinimizationEvidence, FindingReplaySignature,
     FindingSignature, FindingSignatureMinimizationEvidence, FindingTarget,
-    FindingTriageEvidenceSet, FindingTriageReplayEvidence, ObservationId,
-    ReproductionArtifact as CampaignReproductionArtifact, ScenarioArtifactId, ScenarioDefId,
+    FindingTriageEvidenceSet, FindingTriageReplayEvidence, FindingTriageReplayLogSegment,
+    ObservationId, ReproductionArtifact as CampaignReproductionArtifact, ReproductionPayload,
+    ReproductionPayloadSegment, ScenarioArtifactId, ScenarioDefId,
 };
 use crucible_engine::test_support::{
     condition_observation_entry_for_test, condition_payload_entry_for_test,
