@@ -92,7 +92,7 @@ junit = { path = "junit.xml" }
 
 # Protected ancestry, real cgroup-v2 and user-xattr fixtures require the
 # host-native profile described in README.md. Default and ci stay unfiltered.
-# Exclude only these exact 58 native cases from the hermetic sandbox.
+# Exclude only these exact 110 native cases from the hermetic sandbox.
 # Stack failures are not excluded: both entries set RUST_MIN_STACK=33554432.
 [profile.nix-sandbox]
 inherits = "ci"
@@ -108,7 +108,59 @@ not (
     test(=journal::protected_storage::opening::retained::captured_readonly::tests::ordinary_empty_readonly_materializes_actual_readonly_owner_with_legacy_basename) or
     test(=journal::protected_storage::opening::retained::captured_readonly::tests::readonly_incomplete_tail_keeps_its_post_and_never_repairs_the_actual_file) or
     test(=journal::protected_storage::opening::retained::writable::tests::incomplete_tail_keeps_its_original_post_before_writable_repair) or
-    test(=journal::root_readonly_model::tests::saved_challenge_refusal_preserves_acquisition_and_owed_names_after_mount_failure)
+    test(=journal::root_readonly_model::tests::saved_challenge_refusal_preserves_acquisition_and_owed_names_after_mount_failure) or
+    test(=journal::storage_captured_open::initial_checkpoint_residue::tests::method46_initial_checkpoint_residue_accepts_only_stable_absence_or_safe_empty_file) or
+    test(=journal::storage_captured_open::initial_checkpoint_residue::tests::method46_initial_checkpoint_residue_fences_appearance_disappearance_replacement_and_mutation) or
+    test(=journal::storage_captured_open::initial_checkpoint_residue::tests::method46_initial_checkpoint_residue_keeps_first_native_failure_and_independent_after) or
+    test(=journal::storage_captured_open::initial_checkpoint_residue::tests::method46_initial_checkpoint_residue_rejects_unsafe_and_nonempty_names_without_repair) or
+    test(=journal::storage_captured_open::method46_initial::approval_currentness::tests::method46_initial_approval_cannot_rebase_onto_a_file_changed_after_replay) or
+    test(=journal::storage_captured_open::method46_initial::approval_currentness::tests::method46_initial_approval_failed_before_still_attempts_its_independent_after) or
+    test(=journal::storage_captured_open::method46_initial::approval_currentness::tests::method46_initial_approval_metadata_requires_original_geometry_before_native_entry) or
+    test(=journal::storage_captured_open::method46_initial::approval_currentness::tests::method46_initial_approval_rejects_in_place_append_overwrite_and_replaced_names) or
+    test(=journal::storage_captured_open::method46_initial::approval_currentness::tests::method46_initial_approval_unchanged_writer_preserves_both_native_samples) or
+    test(=journal::storage_captured_open::method46_initial::approval_currentness::tests::method46_initial_nv_main_failed_before_still_keeps_restored_native_after) or
+    test(=journal::storage_captured_open::method46_initial::approval_currentness::tests::method46_initial_nv_main_four_exchanges_keep_every_actual_interval) or
+    test(=journal::storage_captured_open::method46_initial::approval_currentness::tests::method46_initial_nv_main_mutation_during_exchange_fences_next_entry) or
+    test(=journal::storage_captured_open::method46_initial::approval_currentness::tests::method46_initial_nv_main_reobserves_replayed_file_after_a_wait) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::publication::tests::method46_initial_checkpoint_publication_exchange_races_preserve_foreign_files_and_fence_success) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::publication::tests::method46_initial_checkpoint_publication_failed_exchange_keeps_its_native_cause_and_posts) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::publication::tests::method46_initial_checkpoint_publication_preserves_displaced_inode_and_both_real_locks) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::publication::tests::method46_initial_checkpoint_publication_rechecks_both_names_after_stage_fsync) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::publication::tests::method46_initial_checkpoint_publication_rechecks_capture_without_overwriting_changed_stage) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::publication::tests::method46_initial_checkpoint_publication_rechecks_main_after_stage_fsync_before_exchange) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::publication::tests::method46_initial_checkpoint_publication_requires_its_original_quote) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::publication::tests::method46_initial_checkpoint_publication_resumes_exact_prefix_and_resyncs_complete_stage) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::tests::method46_initial_checkpoint_stage_accepts_only_matching_partial_prefixes) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::tests::method46_initial_checkpoint_stage_changed_main_refuses_before_stage_open) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::tests::method46_initial_checkpoint_stage_conflicts_are_preserved_with_native_after) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::tests::method46_initial_checkpoint_stage_requires_payment_before_encoding_or_io) or
+    test(=journal::storage_captured_open::method46_initial::checkpoint::tests::method46_initial_checkpoint_stage_uses_full_canonical_transaction_without_writes) or
+    test(=journal::storage_captured_open::method46_initial::initial_floor::tests::method46_initial_floor_allows_own_directory_publication_but_preserves_main_metadata) or
+    test(=journal::storage_captured_open::method46_initial::initial_floor::tests::method46_initial_floor_captures_empty_journal_and_exclusive_original_lock) or
+    test(=journal::storage_captured_open::method46_initial::initial_floor::tests::method46_initial_floor_changed_main_before_preparation_creates_nothing) or
+    test(=journal::storage_captured_open::method46_initial::initial_floor::tests::method46_initial_floor_foreign_flock_refuses_without_mutating_existing_names) or
+    test(=journal::storage_captured_open::method46_initial::initial_floor::tests::method46_initial_floor_owed_post_rejects_changed_floor_and_missing_lock) or
+    test(=journal::storage_captured_open::method46_initial::initial_floor::tests::method46_initial_floor_recovers_each_empty_creation_prefix_without_replacement) or
+    test(=journal::storage_captured_open::method46_initial::initial_floor::tests::method46_initial_floor_rejects_nonempty_unsafe_and_compaction_state_before_creation) or
+    test(=journal::storage_captured_open::method46_initial::initial_floor::tests::method46_initial_floor_requires_its_original_quote_before_creating_names) or
+    test(=journal::storage_captured_open::method46_initial::initial_intent::tests::method46_initial_intent_checks_new_stage_label_before_writing_approved_bytes) or
+    test(=journal::storage_captured_open::method46_initial::initial_intent::tests::method46_initial_intent_conflicts_are_preserved_with_independent_posts) or
+    test(=journal::storage_captured_open::method46_initial::initial_intent::tests::method46_initial_intent_main_and_floor_changes_close_the_native_publication) or
+    test(=journal::storage_captured_open::method46_initial::initial_intent::tests::method46_initial_intent_new_publication_keeps_original_sync_and_name_results) or
+    test(=journal::storage_captured_open::method46_initial::initial_intent::tests::method46_initial_intent_publish_never_replaces_a_racing_final_name) or
+    test(=journal::storage_captured_open::method46_initial::initial_intent::tests::method46_initial_intent_recovery_resyncs_the_actual_existing_exact_file) or
+    test(=journal::storage_captured_open::method46_initial::initial_intent::tests::method46_initial_intent_refuses_unsafe_or_completed_state_without_mutation) or
+    test(=journal::storage_captured_open::method46_initial::initial_intent::tests::method46_initial_intent_rejects_generic_files_renamed_to_reserved_names) or
+    test(=journal::storage_captured_open::method46_initial::initial_intent::tests::method46_initial_intent_replaced_stage_is_never_written_or_unlinked) or
+    test(=journal::storage_captured_open::method46_initial::initial_intent::tests::method46_initial_intent_requires_payment_before_native_capture) or
+    test(=journal::storage_captured_open::method46_initial::initial_intent::tests::method46_initial_intent_resumes_only_exact_partial_prefixes) or
+    test(=journal::storage_captured_open::method46_initial::tpm_locks::tests::method46_initial_tpm_lock_pair_checks_the_second_before_after_first_refusal) or
+    test(=journal::storage_captured_open::method46_initial::tpm_locks::tests::method46_initial_tpm_lock_pair_preserves_both_real_flocks_after_writer_drop) or
+    test(=journal::storage_captured_open::method46_initial::tpm_locks::tests::method46_initial_tpm_lock_pair_preserves_custody_and_both_posts_after_name_loss) or
+    test(=journal::storage_captured_open::method46_initial::tpm_locks::tests::method46_initial_tpm_lock_pair_reentry_preserves_originals_and_owed_posts) or
+    test(=journal::storage_captured_open::method46_initial::tpm_locks::tests::method46_initial_tpm_lock_pair_rejects_aliases_without_discarding_duplicates) or
+    test(=journal::storage_captured_open::method46_initial::tpm_locks::tests::method46_initial_tpm_lock_pair_rejects_changes_to_either_journal) or
+    test(=journal::storage_captured_open::method46_initial::tpm_locks::tests::method46_initial_tpm_lock_pair_requires_its_original_quote)
   )) or
   (package(=aos-sandbox-policy) & (
     test(=native::readonly::completed::tests::an_already_transferred_model_cannot_also_retire_as_complete_data) or

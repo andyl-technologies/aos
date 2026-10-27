@@ -2,15 +2,21 @@
 
 The `default` and `ci` Nextest profiles select the full configured suite.
 `pkgs.aos` uses `nix-sandbox`, which inherits the same timeouts and failure
-policy but excludes 53 explicitly named native-environment cases. Test names
+policy but excludes 110 explicitly named native-environment cases. Test names
 are exact and package-qualified; unrelated and future tests remain selected.
 
-The excluded cases require protected root-to-fixture ownership (44 Journal
+The excluded cases require protected root-to-fixture ownership (96 Journal
 tests), root-owned fixed Nix store ancestry (one Network test), working
 `user.*` extended attributes (three GuestRoot tests), or a real readable
-cgroup-v2 root (five Host/Linux tests). An isolated Nix build can expose
+cgroup-v2 root (five Host/Linux and five Publisher tests). An isolated Nix build can expose
 unmapped administrative UIDs and omit the host cgroup filesystem. These
 tests retain their production ownership, mode and native checks.
+
+The AOS QEMU `sandbox-domain-native-journal` check runs the complete Domain
+unit suite under an unprivileged UID with protected guest ancestry. It reads
+the exact Domain names from the sandbox profile and requires each to report
+success, including all 52 Method46 initial-provisioning fixtures. This component
+result does not qualify the installed producer, TPM floors or public lifecycle.
 
 Complete qualification requires both the sandbox suite and a full
 `host-native` run with identical source, application package roster, features,

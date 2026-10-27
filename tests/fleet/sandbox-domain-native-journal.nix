@@ -18,6 +18,21 @@ in {
   machines.vm = {inherit system;};
 
   testScript = ''
+    import re
+    import tomllib
+
+    # Every Domain case excluded from the build sandbox must execute here.
+    # Exact names make missing or conditionally compiled cases fail closed.
+    with open("${../../crates/.config/nextest.toml}", "rb") as stream:
+        expression = tomllib.load(stream)["profile"]["nix-sandbox"]["default-filter"]
+    native_groups = dict(re.findall(
+        r"\(package\(=([^)]+)\) & \((.*?)\)\)", expression, re.S,
+    ))
+    native_cases = re.findall(
+        r"test\(=([^)]+)\)", native_groups["aos-sandbox-controller-domain"],
+    )
+    assert native_cases, "missing required Domain native cases"
+
     vm.wait_for_unit("multi-user.target", timeout=180)
 
     # Fixtures create their journals beside current_exe(). Keep the store
@@ -35,10 +50,7 @@ in {
     )
     assert "test result: ok." in output, output
     assert "0 filtered out" in output, output
-    for name in (
-        "journal::protected_storage::currentness::tests::one_native_ancestry_binds_actual_writers_and_rejects_different_directory_uid_or_path",
-        "journal::root_readonly_model::tests::saved_challenge_refusal_preserves_acquisition_and_owed_names_after_mount_failure",
-    ):
+    for name in native_cases:
         assert f"test {name} ... ok" in output, output
   '';
 }
