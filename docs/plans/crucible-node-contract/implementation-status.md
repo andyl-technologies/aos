@@ -12,19 +12,20 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Current completion boundary
 
-The latest qualified Source-composition checkpoint is `a3966e3ec8`. It composes
-the prebirth Source census under the original deployment, following retained
-mechanism accounting in `abc1915f26` and retained Job accounting in `4788218df7`.
-Its seven-package check, seven architecture gates, both Engine codec suites,
-application test-target build and funded Source VM passed. The application build
-contains 185 test artifacts across 58 packages, including 76 integration targets.
-Both registered Nix sources match all 8,391 captured Rust/Cargo inputs. Those
+The latest qualified Source-mapping checkpoint is `a33fcf9a5a`. It retains and
+authenticates original one-use mapping custody, following private-Birth nonce
+derivation in `2b51f53190` and Source census composition in `a3966e3ec8`.
+Its seven-package check, seven architecture gates, both SDK and Engine codec
+suites, application test-target build and funded Source VM passed. The application
+build contains 185 test artifacts across 58 packages, including 76 integration
+targets.
+Both registered Nix sources match all 8,397 captured Rust/Cargo inputs. Those
 snapshots include local user changes; they do not qualify a clean PR checkout.
 
-Private-Birth mapping nonces and original one-use Source mapping custody are
-subsequent implementation work. Their focused checks do not establish complete
-Recipe or Initial production. In particular, the native funding path still needs
-all of the following before full lifecycle qualification:
+These results establish original Source workers, private Birth, mapping custody,
+census, refusal and cleanup. They do not establish complete Recipe or Initial
+production or the full Native18 model and phase lifecycle. The native funding
+path still needs all of the following before full lifecycle qualification:
 
 | Dependency | Required completion evidence |
 | --- | --- |
