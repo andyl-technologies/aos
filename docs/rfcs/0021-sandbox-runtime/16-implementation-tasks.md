@@ -31,6 +31,23 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Closed initial-role rendering now describes Controller and Storage separately,
+  including fixed service/helper entrypoints, own floor/lock access, immutable
+  credential delivery, approval transport and public output. The renderer
+  accepts only canonical selections and exact evaluated initializer/helper
+  package roots. Only the 36 aliases recognized by the actual startup consumer
+  receive readable credential labels and named creation transitions; other
+  deliveries retain the generic label. Neither-role selection emits no policy
+  or contexts and requires no package inputs. All four selections pass real
+  source-built libselinux lookup checks, and all three nonempty rendered modules
+  compile against the selected kernel's permission names. Eight new rendering
+  tests and the ten existing custody checks pass on an audited 546-derivation
+  closure without production policy. Python bytecode caches are excluded from
+  this check's frozen source. These are unselected policy inputs: the production
+  recipe does not import them yet. Expanded permission/custody checks, production
+  selection, linked-policy validation and genuine installed Source provisioning
+  remain required before enabling either initializer. Admission stays closed.
+
 - Initial-intent final and pending files now have separate per-endpoint object
   labels. Normal writers' exact-name creation transitions select those labels,
   whose file permissions remain denied to all actors until initial roles are
