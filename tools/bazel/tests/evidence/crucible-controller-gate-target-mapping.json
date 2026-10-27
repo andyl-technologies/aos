@@ -8,6 +8,24 @@
     },
     "source": "/nix/store/gcpppffgjrf0ifwb1ln5hfn6sygwvy9d-aos-workspace-src"
   },
+  "application_compilation_validation": {
+    "binding_scope": "Historical gate mapping checkpoint Rust sources; later reader changes require their own source-bound checks.",
+    "cargo_build_messages_sha256": "cdf28ef80b2bac755a38d0d109b316bc7870e22d494cce0eca50a0bc7b9b6ea3",
+    "compiled_test_artifacts": 185,
+    "derivation": "/nix/store/qks0hv5xv5yk4mcnq00j0wmcg2v25vkp-aos-test-targets-0.1.0.drv",
+    "output": "/nix/store/hqq1hjc087ak1c90pdmsbb8w6dhq1sw2-aos-test-targets-0.1.0",
+    "scope": "Required aos/aos-* application unit and integration target compilation; the focused Cargo/Bazel gate separately compiles and executes the Crucible gate mapping audits.",
+    "source_binding": {
+      "derivation": "/nix/store/qks0hv5xv5yk4mcnq00j0wmcg2v25vkp-aos-test-targets-0.1.0.drv",
+      "rust_sources_sha256": {
+        "crates/crucible/crucible-test-support/tests/gate_target_mapping.rs": "945ea73cec92f37103e0d38030d824e5cc0e2969e54349dd066a665723572285",
+        "crates/crucible/crucible-test-support/tests/support/architecture.rs": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589",
+        "crates/crucible/crucible-test-support/tests/support/test_targets.rs": "76aa59cef471b1ae231581583ddfd19220d0a312b3f25d3edb5ee32715b670bb"
+      },
+      "source": "/nix/store/gcpppffgjrf0ifwb1ln5hfn6sygwvy9d-aos-workspace-src"
+    },
+    "status": "PASS"
+  },
   "backend_controls": {
     "accepted": [
       "guaranteed-concatenated-features"
@@ -203,9 +221,7 @@
   ],
   "oracle": "/nix/store/fkfxa4ivqydzxd3sfzl2azwc6pfj9ma6-aos-bazel-crucible-controller-gate-targets-cargo-oracle-1",
   "oracle_derivation": "/nix/store/c9k2fg4k35yv1x19x8fhxgdp372ls124-aos-bazel-crucible-controller-gate-targets-cargo-oracle-1.drv",
-  "pending_checkpoint_validation": [
-    "required checks.rust.aos-test-targets application compilation"
-  ],
+  "pending_checkpoint_validation": [],
   "public_controller_cutover_qualified": false,
   "qualification_derivation": "/nix/store/h9p8jwqca3f6y9i4144zxb5z6dawjzqc-aos-bazel-crucible-controller-gate-target-parity.drv",
   "qualification_helper_sha256": {
