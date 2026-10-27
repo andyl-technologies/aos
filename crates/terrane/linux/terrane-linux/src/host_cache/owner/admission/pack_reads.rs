@@ -35,7 +35,7 @@ use terrane_sdk::{
 };
 
 /// Retains one genuine cache admission and both original native members.
-pub(in crate::host_cache::owner) struct AdmittedPackRead {
+pub(in crate::host_cache) struct AdmittedPackRead {
     layout: Arc<NativeHostLayout<HostDomainLocation>>,
     job: Arc<Mutex<AdmissionJob>>,
     observation: Arc<EncodedReadObservation>,
@@ -54,6 +54,7 @@ struct ChunkRead {
     profile: ChunkProfile,
     limits: HostReadLimits,
     max_entries: usize,
+    length: usize,
 }
 
 struct Member {
@@ -95,16 +96,46 @@ impl AdmittedPackRead {
         executor.check_physical_worker()?;
         let context = executor.admission_context()?;
         context.check_current().map_err(io::Error::other)?;
+        let read = {
+            let owner = executor
+                .custody()
+                .lock()
+                .map_err(|_| invalid("pack read custody poisoned"))?;
+            Self::prepare_registered(executor, &owner, identity, require_cached)?
+        };
+        context.check_current().map_err(io::Error::other)?;
+        Ok(read)
+    }
+
+    /// Retains an actual cached pair during the worker's publication selection.
+    ///
+    /// The caller already holds this owner's policy lock and checks publisher
+    /// phase outside it. This checks the actual retained Running registration
+    /// without nesting the publisher's connection mutex under owner custody.
+    ///
+    /// # Errors
+    /// Refuses stale Running custody, absent admission or changed original bytes.
+    pub(in crate::host_cache::owner) fn prepare_publication(
+        executor: &NativeOwnerExecutor,
+        owner: &Custody,
+        identity: Identity,
+    ) -> io::Result<Self> {
+        executor.admission_context_locked(owner)?;
+        Self::prepare_registered(executor, owner, identity, true)
+    }
+
+    fn prepare_registered(
+        executor: &NativeOwnerExecutor,
+        owner: &Custody,
+        identity: Identity,
+        require_cached: bool,
+    ) -> io::Result<Self> {
         if identity.kind() == IdentityKind::Pack || identity.profile() != TERRANE_V1.name() {
             return Err(invalid(
-                "metadata consumer requires a canonical metadata identity",
+                "pack consumer requires a canonical chunk or metadata identity",
             ));
         }
-        let owner = executor
-            .custody()
-            .lock()
-            .map_err(|_| invalid("metadata read custody poisoned"))?;
-        check_snapshot(&owner)?;
+        check_snapshot(owner)?;
         for resource in executor.admission_jobs() {
             let job = super::backing::lock(resource)?;
             let (pack, index, chunk) = match &job.input {
@@ -132,7 +163,7 @@ impl AdmittedPackRead {
                     "metadata consumer source has not entered cache custody",
                 ));
             }
-            state::check_registration(&owner, &job)?;
+            state::check_registration(owner, &job)?;
             if job.files.len() != 2
                 || !job.dependencies.is_empty()
                 || !Arc::ptr_eq(&job.custody, executor.custody())
@@ -149,7 +180,7 @@ impl AdmittedPackRead {
             let member = |position: usize, expected: &Arc<Vec<u8>>| -> io::Result<Member> {
                 let original = &job.files[position];
                 let stamp = original
-                    .read_stamp(&owner)
+                    .read_stamp(owner)
                     .inspect_err(|_| observation.reject(1))?;
                 let file = original
                     .readonly
@@ -187,6 +218,7 @@ impl AdmittedPackRead {
                 uid: owner.preparation.config.content_uid,
                 gid: owner.preparation.config.content_gid,
                 chunk: chunk.then(|| ChunkRead {
+                    length: entry.plaintext_len() as usize,
                     profile: owner.preparation.config.location.chunk_profile().clone(),
                     limits: owner.preparation.config.reads,
                     max_entries: owner
@@ -198,17 +230,34 @@ impl AdmittedPackRead {
                 }),
             };
             drop(job);
-            drop(owner);
             read.check_native()?;
-            context.check_current().map_err(io::Error::other)?;
             return Ok(read);
         }
         Err(io::Error::new(io::ErrorKind::NotFound, MissingCachedPack))
     }
 
     /// Borrows the selected canonical chunk or metadata identity.
-    pub(in crate::host_cache::owner) fn identity(&self) -> &Identity {
+    pub(in crate::host_cache) fn identity(&self) -> &Identity {
         &self.identity
+    }
+
+    /// Borrows actual admitted chunk parameters for ordered reassembly.
+    ///
+    /// # Errors
+    /// Refuses metadata records, which cannot supply a plaintext chunk source.
+    pub(in crate::host_cache) fn chunk_parameters(
+        &self,
+    ) -> io::Result<(&str, &ChunkProfile, usize, usize)> {
+        let policy = self
+            .chunk
+            .as_ref()
+            .ok_or_else(|| invalid("metadata pair is not an ordered chunk source"))?;
+        Ok((
+            self.layout.layout().domain(),
+            &policy.profile,
+            policy.length,
+            policy.limits.max_allocation_bytes,
+        ))
     }
 
     /// Checks the actual original admission and its durable cache registration.
@@ -242,7 +291,7 @@ impl AdmittedPackRead {
     ///
     /// # Errors
     /// Refuses changed custody, corrupt pack/index bytes, allocation or read errors.
-    pub(in crate::host_cache::owner) fn read_verified(&self) -> io::Result<Vec<u8>> {
+    pub(in crate::host_cache) fn read_verified(&self) -> io::Result<Vec<u8>> {
         self.check_native()?;
         let result = (|| {
             self.check_bytes()?;
@@ -291,7 +340,7 @@ impl AdmittedPackRead {
     /// # Errors
     /// Refuses changed pair or dictionary bytes, invalid content, exhausted
     /// allocation bounds, and failure to read the original selected range.
-    pub(in crate::host_cache::owner) fn read_encoded(&self) -> io::Result<Vec<u8>> {
+    pub(in crate::host_cache) fn read_encoded(&self) -> io::Result<Vec<u8>> {
         if self.chunk.is_none() {
             return self.read_verified();
         }

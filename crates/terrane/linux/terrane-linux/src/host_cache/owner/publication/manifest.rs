@@ -6,7 +6,7 @@
 
 use super::{
     super::{
-        admission::TransferSource,
+        admission::{TransferSource, pack_reads::AdmittedPackRead},
         retention::{Command, Custody, NativeMetadataOwner, NativeOwnerExecutor},
     },
     PublicationCompletion, PublicationJob, invalid,
@@ -131,9 +131,10 @@ impl NativeMetadataOwner {
     /// chunks itself. It synchronizes metadata retention and allocation funding
     /// before creating output, streams ordered bytes through content verification,
     /// and retires actual standalone sources before recording their sealed ranges.
-    /// Existing sealed ranges retain their original completed job and residence;
-    /// only newly admitted standalone sources retire into this object. This
-    /// never guesses source bytes or reconstructs metadata from plaintext.
+    /// Existing sealed ranges retain their original completed job and residence.
+    /// Packed inputs retain their actual admitted pair with synchronized source
+    /// pins and handoff grace; only standalone sources retire into this object.
+    /// This never guesses source bytes or reconstructs metadata from plaintext.
     /// View-policy selection belongs to the caller's trusted tier composition,
     /// before this explicit physical operation.
     ///
@@ -188,6 +189,7 @@ pub(super) struct ManifestInput {
     pub(super) transfers: Vec<SourceTransfer>,
     dependencies: Vec<TransferSource>,
     residents: Vec<Arc<crate::host_cache::NativeResidentChunkSource>>,
+    packs: Vec<Arc<AdmittedPackRead>>,
 }
 
 impl ManifestInput {
@@ -196,13 +198,19 @@ impl ManifestInput {
     /// The completed plan has already closed its reads. Durable release pins
     /// protect the original bodies independently; keeping these descriptions
     /// would retain their quota after those pins expire and final unlink succeeds.
-    pub(super) fn take_resident_inputs(
+    pub(super) fn take_copy_inputs(
         &mut self,
-    ) -> Vec<Arc<crate::host_cache::NativeResidentChunkSource>> {
-        std::mem::take(&mut self.residents)
+    ) -> (
+        Vec<Arc<crate::host_cache::NativeResidentChunkSource>>,
+        Vec<Arc<AdmittedPackRead>>,
+    ) {
+        (
+            std::mem::take(&mut self.residents),
+            std::mem::take(&mut self.packs),
+        )
     }
 
-    /// Derives distinct backing hashes only from original verified resident sources.
+    /// Derives backing protection from original sealed sources and admitted pairs.
     ///
     /// # Errors
     /// Refuses changed original source protection.
@@ -211,6 +219,10 @@ impl ManifestInput {
         for source in &self.residents {
             source.check_protected(owner)?;
             hashes.insert(super::state::hex(source.protected_object_digest()));
+        }
+        for source in &self.packs {
+            source.check_protected(owner)?;
+            hashes.extend(source.digests().map(super::state::hex));
         }
         Ok(hashes.into_iter().collect())
     }
@@ -225,9 +237,7 @@ impl ManifestInput {
         next: &mut terrane_sdk::host::cache::CacheState,
         producer: &str,
     ) -> io::Result<()> {
-        for source in &self.residents {
-            source.check_protected(owner)?;
-            let hash = super::state::hex(source.protected_object_digest());
+        for hash in self.backing_hashes(owner)? {
             if !next
                 .pins
                 .iter()
@@ -263,6 +273,10 @@ impl ManifestInput {
         let mut sources = Vec::new();
         let mut residents: Vec<Arc<crate::host_cache::NativeResidentChunkSource>> = Vec::new();
         residents
+            .try_reserve_exact(declaration.chunks.len())
+            .map_err(io::Error::other)?;
+        let mut packs: Vec<Arc<AdmittedPackRead>> = Vec::new();
+        packs
             .try_reserve_exact(declaration.chunks.len())
             .map_err(io::Error::other)?;
         let mut transfers: Vec<SourceTransfer> = Vec::new();
@@ -312,7 +326,29 @@ impl ManifestInput {
                 )?);
                 continue;
             }
-            let actual = TransferSource::select_chunk(executor, owner, &identity, chunk.length)?;
+            let Some(actual) =
+                TransferSource::select_chunk_optional(executor, owner, &identity, chunk.length)?
+            else {
+                // Whole-pack cache custody remains independent of this object.
+                // Retain and pin the genuine pair; never synthesize a standalone
+                // extraction or retire other members to assemble one object.
+                super::io::refuse_standalone(owner, &chunk.digest)?;
+                let source = match packs.iter().find(|source| source.identity() == &identity) {
+                    Some(source) => Arc::clone(source),
+                    None => {
+                        let source = Arc::new(AdmittedPackRead::prepare_publication(
+                            executor, owner, identity,
+                        )?);
+                        packs.push(Arc::clone(&source));
+                        source
+                    }
+                };
+                sources.push(NativeChunkSource::from_pack(
+                    source,
+                    index + 1 == declaration.chunks.len(),
+                )?);
+                continue;
+            };
             actual.check_retirement(executor, owner)?;
             super::io::refuse_other_standalone(owner, &chunk.digest, actual.key().codec)?;
             let source = NativeChunkSource::open_bounded(
@@ -358,6 +394,7 @@ impl ManifestInput {
             transfers,
             dependencies,
             residents,
+            packs,
         })
     }
 
@@ -368,6 +405,9 @@ impl ManifestInput {
     pub(super) fn check(&self, owner: &Custody) -> io::Result<()> {
         self.retained.check_registration(owner)?;
         for source in &self.residents {
+            source.check_protected(owner)?;
+        }
+        for source in &self.packs {
             source.check_protected(owner)?;
         }
         for dependency in &self.dependencies {
@@ -489,6 +529,7 @@ pub(in crate::host_cache::owner) async fn run(
         super::residence::prepare_recovered_inline(executor, &identity).await?;
     }
     let custody = Arc::clone(executor.custody());
+    context.check_current().map_err(io::Error::other)?;
     let input = {
         let owner = custody
             .lock()
@@ -496,6 +537,7 @@ pub(in crate::host_cache::owner) async fn run(
         owner.check_current()?;
         ManifestInput::prepare(executor, &owner, retained)?
     };
+    context.check_current().map_err(io::Error::other)?;
     let claim = input.retained.claim().clone();
     let job = executor.register_publication(PublicationJob {
         order: 0,

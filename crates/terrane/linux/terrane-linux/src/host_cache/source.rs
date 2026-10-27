@@ -1,4 +1,4 @@
-//! Retains genuine encoded or pinned sealed chunk sources for native commands.
+//! Retains encoded, admitted-pack and pinned sealed sources for native commands.
 //!
 //! Each decode is bounded by CDC-12/CDC-13 and re-verifies the bytes actually
 //! read. A retained descriptor is not a pin or an allocation reservation.
@@ -31,7 +31,8 @@ use terrane_sdk::host::cache::{HostReadLocation, maximum_encoded_chunk_bytes};
 ///
 /// This grants no surface handle or new pin authority. Encoded sources require
 /// their actual owner's original pin and reservation throughout use. Internal
-/// sealed sources retain their genuine completed publication job instead.
+/// sealed sources retain their genuine completed publication job instead. Packed
+/// sources retain the original admitted pair under durable container protection.
 pub struct NativeChunkSource {
     backing: Backing,
     domain: String,
@@ -49,6 +50,8 @@ enum Backing {
     },
     #[cfg(feature = "tokio")]
     Sealed(Arc<NativeResidentChunkSource>),
+    #[cfg(feature = "tokio")]
+    Pack(Arc<super::owner::AdmittedPackRead>),
 }
 
 impl NativeChunkSource {
@@ -183,6 +186,36 @@ impl NativeChunkSource {
         })
     }
 
+    /// Retains an original admitted pair for one ordered chunk occurrence.
+    ///
+    /// This constructor accepts only the owner's private native read custody.
+    /// It grants no new pin; publication synchronizes the container protection
+    /// before any copying and retains that protection through durable handoff.
+    ///
+    /// # Errors
+    /// Refuses metadata records or a source too short for a nonfinal occurrence.
+    #[cfg(feature = "tokio")]
+    pub(in crate::host_cache) fn from_pack(
+        source: Arc<super::owner::AdmittedPackRead>,
+        final_chunk: bool,
+    ) -> io::Result<Self> {
+        let (domain, profile, length, allocation_limit) = source.chunk_parameters()?;
+        if !final_chunk && length < profile.minimum() {
+            return Err(invalid(
+                "packed source is too short for a nonfinal occurrence",
+            ));
+        }
+        Ok(Self {
+            domain: domain.to_owned(),
+            identity: source.identity().clone(),
+            length,
+            final_chunk,
+            profile: profile.clone(),
+            allocation_limit,
+            backing: Backing::Pack(source),
+        })
+    }
+
     /// Returns the source's trusted configured domain label.
     pub fn domain(&self) -> &str {
         &self.domain
@@ -228,7 +261,7 @@ impl NativeChunkSource {
                 Some((&self.identity, self.length, file)),
                 dictionary.as_slice(),
             ),
-            Backing::Sealed(_) => (None, &[][..]),
+            Backing::Sealed(_) | Backing::Pack(_) => (None, &[][..]),
         };
         source.into_iter().chain(
             dictionaries
@@ -276,19 +309,23 @@ impl NativeChunkSource {
                 Ok(verified.plaintext().to_vec())
             }
             #[cfg(feature = "tokio")]
-            Backing::Sealed(source) => {
-                let bytes = source.read_verified()?;
-                if bytes.len() != self.length
-                    || self.profile.first_boundary(&bytes) != bytes.len()
-                    || (!self.final_chunk && !self.profile.valid_nonfinal_chunk(&bytes))
-                {
-                    return Err(invalid(
-                        "resident source differs from its ordered chunk context",
-                    ));
-                }
-                Ok(bytes)
-            }
+            Backing::Sealed(source) => self.check_ordered_plaintext(source.read_verified()?),
+            #[cfg(feature = "tokio")]
+            Backing::Pack(source) => self.check_ordered_plaintext(source.read_verified()?),
         }
+    }
+
+    #[cfg(feature = "tokio")]
+    fn check_ordered_plaintext(&self, bytes: Vec<u8>) -> io::Result<Vec<u8>> {
+        if bytes.len() != self.length
+            || self.profile.first_boundary(&bytes) != bytes.len()
+            || (!self.final_chunk && !self.profile.valid_nonfinal_chunk(&bytes))
+        {
+            return Err(invalid(
+                "native source differs from its ordered chunk context",
+            ));
+        }
+        Ok(bytes)
     }
 
     /// Returns the original verified envelope, or a raw envelope for a sealed source.
@@ -309,6 +346,10 @@ impl NativeChunkSource {
                 let encoded = source.read_encoded()?;
                 self.decode_encoded(&encoded, &[])?;
                 Ok(encoded)
+            }
+            Backing::Pack(source) => {
+                drop(self.read_verified_at()?);
+                source.read_encoded()
             }
         }
     }

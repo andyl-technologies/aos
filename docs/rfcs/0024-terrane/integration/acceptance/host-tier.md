@@ -152,9 +152,25 @@ that physical charges survive unlink until the last descriptions close while
 unrelated consumers remain usable. These new assertions are not yet guest
 qualified. All-target feature-enabled Clippy passes with warnings denied, and
 source inventories match 151/279 ordinary tests plus five creator tests. These
-are compilation and source checks only. External dictionary transfer, complete
-packed-manifest reassembly, required application compilation and physical
-qualification remain open. Trunk acceptance remains 28/64.
+are compilation and source checks only.
+
+Manifest publication now also selects actual admitted packed chunks when no
+completed standalone admission exists. Failed original native custody remains
+an error rather than a pack fallback. Ordered sources retain both original
+members, recheck each occurrence's boundary context and stream through the same
+canonical-manifest and whole-file verification as other sources. Publication
+synchronizes selected chunk and container pins before copying. Handoff retains
+container grace and drops private source descriptors outside the custody locks;
+the independent whole-pack cache admission remains counted and evictable.
+
+New guest controls seed a data pair and canonical metadata pair, publish repeated
+dictionary-backed chunks without standalone extraction, check actual sealed
+ranges and descriptor closure, and refuse an incorrect whole-file hash while
+retaining funding. The supervisor independently compares the sealed bytes and
+ranges with original pack records and measures the kernel seal. These assertions
+are pending execution. External dictionary transfer, required application
+compilation and physical qualification remain open. Trunk acceptance remains
+28/64.
 
 ## Clause coverage
 

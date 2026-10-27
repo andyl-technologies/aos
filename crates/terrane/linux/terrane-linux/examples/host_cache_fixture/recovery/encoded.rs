@@ -224,6 +224,9 @@ pub(crate) fn inspect_pack(inspector: &NativeRecoveryInspector) -> io::Result<()
 /// Refuses missing native project inheritance or an invalid fixture envelope.
 pub(crate) fn seed() -> io::Result<()> {
     let inputs = Inputs::load()?;
+    if super::packed_manifest::selected(&inputs) {
+        return super::packed_manifest::seed(&inputs);
+    }
     let chunks = if inputs.domain == "tenant:encoded-metadata-only" {
         Vec::new()
     } else {
@@ -409,7 +412,9 @@ pub(crate) fn run(
     }
     let completed = recovered?;
     completed.check_current()?;
-    let chunks = if inputs.domain == "tenant:encoded-metadata-only" {
+    let chunks = if inputs.domain == "tenant:encoded-metadata-only"
+        || super::packed_manifest::selected(inputs)
+    {
         Vec::new()
     } else {
         chunks()?
@@ -439,6 +444,9 @@ pub(crate) fn run(
     runtime
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
+    if super::packed_manifest::selected(inputs) {
+        return super::packed_manifest::run(owner, runtime, inputs);
+    }
     let mut retained = BTreeMap::<(u64, u64), usize>::new();
     for entry in fs::read_dir("/proc/self/fd")? {
         let metadata = match fs::metadata(entry?.path()) {

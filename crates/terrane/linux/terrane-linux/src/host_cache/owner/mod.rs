@@ -48,6 +48,7 @@ mod surface_index;
 /// retained through actual retirement; this value grants no release authority.
 pub(super) const RETAINED_LEASE_DEADLINE: u64 = i64::MAX as u64;
 
+pub(super) use admission::pack_reads::AdmittedPackRead;
 pub(super) use index_io::open_regular_at;
 
 pub(crate) use admission::eviction::turn::PublisherEncodedCacheTurn;

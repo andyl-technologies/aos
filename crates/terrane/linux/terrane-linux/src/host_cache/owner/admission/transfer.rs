@@ -244,7 +244,8 @@ impl TransferSource {
         owner: &Custody,
         descriptor: &Descriptor,
     ) -> io::Result<Self> {
-        let source = Self::select_matching(executor, owner, |actual| actual == descriptor)?;
+        let source = Self::select_matching(executor, owner, |actual| Ok(actual == descriptor))?
+            .ok_or_else(|| invalid("standalone body lacks actual completed admission custody"))?;
         source.check_retirement(executor, owner)?;
         Ok(source)
     }
@@ -263,21 +264,45 @@ impl TransferSource {
         identity: &Identity,
         length: u64,
     ) -> io::Result<Self> {
+        Self::select_chunk_optional(executor, owner, identity, length)?
+            .ok_or_else(|| invalid("standalone body lacks actual completed admission custody"))
+    }
+
+    /// Distinguishes registry absence from failed original native source custody.
+    ///
+    /// Only a complete lookup with no matching completed identity returns `None`.
+    /// A changed length, registration or inode remains an error, so a different
+    /// source cannot hide corruption by treating a missing native file as a miss.
+    ///
+    /// # Errors
+    /// Refuses foreign identities and changed completed admission or native bytes.
+    pub(in crate::host_cache::owner) fn select_chunk_optional(
+        executor: &NativeOwnerExecutor,
+        owner: &Custody,
+        identity: &Identity,
+        length: u64,
+    ) -> io::Result<Option<Self>> {
         if identity.kind() != IdentityKind::Chunk || identity.profile() != TERRANE_V1.name() {
             return Err(invalid(
                 "manifest transfer requires a registered chunk identity",
             ));
         }
         Self::select_matching(executor, owner, |actual| {
-            actual.digest() == identity.digest() && actual.size() == length
+            if actual.digest() != identity.digest() {
+                return Ok(false);
+            }
+            if actual.size() != length {
+                return Err(invalid("admitted chunk length differs from the manifest"));
+            }
+            Ok(true)
         })
     }
 
     fn select_matching(
         executor: &NativeOwnerExecutor,
         owner: &Custody,
-        matches: impl Fn(&Descriptor) -> bool,
-    ) -> io::Result<Self> {
+        matches: impl Fn(&Descriptor) -> io::Result<bool>,
+    ) -> io::Result<Option<Self>> {
         executor.check_physical_worker()?;
         for candidate in executor.admission_jobs() {
             let job = candidate
@@ -291,7 +316,7 @@ impl TransferSource {
             else {
                 continue;
             };
-            if !matches(actual) || !job.complete {
+            if !job.complete || !matches(actual)? {
                 continue;
             }
             if !Arc::ptr_eq(&job.custody, executor.custody()) || job.files.len() != 1 {
@@ -307,7 +332,7 @@ impl TransferSource {
             let codec = *encoded
                 .first()
                 .ok_or_else(|| invalid("transfer encoding absent"))?;
-            return Ok(Self {
+            return Ok(Some(Self {
                 job: Arc::clone(candidate),
                 key: BodyKey {
                     kind: BodyKind::Chunk as i32,
@@ -316,11 +341,9 @@ impl TransferSource {
                     ..Default::default()
                 },
                 source: (metadata.dev(), metadata.ino(), metadata.len()),
-            });
+            }));
         }
-        Err(invalid(
-            "standalone body lacks actual completed admission custody",
-        ))
+        Ok(None)
     }
 
     /// Requires that retiring this original inode preserves every admitted body.

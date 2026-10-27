@@ -79,6 +79,7 @@ CASES += ["encoded-eviction", "encoded-recovery", "encoded-cold", "encoded-corru
 CASES += ["shared-reextract"]
 CASES += ["encoded-sealed", "encoded-old-range"]
 CASES += ["encoded-metadata", "encoded-metadata-only", "encoded-data-pack"]
+CASES += ["encoded-packed-manifest", "encoded-packed-manifest-bad-whole"]
 MANIFEST_CASES.append(("manifest-extra-metadata", "seed-manifest", "recover-manifest", True, "valid manifest"))
 CASES += ["manifest-extra-metadata"]
 MANIFEST_CASES += [

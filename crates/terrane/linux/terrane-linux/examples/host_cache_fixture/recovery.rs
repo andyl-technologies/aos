@@ -16,6 +16,8 @@ mod inline;
 mod metadata;
 #[path = "recovery/packed_eviction.rs"]
 mod packed_eviction;
+#[path = "recovery/packed_manifest.rs"]
+mod packed_manifest;
 #[path = "recovery/pending.rs"]
 pub(super) mod pending;
 #[path = "recovery/pending_packs.rs"]
