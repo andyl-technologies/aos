@@ -36,9 +36,30 @@ codec). Engine suites passed 2,226 tests per codec at the model checkpoint and
 2,227 at the Source checkpoint, with 34 ignored. Their mandatory application
 builds each compiled 185 artifacts across 58 packages, including 76 integration
 targets, and match all 8,403 and 8,404 captured Rust/Cargo inputs respectively.
-These snapshots include local user changes. Whole-archive and decoder-bank
-custody transitions are implemented locally and still undergoing combined
-qualification; genuine complete Native18 installation remains unproven.
+These snapshots include local user changes.
+
+Whole-archive custody checkpoint `5f4f99f50e` retains raw roles, immutable ancestry,
+the before-graph cache and the same current decoder bank through model transfer.
+Private Held-state installation checkpoint `05e993e998` derives the current
+boundary, binds the complete original coordinator and installs the same model
+and fresh socket beneath a distinct physical Hold. Its Control remains private
+and fenced; this component cannot dispatch genuine Native18 Commit or release
+the target through legacy activation.
+
+Both checkpoints passed seven-package all-feature/all-target compilation, seven
+architecture gates and complete SDK and Engine suites in both codecs. SDK totals
+are 2,391 and 2,394 passed respectively, with 20 ignored per codec. Engine totals
+are 2,227 passed and 34 ignored per codec at both checkpoints. Each mandatory
+application build compiled 185 artifacts across 58 packages, including 76
+integration targets, and matched all 8,408 and 8,410 frozen Rust/Cargo inputs
+respectively. These source snapshots include local user changes and do not
+qualify a clean final PR checkout.
+
+The retained-installation census, target derivation from the immutable launch
+and target construction demand remain local work undergoing qualification.
+The model controls cover actual producer/reactive transfers and refusal custody;
+a positive complete sealed-archive installation is not yet demonstrated.
+Genuine Native18 admission and the full phase lifecycle remain unproven.
 
 These results establish original Source workers, private Birth, mapping custody,
 census, refusal and cleanup. They do not establish complete Recipe or Initial
