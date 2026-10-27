@@ -45,13 +45,13 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
 use aos_transfer::progress::TransferObserver;
 use aos_transfer::progress::TransferProgress;
-use futures_util::stream::{self, StreamExt};
+use futures_util::stream::{self, StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
 
 use crate::registry::repo;
@@ -74,8 +74,26 @@ const MAX_SYNC_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// (S3/garage/nginx) while still hiding round-trip latency.
 const MAX_CONCURRENCY: usize = 24;
 
+#[derive(Clone, Copy)]
+struct FetchLimits {
+    objects: usize,
+    loose_compressed_bytes: u64,
+    sync_bytes: u64,
+    concurrency: usize,
+}
+
+impl FetchLimits {
+    const PRODUCTION: Self = Self {
+        objects: MAX_OBJECTS,
+        loose_compressed_bytes: MAX_LOOSE_COMPRESSED_BYTES,
+        sync_bytes: MAX_SYNC_BYTES,
+        concurrency: MAX_CONCURRENCY,
+    };
+}
+
 struct SyncBudget {
     used: AtomicU64,
+    exhausted: AtomicBool,
     maximum: u64,
 }
 
@@ -83,17 +101,78 @@ impl SyncBudget {
     fn new(maximum: u64) -> Self {
         Self {
             used: AtomicU64::new(0),
+            exhausted: AtomicBool::new(false),
             maximum,
         }
     }
 
-    fn charge(&self, bytes: u64) -> Result<()> {
-        self.used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                used.checked_add(bytes).filter(|next| *next <= self.maximum)
-            })
-            .map_err(|_| anyhow::anyhow!("registry sync exceeded {} byte limit", self.maximum))?;
+    fn reserve(&self, requested: u64) -> Result<BudgetReservation<'_>> {
+        if self.exhausted.load(Ordering::Acquire) {
+            bail!("registry sync exceeded {} byte limit", self.maximum);
+        }
+
+        let mut used = self.used.load(Ordering::Relaxed);
+        loop {
+            let available = self.maximum.saturating_sub(used);
+            if available == 0 {
+                self.exhausted.store(true, Ordering::Release);
+                bail!("registry sync exceeded {} byte limit", self.maximum);
+            }
+            let granted = requested.min(available);
+            match self.used.compare_exchange_weak(
+                used,
+                used.saturating_add(granted),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Ok(BudgetReservation {
+                        budget: self,
+                        granted,
+                        committed: false,
+                    });
+                }
+                Err(observed) => used = observed,
+            }
+        }
+    }
+}
+
+struct BudgetReservation<'a> {
+    budget: &'a SyncBudget,
+    granted: u64,
+    committed: bool,
+}
+
+impl BudgetReservation<'_> {
+    fn maximum_bytes(&self) -> u64 {
+        self.granted
+    }
+
+    fn commit(mut self, bytes: u64) -> Result<()> {
+        if bytes > self.granted {
+            self.budget.exhausted.store(true, Ordering::Release);
+            bail!("registry transport exceeded its reserved byte allowance");
+        }
+
+        self.budget
+            .used
+            .fetch_sub(self.granted - bytes, Ordering::AcqRel);
+        self.committed = true;
         Ok(())
+    }
+}
+
+impl Drop for BudgetReservation<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+
+        // A failed or cancelled transfer consumes its complete reservation.
+        // This conservatively includes bytes read before the transport failed
+        // and makes exhaustion terminal for the operation.
+        self.budget.exhausted.store(true, Ordering::Release);
     }
 }
 
@@ -163,12 +242,36 @@ pub async fn fetch_with_optional_head(
     client: &reqwest::Client,
     include_head: bool,
 ) -> Result<bool> {
+    fetch_with_optional_head_and_limits(
+        repo_dir,
+        base_url,
+        refspecs,
+        progress,
+        verified,
+        client,
+        include_head,
+        FetchLimits::PRODUCTION,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn fetch_with_optional_head_and_limits(
+    repo_dir: &Path,
+    base_url: &str,
+    refspecs: &[String],
+    progress: Option<&TransferProgress>,
+    verified: &mut repo::VerifiedObjectGraph,
+    client: &reqwest::Client,
+    include_head: bool,
+    limits: FetchLimits,
+) -> Result<bool> {
     let engine = std::sync::Arc::new(aos_transfer::TransferEngine::with_http_client(
         aos_transfer::TransferEngineConfig::default(),
         client.clone(),
     ));
     let reader = RegistryTransport::new(base_url)?.with_engine(engine);
-    let budget = SyncBudget::new(MAX_SYNC_BYTES);
+    let budget = SyncBudget::new(limits.sync_bytes);
 
     set_phase(progress, "Reading registry references");
     let advertised = fetch_info_refs(&reader, base_url, progress, &budget).await?;
@@ -250,8 +353,11 @@ pub async fn fetch_with_optional_head(
                 &format!("Downloading registry objects ({})", missing.len()),
             );
             total_fetched += missing.len();
-            if total_fetched > MAX_OBJECTS {
-                bail!("registry object graph exceeded {MAX_OBJECTS} objects; refusing to continue");
+            if total_fetched > limits.objects {
+                bail!(
+                    "registry object graph exceeded {} objects; refusing to continue",
+                    limits.objects
+                );
             }
             let objects_dir = &objects_dir;
             let reader = &reader;
@@ -259,13 +365,20 @@ pub async fn fetch_with_optional_head(
             verified.invalidate();
             stream::iter(missing.into_iter())
                 .map(|oid| async move {
-                    fetch_loose(reader, base_url, objects_dir, &oid, progress, &budget).await
+                    fetch_loose(
+                        reader,
+                        base_url,
+                        objects_dir,
+                        &oid,
+                        progress,
+                        &budget,
+                        limits.loose_compressed_bytes,
+                    )
+                    .await
                 })
-                .buffer_unordered(MAX_CONCURRENCY)
-                .collect::<Vec<_>>()
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>>>()?;
+                .buffer_unordered(limits.concurrency)
+                .try_collect::<Vec<_>>()
+                .await?;
             if let Some(progress) = progress {
                 progress.activity_phase("Verifying registry objects");
             }
@@ -306,13 +419,18 @@ async fn read_object(
     progress: Option<&TransferProgress>,
     budget: &SyncBudget,
 ) -> Result<(reqwest::StatusCode, Vec<u8>)> {
-    let Some(body) = reader.read_optional(relative, maximum_bytes).await? else {
+    let reservation = budget.reserve(maximum_bytes)?;
+    let Some(body) = reader
+        .read_optional(relative, reservation.maximum_bytes())
+        .await?
+    else {
+        reservation.commit(0)?;
         return Ok((reqwest::StatusCode::NOT_FOUND, Vec::new()));
     };
+    reservation.commit(body.len() as u64)?;
     if let Some(progress) = progress {
         progress.inc(body.len() as u64);
     }
-    budget.charge(body.len() as u64)?;
     Ok((reqwest::StatusCode::OK, body))
 }
 
@@ -328,9 +446,18 @@ async fn fetch_loose(
     oid: &str,
     progress: Option<&TransferProgress>,
     budget: &SyncBudget,
+    maximum_compressed_bytes: u64,
 ) -> Result<()> {
     let loose_path = loose_object_path(objects_dir, oid)?;
-    let compressed = fetch_object(reader, base_url, oid, progress, budget).await?;
+    let compressed = fetch_object(
+        reader,
+        base_url,
+        oid,
+        progress,
+        budget,
+        maximum_compressed_bytes,
+    )
+    .await?;
     let inflated = inflate(&compressed, MAX_LOOSE_INFLATED_BYTES)
         .with_context(|| format!("inflating object {oid}"))?;
     verify_oid(oid, &inflated)?;
@@ -528,11 +655,11 @@ async fn fetch_object(
     oid: &str,
     progress: Option<&TransferProgress>,
     budget: &SyncBudget,
+    maximum_bytes: u64,
 ) -> Result<Vec<u8>> {
     let path = format!("objects/{}/{}", &oid[..2], &oid[2..]);
     let url = join_cache_url(base_url, &path);
-    let (status, body) =
-        read_object(reader, &path, MAX_LOOSE_COMPRESSED_BYTES, progress, budget).await?;
+    let (status, body) = read_object(reader, &path, maximum_bytes, progress, budget).await?;
     if !status.is_success() {
         bail!("fetching object {url} failed with {status}");
     }
@@ -625,9 +752,18 @@ mod tests {
     fn sync_budget_accepts_exact_limit_and_rejects_more() {
         let budget = SyncBudget::new(4);
 
-        budget.charge(4).unwrap();
+        budget.reserve(4).unwrap().commit(4).unwrap();
 
-        assert!(budget.charge(1).is_err());
+        assert!(budget.reserve(1).is_err());
+    }
+
+    #[test]
+    fn failed_reservation_makes_budget_exhaustion_sticky() {
+        let budget = SyncBudget::new(8);
+        drop(budget.reserve(4).unwrap());
+
+        assert!(budget.reserve(1).is_err());
+        assert_eq!(budget.used.load(Ordering::Relaxed), 4);
     }
 
     #[test]
@@ -724,6 +860,14 @@ mod tests {
     /// serve its bare `.git` as a static dumb-HTTP tree. Returns `None` when a
     /// loopback socket cannot be bound (sandbox without local TCP).
     fn serve_repo(repack: bool) -> Option<TestOrigin> {
+        serve_repo_fixture(repack, 0, false)
+    }
+
+    fn serve_repo_fixture(
+        repack: bool,
+        wide_file_count: usize,
+        corrupt_blobs: bool,
+    ) -> Option<TestOrigin> {
         use std::io::{Read as _, Write as _};
         use std::net::TcpListener;
         use std::process::Command;
@@ -757,6 +901,13 @@ mod tests {
         git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(work.join("file.txt"), b"hello sha256").unwrap();
         std::fs::write(work.join("sub/nested.txt"), b"nested").unwrap();
+        for index in 0..wide_file_count {
+            std::fs::write(
+                work.join(format!("wide-{index:04}.txt")),
+                format!("wide fixture {index}\n"),
+            )
+            .unwrap();
+        }
         git(&["add", "."]);
         git(&["commit", "-m", "init"]);
         if repack {
@@ -776,6 +927,30 @@ mod tests {
         };
         assert_eq!(head.len(), 64, "expected sha256 head, got {head:?}");
 
+        let (corrupt_oids, corrupt_body) = if corrupt_blobs {
+            let output = Command::new("git")
+                .args(["ls-tree", "-r", "--format=%(objectname)", "HEAD"])
+                .current_dir(&work)
+                .output()
+                .unwrap();
+            let mut oids = String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let source_oid = oids.pop().unwrap();
+            let source_path = work
+                .join(".git/objects")
+                .join(&source_oid[..2])
+                .join(&source_oid[2..]);
+            (
+                oids.into_iter().collect::<std::collections::HashSet<_>>(),
+                Some(std::fs::read(source_path).unwrap()),
+            )
+        } else {
+            (std::collections::HashSet::new(), None)
+        };
+
         let git_dir = work.join(".git");
         let listener = TcpListener::bind("127.0.0.1:0").ok()?;
         let addr = listener.local_addr().unwrap();
@@ -785,6 +960,8 @@ mod tests {
         let references = reference_requests.clone();
         let heads = head_requests.clone();
         let counter = object_requests.clone();
+        let corrupt_oids = Arc::new(corrupt_oids);
+        let corrupt_body = Arc::new(corrupt_body);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
@@ -792,6 +969,8 @@ mod tests {
                 let counter = counter.clone();
                 let references = references.clone();
                 let heads = heads.clone();
+                let corrupt_oids = Arc::clone(&corrupt_oids);
+                let corrupt_body = Arc::clone(&corrupt_body);
                 std::thread::spawn(move || {
                     let mut buf = [0u8; 1024];
                     let n = stream.read(&mut buf).unwrap_or(0);
@@ -809,6 +988,26 @@ mod tests {
                     }
                     if path.starts_with("objects/") {
                         counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let object_oid = path
+                        .strip_prefix("objects/")
+                        .and_then(|path| path.split_once('/'))
+                        .map(|(prefix, suffix)| format!("{prefix}{suffix}"));
+                    if object_oid
+                        .as_ref()
+                        .is_some_and(|oid| corrupt_oids.contains(oid))
+                    {
+                        let body = corrupt_body.as_ref().as_ref().unwrap();
+                        let header = format!(
+                            "HTTP/1.0 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes());
+                        let _ = stream.write_all(body);
+                        return;
+                    }
+                    if !corrupt_oids.is_empty() && path.starts_with("objects/") {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
                     }
                     match std::fs::read(root.join(path)) {
                         Ok(body) => {
@@ -886,6 +1085,109 @@ mod tests {
             progress.position() > 0,
             "fetch should report received bytes"
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_frontier_object_stops_bounded_in_flight_fetches() {
+        use std::sync::atomic::Ordering;
+
+        let Some(origin) = serve_repo_fixture(false, MAX_CONCURRENCY * 4, true) else {
+            return;
+        };
+        let client_dir = origin._tmp.path().join("client-invalid-frontier.git");
+        repo::init_bare_sha256(&client_dir).await.unwrap();
+
+        let result = fetch(&client_dir, &origin.url, &[MAIN_REFSPEC.to_string()]).await;
+
+        let error = result.unwrap_err();
+        assert!(
+            error.to_string().contains("content hash mismatch"),
+            "{error:#}"
+        );
+        // Requests already handed to the kernel can reach the fixture just
+        // after the client future is cancelled. Let that bounded set settle,
+        // then prove no new frontier work is produced.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let settled_requests = origin.object_requests.load(Ordering::Relaxed);
+        assert!(
+            settled_requests <= MAX_CONCURRENCY + 3,
+            "frontier failure started {settled_requests} object requests"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            origin.object_requests.load(Ordering::Relaxed),
+            settled_requests,
+            "cancelled frontier work continued after fetch returned"
+        );
+        assert!(
+            repo::rev_parse(&client_dir, "refs/remotes/origin/main")
+                .await
+                .is_err(),
+            "failed acquisition must not advance the destination ref"
+        );
+        assert!(!contains_temporary_object(&client_dir));
+    }
+
+    #[tokio::test]
+    async fn aggregate_budget_stops_a_wide_frontier() {
+        use std::sync::atomic::Ordering;
+
+        let Some(origin) = serve_repo_fixture(false, 32, false) else {
+            return;
+        };
+        let client_dir = origin._tmp.path().join("client-budget-frontier.git");
+        repo::init_bare_sha256(&client_dir).await.unwrap();
+        let mut verified = repo::VerifiedObjectGraph::new(&client_dir);
+        let limits = FetchLimits {
+            objects: 128,
+            loose_compressed_bytes: 8 * 1024,
+            sync_bytes: 10 * 1024,
+            concurrency: 4,
+        };
+
+        let result = fetch_with_optional_head_and_limits(
+            &client_dir,
+            &origin.url,
+            &[MAIN_REFSPEC.to_string()],
+            None,
+            &mut verified,
+            &reqwest::Client::new(),
+            false,
+            limits,
+        )
+        .await;
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("byte limit"), "{error:#}");
+        assert!(
+            origin.object_requests.load(Ordering::Relaxed) <= limits.concurrency + 3,
+            "budget failure drained the wide frontier"
+        );
+        assert!(
+            repo::rev_parse(&client_dir, "refs/remotes/origin/main")
+                .await
+                .is_err(),
+            "budget failure must not advance the destination ref"
+        );
+        assert!(!contains_temporary_object(&client_dir));
+    }
+
+    fn contains_temporary_object(root: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return false;
+        };
+
+        for entry in entries.filter_map(|entry| entry.ok()) {
+            let path = entry.path();
+            if path.is_dir() && contains_temporary_object(&path) {
+                return true;
+            }
+            if path.extension().is_some_and(|extension| extension == "tmp") {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Authoring clones are normal worktrees, so loose objects must land in
