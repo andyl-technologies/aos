@@ -11,6 +11,27 @@
     },
     "source": "/nix/store/xsa9lsszmsc1z8fb69v38gb5ay27fi4f-aos-workspace-src"
   },
+  "application_compilation_validation": {
+    "binding_scope": "Historical campaign traceability checkpoint Rust sources; later reader changes require their own source-bound checks.",
+    "cargo_build_messages_sha256": "cdf28ef80b2bac755a38d0d109b316bc7870e22d494cce0eca50a0bc7b9b6ea3",
+    "compiled_test_artifacts": 185,
+    "derivation": "/nix/store/bi5zhwl5g07hwihd8lrgnbiz84awrqmz-aos-test-targets-0.1.0.drv",
+    "output": "/nix/store/ici16cry1ccsb2rsrrgx2jlb29sjdmhn-aos-test-targets-0.1.0",
+    "scope": "Required aos/aos-* application unit and integration target compilation; the focused Cargo/Bazel gate separately compiles and executes the campaign traceability audits.",
+    "source_binding": {
+      "derivation": "/nix/store/bi5zhwl5g07hwihd8lrgnbiz84awrqmz-aos-test-targets-0.1.0.drv",
+      "rust_sources_sha256": {
+        "crates/crucible/crucible-test-support/tests/campaign_gate_traceability.rs": "356f48f1486facf31627f8087970572c9363cd653d3400a069ed304c7734a51b",
+        "crates/crucible/crucible-test-support/tests/campaign_gate_traceability/declared_targets.rs": "1ea8ba41a2e277b0b288aa95c885a2a691365117f3920add51d9f227543a1ef2",
+        "crates/crucible/crucible-test-support/tests/campaign_gate_traceability/integration_exact.rs": "9ded4d1e08082c4dea0df19d0dce3632213854455997a6bcc8134495d7f8c7e8",
+        "crates/crucible/crucible-test-support/tests/campaign_gate_traceability/schema_source_coverage.rs": "918415c5609065d2948102e09b7670950342e405983807470de4e55d54e1bdcd",
+        "crates/crucible/crucible-test-support/tests/support/architecture.rs": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589",
+        "crates/crucible/crucible-test-support/tests/support/test_targets.rs": "6cbabaf473e5331465e01c0fce2a687c077770c267e32c48bf971b1ba039172e"
+      },
+      "source": "/nix/store/xsa9lsszmsc1z8fb69v38gb5ay27fi4f-aos-workspace-src"
+    },
+    "status": "PASS"
+  },
   "backend_controls": {
     "accepted_actual_library_layout": "owned test-only copies with matching production source roots",
     "actual_graph_cases": [
@@ -1427,9 +1448,7 @@
   ],
   "oracle": "/nix/store/fka9gpy33gfggvj7bmhhph70la8sq99b-aos-bazel-crucible-controller-campaign-cargo-oracle-1",
   "oracle_derivation": "/nix/store/8nq37rb65ds6ji3xy21w7jk03558gcv9-aos-bazel-crucible-controller-campaign-cargo-oracle-1.drv",
-  "pending_checkpoint_validation": [
-    "required checks.rust.aos-test-targets application compilation"
-  ],
+  "pending_checkpoint_validation": [],
   "public_controller_cutover_qualified": false,
   "qualification_derivation": "/nix/store/0b9yjhazvgb1wb69b3j5ajbaiszmbrpr-aos-bazel-crucible-controller-campaign-parity.drv",
   "qualification_helper_sha256": {
