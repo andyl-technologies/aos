@@ -47,6 +47,7 @@ impl Native18ModelInstallation {
             installed: _,
             policy: _,
             inputs,
+            target,
             boundary,
             archive,
             control,
@@ -57,19 +58,26 @@ impl Native18ModelInstallation {
         let mut requested = size_of::<Self>();
         if let Some(inputs) = inputs {
             let Native18ModelInstallationInputs {
-                target,
                 archive,
                 effect_socket: _,
             } = inputs;
-            if let Some((selection, coordinator)) = target {
-                observer.observe(selection)?;
-                observer.observe(coordinator)?;
-            }
             if let Some(archive) = archive {
                 requested = checked_sum(
                     requested,
                     archive.retained_requested_storage_data(usize::MAX)?,
                 )?;
+            }
+        }
+        if let Some(target) = target {
+            let Native18InstallationTarget {
+                selection,
+                coordinator,
+            } = target;
+            if let Some(selection) = selection {
+                observer.observe(selection)?;
+            }
+            if let Some(coordinator) = coordinator {
+                observer.observe(coordinator)?;
             }
         }
         if let Some(boundary) = boundary {
@@ -137,6 +145,7 @@ impl Native18ModelInstallation {
             + size_of::<MetadataObserver<'static>>()
             + size_of::<RetainedProtocolMetadataFacts>()
             + size_of::<&Native18ModelInstallationInputs>()
+            + size_of::<&Native18InstallationTarget>()
             + size_of::<&PacketModelCaptureBoundaryData>()
             + size_of::<&RestoredSettledNative18ModelAdoption>()
             + size_of::<&PacketControl>()

@@ -21,14 +21,18 @@ use crate::reference_packet::{
 
 mod storage;
 
-/// Retains the actual fresh target and archive before any installing validation.
+/// Retains the archive and fresh socket before any installing validation.
 pub(crate) struct Native18ModelInstallationInputs {
-    /// Retains the original independently authenticated selected target values.
-    pub(crate) target: Option<(PacketControlSelection, PacketNative5CoordinatorInstallation)>,
     /// Retains the complete archive selected by the original Source occurrence.
     pub(crate) archive: Option<SealedHistoricalRestoredSettledNative17>,
     /// Retains the already owned fresh effect socket through every refusal.
     pub(crate) effect_socket: Option<UnixDatagram>,
+}
+
+/// Retains target construction from the same immutable selected launch.
+struct Native18InstallationTarget {
+    selection: Option<PacketControlSelection>,
+    coordinator: Option<PacketNative5CoordinatorInstallation>,
 }
 
 /// Keeps the same model, archive and fresh Control through the held installation.
@@ -39,6 +43,7 @@ pub(crate) struct Native18ModelInstallation {
     installed: bool,
     policy: Rc<NativeImport18PolicyData>,
     inputs: Option<Native18ModelInstallationInputs>,
+    target: Option<Native18InstallationTarget>,
     boundary: Option<PacketModelCaptureBoundaryData>,
     archive: Option<RestoredSettledNative18ModelAdoption>,
     control: Option<PacketControl>,
@@ -50,7 +55,8 @@ impl Native18ModelInstallation {
     /// Prepares a model-absent target while retaining every original input.
     ///
     /// The enclosing genuine Source/SDK transition must independently admit
-    /// archive/model validation, canonical coordinator and inventory work,
+    /// archive/model validation, selected-launch cloning, coordinator decoding,
+    /// canonical coordinator and inventory work,
     /// target/identity/Hold allocations and all constructor controls before entry.
     /// Immutable policy correspondence here is DATA, not proof of those admissions
     /// or ancestry.
@@ -58,8 +64,8 @@ impl Native18ModelInstallation {
     ///
     /// # Errors
     /// Refuses an occupied destination without changing inputs. After retaining
-    /// the attempt, absent inputs, a changed target, invalid archive or model
-    /// leaves this same attempt spent with every initialized prefix retained.
+    /// the attempt, absent inputs, an invalid original coordinator, archive or
+    /// model leaves this same attempt spent with each initialized owner retained.
     pub(crate) fn prepare_into(
         inputs: &mut Option<Native18ModelInstallationInputs>,
         policy: &Rc<NativeImport18PolicyData>,
@@ -75,6 +81,7 @@ impl Native18ModelInstallation {
             installed: false,
             policy: Rc::clone(policy),
             inputs: inputs.take(),
+            target: None,
             boundary: None,
             archive: None,
             control: None,
@@ -85,13 +92,28 @@ impl Native18ModelInstallation {
         let owner = output.as_mut().ok_or_else(refused18)?;
         owner.policy.definitions_data()?;
         let inputs = owner.inputs.as_mut().ok_or_else(refused18)?;
-        let (selection, coordinator) = inputs.target.as_ref().ok_or_else(refused18)?;
-        if selection != &owner.policy.launch_data().selection || inputs.effect_socket.is_none() {
+        if inputs.effect_socket.is_none() {
             return Err(refused18());
         }
-        coordinator.validate(selection)?;
+
+        // Retain the selected launch clone before decoding the coordinator.
+        // A decode refusal cannot discard or replace this initialized target.
+        owner.target = Some(Native18InstallationTarget {
+            selection: Some(owner.policy.launch_data().selection.clone()),
+            coordinator: None,
+        });
+        let target = owner.target.as_mut().ok_or_else(refused18)?;
+        target.coordinator = Some(PacketNative5CoordinatorInstallation::decode(
+            owner
+                .policy
+                .launch_data()
+                .initial_coordinator
+                .bytes
+                .as_slice(),
+            target.selection.as_ref().ok_or_else(refused18)?,
+        )?);
         Self::authenticate_coordinator_data(
-            coordinator,
+            target.coordinator.as_ref().ok_or_else(refused18)?,
             owner
                 .policy
                 .launch_data()
@@ -107,8 +129,14 @@ impl Native18ModelInstallation {
                 .installation_boundary18_data()?,
         );
 
-        let (selection, coordinator) = inputs.target.take().ok_or_else(refused18)?;
-        owner.control = Some(Self::model_absent_target(selection, coordinator));
+        let target = owner.target.take().ok_or_else(refused18)?;
+        match target.into_model_absent_control() {
+            Ok(control) => owner.control = Some(control),
+            Err(prefix) => {
+                owner.target = Some(prefix);
+                return Err(refused18());
+            }
+        }
         let control = owner.control.as_mut().ok_or_else(refused18)?;
         let boundary = owner.boundary.take().ok_or_else(refused18)?;
         owner.hold = Some(Self::preparing_hold(control, boundary));
@@ -243,6 +271,22 @@ impl Native18ModelInstallation {
             return Err(refused18());
         }
         Ok(())
+    }
+}
+
+impl Native18InstallationTarget {
+    /// Returns an incomplete prefix intact if either original field is absent.
+    fn into_model_absent_control(self) -> Result<PacketControl, Self> {
+        match self {
+            Self {
+                selection: Some(selection),
+                coordinator: Some(coordinator),
+            } => Ok(Native18ModelInstallation::model_absent_target(
+                selection,
+                coordinator,
+            )),
+            prefix => Err(prefix),
+        }
     }
 }
 

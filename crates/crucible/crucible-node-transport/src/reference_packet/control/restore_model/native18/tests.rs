@@ -104,8 +104,12 @@ fn native18_installation_preserves_current_model_and_blocks_legacy_hold_release(
             .as_ref()
             .ok_or_else(refused18)?
             .clone();
-        let mut target =
-            Native18ModelInstallation::model_absent_target(actual.selection.clone(), coordinator);
+        let mut target = Native18InstallationTarget {
+            selection: Some(actual.selection.clone()),
+            coordinator: Some(coordinator),
+        }
+        .into_model_absent_control()
+        .map_err(|_| refused18())?;
         assert!(matches!(
             target.program,
             NativeProgram::RestorationInProgress

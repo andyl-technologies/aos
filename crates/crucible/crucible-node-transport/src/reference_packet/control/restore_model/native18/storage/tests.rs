@@ -47,14 +47,9 @@ fn inert_policy() -> Result<Rc<NativeImport18PolicyData>, ProviderError> {
 fn native18_installation_retained_census_keeps_refused_target_and_socket()
 -> Result<(), ProviderError> {
     let policy = inert_policy()?;
-    let mut actual = current_control17_fixture_data(false)?;
     let (socket, _peer) = UnixDatagram::pair()?;
     let descriptor = socket.as_raw_fd();
     let mut inputs = Some(Native18ModelInstallationInputs {
-        target: Some((
-            actual.selection.clone(),
-            actual.complete_coordinator.take().ok_or_else(refused18)?,
-        )),
         archive: None,
         effect_socket: Some(socket),
     });
@@ -67,8 +62,12 @@ fn native18_installation_retained_census_keeps_refused_target_and_socket()
     assert!(owner.failed && !owner.installed);
     assert!(owner.control.is_none() && owner.hold.is_none());
     let retained = owner.inputs.as_ref().ok_or_else(refused18)?;
-    let selection = &retained.target.as_ref().ok_or_else(refused18)?.0;
-    assert_eq!(selection, &actual.selection);
+    let target = owner.target.as_ref().ok_or_else(refused18)?;
+    assert_eq!(
+        target.selection.as_ref().ok_or_else(refused18)?,
+        &policy.launch_data().selection
+    );
+    assert!(target.coordinator.is_none());
     assert_eq!(
         retained
             .effect_socket
