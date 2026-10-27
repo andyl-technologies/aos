@@ -1,0 +1,10 @@
+--- a/src/sftp.c
++++ b/src/sftp.c
+@@ -1279,6 +1279,7 @@
+                                "got HANDLE FXOK"));
+ 
+                 LIBSSH2_FREE(session, data);
++                data = NULL;
+ 
+                 /* silly situation, but check for a HANDLE */
+                 rc = sftp_packet_require(sftp, SSH_FXP_HANDLE,
