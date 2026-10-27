@@ -1093,6 +1093,7 @@ impl QemuNode {
     }
 
     /// Returns this node with staged console bytes exposed as observations.
+    #[cfg(test)]
     pub(crate) fn with_console_observation(
         mut self,
         node: NodeId,
@@ -1111,6 +1112,7 @@ impl QemuNode {
     }
 
     /// Retains setup-time observations for the first authoritative scheduler drain.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn with_priming_observable_events(
         mut self,
