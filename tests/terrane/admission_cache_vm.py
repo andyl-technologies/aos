@@ -1,10 +1,123 @@
 """Observes real encoded cache handoff, grace and original source retirement."""
 
 import re
+import struct
 import time
 import tomllib
 
 from source_cleanup_vm import files, quota
+
+
+def run_data_pack(driver, uuid):
+    """Observes funded producer admission and same-inode handoff independently."""
+    from encoded_eviction_vm import Original
+
+    case = "admission-data-pack"
+    root = driver.root(case)
+    snapshot = root / "state/cache/records.toml"
+    process = driver.controlled_actor(case, "admit-data-pack", uuid)
+    lines = driver.Lines(process)
+    originals = []
+
+    def control(value):
+        process.stdin.write((value + "\n").encode())
+        process.stdin.flush()
+
+    try:
+        lines.until("READY actual producer data pair verified with original funding; no standalone copies", timeout=30)
+        driver.require(lines.bytes.decode().splitlines().count(
+            "ACK actual empty recovery Resume; no Ready") == 1,
+            "producer data pair lacks actual empty recovery and Resume")
+        print(driver.process_status(process, 840), flush=True)
+        paths = sorted((root / "objects/pack").glob("*/*"))
+        driver.require(len(paths) == 2 and {path.suffix for path in paths} == {".pack", ".idx"}
+                       and all(path.stem == "78" * 16 and path.parent.name == "78" for path in paths),
+                       "producer admission did not publish exactly one complete pair")
+        for path in paths:
+            originals.append(Original(driver, case, path, 840))
+        pair = next(path for path in paths if path.suffix == ".pack").read_bytes()
+        detached = next(path for path in paths if path.suffix == ".idx").read_bytes()
+        driver.require(len(pair) >= 24 + 12 + 3 * 56 + 16
+                       and pair[:4] == b"TRPK" and pair[4:8] == bytes([1, 0, 0, 0])
+                       and pair[8:24] == bytes([120]) * 16 and pair[-4:] == b"TRPE",
+                       "producer observer found another data-pack header")
+        offset = struct.unpack_from("<Q", pair, len(pair) - 16)[0]
+        driver.require(pair[offset:offset + 4] == b"TRIX"
+                       and struct.unpack_from("<Q", pair, offset + 4)[0] == 3
+                       and offset + 12 + 3 * 56 == len(pair) - 16
+                       and detached == pair[:24] + pair[offset:-16],
+                       "producer observer lost exact original detached index binding")
+        records = {}
+        for position in range(3):
+            record = pair[offset + 12 + position * 56:offset + 12 + (position + 1) * 56]
+            start, encoded, length, codec, kind = struct.unpack_from("<QIIBB", record, 32)
+            driver.require(24 <= start < start + encoded <= offset and kind == 0
+                           and codec in (0, 2) and record[50:] == bytes(6),
+                           "producer observer found an invalid original chunk record")
+            body = pair[start:start + encoded]
+            driver.require(body[0] == codec and record[:32].hex() not in records,
+                           "producer chunk codec or identity is ambiguous")
+            records[record[:32].hex()] = (length, codec, body)
+        terminal = b"producer packed terminal vocabulary " * 16
+        middle = b"producer packed terminal vocabulary intermediate " * 64
+        content = b"producer packed terminal vocabulary intermediate content " * 128
+        by_length = {length: (digest, codec, body) for digest, (length, codec, body) in records.items()}
+        driver.require(set(by_length) == {len(terminal), len(middle), len(content)},
+                       "producer records do not contain the complete expected nested chain")
+        terminal_id, terminal_codec, terminal_body = by_length[len(terminal)]
+        middle_id, middle_codec, middle_body = by_length[len(middle)]
+        _, content_codec, content_body = by_length[len(content)]
+        driver.require(terminal_codec == 0 and terminal_body == b"\0" + terminal
+                       and middle_codec == content_codec == 2
+                       and middle_body[1:33].hex() == terminal_id
+                       and content_body[1:33].hex() == middle_id,
+                       "producer observer found a different original dictionary graph")
+        before = files(root / "objects/pack")
+        policy = tomllib.loads(snapshot.read_text())
+        holds = policy["reservations"]
+        driver.require(len(holds) == 2
+                       and sorted(row["bytes"] for row in holds)
+                       == [262144, 262144 + len(pair) + len(detached)]
+                       and len(policy["pins"]) == 4
+                       and {row["hash"] for row in policy["pins"]} >= set(records)
+                       and all(row["owner"].startswith("admission:") for row in policy["pins"])
+                       and len(policy["leases"]) == 1
+                       and not files(root / "chunks") and not files(root / "pending-delete"),
+                       "producer pair lacks distinct original funding and complete pin closure")
+        driver.require(quota(driver, case) + sum(row["bytes"] for row in holds) <= 6 * 1024 * 1024,
+                       "actual producer charge plus future funding exceeds capacity")
+        control("handoff-data-pack")
+        lines.until("READY actual producer data pair serves original nested envelopes after cache handoff", timeout=30)
+        policy = tomllib.loads(snapshot.read_text())
+        driver.require(len(policy["reservations"]) == 1 and policy["reservations"][0]["bytes"] == 262144
+                       and not any(row["owner"].startswith("admission:") for row in policy["pins"])
+                       and any(row["owner"].startswith("admission-grace:") for row in policy["pins"])
+                       and files(root / "objects/pack") == before
+                       and not files(root / "chunks") and not files(root / "pending-delete"),
+                       "producer handoff changed original pair or retained producer funding/copies")
+        for original in originals:
+            original.check(1)
+        control("data-pack-observed")
+        remaining, error = process.communicate(timeout=10)
+        driver.require(process.returncode == 0 and not error and remaining.decode().splitlines() == [
+            "PASS actual producer data pair rejects invalid content before funding, retains both original members and serves nested chunks without extraction; no Ready"
+        ], "producer data actor did not complete its actual native reads")
+        print("PASS independent observer verifies producer data-pair funding, nested dictionary records and same-inode cache handoff", flush=True)
+    except BaseException:
+        print(lines.bytes[lines.printed:].decode(), end="", flush=True)
+        if process.poll() is None:
+            process.kill()
+        remaining, error = process.communicate(timeout=5)
+        print(remaining.decode(), end="", flush=True)
+        if error:
+            print(error.decode(), end="", flush=True)
+        raise
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        for original in originals:
+            original.close()
 
 
 def run(driver, uuid):

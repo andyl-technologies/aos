@@ -55,8 +55,8 @@ pub(crate) use admission::eviction::turn::PublisherEncodedCacheTurn;
 pub(crate) use admission::read_custody::PublisherEncodedReadTurn;
 pub use admission::{
     NativeAdmissionHandoffError, NativeAdmissionHandoffReport, NativeChunkAdmission,
-    NativeChunkAdmissionError, NativeChunkAdmissionTicket, NativeMetadataAdmission,
-    NativeMetadataAdmissionError,
+    NativeChunkAdmissionError, NativeChunkAdmissionTicket, NativeDataPackAdmission,
+    NativeDataPackAdmissionError, NativeMetadataAdmission, NativeMetadataAdmissionError,
 };
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig, SurfaceIndexPolicy};
 pub(crate) use consumer::NativeFilePreparation;

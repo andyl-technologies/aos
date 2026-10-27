@@ -56,12 +56,12 @@ pub use owner::{
     NativeAdmissionHandoffReport, NativeCacheEvictionReport, NativeCacheHandoffError,
     NativeCacheHandoffReport, NativeCacheOwnerConfig, NativeCachePreparation, NativeCacheStatus,
     NativeChunkAdmission, NativeChunkAdmissionError, NativeChunkAdmissionTicket,
-    NativeChunkFetchRequest, NativeConsumerLease, NativeFetchedChunk, NativeFileBacking,
-    NativeIndexRepairReport, NativeInlinePublication, NativeLeaseAccounting,
-    NativeManifestPublication, NativeMetadataAdmission, NativeMetadataAdmissionError,
-    NativeMetadataOwner, NativeProducerReadClosure, NativeReadChunk, NativeResidentChunkSource,
-    NativeResumeError, NativeSealedBacking, NativeSealedObjectLease, NativeSourceCleanupReport,
-    RetainedManifest,
+    NativeChunkFetchRequest, NativeConsumerLease, NativeDataPackAdmission,
+    NativeDataPackAdmissionError, NativeFetchedChunk, NativeFileBacking, NativeIndexRepairReport,
+    NativeInlinePublication, NativeLeaseAccounting, NativeManifestPublication,
+    NativeMetadataAdmission, NativeMetadataAdmissionError, NativeMetadataOwner,
+    NativeProducerReadClosure, NativeReadChunk, NativeResidentChunkSource, NativeResumeError,
+    NativeSealedBacking, NativeSealedObjectLease, NativeSourceCleanupReport, RetainedManifest,
 };
 #[cfg(all(feature = "tokio", feature = "surface-fuse"))]
 pub use owner::{

@@ -181,6 +181,13 @@ pub(super) enum Command {
         index: Vec<u8>,
         response: oneshot::Sender<io::Result<super::NativeMetadataAdmission>>,
     },
+    /// Transfers bounded untrusted data pair input to actual running admission.
+    AdmitDataPack {
+        expected_id: terrane_sdk::pack::PackId,
+        pack: Vec<u8>,
+        index: Vec<u8>,
+        response: oneshot::Sender<io::Result<super::NativeDataPackAdmission>>,
+    },
     /// Transfers genuine completion through the sole physical Resume turn.
     Resume {
         completed: Box<super::CompletedRecovery>,
@@ -585,6 +592,20 @@ impl NativeMetadataOwner {
                             response,
                         } => {
                             let result = runtime.block_on(super::admission::metadata(
+                                &mut executor,
+                                expected_id,
+                                pack,
+                                index,
+                            ));
+                            let _ = response.send(result);
+                        }
+                        Command::AdmitDataPack {
+                            expected_id,
+                            pack,
+                            index,
+                            response,
+                        } => {
+                            let result = runtime.block_on(super::admission::data_pack::run(
                                 &mut executor,
                                 expected_id,
                                 pack,

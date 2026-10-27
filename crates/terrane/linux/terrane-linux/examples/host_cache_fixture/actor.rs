@@ -41,6 +41,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "start-refuse"
             | "admit-chunk"
             | "admit-metadata"
+            | "admit-data-pack"
             | "admit-cancel"
             | "cache-admission-handoff"
             | "dictionary-custody"
@@ -267,7 +268,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             }
             emit("PASS unresolved actual candidate refused without clearing state")?;
         }
-        "admit-chunk" | "admit-metadata" | "admit-cancel" => {
+        "admit-chunk" | "admit-metadata" | "admit-data-pack" | "admit-cancel" => {
             super::admission::run(mode, &owner, &runtime, &inputs, original)?;
         }
         "recover-manifest"

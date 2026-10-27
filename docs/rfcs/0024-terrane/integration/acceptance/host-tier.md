@@ -134,8 +134,10 @@ policy. At `0353648de6`, final admission reconciliation replaces its remaining
 one-hop restriction with bounded iterative verification of the actual older
 dependency jobs, original envelope edges, native bytes and retained protection.
 Both increments pass feature-enabled all-target Clippy with warnings denied.
-Their required application compilation and guest qualification remain pending;
-the earlier run does not qualify either later source.
+The frozen `0353648de6` snapshot has passed required application compilation
+(190 targets across 59 packages) and four source-bound image reviews. Its
+runtime run is pending completion. These artifact checks do not qualify the
+later data-pack and packed-manifest implementation.
 
 Cold recovery now imports an original data pack/index pair when all dictionary
 dependencies remain inside that pack. Consumer grants retain that actual
@@ -171,6 +173,23 @@ ranges with original pack records and measures the kernel seal. These assertions
 are pending execution. External dictionary transfer, required application
 compilation and physical qualification remain open. Trunk acceptance remains
 28/64.
+
+Producer admission now accepts complete data packs through a distinct receipt
+and bounded command on the sole physical owner. It verifies every chunk and
+the complete detached index before pressure, funding and pair writes, then
+uses the same durable index-first publication and measured allocation path as
+metadata pairs. Cache handoff preserves both original members as one unit.
+The new guest control repeatedly refuses malformed, mismatched, wrong-class
+and freshly checksummed corrupt-content inputs before admitting a nested
+dictionary pack. An independent observer checks actual funding, original pair
+records and same-inode handoff; consumers check plaintext and original envelopes
+without extraction. Feature-enabled and minimal-feature compilation pass
+all-target Clippy with warnings denied; source inventory and selector checks
+pass. These assertions are implemented but not yet guest qualified, and the
+required application compile must be renewed for this source. Producer and cold
+data admission still require dictionary closure
+inside a pack; external dictionary custody and cyclic pack-unit lifecycle remain
+open. This increment does not advance task acceptance.
 
 ## Clause coverage
 

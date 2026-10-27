@@ -38,6 +38,23 @@ pub enum NativeMetadataAdmissionError {
     Accepted(io::Error),
 }
 
+/// Reports a refused submission or a physically accepted data-pack failure.
+pub enum NativeDataPackAdmissionError {
+    /// Returns untouched inputs when no physical command was accepted.
+    Unsubmitted {
+        /// Actual validation or bounded-queue error.
+        error: io::Error,
+        /// Original untrusted canonical pack identifier.
+        expected_id: PackId,
+        /// Original untrusted complete pack bytes.
+        pack: Vec<u8>,
+        /// Original untrusted detached index bytes.
+        detached_index: Vec<u8>,
+    },
+    /// Reports failure whose resources remain owned by the physical executor.
+    Accepted(io::Error),
+}
+
 macro_rules! admission_error {
     ($name:ident) => {
         impl fmt::Debug for $name {
@@ -73,3 +90,4 @@ macro_rules! admission_error {
 
 admission_error!(NativeChunkAdmissionError);
 admission_error!(NativeMetadataAdmissionError);
+admission_error!(NativeDataPackAdmissionError);

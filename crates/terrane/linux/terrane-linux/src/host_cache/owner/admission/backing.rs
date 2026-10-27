@@ -197,6 +197,11 @@ impl NativeChunkAdmission {
 /// This receipt is neither a manifest publication pin nor a native serving
 /// handle. Later publication must independently retain its exact manifest range.
 pub struct NativeMetadataAdmission {
+    pub(super) pair: PackAdmission,
+}
+
+/// Keeps measured pair custody shared by the distinct metadata and data receipts.
+pub(super) struct PackAdmission {
     /// Actual worker-registered physical resources retained independently of the waiter.
     pub(super) _job: Arc<Mutex<AdmissionJob>>,
     /// Verified canonical pack identifier selecting both members.
@@ -224,32 +229,32 @@ impl NativeMetadataAdmission {
         self,
         owner: &super::NativeMetadataOwner,
     ) -> Result<super::NativeAdmissionHandoffReport, super::NativeAdmissionHandoffError<Self>> {
-        super::handoff::submit(owner, Arc::clone(&self._job), self).await
+        super::handoff::submit(owner, Arc::clone(&self.pair._job), self).await
     }
 
     /// Returns the canonical identifier of the complete synchronized pair.
     pub fn pack_id(&self) -> PackId {
-        self.id
+        self.pair.id
     }
 
     /// Returns deduplicated synchronized allocation for the pair's two inodes.
     pub fn synchronized_pair_bytes(&self) -> u64 {
-        self.allocated
+        self.pair.allocated
     }
 
     /// Returns the separate fresh full-project charged-and-reserved observation.
     pub fn charged_reserved_bytes(&self) -> u64 {
-        self.charged
+        self.pair.charged
     }
 
     /// Returns the distinct retained future policy hold at acknowledgment.
     pub fn future_hold_bytes(&self) -> u64 {
-        self.future_hold
+        self.pair.future_hold
     }
 
     /// Returns scoped synchronized allocation of the touched directory chain.
     pub fn synchronized_directory_bytes(&self) -> u64 {
-        self.directory_allocated
+        self.pair.directory_allocated
     }
 }
 

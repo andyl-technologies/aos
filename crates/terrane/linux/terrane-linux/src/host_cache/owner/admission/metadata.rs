@@ -1,4 +1,4 @@
-//! Verifies every metadata body before publishing a complete pack/index pair.
+//! Verifies every body before publishing a complete data or metadata pair.
 
 use super::{
     super::retention::Custody,
@@ -17,7 +17,7 @@ use terrane_sdk::{
     repository::MetadataValidator,
 };
 
-/// Verifies and synchronizes an exact metadata pack and detached index pair.
+/// Verifies and synchronizes the input's exact pack class and detached index.
 ///
 /// # Errors
 /// Refuses unavailable, changed or invalid native inputs and failed completion.
@@ -28,13 +28,18 @@ pub(super) async fn run(
 ) -> io::Result<(u64, u64)> {
     let (expected_id, pack, index, payload, hashes) = {
         let job = backing::lock(resource)?;
-        let (expected_id, pack, index) = match &job.input {
+        let (expected_id, pack, index, data) = match &job.input {
             Input::Metadata {
                 expected_id,
                 pack,
                 index,
-            } => (*expected_id, Arc::clone(pack), Arc::clone(index)),
-            _ => return Err(io::Error::other("metadata admission received chunk input")),
+            } => (*expected_id, Arc::clone(pack), Arc::clone(index), false),
+            Input::DataPack {
+                expected_id,
+                pack,
+                index,
+            } => (*expected_id, Arc::clone(pack), Arc::clone(index), true),
+            _ => return Err(io::Error::other("pack admission received chunk input")),
         };
         let owner = custody
             .lock()
@@ -43,6 +48,11 @@ pub(super) async fn run(
         let config = &owner.preparation.config;
         super::AdmissionBounds::new(config)?.check(pack.len(), index.len())?;
         super::AdmissionBounds::new(config)?.check(pack.capacity(), index.capacity())?;
+        let verify = if data {
+            super::packed_body::verify
+        } else {
+            verify
+        };
         let hashes = verify(
             &pack,
             &index,

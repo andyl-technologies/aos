@@ -2,8 +2,12 @@
 //!
 //! Each selector starts with genuine empty recovery and acknowledged Resume.
 //! Untrusted byte fixtures confer no hash, quota or publication evidence. The
-//! old cold-recovery selectors remain separate. These cases grant no bucket
-//! readiness, consumer lease, full HOST acceptance or admission-time EDQUOT proof.
+//! old cold-recovery selectors remain separate. The data-pair case also obtains
+//! actual consumer leases after cache handoff. These cases do not establish
+//! bucket readiness, full HOST acceptance or admission-time EDQUOT proof.
+
+#[path = "admission/data_pack.rs"]
+mod data_pack;
 
 use super::config::{EPOCH, HARD_LIMIT, HOLD, Inputs, STATE};
 use rustix::fs::{self as native, Mode, OFlags, ResolveFlags};
@@ -60,6 +64,7 @@ pub(super) fn run(
     let case = match mode {
         "admit-chunk" => "tenant:admission-chunk",
         "admit-metadata" => "tenant:admission-metadata",
+        "admit-data-pack" => "tenant:admission-data-pack",
         "admit-cancel" => "tenant:admission-cancel",
         _ => return Err(invalid("unknown admission selector")),
     };
@@ -77,6 +82,7 @@ pub(super) fn run(
     match mode {
         "admit-chunk" => chunks(owner, runtime, inputs),
         "admit-metadata" => metadata(owner, runtime, inputs),
+        "admit-data-pack" => data_pack::run(owner, runtime, inputs),
         "admit-cancel" => cancelled(owner, runtime, inputs),
         _ => Err(invalid("unreachable admission selector")),
     }

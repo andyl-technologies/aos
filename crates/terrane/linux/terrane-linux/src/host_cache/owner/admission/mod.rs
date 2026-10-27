@@ -9,6 +9,7 @@
 mod backing;
 mod cache_error;
 pub(super) mod chunk;
+pub(in crate::host_cache::owner) mod data_pack;
 mod error;
 pub(in crate::host_cache::owner) mod eviction;
 pub(super) mod handoff;
@@ -30,7 +31,10 @@ mod transfer;
 pub(in crate::host_cache::owner) use backing::AdmissionJob;
 pub use backing::{NativeChunkAdmission, NativeMetadataAdmission};
 pub use cache_error::NativeAdmissionHandoffError;
-pub use error::{NativeChunkAdmissionError, NativeMetadataAdmissionError};
+pub use data_pack::NativeDataPackAdmission;
+pub use error::{
+    NativeChunkAdmissionError, NativeDataPackAdmissionError, NativeMetadataAdmissionError,
+};
 pub use handoff::NativeAdmissionHandoffReport;
 pub use ticket::NativeChunkAdmissionTicket;
 pub(in crate::host_cache::owner) use transfer::{TransferSource, TransferredFunding};
@@ -100,7 +104,7 @@ pub(in crate::host_cache::owner) enum Input {
         pack: Arc<Vec<u8>>,
         index: Arc<Vec<u8>>,
     },
-    /// Retains a complete data pair imported from genuine verified recovery.
+    /// Describes an untrusted complete data pack and detached index.
     DataPack {
         expected_id: PackId,
         pack: Arc<Vec<u8>>,
@@ -376,15 +380,32 @@ pub(in crate::host_cache::owner) async fn metadata(
     pack: Vec<u8>,
     index: Vec<u8>,
 ) -> std_io::Result<NativeMetadataAdmission> {
+    pair(
+        executor,
+        Input::Metadata {
+            expected_id,
+            pack: Arc::new(pack),
+            index: Arc::new(index),
+        },
+    )
+    .await
+    .map(|pair| NativeMetadataAdmission { pair })
+}
+
+/// Retains common measured resources after verifying the input's exact pack class.
+async fn pair(
+    executor: &mut NativeOwnerExecutor,
+    input: Input,
+) -> std_io::Result<backing::PackAdmission> {
+    let expected_id = match &input {
+        Input::Metadata { expected_id, .. } | Input::DataPack { expected_id, .. } => *expected_id,
+        Input::Chunk { .. } => return Err(std_io::Error::other("pair admission received a chunk")),
+    };
     let context = executor.admission_context()?;
     context.check_current().map_err(std_io::Error::other)?;
     eviction::restore_pack(executor, expected_id)?;
     let custody = Arc::clone(executor.custody());
-    let job = executor.register_admission(Input::Metadata {
-        expected_id,
-        pack: Arc::new(pack),
-        index: Arc::new(index),
-    })?;
+    let job = executor.register_admission(input)?;
     let mut failure = FailureGuard::new(&custody, &job)?;
     let outcome = match metadata::run(executor, &custody, &job).await {
         Ok(outcome) => outcome,
@@ -402,7 +423,7 @@ pub(in crate::host_cache::owner) async fn metadata(
         (actual.hold, actual.directory_bytes)
     };
     failure.settled = true;
-    Ok(NativeMetadataAdmission {
+    Ok(backing::PackAdmission {
         _job: job,
         id: expected_id,
         allocated: outcome.0,
