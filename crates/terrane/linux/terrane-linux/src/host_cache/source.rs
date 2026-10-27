@@ -3,9 +3,12 @@
 //! Each decode is bounded by CDC-12/CDC-13 and re-verifies the bytes actually
 //! read. A retained descriptor is not a pin or an allocation reservation.
 
+mod encoded;
+
 use super::NativeHostLayout;
 #[cfg(feature = "tokio")]
 use super::NativeResidentChunkSource;
+use encoded::Dictionary;
 use rustix::fs::{Mode, OFlags, open, openat};
 #[cfg(feature = "tokio")]
 use std::sync::Arc;
@@ -22,9 +25,7 @@ use terrane_format::{
     codec::Codec,
     identity::{Identity, IdentityKind, TERRANE_V1},
 };
-use terrane_sdk::host::cache::{
-    HostReadLocation, inspect_standalone_length, maximum_encoded_chunk_bytes,
-};
+use terrane_sdk::host::cache::{HostReadLocation, maximum_encoded_chunk_bytes};
 
 /// Retains a verified chunk source from one inspected native domain.
 ///
@@ -44,7 +45,7 @@ pub struct NativeChunkSource {
 enum Backing {
     Encoded {
         file: File,
-        dictionary: Option<Box<NativeChunkSource>>,
+        dictionary: Vec<Dictionary>,
     },
     #[cfg(feature = "tokio")]
     Sealed(Arc<NativeResidentChunkSource>),
@@ -65,14 +66,7 @@ impl NativeChunkSource {
         length: usize,
         final_chunk: bool,
     ) -> io::Result<Self> {
-        Self::open_inner(
-            layout,
-            identity,
-            Some(length),
-            final_chunk,
-            true,
-            usize::MAX,
-        )
+        Self::open_inner(layout, identity, Some(length), final_chunk, 2, usize::MAX)
     }
 
     /// Opens an actual source within the physical owner's per-allocation budget.
@@ -87,6 +81,7 @@ impl NativeChunkSource {
         length: usize,
         final_chunk: bool,
         allocation_limit: usize,
+        max_members: usize,
     ) -> io::Result<Self> {
         if allocation_limit == 0 || length > allocation_limit {
             return Err(io::Error::new(
@@ -99,7 +94,7 @@ impl NativeChunkSource {
             identity,
             Some(length),
             final_chunk,
-            true,
+            max_members,
             allocation_limit,
         )
     }
@@ -109,83 +104,42 @@ impl NativeChunkSource {
         identity: Identity,
         length: Option<usize>,
         final_chunk: bool,
-        allow_dictionary: bool,
+        max_members: usize,
         allocation_limit: usize,
     ) -> io::Result<Self> {
         layout.recheck()?;
-        if identity.kind() != IdentityKind::Chunk || identity.profile() != TERRANE_V1.name() {
-            return Err(invalid("source is not a configured chunk identity"));
+        if max_members == 0 {
+            return Err(invalid("source requires a finite nonzero member window"));
         }
-        let hash: String = identity
-            .digest()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        if hash.len() != 64 {
-            return Err(invalid("source digest has invalid width"));
-        }
-        let directory = layout
-            .directories
-            .get("chunks")
-            .ok_or_else(|| invalid("missing retained chunk directory"))?;
-        let shard = openat(
-            directory,
-            &hash[..2],
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
-        let mut file = None;
-        for codec in 0_u8..=2 {
-            match open_regular_at(&shard, &format!("{hash}.{codec}")) {
-                Ok(descriptor) => {
-                    file = Some((descriptor, codec));
-                    break;
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error),
+        let (file, declared, mut codec) =
+            encoded::open(layout, &identity, length, allocation_limit)?;
+        let mut dictionary: Vec<Dictionary> = Vec::new();
+        while let Codec::ZstdDictionary(digest) = codec {
+            if identity.digest() == digest
+                || dictionary
+                    .iter()
+                    .any(|member| member.identity.digest() == digest)
+            {
+                return Err(invalid("native dictionary dependency cycle"));
             }
-        }
-        let (file, codec) =
-            file.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "chunk source absent"))?;
-        let profile = layout.layout.chunk_profile().clone();
-        let encoded = read_bounded(&file, &profile, allocation_limit)?;
-        if encoded.first() != Some(&codec) {
-            return Err(invalid("source codec differs from canonical filename"));
-        }
-        let declared = match length {
-            Some(length) => length,
-            None => inspect_standalone_length(&encoded, &profile).map_err(invalid)?,
-        };
-        if declared > profile.maximum() {
-            return Err(invalid("source declaration exceeds chunk profile"));
-        }
-        if declared > allocation_limit {
-            return Err(io::Error::new(
-                io::ErrorKind::OutOfMemory,
-                "decoded source exceeds owner allocation policy",
-            ));
-        }
-        let envelope = terrane_format::codec::parse_envelope(&encoded).map_err(invalid)?;
-        let dictionary = if let Codec::ZstdDictionary(digest) = envelope.codec {
-            if !allow_dictionary {
+            if dictionary.len() >= max_members - 1 {
                 return Err(invalid(
-                    "dictionary source cannot depend on another dictionary",
+                    "native dictionary chain exceeds retained member window",
                 ));
             }
             let identity = TERRANE_V1
                 .from_digest(IdentityKind::Chunk, &digest)
                 .map_err(invalid)?;
-            Some(Box::new(Self::open_inner(
-                layout,
+            let (file, length, next) = encoded::open(layout, &identity, None, allocation_limit)?;
+            dictionary.try_reserve_exact(1).map_err(invalid)?;
+            dictionary.push(Dictionary {
+                file,
                 identity,
-                None,
-                true,
-                false,
-                allocation_limit,
-            )?))
-        } else {
-            None
-        };
+                length,
+            });
+            codec = next;
+        }
+        let profile = layout.layout.chunk_profile().clone();
         let mut source = Self {
             backing: Backing::Encoded { file, dictionary },
             domain: layout.layout.domain().to_owned(),
@@ -244,19 +198,43 @@ impl NativeChunkSource {
         self.length
     }
 
-    /// Borrows actual source and one-hop dictionary handles for owner binding.
+    /// Bounds flat retained dependency descriptors and their owned identity bytes.
+    ///
+    /// The root source header and identity are owned by the caller's containing
+    /// record. Discovery checks existing identities without allocating a second
+    /// set; reverse decoding retains only the current plaintext window.
+    ///
+    /// # Errors
+    /// Refuses a zero member limit or overflow in dependency storage arithmetic.
+    #[cfg(feature = "tokio")]
+    pub(in crate::host_cache) fn dictionary_storage_bytes(max_members: usize) -> io::Result<usize> {
+        max_members
+            .checked_sub(1)
+            .and_then(|count| {
+                count.checked_mul(
+                    std::mem::size_of::<Dictionary>()
+                        + TERRANE_V1.name().len()
+                        + TERRANE_V1.digest_len(),
+                )
+            })
+            .ok_or_else(|| invalid("native dictionary storage overflow"))
+    }
+
+    /// Borrows actual source and dictionary chain handles for owner binding.
     #[cfg(feature = "tokio")]
     pub(in crate::host_cache) fn handles(&self) -> impl Iterator<Item = (&Identity, usize, &File)> {
-        let dictionary = match &self.backing {
-            Backing::Encoded { dictionary, .. } => dictionary.as_deref(),
-            Backing::Sealed(_) => None,
+        let (source, dictionaries) = match &self.backing {
+            Backing::Encoded { file, dictionary } => (
+                Some((&self.identity, self.length, file)),
+                dictionary.as_slice(),
+            ),
+            Backing::Sealed(_) => (None, &[][..]),
         };
-        std::iter::once(self)
-            .chain(dictionary)
-            .filter_map(|source| match &source.backing {
-                Backing::Encoded { file, .. } => Some((&source.identity, source.length, file)),
-                Backing::Sealed(_) => None,
-            })
+        source.into_iter().chain(
+            dictionaries
+                .iter()
+                .map(|dictionary| (&dictionary.identity, dictionary.length, &dictionary.file)),
+        )
     }
 
     pub(super) fn matches(
@@ -284,7 +262,7 @@ impl NativeChunkSource {
 
     /// Verifies retained bytes without changing any shared open-file cursor.
     ///
-    /// The source and one-hop dictionary use positioned reads. Concurrent
+    /// The source and dictionary chain use positioned reads. Concurrent
     /// consumers retain independent bounded buffers without a source mutex.
     ///
     /// # Errors
@@ -294,7 +272,7 @@ impl NativeChunkSource {
         match &self.backing {
             Backing::Encoded { file, dictionary } => {
                 let encoded = read_bounded(file, &self.profile, self.allocation_limit)?;
-                let verified = self.decode_encoded(&encoded, dictionary.as_deref())?;
+                let verified = self.decode_encoded(&encoded, dictionary)?;
                 Ok(verified.plaintext().to_vec())
             }
             #[cfg(feature = "tokio")]
@@ -323,13 +301,13 @@ impl NativeChunkSource {
         match &self.backing {
             Backing::Encoded { file, dictionary } => {
                 let encoded = read_bounded(file, &self.profile, self.allocation_limit)?;
-                self.decode_encoded(&encoded, dictionary.as_deref())?;
+                self.decode_encoded(&encoded, dictionary)?;
                 Ok(encoded)
             }
             #[cfg(feature = "tokio")]
             Backing::Sealed(source) => {
                 let encoded = source.read_encoded()?;
-                self.decode_encoded(&encoded, None)?;
+                self.decode_encoded(&encoded, &[])?;
                 Ok(encoded)
             }
         }
@@ -338,9 +316,24 @@ impl NativeChunkSource {
     fn decode_encoded<'a>(
         &self,
         encoded: &'a [u8],
-        dictionary: Option<&Self>,
+        dictionaries: &[Dictionary],
     ) -> io::Result<terrane_sdk::codec::VerifiedChunk<'a>> {
-        let dictionary = dictionary.map(Self::read_verified_at).transpose()?;
+        // Reverse discovery order makes each verified plaintext available to
+        // its immediate dependent without recursion or retaining older decodes.
+        let mut dictionary: Option<Vec<u8>> = None;
+        for dependency in dictionaries.iter().rev() {
+            let encoded = read_bounded(&dependency.file, &self.profile, self.allocation_limit)?;
+            let verified = terrane_sdk::codec::decode_verified(
+                &encoded,
+                dependency.length,
+                &self.profile,
+                true,
+                &dependency.identity,
+                dictionary.as_deref(),
+            )
+            .map_err(invalid)?;
+            dictionary = Some(verified.plaintext().to_vec());
+        }
         terrane_sdk::codec::decode_verified(
             encoded,
             self.length,
@@ -480,6 +473,86 @@ mod tests {
 
     #[cfg(feature = "tokio")]
     #[test]
+    fn encoded_chain_verifies_terminal_dependencies_without_moving_original_cursors() {
+        // Only the retained decode algorithm is exercised here. These ordinary
+        // files supply no native owner, funded pin, cache custody or authority.
+        let fixture = Fixture::new();
+        let profile = ChunkProfile::cdc_1m([0; 32]);
+        let base = b"retained dictionary vocabulary ".repeat(32);
+        let middle = b"retained dictionary vocabulary for selected content ".repeat(64);
+        let body = b"retained dictionary vocabulary for selected content and file ".repeat(128);
+        let identity = |bytes: &[u8]| TERRANE_V1.calculate(IdentityKind::Chunk, bytes).unwrap();
+        let encode = |bytes: &[u8], dictionary| {
+            terrane_sdk::codec::encode_chunk(bytes, profile.maximum(), 3, dictionary).unwrap()
+        };
+        let base_encoded = encode(&base, None);
+        let middle_encoded = encode(&middle, Some(base.as_slice()));
+        let body_encoded = encode(&body, Some(middle.as_slice()));
+        for (encoded, dictionary) in [(&middle_encoded, &base), (&body_encoded, &middle)] {
+            assert_eq!(
+                terrane_format::codec::parse_envelope(encoded)
+                    .unwrap()
+                    .codec,
+                Codec::ZstdDictionary(identity(dictionary).terrane_v1_digest().unwrap())
+            );
+        }
+        let mut files = Vec::new();
+        for (name, encoded) in [
+            ("body", &body_encoded),
+            ("middle", &middle_encoded),
+            ("base", &base_encoded),
+        ] {
+            let path = fixture.0.join(name);
+            std::fs::write(&path, encoded).unwrap();
+            let mut file = File::open(&path).unwrap();
+            file.seek(SeekFrom::Start(7)).unwrap();
+            files.push(file);
+        }
+        let source = NativeChunkSource {
+            backing: Backing::Encoded {
+                file: files.remove(0),
+                dictionary: vec![
+                    Dictionary {
+                        file: files.remove(0),
+                        identity: identity(&middle),
+                        length: middle.len(),
+                    },
+                    Dictionary {
+                        file: files.remove(0),
+                        identity: identity(&base),
+                        length: base.len(),
+                    },
+                ],
+            },
+            domain: "public".into(),
+            identity: identity(&body),
+            length: body.len(),
+            final_chunk: true,
+            profile,
+            allocation_limit: 65_536,
+        };
+
+        assert_eq!(source.read_encoded_at().unwrap(), body_encoded);
+        assert_eq!(source.read_verified_at().unwrap(), body);
+        assert_eq!(source.handles().count(), 3);
+        for (_, _, file) in source.handles() {
+            assert_eq!(file.try_clone().unwrap().stream_position().unwrap(), 7);
+        }
+
+        let corrupt = terrane_format::codec::encode_envelope(terrane_format::codec::EncodedChunk {
+            codec: Codec::Raw,
+            body: &vec![b'?'; base.len()],
+        });
+        std::fs::write(fixture.0.join("base"), corrupt).unwrap();
+        assert!(source.read_encoded_at().is_err());
+        assert!(source.read_verified_at().is_err());
+        for (_, _, file) in source.handles() {
+            assert_eq!(file.try_clone().unwrap().stream_position().unwrap(), 7);
+        }
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
     fn encoded_consumer_verifies_original_envelope_before_returning_bytes() {
         // This tests bounded codec verification only. No layout, admission,
         // quota, consumer pin or serving authority is manufactured here.
@@ -496,7 +569,7 @@ mod tests {
         let mut source = NativeChunkSource {
             backing: Backing::Encoded {
                 file,
-                dictionary: None,
+                dictionary: Vec::new(),
             },
             domain: "public".into(),
             identity: TERRANE_V1

@@ -895,6 +895,15 @@ def run(driver, image, wipe_only=False, refusals=False):
                 b"PASS: actual confined native dictionary read-through completes without original publication writes"]:
             driver.require(dictionaries.splitlines().count(witness) == 1,
                            "native SDK actor omitted or repeated a dictionary-chain control")
+        recovered_dictionaries, _ = actor(
+            driver, image, name + "-dictionaries-recovered",
+            ["configured-sdk-cache-example", "read-cache-dictionaries-recovered", root, 840],
+            mount_policy="readonly")
+        for witness in [
+                b"PASS: fresh confined owner recovers the complete original dictionary chain without a lower provider",
+                b"PASS: fresh confined dictionary recovery completes without original publication writes"]:
+            driver.require(recovered_dictionaries.splitlines().count(witness) == 1,
+                           "native SDK actor omitted or repeated fresh dictionary recovery")
         print("PASS actual configured CLI recovers both native cache owners and materializes signed original-authority SDK snapshots", flush=True)
 
 

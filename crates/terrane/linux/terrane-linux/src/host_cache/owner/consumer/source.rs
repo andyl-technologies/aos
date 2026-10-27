@@ -1,7 +1,7 @@
 //! Selects original sealed, encoded or metadata backing for consumer grants.
 //!
 //! Encoded grants retain their actual completed admission jobs and pin every
-//! one-hop dependency. The public producer residence source stays sealed-only.
+//! dictionary dependency. The public producer residence source stays sealed-only.
 
 use super::invalid;
 use crate::host_cache::{
@@ -315,7 +315,7 @@ pub(in crate::host_cache::owner) fn storage_bytes(
 ) -> io::Result<usize> {
     let per_job = std::mem::size_of::<ConsumerSource>()
         .checked_add(
-            AdmittedRead::storage_bytes(domain)?
+            AdmittedRead::storage_bytes(domain, records)?
                 .max(AdmittedMetadataRead::storage_bytes()?)
                 .max(SealedObjectSource::storage_bytes()),
         )
@@ -324,12 +324,16 @@ pub(in crate::host_cache::owner) fn storage_bytes(
         // Its scoped wrapper additionally owns the closing selection's fixed
         // commit/root/size metadata and a clone of the same physical grant.
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::NativeFileBacking>()))
-        // A verified encoded read records both actual body and dictionary units.
-        .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<Arc<ReadActivity>>()))
+        // Every original member can retain its own actual read activity.
+        .and_then(|bytes| {
+            bytes.checked_add(records.checked_mul(std::mem::size_of::<Arc<ReadActivity>>())?)
+        })
         // The consumer view owns one additional verified identity clone.
         .and_then(|bytes| bytes.checked_add(TERRANE_V1.name().len() + TERRANE_V1.digest_len()))
-        // The sorted protection set owns two hash strings and their Vec slots.
-        .and_then(|bytes| bytes.checked_add(2 * (64 + std::mem::size_of::<String>())))
+        // Independent consumer protection closes over the complete chain.
+        .and_then(|bytes| {
+            bytes.checked_add(records.checked_mul(64 + std::mem::size_of::<String>())?)
+        })
         .and_then(|bytes| bytes.checked_add(4 * std::mem::size_of::<usize>()))
         .ok_or_else(|| invalid("consumer backing storage overflow"))?;
     records

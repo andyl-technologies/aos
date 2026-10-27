@@ -14,6 +14,7 @@ use std::{fs::File, io, sync::Arc};
 use terrane_sdk::host::cache::{HostDomainLocation, HostReadLimits};
 
 mod collection;
+mod dictionaries;
 mod files;
 mod inspection;
 mod manifest;

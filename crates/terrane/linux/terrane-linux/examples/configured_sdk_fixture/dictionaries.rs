@@ -102,7 +102,7 @@ fn compressed(bytes: &[u8], dictionary: &[u8], maximum: usize) -> FixtureResult<
 /// Refuses missing original configuration, failed confinement or actual native
 /// recovery, incorrect lower requests, changed bytes, partial corrupt admission
 /// or any mutation to the original portable publication.
-pub(super) fn run(root: &Path, owner: u32) -> FixtureResult<()> {
+pub(super) fn run(root: &Path, owner: u32, recovered_only: bool) -> FixtureResult<()> {
     check_owner(root, owner)?;
     let config = Config::parse(&fs::read_to_string(root.join("config.toml"))?)?;
     drop(configured_sdk::preflight(&config, Role::Serve)?);
@@ -144,6 +144,24 @@ pub(super) fn run(root: &Path, owner: u32) -> FixtureResult<()> {
         let middle_body = compressed(&middle, &base, profile.maximum())?;
         let content_body = compressed(&content, &middle, profile.maximum())?;
 
+        let reads = Arc::new(AtomicUsize::new(0));
+        let mut caches = plan.open(Arc::clone(&installed)).await?;
+        let cache = caches.remove(&trusted.domain).ok_or("missing actual native domain")?;
+        let native = cache.into_content();
+        if recovered_only {
+            // This fresh process has no lower provider. Successful reads must
+            // use the original, independently recovered native admissions.
+            for (identity, expected) in [
+                (&base_id, &base_body), (&middle_id, &middle_body), (&content_id, &content_body),
+            ] {
+                if native.get(identity, None).await? != *expected {
+                    return Err("fresh native recovery changed an original chain encoding".into());
+                }
+            }
+            println!("PASS: fresh confined owner recovers the complete original dictionary chain without a lower provider");
+            return Ok(());
+        }
+
         let bad_base = b"independent rejected terminal dictionary ".repeat(32);
         let bad_middle = b"independent rejected terminal dictionary middle ".repeat(64);
         let bad_content = b"independent rejected terminal dictionary content ".repeat(128);
@@ -156,10 +174,7 @@ pub(super) fn run(root: &Path, owner: u32) -> FixtureResult<()> {
             (bad_ids[1].terrane_v1_digest()?, compressed(&bad_middle, &bad_base, profile.maximum())?),
             (bad_ids[2].terrane_v1_digest()?, compressed(&bad_content, &bad_middle, profile.maximum())?),
         ]);
-        let reads = Arc::new(AtomicUsize::new(0));
-        let mut caches = plan.open(Arc::clone(&installed)).await?;
-        let cache = caches.remove(&trusted.domain).ok_or("missing actual native domain")?;
-        let driver = cache.into_content().with_lower(Candidates {
+        let driver = native.with_lower(Candidates {
             capabilities: Capabilities {
                 refs: RefCapability::None,
                 ranges: RangeCapability::WholeObjectOnly,
@@ -181,6 +196,7 @@ pub(super) fn run(root: &Path, owner: u32) -> FixtureResult<()> {
         if verified.plaintext() != content
             || driver.native().get(&base_id, None).await? != base_body
             || driver.native().get(&middle_id, None).await? != middle_body
+            || driver.native().get(&content_id, None).await? != content_body
             || reads.load(Ordering::Relaxed) != 3
         {
             return Err("native dictionary verification or original dependency encoding changed".into());

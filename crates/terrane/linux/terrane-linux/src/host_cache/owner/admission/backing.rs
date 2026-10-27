@@ -34,7 +34,7 @@ pub(in crate::host_cache::owner) struct AdmissionJob {
     pub(super) files: Vec<PendingFile>,
     /// Generated mkdir progress and real directory inodes retained through errors.
     pub(super) directory_progress: Vec<DirectoryProgress>,
-    /// Actual previously admitted one-hop dictionary custody, never caller evidence.
+    /// Actual previously admitted direct dictionary custody, never caller evidence.
     pub(super) dependencies: Vec<Arc<Mutex<AdmissionJob>>>,
     /// Records only fully reconciled physical completion.
     pub(super) complete: bool,

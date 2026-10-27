@@ -2,6 +2,7 @@
 
 use super::{
     NativeRecoveryInspector,
+    dictionaries::resolve as dictionary,
     files::{CanonicalName, RetainedFile, invalid},
 };
 use crate::{host_cache::NativeHostLayout, publisher_local::wire::BodyKey};
@@ -9,7 +10,7 @@ use std::{collections::BTreeMap, fs::File, io, sync::Arc};
 use terrane_format::{
     chunking::ChunkProfile,
     codec::Codec,
-    identity::{Descriptor, Digest, Identity, IdentityKind, TERRANE_V1},
+    identity::{Descriptor, Identity, IdentityKind, TERRANE_V1},
     pack_format::{RECORD_SIZE, Record, index_count},
 };
 use terrane_sdk::{
@@ -17,9 +18,7 @@ use terrane_sdk::{
         HostDomainLocation, HostReadLimits, ReconstructedPackIndex, inspect_standalone_length,
         maximum_encoded_chunk_bytes, reconstruct_pack_index,
     },
-    pack::{
-        EntryKind, FOOTER_SIZE, HEADER_SIZE, IndexEntry, NativeBodyDecoder, PackId, PackReader,
-    },
+    pack::{EntryKind, FOOTER_SIZE, HEADER_SIZE, IndexEntry, PackId, PackReader},
     repository::MetadataValidator,
 };
 
@@ -253,13 +252,13 @@ impl VerifiedStandaloneChunk {
 }
 
 /// Retains the exact verified dependency bytes, without relying on timestamp resolution.
-struct VerifiedDependency {
-    source: RetainedFile,
-    encoded_hash: blake3::Hash,
+pub(super) struct VerifiedDependency {
+    pub(super) source: RetainedFile,
+    pub(super) encoded_hash: blake3::Hash,
 }
 
 impl VerifiedDependency {
-    fn check_current(&self) -> io::Result<()> {
+    pub(super) fn check_current(&self) -> io::Result<()> {
         self.source.check_hash(self.encoded_hash)
     }
 }
@@ -389,7 +388,7 @@ pub(super) fn pack(
             let plaintext = dictionary(
                 context,
                 &digest,
-                Some(&reader),
+                Some((&reader, &bytes)),
                 packs,
                 &mut dependencies,
                 remaining,
@@ -448,101 +447,11 @@ pub(super) fn pack(
     Ok(VerifiedEncodedBody::Pack(Arc::new(plan)))
 }
 
-fn dictionary(
-    context: &NativeRecoveryInspector,
-    digest: &Digest,
-    current_pack: Option<&PackReader<'_>>,
-    packs: &[PackId],
-    dependencies: &mut Vec<VerifiedDependency>,
-    plaintext_budget: usize,
-) -> io::Result<Vec<u8>> {
-    if dependencies.len() >= context.max_candidates {
-        return Err(io::Error::new(
-            io::ErrorKind::OutOfMemory,
-            "dictionary descriptor budget exceeded",
-        ));
-    }
-    let plaintext_budget = plaintext_budget.min(context.reads.max_allocation_bytes);
-    let profile = context.layout.layout().chunk_profile();
-    if let Some(pack) = current_pack
-        && let Some(bytes) = dictionary_from_pack(profile, pack, digest, plaintext_budget)?
-    {
-        return Ok(bytes);
-    }
-    let identity = TERRANE_V1
-        .from_digest(IdentityKind::Chunk, digest)
-        .map_err(invalid)?;
-    for codec in 0..=2 {
-        let source = match RetainedFile::open(
-            context,
-            CanonicalName::Chunk {
-                digest: hex(digest),
-                codec,
-            },
-        ) {
-            Ok(source) => source,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-        let encoded = source.read(
-            maximum_encoded_chunk_bytes(profile)
-                .map_err(invalid)?
-                .min(context.reads.max_allocation_bytes),
-        )?;
-        if encoded.first().copied().map(u32::from) != Some(codec) {
-            return Err(invalid(
-                "dictionary source codec differs from canonical key",
-            ));
-        }
-        let length = bounded_standalone_length(&encoded, profile, plaintext_budget)?;
-        let plaintext =
-            terrane_sdk::codec::decode_verified(&encoded, length, profile, true, &identity, None)
-                .map_err(invalid)?
-                .plaintext()
-                .to_vec();
-        source.recheck()?;
-        dependencies.push(VerifiedDependency {
-            source,
-            encoded_hash: blake3::hash(&encoded),
-        });
-        return Ok(plaintext);
-    }
-    for id in packs {
-        let source = match RetainedFile::open(
-            context,
-            CanonicalName::Pack {
-                id: *id,
-                index: false,
-            },
-        ) {
-            Ok(source) => source,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-        let encoded = source.read(context.reads.max_allocation_bytes)?;
-        let pack = bounded_pack(&encoded, context.reads)?;
-        if pack.header().id() != *id {
-            return Err(invalid("dictionary pack header differs from canonical key"));
-        }
-        if let Some(bytes) = dictionary_from_pack(profile, &pack, digest, plaintext_budget)? {
-            source.recheck()?;
-            dependencies.push(VerifiedDependency {
-                source,
-                encoded_hash: blake3::hash(&encoded),
-            });
-            return Ok(bytes);
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "actual domain-bound dictionary is unavailable",
-    ))
-}
-
+#[cfg(test)]
 pub(super) fn dictionary_from_pack(
     profile: &ChunkProfile,
     pack: &PackReader<'_>,
-    digest: &Digest,
+    digest: &terrane_format::identity::Digest,
     plaintext_budget: usize,
 ) -> io::Result<Option<Vec<u8>>> {
     let Some(entry) = pack
@@ -553,7 +462,7 @@ pub(super) fn dictionary_from_pack(
         return Ok(None);
     };
     check_plaintext_budget(entry.plaintext_len() as usize, plaintext_budget)?;
-    let decoder = NativeBodyDecoder::without_dictionaries(profile);
+    let decoder = terrane_sdk::pack::NativeBodyDecoder::without_dictionaries(profile);
     pack.read(EntryKind::Chunk, digest, &decoder)
         .map(Some)
         .map_err(invalid)

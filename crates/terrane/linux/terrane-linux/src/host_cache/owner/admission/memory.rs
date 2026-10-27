@@ -75,9 +75,24 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
     let per_source = super::super::publication::manifest_source_header_bytes()
         .checked_add(replies.checked_mul(2).ok_or_else(overflow)?)
         .and_then(|bytes| bytes.checked_add(labels))
+        .and_then(|bytes| {
+            bytes.checked_add(
+                crate::host_cache::NativeChunkSource::dictionary_storage_bytes(
+                    config.state.records,
+                )
+                .ok()?,
+            )
+        })
         .ok_or_else(overflow)?;
+    // Each ordered chunk owns its flat read chain. Unique original dependency
+    // transfers are retained once per manifest and bounded by the owner registry.
     let source_slots = jobs
-        .checked_mul(config.inventory_entries)
+        .checked_mul(
+            config
+                .inventory_entries
+                .checked_add(config.state.records)
+                .ok_or_else(overflow)?,
+        )
         .ok_or_else(overflow)?;
     let manifest_record =
         size_of::<ChunkRef>() + size_of::<(String, Vec<u8>)>() + 6 * size_of::<usize>();
@@ -95,8 +110,19 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
     )?;
     let external_reads =
         super::super::publication::residence::read_storage_bytes(config.state.records)?;
+    // One serialized dictionary verification walk retains original job links;
+    // Arc clones share the encoded inputs already counted above.
+    let dictionary_walk = config
+        .state
+        .records
+        .checked_add(1)
+        .and_then(|count| {
+            count.checked_mul(size_of::<std::sync::Arc<std::sync::Mutex<AdmissionJob>>>())
+        })
+        .ok_or_else(overflow)?;
     total
-        .checked_add(consumer_backing)
+        .checked_add(dictionary_walk)
+        .and_then(|bytes| bytes.checked_add(consumer_backing))
         .and_then(|bytes| bytes.checked_add(external_reads))
         .and_then(|bytes| bytes.checked_add(source_slots.checked_mul(per_source)?))
         .and_then(|bytes| bytes.checked_add(claims))

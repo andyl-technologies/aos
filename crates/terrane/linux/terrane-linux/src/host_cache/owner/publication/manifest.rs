@@ -274,13 +274,7 @@ impl ManifestInput {
             .try_reserve_exact(declaration.chunks.len())
             .map_err(io::Error::other)?;
         dependencies
-            .try_reserve_exact(
-                declaration
-                    .chunks
-                    .len()
-                    .checked_mul(2)
-                    .ok_or_else(|| invalid("source inventory overflow"))?,
-            )
+            .try_reserve_exact(owner.preparation.config.state.records)
             .map_err(io::Error::other)?;
         for (index, chunk) in declaration.chunks.iter().enumerate() {
             let identity = TERRANE_V1
@@ -327,6 +321,7 @@ impl ManifestInput {
                 usize::try_from(chunk.length).map_err(io::Error::other)?,
                 index + 1 == declaration.chunks.len(),
                 owner.preparation.config.reads.max_allocation_bytes,
+                owner.preparation.config.state.records,
             )?;
             // Match every actual readable inode, including dictionaries, to a
             // completed native admission with its original durable pin and hold.
@@ -339,6 +334,9 @@ impl ManifestInput {
                 )?;
                 dependency.check_received(owner, file)?;
                 if !dependencies.iter().any(|old| old.key() == dependency.key()) {
+                    if dependencies.len() >= owner.preparation.config.state.records {
+                        return Err(invalid("source dependencies exceed owner registry bound"));
+                    }
                     dependencies.push(dependency);
                 }
             }

@@ -25,7 +25,7 @@ use std::{
 use terrane_format::identity::{Identity, IdentityKind, TERRANE_V1};
 use terrane_sdk::{host::cache::HostDomainLocation, store::ChunkPosition};
 
-/// Retains genuine body and one-hop dictionary custody for independent consumers.
+/// Retains genuine body and complete dictionary custody for independent consumers.
 pub(in crate::host_cache::owner) struct AdmittedRead {
     layout: Arc<NativeHostLayout<HostDomainLocation>>,
     source: NativeChunkSource,
@@ -63,7 +63,7 @@ impl AdmittedRead {
                 "consumer admission requires a registered chunk identity",
             ));
         }
-        let (layout, project, length, final_chunk, limit, members) = {
+        let (layout, project, length, final_chunk, limit, max_members, members) = {
             let owner = executor
                 .custody()
                 .lock()
@@ -89,24 +89,11 @@ impl AdmittedRead {
                         "consumer source has not entered cache custody",
                     ));
                 }
-                if job.dependencies.len() > 1 {
-                    return Err(invalid("consumer admission exceeds one dictionary"));
-                }
-                let mut members = Vec::new();
-                members.try_reserve_exact(2).map_err(io::Error::other)?;
-                members.push(member(executor, &owner, resource, &job)?);
-                for dependency in &job.dependencies {
-                    let dictionary = super::backing::lock(dependency)?;
-                    if !dictionary.dependencies.is_empty() {
-                        return Err(invalid("consumer dictionary is not one hop"));
-                    }
-                    members.push(member(executor, &owner, dependency, &dictionary)?);
-                }
-                selected = Some((
-                    usize::try_from(descriptor.size()).map_err(io::Error::other)?,
-                    matches!(position, ChunkPosition::Final),
-                    members,
-                ));
+                let length = usize::try_from(descriptor.size()).map_err(io::Error::other)?;
+                let final_chunk = matches!(position, ChunkPosition::Final);
+                drop(job);
+                let members = collect_members(executor, &owner, resource)?;
+                selected = Some((length, final_chunk, members));
                 break;
             }
             let (length, final_chunk, members) = selected.ok_or_else(|| {
@@ -118,12 +105,20 @@ impl AdmittedRead {
                 length,
                 final_chunk,
                 owner.preparation.config.reads.max_allocation_bytes,
+                owner.preparation.config.state.records,
                 members,
             )
         };
         // Canonical open and decompression happen without embedded custody held.
-        let source = NativeChunkSource::open_bounded(&layout, identity, length, final_chunk, limit)
-            .inspect_err(|error| reject_read(&members, error))?;
+        let source = NativeChunkSource::open_bounded(
+            &layout,
+            identity,
+            length,
+            final_chunk,
+            limit,
+            max_members,
+        )
+        .inspect_err(|error| reject_read(&members, error))?;
         let read = Self {
             layout,
             source,
@@ -259,22 +254,24 @@ impl AdmittedRead {
         Ok(allocated)
     }
 
-    /// Bounds retained body, one-hop dictionary and original member headers.
+    /// Bounds all original member headers and the source's flat descriptor chain.
     ///
     /// # Errors
-    /// Refuses overflow in trusted domain-label storage arithmetic.
-    pub(in crate::host_cache::owner) fn storage_bytes(domain: usize) -> io::Result<usize> {
-        // The inline source owns its ChunkProfile table; the boxed dictionary
-        // owns another complete source, not merely one pointer-sized slot.
+    /// Refuses zero members or overflow in configured chain and label storage.
+    pub(in crate::host_cache::owner) fn storage_bytes(
+        domain: usize,
+        max_members: usize,
+    ) -> io::Result<usize> {
+        let identity = TERRANE_V1.name().len() + TERRANE_V1.digest_len();
+        let sources = NativeChunkSource::dictionary_storage_bytes(max_members)?;
         std::mem::size_of::<Self>()
-            .checked_add(std::mem::size_of::<NativeChunkSource>())
-            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<Member>()))
-            .and_then(|bytes| bytes.checked_add(domain.checked_mul(2)?))
-            // Two source identities and two original member identities own
-            // their registered profile labels and digest buffers.
+            .checked_add(sources)
             .and_then(|bytes| {
-                bytes.checked_add(4 * (TERRANE_V1.name().len() + TERRANE_V1.digest_len()))
+                bytes
+                    .checked_add(max_members.checked_mul(std::mem::size_of::<Member>() + identity)?)
             })
+            .and_then(|bytes| bytes.checked_add(domain))
+            .and_then(|bytes| bytes.checked_add(identity))
             .and_then(|bytes| bytes.checked_add(8 * std::mem::size_of::<usize>()))
             .ok_or_else(|| invalid("admitted read header storage overflow"))
     }
@@ -336,8 +333,8 @@ fn reject_read(members: &[Member], error: &io::Error) {
     ) {
         return;
     }
-    // A complete decode depends on both original members. If the decoder cannot
-    // attribute a failure, withhold both; neither allocation or pin is released.
+    // A complete decode depends on every original member. If the decoder cannot
+    // attribute a failure, withhold the set; no allocation or pin is released.
     for member in members {
         member.observation.reject(2);
     }
@@ -347,6 +344,58 @@ fn reject_custody(members: &[Member]) {
     for member in members {
         member.observation.reject(1);
     }
+}
+
+/// Closes consumer custody over actual registered direct dependency links.
+fn collect_members(
+    executor: &NativeOwnerExecutor,
+    owner: &Custody,
+    root: &Arc<Mutex<AdmissionJob>>,
+) -> io::Result<Vec<Member>> {
+    let limit = owner.preparation.config.state.records;
+    let mut members: Vec<Member> = Vec::new();
+    let mut next = Some(Arc::clone(root));
+    let mut expected = None;
+    while let Some(resource) = next {
+        if members.len() >= limit
+            || members
+                .iter()
+                .any(|member| Arc::ptr_eq(&member.job, &resource))
+        {
+            return Err(invalid(
+                "consumer dependency cycle or member limit exceeded",
+            ));
+        }
+        let job = super::backing::lock(&resource)?;
+        let actual = member(executor, owner, &resource, &job)?;
+        if expected.is_some_and(|digest: [u8; 32]| actual.identity.digest() != digest) {
+            return Err(invalid(
+                "consumer dependency differs from original envelope",
+            ));
+        }
+        let Input::Chunk { encoded, .. } = &job.input else {
+            return Err(invalid("consumer dependency is not a chunk"));
+        };
+        match (
+            terrane_format::codec::parse_envelope(encoded)
+                .map_err(io::Error::other)?
+                .codec,
+            job.dependencies.as_slice(),
+        ) {
+            (terrane_format::codec::Codec::ZstdDictionary(digest), [dependency]) => {
+                expected = Some(digest);
+                next = Some(Arc::clone(dependency));
+            }
+            (terrane_format::codec::Codec::ZstdDictionary(_), _) => {
+                return Err(invalid("consumer dictionary lacks its original dependency"));
+            }
+            (_, []) => next = None,
+            _ => return Err(invalid("terminal consumer has unexpected dependencies")),
+        }
+        members.try_reserve_exact(1).map_err(io::Error::other)?;
+        members.push(actual);
+    }
+    Ok(members)
 }
 
 fn member(

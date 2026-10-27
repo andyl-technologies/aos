@@ -76,11 +76,23 @@ candidates, original encoded dependency warming and no partial corrupt admission
 These additions require fresh AOS guest qualification; compilation and source
 inventory checks alone do not establish their runtime behavior.
 
-Native custody and admission still reject a dictionary whose own encoding uses
-codec 2. Verified lower reads may therefore serve deeper chains while optional
-warming of those dependents is refused. Full nested native admission, recovery
-and retained dependency custody remain unfinished. This change neither accepts
-T-HOST-1 nor resolves the separate metadata-only GC dictionary-index gap.
+Native admission now walks original completed dependency jobs iteratively. Each
+admission retains its genuine direct dependency; consumer grants bind every
+dependency descriptor to the original registered inode, observation and custody.
+The configured record bound also bounds the source, activity and protection-hash
+storage calculations. Reverse decoding retains a fixed number of payload windows.
+
+Cold inspection retains original source descriptors and checked pack-body ranges,
+then rereads and verifies the complete dependency chain from its terminal member.
+It does not accumulate all encoded chain bodies. Standalone recovery uses a
+deterministic dependency order and refuses missing standalone dependencies and
+cycles. Dictionaries present only in packs still require a separate admission
+transfer path. The configured fixture now requires native reads of the root and
+both dependencies, followed by a fresh confined actor with no lower provider.
+Those runtime assertions and the new source/order/pack-range regressions remain
+pending AOS guest qualification. Compilation is not proof of native recovery,
+producer release, pressure behavior or final consumer closure. T-HOST-1 and the
+separate metadata-only GC dictionary-index gap remain open.
 
 ## Clause coverage
 

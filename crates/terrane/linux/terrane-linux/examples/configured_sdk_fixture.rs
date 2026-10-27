@@ -182,9 +182,15 @@ fn dispatch() -> FixtureResult<&'static str> {
             Ok("PASS: invalid startup Read uses neither exposure nor private token fallback")
         }
         "read-cache-dictionaries" => {
-            dictionaries::run(root, owner)?;
+            dictionaries::run(root, owner, false)?;
             Ok(
                 "PASS: actual confined native dictionary read-through completes without original publication writes",
+            )
+        }
+        "read-cache-dictionaries-recovered" => {
+            dictionaries::run(root, owner, true)?;
+            Ok(
+                "PASS: fresh confined dictionary recovery completes without original publication writes",
             )
         }
         "read-cache-offline" => {

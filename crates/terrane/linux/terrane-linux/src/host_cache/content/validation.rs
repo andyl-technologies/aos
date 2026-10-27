@@ -49,17 +49,6 @@ impl NativeContentStore {
                 })?;
                 leases.push(lease);
                 let lease = &leases[leases.len() - 1];
-                let encoded = lease
-                    .read_encoded()
-                    .map_err(|error| native_failure(error, &identity))?;
-                if matches!(
-                    parse_envelope(&encoded)
-                        .map_err(|_| invalid("CDC-9"))?
-                        .codec,
-                    Codec::ZstdDictionary(_)
-                ) {
-                    return Err(invalid("CDC-9"));
-                }
                 Some(
                     lease
                         .read_verified()

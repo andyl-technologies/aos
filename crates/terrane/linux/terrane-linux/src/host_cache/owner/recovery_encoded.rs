@@ -13,6 +13,7 @@ use std::{
     sync::Arc,
 };
 use terrane_format::codec::Codec;
+use terrane_format::identity::Digest;
 use terrane_sdk::host::cache::ResidenceRecord;
 
 /// Selects genuine verified chunks after classifying the entire inventory.
@@ -24,8 +25,8 @@ pub(super) fn select(
     inventory: &NativeRecoveryInspection,
 ) -> io::Result<Vec<Arc<VerifiedStandaloneChunk>>> {
     recovery_candidates::preflight(inventory)?;
-    let mut chunks = Vec::new();
-    let mut identities = BTreeMap::new();
+    let mut chunks = BTreeMap::new();
+    let mut dependencies = BTreeMap::new();
     for candidate in inventory.candidates() {
         if !matches!(
             recovery_candidates::classify(candidate)?,
@@ -36,37 +37,67 @@ pub(super) fn select(
         let Some(VerifiedEncodedBody::Chunk(chunk)) = candidate.verified() else {
             return Err(invalid("standalone candidate lost verified native custody"));
         };
-        if identities
-            .insert(chunk.identity().digest().to_vec(), chunk.codec())
-            .is_some()
-        {
+        let digest: Digest = chunk
+            .identity()
+            .digest()
+            .try_into()
+            .map_err(io::Error::other)?;
+        if chunks.insert(digest, Arc::clone(chunk)).is_some() {
             return Err(invalid(
                 "multiple standalone encodings of one recovered identity",
             ));
         }
-        chunks.push(Arc::clone(chunk));
-    }
-    // Import relies on actual completed one-hop admission jobs. A dictionary
-    // present only inside a metadata pack needs a separate transfer path.
-    for chunk in &chunks {
         let bytes = chunk.encoded()?;
-        if let Codec::ZstdDictionary(digest) = terrane_format::codec::parse_envelope(&bytes)
+        let dependency = match terrane_format::codec::parse_envelope(&bytes)
             .map_err(io::Error::other)?
             .codec
-            && identities
-                .get(digest.as_slice())
-                .is_none_or(|codec| *codec == 2)
         {
-            return Err(invalid("recovery requires a standalone one-hop dictionary"));
+            Codec::ZstdDictionary(digest) => Some(digest),
+            _ => None,
+        };
+        dependencies.insert(digest, dependency);
+    }
+    // Only genuine standalone admissions can supply the original dependency
+    // links. Metadata-pack dictionaries still require a separate transfer path.
+    dependency_order(&dependencies)?
+        .into_iter()
+        .map(|digest| {
+            chunks
+                .remove(&digest)
+                .ok_or_else(|| invalid("recovered chunk disappeared"))
+        })
+        .collect()
+}
+
+/// Orders the complete observed graph, with deterministic ready-node selection.
+fn dependency_order(graph: &BTreeMap<Digest, Option<Digest>>) -> io::Result<Vec<Digest>> {
+    let mut ready = BTreeSet::new();
+    let mut dependents: BTreeMap<Digest, Vec<Digest>> = BTreeMap::new();
+    for (digest, dependency) in graph {
+        if let Some(dependency) = dependency {
+            if !graph.contains_key(dependency) {
+                return Err(invalid("recovery requires a standalone dictionary"));
+            }
+            dependents.entry(*dependency).or_default().push(*digest);
+        } else {
+            ready.insert(*digest);
         }
     }
-    // Raw and plain Zstd dictionaries enter the actual owner before dependents.
-    chunks.sort_by(|left, right| {
-        (left.codec() == 2)
-            .cmp(&(right.codec() == 2))
-            .then_with(|| left.identity().digest().cmp(right.identity().digest()))
-    });
-    Ok(chunks)
+
+    let mut ordered = Vec::new();
+    ordered
+        .try_reserve_exact(graph.len())
+        .map_err(io::Error::other)?;
+    while let Some(digest) = ready.pop_first() {
+        ordered.push(digest);
+        if let Some(children) = dependents.remove(&digest) {
+            ready.extend(children);
+        }
+    }
+    if ordered.len() != graph.len() {
+        return Err(invalid("recovered dictionary dependency cycle"));
+    }
+    Ok(ordered)
 }
 
 /// Checks the exact original encoded sources against a fresh complete inventory.
@@ -167,6 +198,37 @@ fn invalid(message: &'static str) -> io::Error {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dependency_order_restores_nested_and_shared_dictionaries_before_dependents() {
+        // Graph ordering is not evidence of native admission or serving custody.
+        let graph = BTreeMap::from([
+            ([1; 32], Some([3; 32])),
+            ([2; 32], Some([3; 32])),
+            ([3; 32], Some([4; 32])),
+            ([4; 32], None),
+            ([5; 32], None),
+        ]);
+
+        let ordered = dependency_order(&graph).unwrap();
+
+        assert_eq!(ordered, [[4; 32], [3; 32], [1; 32], [2; 32], [5; 32]]);
+    }
+
+    #[test]
+    fn dependency_order_refuses_missing_dictionary_and_disconnected_cycles() {
+        let missing = BTreeMap::from([([1; 32], Some([2; 32]))]);
+        let cycle = BTreeMap::from([
+            ([1; 32], Some([2; 32])),
+            ([2; 32], Some([1; 32])),
+            ([3; 32], None),
+        ]);
+        let self_cycle = BTreeMap::from([([1; 32], Some([1; 32]))]);
+
+        assert!(dependency_order(&missing).is_err());
+        assert!(dependency_order(&cycle).is_err());
+        assert!(dependency_order(&self_cycle).is_err());
+    }
 
     fn range(chunk: &str, offset: u64, length: u64) -> ResidenceRecord {
         ResidenceRecord {
