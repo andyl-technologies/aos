@@ -315,6 +315,16 @@ fn model18_quote_refuses_modeled_and_equal_foreign_sources_without_spending_cust
                     .original_restored_model18_construction_data(&ticket, maximum)
                     .is_err()
             );
+            assert!(
+                candidate
+                    .original_restored_model18_boundary_quote_formatter_data(&ticket, maximum)
+                    .is_err()
+            );
+            assert!(
+                candidate
+                    .original_restored_model18_boundary_construction_data(&ticket, maximum)
+                    .is_err()
+            );
         }
     }
 
@@ -332,6 +342,7 @@ fn model18_quote_refuses_modeled_and_equal_foreign_sources_without_spending_cust
     assert!(source.take_native_ticket(&owners[0]).is_err());
     assert!(source.take_native_ticket(&owners[1]).is_ok());
     assert!(CompleteOriginalRestorationSource::original_restored_model18_construction_counter_scratch_data() > 0);
+    assert!(CompleteOriginalRestorationSource::original_restored_model18_boundary_construction_counter_scratch_data() > 0);
 }
 
 #[test]

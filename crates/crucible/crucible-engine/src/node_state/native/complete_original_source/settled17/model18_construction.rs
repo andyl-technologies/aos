@@ -83,6 +83,69 @@ impl CompleteOriginalRestorationSource {
             + size_of::<Result<(), RuntimeError>>()
     }
 
+    /// Quotes current-boundary formatter work from the original ticket's model.
+    ///
+    /// The caller admits the fixed boundary counter and metadata walk first,
+    /// then admits this formatter window before construction quoting. The
+    /// original decoder collection stays borrowed only for this synchronous call.
+    ///
+    /// # Errors
+    /// Refuses foreign or unavailable original custody, started target binding,
+    /// changed references, metadata overflow or a short formatter restriction.
+    pub fn original_restored_model18_boundary_quote_formatter_data(
+        &self,
+        ticket: &CompleteOriginalNativeTicket,
+        maximum: usize,
+    ) -> Result<usize, RuntimeError> {
+        self.with_original_restored_model18_data(ticket, |native| {
+            native
+                .current_model18_boundary_quote_formatter_data(maximum)
+                .map_err(|_| RuntimeError::ResourceLimit)
+        })
+    }
+
+    /// Derives current-boundary demand from the same original decoded model.
+    ///
+    /// Returns additional retained hash backing, simultaneous transient work
+    /// and counters including this Source loan. The caller independently admits
+    /// the formatter prewalk and this traversal. Existing archive/model backing,
+    /// target and Hold construction remain separate complete-phase components.
+    /// No historical boundary, worker result or supplied ceiling supplies demand.
+    ///
+    /// # Errors
+    /// Refuses foreign or unavailable original custody, started target binding,
+    /// changed reference correspondence, serialization or arithmetic failure,
+    /// or insufficient credit for the complete returned three-axis sum.
+    pub fn original_restored_model18_boundary_construction_data(
+        &self,
+        ticket: &CompleteOriginalNativeTicket,
+        maximum: usize,
+    ) -> Result<[usize; 3], RuntimeError> {
+        self.with_original_restored_model18_data(ticket, |native| {
+            let [retained, transient, _] = native
+                .current_model18_boundary_construction_data(maximum)
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+            let counter =
+                Self::original_restored_model18_boundary_construction_counter_scratch_data();
+            retained
+                .checked_add(transient)
+                .and_then(|bytes| bytes.checked_add(counter))
+                .filter(|bytes| *bytes <= maximum)
+                .ok_or(RuntimeError::ResourceLimit)?;
+            Ok([retained, transient, counter])
+        })
+    }
+
+    /// Names boundary construction and original collection-loan controls.
+    ///
+    /// Dynamic formatter work, enclosing phase owners and native compiler
+    /// frames remain independently admitted terms.
+    pub fn original_restored_model18_boundary_construction_counter_scratch_data() -> usize {
+        Self::original_restored_model18_construction_counter_scratch_data()
+            + Self::restored_decoded_collection_prebirth_counter_scratch_data::<[usize; 3]>()
+            + SealedHistoricalRestoredSettledNative17::current_model18_boundary_construction_counter_scratch_data()
+    }
+
     fn with_original_restored_model18_data<R>(
         &self,
         ticket: &CompleteOriginalNativeTicket,
