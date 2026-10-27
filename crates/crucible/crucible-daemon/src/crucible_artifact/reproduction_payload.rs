@@ -19,11 +19,11 @@
 
 use std::io;
 
-use crucible_engine::{Schedule, ScheduleManifest};
 use crucible_campaign::{
     CampaignExecutorStore, CampaignRepository, CampaignRepositoryError, ReproductionArtifact,
     ReproductionArtifactId, ReproductionPayload, ReproductionPayloadSegment,
 };
+use crucible_engine::{Schedule, ScheduleManifest};
 use crucible_store::content_store::ContentId;
 
 use super::{
@@ -131,14 +131,16 @@ pub fn decode_crucible_reproduction(
         source: Box::new(source),
     };
 
-    let manifest = crucible_engine::ReproductionArtifact::stored_form_schedule_manifest(record.payload())
-        .map_err(invalid)?;
+    let manifest =
+        crucible_engine::ReproductionArtifact::stored_form_schedule_manifest(record.payload())
+            .map_err(invalid)?;
     if payload_segments(&manifest)? != record.payload_segments() {
         return Err(CrucibleArtifactError::SemanticIdentityMismatch {
             artifact: artifact_name,
         });
     }
-    crucible_engine::ReproductionArtifact::from_stored_form(record.payload(), source).map_err(invalid)
+    crucible_engine::ReproductionArtifact::from_stored_form(record.payload(), source)
+        .map_err(invalid)
 }
 
 impl CrucibleCampaignArtifactStore {

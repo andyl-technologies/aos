@@ -159,7 +159,8 @@ impl NativeConsoleAuthorizationTable {
         &self,
         authorization: NativeConsoleAuthorization,
     ) -> Result<PreparedNativeConsoleRestoreAuthorization<'_>, NativeConsoleError> {
-        if authorization.phase != crucible_qemu_protocol::native_console::NativeConsolePhase::Restore
+        if authorization.phase
+            != crucible_qemu_protocol::native_console::NativeConsolePhase::Restore
             || authorization.phase_token != 0
         {
             return Err(NativeConsoleError::Field);

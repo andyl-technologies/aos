@@ -204,10 +204,11 @@ fn hub_replays_and_summarizes_across_sealed_segments() {
 fn debug_history_extends_its_breakpoint_prefix_like_a_whole_rebuild() {
     let store: Arc<dyn DagStore> = Arc::new(MemoryDagStore::new());
     let mut history = crate::SessionDebugHistory::new(store);
-    let configuration = Configuration::genesis(crucible_engine::ScenarioDef::from_canonical_material(
-        "crucible.test.session.debug-history",
-        "debug history",
-    ));
+    let configuration =
+        Configuration::genesis(crucible_engine::ScenarioDef::from_canonical_material(
+            "crucible.test.session.debug-history",
+            "debug history",
+        ));
     let no_patterns = BTreeSet::new();
 
     history

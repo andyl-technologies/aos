@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::AttemptLogSegmentSources;
-use crucible_engine::SegmentSource;
 use crucible_campaign::FindingTriageReplayLogSegment;
+use crucible_engine::SegmentSource;
 
 /// The four role-specific triage replay records and the stores holding the
 /// attempt-log segments they name.

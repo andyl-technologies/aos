@@ -485,11 +485,13 @@ fn checkpoint_readiness_limits_cold_catalog_to_initial_execution_boundary() {
 
     let advanced = Configuration {
         def: scenario,
-        schedule: Schedule::from_decisions([Decision::RngDraw(crucible_engine::RngDecision::ordinal(
-            crucible_engine::RngStreamId::from_name("checkpoint-catalog"),
-            0,
-            7,
-        ))]),
+        schedule: Schedule::from_decisions([Decision::RngDraw(
+            crucible_engine::RngDecision::ordinal(
+                crucible_engine::RngStreamId::from_name("checkpoint-catalog"),
+                0,
+                7,
+            ),
+        )]),
     };
     assert!(!selectable_catalogs_checkpoint_ready(
         &advanced,

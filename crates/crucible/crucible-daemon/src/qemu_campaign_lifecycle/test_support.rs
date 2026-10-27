@@ -9,12 +9,12 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::vm_lifecycle::ProductionVmHotForkSourceWorld;
+use crate::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 use crucible_engine::{
     Configuration, NodeId, ScenarioDef, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
     SelectionDecision, VirtualTime,
 };
-use crate::vm_lifecycle::ProductionVmHotForkSourceWorld;
-use crate::{ProductionFaultEvidenceSnapshot, ProductionVmNodeReplayLaunchProfile};
 
 use super::{
     QemuFinalBoundaryDrain, QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner,
@@ -27,8 +27,10 @@ pub(crate) type Order = Arc<Mutex<Vec<&'static str>>>;
 
 /// Returns the resolved-effect trace every scripted lifecycle reports.
 pub(crate) fn retention_trace() -> crucible_engine::model::ResolvedEffectTrace {
-    crucible_engine::model::ResolvedEffectTrace::empty(crucible_engine::model::FaultReplayMode::LockedEffect)
-        .expect("empty locked-effect trace")
+    crucible_engine::model::ResolvedEffectTrace::empty(
+        crucible_engine::model::FaultReplayMode::LockedEffect,
+    )
+    .expect("empty locked-effect trace")
 }
 
 /// What source preparation does with a drained lifecycle.

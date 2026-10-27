@@ -298,7 +298,8 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     assert_eq!(configuration.id().to_hex(), child.to_hex());
     assert_eq!(
         model_finding.artifact.id().to_hex(),
-        crucible_engine::ContentHash::from_bytes(&model_finding.artifact.to_compact_binary()).to_hex()
+        crucible_engine::ContentHash::from_bytes(&model_finding.artifact.to_compact_binary())
+            .to_hex()
     );
     publish_reproduction_segments(&repository, &model_finding.artifact)?;
     publish_reproduction_segments(&repository, &minimized_model_finding.artifact)?;

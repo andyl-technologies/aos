@@ -108,7 +108,8 @@ where
 {
     let scenario = source.scenario_def();
     let genesis = Configuration::genesis(scenario.clone());
-    let signal_fault_replay = crucible_engine::SignalFaultCampaignReplayPlan::empty(genesis.clone());
+    let signal_fault_replay =
+        crucible_engine::SignalFaultCampaignReplayPlan::empty(genesis.clone());
     let mut lifecycle = factory
         .start_fresh_lifecycle(&scenario, source, &genesis, &signal_fault_replay, context)
         .map_err(QemuFreshGenesisCheckpointError::Start)?;

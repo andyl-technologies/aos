@@ -104,9 +104,10 @@ fn proxy_completion_requires_request_and_exact_body_on_both_legs() -> Result<(),
         ),
     ];
     let evaluate = |events| -> Result<bool, Box<dyn Error>> {
-        let prefix = ::crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
-            at.ticks, events,
-        )?;
+        let prefix =
+            ::crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
+                at.ticks, events,
+            )?;
         let mut pass =
             ConditionEvaluationPass::from_log_prefix(prefix, |_: ConditionLeaf<'_>| false)
                 .with_world_white_box_policies(form.world());

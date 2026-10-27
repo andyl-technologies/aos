@@ -242,8 +242,10 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
 
     fn drain_pending_selectable_requests(
         &mut self,
-    ) -> Result<Vec<crucible_qemu_host::QemuNodeSelectablePendingRequest>, crucible_engine::SchedulerError>
-    {
+    ) -> Result<
+        Vec<crucible_qemu_host::QemuNodeSelectablePendingRequest>,
+        crucible_engine::SchedulerError,
+    > {
         Ok(std::mem::take(&mut self.pending))
     }
 
@@ -313,7 +315,9 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
                 ticks: self.completed_quanta,
             },
             fingerprint: crucible_engine::ExecutionFingerprint {
-                hash: crucible_engine::ContentHash::from_bytes(&self.completed_quanta.to_le_bytes()),
+                hash: crucible_engine::ContentHash::from_bytes(
+                    &self.completed_quanta.to_le_bytes(),
+                ),
             },
         })
     }
@@ -324,7 +328,8 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
 
     fn resolved_effect_trace(
         &self,
-    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, crucible_engine::SchedulerError> {
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, crucible_engine::SchedulerError>
+    {
         Ok(Some(
             crucible_engine::model::ResolvedEffectTrace::empty(
                 crucible_engine::model::FaultReplayMode::RecomputedCause,

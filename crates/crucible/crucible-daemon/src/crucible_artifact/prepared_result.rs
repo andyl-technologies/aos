@@ -310,7 +310,9 @@ impl PreparedSemanticAttemptResult {
     ///
     /// The original and minimized schedules often share a prefix, and with it
     /// their leading segments, so a shared segment is listed once.
-    pub fn referenced_reproduction_segments(&self) -> Vec<crucible_engine::segment_store::ContentId> {
+    pub fn referenced_reproduction_segments(
+        &self,
+    ) -> Vec<crucible_engine::segment_store::ContentId> {
         let Some(finding) = &self.finding else {
             return Vec::new();
         };
@@ -393,8 +395,9 @@ impl PreparedSemanticAttemptResult {
             return Ok(());
         };
 
-        let manifest = crucible_engine::model::ResolvedEffectTraceManifest::from_canonical_bytes(manifest)
-            .map_err(|_| inconsistent("resolved-effect trace manifest"))?;
+        let manifest =
+            crucible_engine::model::ResolvedEffectTraceManifest::from_canonical_bytes(manifest)
+                .map_err(|_| inconsistent("resolved-effect trace manifest"))?;
         manifest
             .admit(scenario.plan().fault_signals().resource_limits())
             .map_err(|_| inconsistent("resolved-effect trace contract"))?;

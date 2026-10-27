@@ -137,7 +137,8 @@ impl LiveVcpuTimeCallbackState {
                 if let Some(console) = console {
                     let advance =
                         prepared_advance.ok_or(LiveVcpuTimeCallbackError::ConsoleControl {
-                            source: crucible_qemu_protocol::native_console::NativeConsoleError::Binding,
+                            source:
+                                crucible_qemu_protocol::native_console::NativeConsoleError::Binding,
                         })?;
                     let published = console
                         .publish_pause(self.slot.get(), current_icount, raw_icount, advance)

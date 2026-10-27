@@ -404,7 +404,8 @@ mod tests {
             serde_json::to_vec(&outcome.event_log_entries)?,
             event_bytes_before
         );
-        let after = crucible_engine::EventLog::new().append_entries(outcome.event_log_entries.clone())?;
+        let after =
+            crucible_engine::EventLog::new().append_entries(outcome.event_log_entries.clone())?;
         assert_eq!(after.segment_bytes, outcome.event_log_segment_bytes);
         assert_eq!(after.segment_hash, outcome.event_log_segment_hash);
         assert_eq!(after.offset, outcome.event_log_offset);

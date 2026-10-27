@@ -219,8 +219,9 @@ fn promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan() {
         unsupported_fresh_replay_decision(&selected, &empty),
         Some(1)
     );
-    let plan = crucible_engine::SignalFaultCampaignReplayPlan::new(selected.clone(), vec![branch.clone()])
-        .expect("typed replay plan");
+    let plan =
+        crucible_engine::SignalFaultCampaignReplayPlan::new(selected.clone(), vec![branch.clone()])
+            .expect("typed replay plan");
     assert_eq!(unsupported_fresh_replay_decision(&selected, &plan), None);
 }
 
@@ -1137,7 +1138,8 @@ impl QemuFreshAttemptLifecycleOwner for BoundaryCaptureLifecycle {
 
     fn resolved_effect_trace(
         &self,
-    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, crucible_engine::SchedulerError> {
+    ) -> Result<Option<crucible_engine::model::ResolvedEffectTrace>, crucible_engine::SchedulerError>
+    {
         Ok(None)
     }
 

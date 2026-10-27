@@ -150,16 +150,20 @@ impl ProductionFaultNetworkInterceptor {
         let committed = self
             .campaign_replay
             .as_ref()
-            .map_or(&[][..], crucible_engine::NetworkFaultCampaignReplayPlan::branches)
+            .map_or(
+                &[][..],
+                crucible_engine::NetworkFaultCampaignReplayPlan::branches,
+            )
             .iter()
             .filter(|branch| {
                 let index = branch.parent().schedule.len();
                 index < boundary.schedule.len() && history.get(index) == Some(branch.decision())
             })
             .collect::<Vec<_>>();
-        let kept = replay
-            .as_ref()
-            .map_or(&[][..], crucible_engine::NetworkFaultCampaignReplayPlan::branches);
+        let kept = replay.as_ref().map_or(
+            &[][..],
+            crucible_engine::NetworkFaultCampaignReplayPlan::branches,
+        );
         if !kept.iter().eq(committed.iter().copied()) {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
@@ -377,7 +381,6 @@ impl ProductionFaultNetworkInterceptor {
         Ok(outages)
     }
 }
-
 
 /// Names each branch's phase, anchor time, decision index and child.
 fn describe_branches<'a>(

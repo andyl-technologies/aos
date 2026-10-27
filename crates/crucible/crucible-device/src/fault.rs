@@ -173,7 +173,8 @@ impl DeviceRng {
     #[must_use]
     pub fn for_event(root_seed: u64, domain: &str, name: &str, event: &[u8]) -> Self {
         Self {
-            stream: crucible_determinism::DecisionRng::new(root_seed).event_in_domain(domain, name, event),
+            stream: crucible_determinism::DecisionRng::new(root_seed)
+                .event_in_domain(domain, name, event),
         }
     }
 

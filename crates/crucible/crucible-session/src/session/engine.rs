@@ -1822,10 +1822,12 @@ impl<L: QuantumLoop> Engine<L> {
                                 .as_ref()
                                 .map(|trace| trace.manifest().canonical_bytes())
                                 .transpose()
-                                .map_err(|error| crucible_engine::SchedulerError::BoundaryViolation {
-                                    message: format!(
-                                        "encode resolved-effect trace manifest: {error}"
-                                    ),
+                                .map_err(|error| {
+                                    crucible_engine::SchedulerError::BoundaryViolation {
+                                        message: format!(
+                                            "encode resolved-effect trace manifest: {error}"
+                                        ),
+                                    }
                                 })?,
                         )
                     }

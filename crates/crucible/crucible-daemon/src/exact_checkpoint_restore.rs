@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use crate::{
     DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
-    ProductionEventLogSegments, ProductionVmExactHotForkSourceBoundary, ProductionVmExactNodeRestoreAdmissions,
+    ProductionEventLogSegments, ProductionVmExactHotForkSourceBoundary,
+    ProductionVmExactNodeRestoreAdmissions,
 };
 use crucible_control_api::LifecycleApiError;
 use crucible_engine::{

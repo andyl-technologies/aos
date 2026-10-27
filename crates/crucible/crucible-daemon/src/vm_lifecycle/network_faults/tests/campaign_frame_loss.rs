@@ -16,8 +16,13 @@ const LOSS_BPS: u64 = 1_000;
 const FRAMES_IN_WINDOW: u64 = 40;
 
 /// Builds a two-node World whose backup domain is the right-to-left direction.
-fn backup_loss_world()
--> Result<(crucible_engine::World, crucible_engine::model::WorldFaultTopology), Box<dyn Error>> {
+fn backup_loss_world() -> Result<
+    (
+        crucible_engine::World,
+        crucible_engine::model::WorldFaultTopology,
+    ),
+    Box<dyn Error>,
+> {
     let (base_world, segment) = availability_world();
     let mut topology = base_world.fault_topology().clone();
     topology.network_segments[0].fault_domains = vec![signal_id("primary"), signal_id("backup")];
@@ -97,8 +102,13 @@ fn selected_packet_loss_records_every_frame_it_evaluates() -> Result<(), Box<dyn
         &[],
     )?
     .ok_or("active first network group")?;
-    let outage =
-        crucible_engine::NetworkFaultSelectable::selected_value("link_down", "primary", 1_000, 0, 0)?;
+    let outage = crucible_engine::NetworkFaultSelectable::selected_value(
+        "link_down",
+        "primary",
+        1_000,
+        0,
+        0,
+    )?;
     let first = first.resolve_branch(&first.branch_selection(outage)?)?;
     let followup = crucible_engine::NetworkFaultSelectable::next(
         &scenario,

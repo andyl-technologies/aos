@@ -6,11 +6,11 @@
 
 use std::sync::Arc;
 
-use crucible_engine::{Configuration, ConfigurationPrefix, ScenarioDefForm, Schedule};
 use crucible_campaign::{
     CampaignCodecError, CampaignHash, ChoiceDomain, ChoiceOpportunity, ChoiceSource,
     SelectableDeclaration, Selection, SelectionOrigin,
 };
+use crucible_engine::{Configuration, ConfigurationPrefix, ScenarioDefForm, Schedule};
 use crucible_store::content_store::ContentId;
 
 use super::builder::{ClosureBuilder, FrameRetention};

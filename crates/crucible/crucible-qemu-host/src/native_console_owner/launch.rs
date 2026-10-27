@@ -156,15 +156,18 @@ impl ConsoleLaunchCustody {
             slot: external_body.owner.slot,
             logical_generation: external_body.logical_generation,
             node_sequence_base: external_body.prior_sequence,
-            streams: vec![crucible_qemu_protocol::native_console::NativeConsoleStream {
-                stream: 1,
-                device: crucible_qemu_protocol::native_console::NativeConsoleDevice::Serial16550,
-                device_identity:
-                    crucible_qemu_protocol::native_console::NativeConsoleDevice::Serial16550
-                        .fixed_console_identity(),
-                owner_mask: 1,
-                sequence_base: 0,
-            }],
+            streams: vec![
+                crucible_qemu_protocol::native_console::NativeConsoleStream {
+                    stream: 1,
+                    device:
+                        crucible_qemu_protocol::native_console::NativeConsoleDevice::Serial16550,
+                    device_identity:
+                        crucible_qemu_protocol::native_console::NativeConsoleDevice::Serial16550
+                            .fixed_console_identity(),
+                    owner_mask: 1,
+                    sequence_base: 0,
+                },
+            ],
         };
         let sealed_plan = crucible_qemu_protocol::native_console::NativeConsoleSetupPlan::new(
             plan.clone(),

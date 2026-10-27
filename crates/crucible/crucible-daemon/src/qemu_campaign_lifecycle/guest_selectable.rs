@@ -199,8 +199,8 @@ pub(super) fn apply_replayed_guest_selectables<F, D>(
         let reply = selected_guest_reply(pending.pending(), &discovery, &selection)
             .map_err(start_replay_guest_selectable_failure)?;
         replies.push((pending, reply, decision.clone(), replayed.clone()));
-        replayed = crucible_engine::try_step(&replayed, Decision::Selection(decision.clone())).map_err(
-            |error| {
+        replayed = crucible_engine::try_step(&replayed, Decision::Selection(decision.clone()))
+            .map_err(|error| {
                 AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
                     QemuFreshStartReplayError::DivergedAt {
                         reason: "selection schedule append",
@@ -211,15 +211,14 @@ pub(super) fn apply_replayed_guest_selectables<F, D>(
                         observed: error.to_string(),
                     },
                 ))
-            },
-        )?;
+            })?;
     }
     let mut selection_entries = Vec::new();
     // Every request matched its recorded decision; replies now apply them.
     for (pending, reply, decision, parent) in replies {
         cursor.applying_at(parent.schedule.len());
-        let selected = crucible_engine::try_step(&parent, Decision::Selection(decision.clone())).map_err(
-            |error| {
+        let selected = crucible_engine::try_step(&parent, Decision::Selection(decision.clone()))
+            .map_err(|error| {
                 AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
                     QemuFreshStartReplayError::DivergedAt {
                         reason: "selection reply schedule append",
@@ -230,8 +229,7 @@ pub(super) fn apply_replayed_guest_selectables<F, D>(
                         observed: error.to_string(),
                     },
                 ))
-            },
-        )?;
+            })?;
         let entries = lifecycle
             .apply_selectable_reply(&parent, decision, &selected, &pending, &reply)
             .map_err(map_start_replay_scheduler_failure)?;

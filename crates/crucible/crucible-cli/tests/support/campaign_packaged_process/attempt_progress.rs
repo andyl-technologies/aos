@@ -181,13 +181,11 @@ fn qemu_thread_report(service_pid: u32) -> String {
         .iter()
         .take(8)
         .map(|(delta, thread)| {
-            let syscall = fs::read_to_string(format!(
-                "/proc/{}/task/{}/syscall",
-                thread.pid, thread.tid
-            ))
-            .ok()
-            .and_then(|text| text.split_whitespace().next().map(str::to_owned))
-            .unwrap_or_else(|| "unavailable".to_owned());
+            let syscall =
+                fs::read_to_string(format!("/proc/{}/task/{}/syscall", thread.pid, thread.tid))
+                    .ok()
+                    .and_then(|text| text.split_whitespace().next().map(str::to_owned))
+                    .unwrap_or_else(|| "unavailable".to_owned());
             format!(
                 "{}/{}:{}:{}:{delta}:{syscall}",
                 thread.pid, thread.tid, thread.name, thread.state
@@ -258,7 +256,10 @@ pub(super) fn reported_guest_progress(row: &str) -> Option<String> {
         let (name, counters) = node.split_once(':')?;
         clocks.push(format!("{name}:{}", counters.rsplit('/').next()?));
     }
-    Some(format!("frontier_ps={frontier} clocks={}", clocks.join(",")))
+    Some(format!(
+        "frontier_ps={frontier} clocks={}",
+        clocks.join(",")
+    ))
 }
 
 /// Tracks one attempt wait and fails it once progress stops.
@@ -476,7 +477,10 @@ fn reported_guest_progress_keeps_clocks_and_drops_window_counts() {
     // More dispatched quanta with no clock movement report the same progress.
     assert_eq!(reported_guest_progress(&row(900, 4_149_999_950)), first);
     assert_ne!(reported_guest_progress(&row(900, 4_150_000_000)), first);
-    assert_eq!(reported_guest_progress("CRUCIBLE-ATTEMPT-DISPATCH-V1 runs="), None);
+    assert_eq!(
+        reported_guest_progress("CRUCIBLE-ATTEMPT-DISPATCH-V1 runs="),
+        None
+    );
 }
 
 #[test]

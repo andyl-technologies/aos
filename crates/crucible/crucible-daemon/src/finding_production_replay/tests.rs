@@ -3,13 +3,13 @@
 use super::capture::validate_execution_side;
 use super::test_support::*;
 use super::*;
+use crucible_campaign::FindingKind;
 use crucible_engine::model::{FaultReplayMode, ResolvedEffectTrace};
 use crucible_engine::{
     ContentAddressedBlobRef, Plan, Properties, ScenarioDefForm, ScenarioSelectableLimits,
     ScenarioSelectables, Seed, World, WorldBlockLatency, WorldIoCoreConfig, WorldIoNode,
     WorldNodeDef,
 };
-use crucible_campaign::FindingKind;
 use crucible_store::content_store::BlobHandle;
 
 #[test]

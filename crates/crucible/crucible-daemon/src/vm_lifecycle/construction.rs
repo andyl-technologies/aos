@@ -52,7 +52,8 @@ fn branch_plan_launch_window(
     plan: &crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan,
     draw_offset: u64,
     node: &NodeId,
-) -> Result<crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan, LifecycleApiError> {
+) -> Result<crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan, LifecycleApiError>
+{
     let first_served = plan
         .entries()
         .partition_point(|entry| entry.draw_index() < draw_offset);
@@ -1252,7 +1253,8 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
     };
     // A restored replay cursor names the signal partition's manifest; the
     // partition's own sources hold its segments.
-    let mut trace_storage = crucible_engine::model::FaultTraceStorage::new(Arc::clone(&trace_segments));
+    let mut trace_storage =
+        crucible_engine::model::FaultTraceStorage::new(Arc::clone(&trace_segments));
     if let Some(signal) = &signal_effect_replay {
         trace_storage = trace_storage.with_replay_segments(signal.segments().clone());
     }
@@ -1392,11 +1394,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         }
         let consumer = crucible_qemu_host::ReferencedEventConsumer::block_recovery(&block.target)
             .map_err(|error| {
-                loop_factory_error(format!(
-                    "identify block recovery consumer for `{}`: {error}",
-                    node.name
-                ))
-            })?;
+            loop_factory_error(format!(
+                "identify block recovery consumer for `{}`: {error}",
+                node.name
+            ))
+        })?;
         referenced_event_consumers.push(consumer);
         backends
             .install_block_fault_coordinator(

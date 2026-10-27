@@ -357,7 +357,9 @@ pub(crate) fn materialize_start_from_tracked<F, D>(
                         stream: payload.string("stream_name"),
                         value: payload.u64("value"),
                         delivery_at: match payload.attribute("at") {
-                            Some(crucible_engine::EventAttributeValue::VirtualTime(at)) => Some(at.ticks),
+                            Some(crucible_engine::EventAttributeValue::VirtualTime(at)) => {
+                                Some(at.ticks)
+                            }
                             _ => None,
                         },
                     }
@@ -536,12 +538,13 @@ pub(super) fn apply_replayed_live_network_selection<F, D>(
     let entries = lifecycle
         .select_live_network_preselection(selection.clone())
         .map_err(map_start_replay_scheduler_failure)?;
-    *current =
-        crucible_engine::try_step(current, Decision::Selection(selection.clone())).map_err(|_| {
+    *current = crucible_engine::try_step(current, Decision::Selection(selection.clone())).map_err(
+        |_| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::StartReplay(
                 QemuFreshStartReplayError::Diverged,
             ))
-        })?;
+        },
+    )?;
     Ok(entries)
 }
 

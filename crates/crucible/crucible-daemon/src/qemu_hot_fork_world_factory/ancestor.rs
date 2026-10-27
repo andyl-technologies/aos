@@ -47,8 +47,8 @@
 use std::io::Write;
 use std::sync::Arc;
 
-use crucible_engine::{Configuration, Decision, SelectionDecision};
 use crucible_campaign::{ChoiceSource, Selection, SelectionOrigin};
+use crucible_engine::{Configuration, Decision, SelectionDecision};
 
 use crate::CrucibleAttemptExecution;
 use crate::qemu_hot_fork_source_capture::{QemuPublishedRootOrigin, QemuPublishedRootProvenance};

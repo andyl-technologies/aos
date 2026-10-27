@@ -40,8 +40,9 @@ pub(crate) struct MappedPublication {
 
 impl MappedPublication {
     pub(crate) fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let allocation =
-            crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 8))?;
+        let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+            crucible_qemu_shmem::RegionConfig::new(1, 8),
+        )?;
         let layout = allocation.layout();
         let mut file = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
         file.write_all(&allocation.setup_region_bytes()?)?;
@@ -302,7 +303,8 @@ fn handoff_acquisition_spends_the_original_clamp_budget() -> Result<(), Box<dyn 
     let before = mapped.producer.node_slot(0)?.snapshot();
     mapped.set_producer_sequence(before.publish_gen + 1)?;
     let file = mapped.file.try_clone()?;
-    let offset = mapped.layout.node_slots_off + crucible_qemu_shmem::NODE_SLOT_PUBLISH_GEN_OFFSET as u64;
+    let offset =
+        mapped.layout.node_slots_off + crucible_qemu_shmem::NODE_SLOT_PUBLISH_GEN_OFFSET as u64;
     let budget = Duration::from_secs(2);
 
     // An independent mapped wait consumes part of the handoff policy while

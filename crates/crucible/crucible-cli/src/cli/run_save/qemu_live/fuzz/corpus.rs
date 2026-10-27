@@ -552,7 +552,8 @@ mod tests {
         parent: Option<crucible_engine::ContentHash>,
     ) -> Result<LiveFuzzCorpusCandidate, Box<dyn std::error::Error>> {
         let configuration = crucible_engine::Configuration::genesis(form.scenario_def());
-        let artifact = crucible_engine::ReproductionArtifact::capture(form, &configuration.schedule)?;
+        let artifact =
+            crucible_engine::ReproductionArtifact::capture(form, &configuration.schedule)?;
         let mut coverage = crucible_engine::EventLogCoverageSet::new();
         // Repeated hits of one block collapse to one retained observation.
         for (sequence, guest_pc) in blocks.iter().chain(blocks).enumerate() {

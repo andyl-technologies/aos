@@ -459,7 +459,8 @@ where
                             >= crucible_engine::MAX_NETWORK_FAULT_CAMPAIGN_BRANCHES
                         {
                             return Err(
-                                crucible_engine::NetworkFaultSelectableError::ReplayPlanMismatch.into()
+                                crucible_engine::NetworkFaultSelectableError::ReplayPlanMismatch
+                                    .into(),
                             );
                         }
                         let selectable = NetworkFaultSelectable::from_records(

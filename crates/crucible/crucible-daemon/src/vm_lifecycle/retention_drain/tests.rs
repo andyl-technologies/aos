@@ -81,15 +81,23 @@ fn refusal_tokens_are_distinct_kebab_case() {
         RetentionDrainRefusal::CampaignEffectReplayUnexhausted,
         RetentionDrainRefusal::FaultReplayUnexhausted,
         RetentionDrainRefusal::SearchOverridesUnconsumed,
-        RetentionDrainRefusal::Boundary(crucible_engine::FinalBoundaryRefusal::PoisonedContinuation),
-        RetentionDrainRefusal::Boundary(crucible_engine::FinalBoundaryRefusal::HeldGuestSelectableStop),
-        RetentionDrainRefusal::Boundary(crucible_engine::FinalBoundaryRefusal::HeldCampaignMarkerStop),
+        RetentionDrainRefusal::Boundary(
+            crucible_engine::FinalBoundaryRefusal::PoisonedContinuation,
+        ),
+        RetentionDrainRefusal::Boundary(
+            crucible_engine::FinalBoundaryRefusal::HeldGuestSelectableStop,
+        ),
+        RetentionDrainRefusal::Boundary(
+            crucible_engine::FinalBoundaryRefusal::HeldCampaignMarkerStop,
+        ),
         RetentionDrainRefusal::Boundary(crucible_engine::FinalBoundaryRefusal::HeldPeerEvidence),
         RetentionDrainRefusal::Boundary(crucible_engine::FinalBoundaryRefusal::PendingFixedInput),
         RetentionDrainRefusal::Boundary(
             crucible_engine::FinalBoundaryRefusal::RetainedDeviceGroupSelection,
         ),
-        RetentionDrainRefusal::Boundary(crucible_engine::FinalBoundaryRefusal::LiveNetworkPreselection),
+        RetentionDrainRefusal::Boundary(
+            crucible_engine::FinalBoundaryRefusal::LiveNetworkPreselection,
+        ),
     ];
 
     let tokens = refusals

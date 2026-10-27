@@ -616,11 +616,13 @@ fn replay_evidence_streams_logs_longer_than_the_retired_entry_cap() -> Result<()
         RETIRED_ENTRY_CAP + 1 - first_console,
     ));
     let mut expected = reproduced.clone();
-    expected.push(crucible_engine::test_support::condition_payload_entry_for_test(
-        expected.len() as u64,
-        VirtualTime { ticks: 20 },
-        SchedulerEventLogPayload::Decision(schedule.decision_history()[0].clone()),
-    ));
+    expected.push(
+        crucible_engine::test_support::condition_payload_entry_for_test(
+            expected.len() as u64,
+            VirtualTime { ticks: 20 },
+            SchedulerEventLogPayload::Decision(schedule.decision_history()[0].clone()),
+        ),
+    );
 
     let store = Arc::new(SharedSegmentStore::new());
     let expected_log = seal_attempt_log(&expected, store.as_ref())?;

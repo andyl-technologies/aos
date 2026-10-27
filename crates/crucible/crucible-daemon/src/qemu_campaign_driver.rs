@@ -14,12 +14,11 @@ use std::sync::{Arc, Mutex};
 use crucible_campaign::{
     AssertionViolationWitness, AttemptStartMode, BoundedStopProof, CampaignCodecError,
     CampaignHash, ChoiceDiscovery, ChoiceDomainId, ChoiceOpportunityId, ConfigurationArtifact,
-    ConfigurationId, CoverageProjection,
-    MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, Observation, ObservationCandidate,
-    ObservationCondition, ObservationEventLogProof, ObservationQuantumBoundary,
-    ObservationStopProof, ObservationStopSatisfaction, PolicyTimeoutKind, PropertyEvidence,
-    PropertyVerdict, PropertyVerdictSet, SelectableId, Selection, SelectionOrigin, StopCondition,
-    StopOutcome,
+    ConfigurationId, CoverageProjection, MAX_OBSERVATION_CHOICE_DISCOVERY_BYTES, Observation,
+    ObservationCandidate, ObservationCondition, ObservationEventLogProof,
+    ObservationQuantumBoundary, ObservationStopProof, ObservationStopSatisfaction,
+    PolicyTimeoutKind, PropertyEvidence, PropertyVerdict, PropertyVerdictSet, SelectableId,
+    Selection, SelectionOrigin, StopCondition, StopOutcome,
 };
 use crucible_engine::model::MeasurementTerminalState;
 use crucible_engine::{
@@ -2337,8 +2336,10 @@ fn check_pending_assertions(
         checker = checker.with_continuing_prefix();
     }
     // The check consumes the retained segments in order (RFC-0020 CMEAS-21).
-    let shape =
-        crucible_engine::RecordedLogShape::new(pending.event_log.len() as u64, pending.event_log.last());
+    let shape = crucible_engine::RecordedLogShape::new(
+        pending.event_log.len() as u64,
+        pending.event_log.last(),
+    );
     let mut oracle = crucible_engine::BlackBoxHostOracle;
     let mut check = checker.start_check(pending.input.scenario().properties(), shape);
     pending.event_log.try_for_each_entry(|entry| {

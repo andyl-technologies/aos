@@ -58,7 +58,9 @@ const RFC_SOURCES: &[&str] = &[
         "../../../../docs/rfcs/0020-crucible-campaigns/12-decisions-and-open-questions.md"
     ),
     include_str!("../../../../docs/rfcs/0020-crucible-campaigns/13-worked-network-campaign.md"),
-    include_str!("../../../../docs/rfcs/0020-crucible-campaigns/14-automated-release-validation.md"),
+    include_str!(
+        "../../../../docs/rfcs/0020-crucible-campaigns/14-automated-release-validation.md"
+    ),
     include_str!("../../../../docs/rfcs/0020-crucible-campaigns/15-segmented-event-log.md"),
 ];
 

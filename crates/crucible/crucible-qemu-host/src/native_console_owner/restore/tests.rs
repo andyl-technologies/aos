@@ -360,9 +360,8 @@ fn wrapped_actual_restore_publication_accepts_its_exact_loaded_pair() -> Result<
         .ok_or(ConsoleOwnerError::Storage)?;
     slot.acknowledge_logical_time_restore(restore, 100, 2)?;
     assert_eq!(slot.snapshot().publish_gen, 0);
-    segment
-        .frontier
-        .store(crucible_qemu_protocol::native_console::NativeConsoleFrontier {
+    segment.frontier.store(
+        crucible_qemu_protocol::native_console::NativeConsoleFrontier {
             sequence: 0,
             ring_end: 0,
             logical_ps: 100,
@@ -372,7 +371,8 @@ fn wrapped_actual_restore_publication_accepts_its_exact_loaded_pair() -> Result<
             logical_generation: 0,
             request: pair.request,
             plan_hash: fixture.plan_hash()?,
-        })?;
+        },
+    )?;
     slot.acknowledge_control_boundary();
     channel.accept_console_logical_time_restore(
         boundary,

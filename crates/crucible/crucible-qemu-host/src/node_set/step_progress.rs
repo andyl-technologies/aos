@@ -24,7 +24,10 @@ pub(super) fn consumed_input_without_retiring(
     inbound_frames_consumed: usize,
 ) -> bool {
     observation.reached == previous
-        && matches!(observation.outcome, crucible_engine::AdvanceOutcome::Paused { .. })
+        && matches!(
+            observation.outcome,
+            crucible_engine::AdvanceOutcome::Paused { .. }
+        )
         && inbound_frames_consumed > 0
 }
 
@@ -34,7 +37,10 @@ pub(super) fn stagnant_pause_boundary(
     final_state: Option<QemuNodeIdleState>,
 ) -> Option<(VirtualTime, Option<Icount>)> {
     (observation.reached == previous
-        && matches!(observation.outcome, crucible_engine::AdvanceOutcome::Paused { .. }))
+        && matches!(
+            observation.outcome,
+            crucible_engine::AdvanceOutcome::Paused { .. }
+        ))
     .then(|| {
         (
             observation.reached,

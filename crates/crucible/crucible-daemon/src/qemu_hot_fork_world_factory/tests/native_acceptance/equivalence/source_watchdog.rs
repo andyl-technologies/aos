@@ -68,9 +68,8 @@ mod tests {
     fn source_stage_authors_finite_advance_and_disarms_the_same_incarnation() {
         let context = context();
         let cancellation = context.cancellation().clone();
-        let template = crate::ProductionVmLifecycleConfig::new(
-            "qemu", "plugin", "kernel", "root", "run",
-        );
+        let template =
+            crate::ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run");
         let baseline = crate::qemu_campaign_lifecycle::config_for_assignment_host_watchdog(
             template.clone(),
             &context,

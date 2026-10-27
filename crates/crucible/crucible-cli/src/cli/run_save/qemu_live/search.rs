@@ -1003,8 +1003,10 @@ fn timeout_failure_material(
 /// Streams the accepted attempt's log once into its event frames and coverage.
 fn accepted_event_frames(
     evidence: &crucible_daemon::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
-) -> Result<(Vec<Vec<u8>>, crucible_engine::EventLogCoverageFeedback), crucible_daemon::AttemptEventLogError>
-{
+) -> Result<
+    (Vec<Vec<u8>>, crucible_engine::EventLogCoverageFeedback),
+    crucible_daemon::AttemptEventLogError,
+> {
     let mut frames = Vec::new();
     let mut coverage = crucible_engine::EventLogCoverageFold::new();
     evidence

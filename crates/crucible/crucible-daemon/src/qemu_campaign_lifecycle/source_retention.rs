@@ -31,15 +31,15 @@
 use std::io::Write;
 use std::sync::Arc;
 
-use crucible_engine::{
-    Configuration, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
-    SignalFaultCampaignReplayPlan,
-};
 use crate::vm_lifecycle::ProductionVmHotForkSourceWorld;
 use crate::{ProductionVmLifecycleConfig, ProductionVmLifecycleLoop};
 use crucible_campaign::{
     AttemptStartMode, CampaignHash, CampaignLineageId, ConfigurationId,
     ExecutorCompatibilityProfile,
+};
+use crucible_engine::{
+    Configuration, ScenarioDefForm, SchedulerError, SchedulerEventLogEntry,
+    SignalFaultCampaignReplayPlan,
 };
 
 use super::continuation::production_lifecycle_config_for_start;

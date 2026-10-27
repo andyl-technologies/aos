@@ -380,7 +380,9 @@ fn ordinary_prime_completion_does_not_read_or_wake_console_state() -> Result<(),
     fixture.setup.console_custody = None;
     use std::os::unix::fs::FileExt;
     let file = File::from(fixture.setup.shmem_as_fd().try_clone_to_owned()?);
-    let layout = crucible_qemu_shmem::RegionLayout::for_config(crucible_qemu_shmem::RegionConfig::new(1, 4))?;
+    let layout = crucible_qemu_shmem::RegionLayout::for_config(
+        crucible_qemu_shmem::RegionConfig::new(1, 4),
+    )?;
     let offset = layout.node_slots_off + crucible_qemu_shmem::NODE_SLOT_PUBLISH_GEN_OFFSET as u64;
     file.write_all_at(&1_u32.to_ne_bytes(), offset)?;
     let (notifications, wake) = UnixStream::pair()?;

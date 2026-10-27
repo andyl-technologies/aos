@@ -102,7 +102,9 @@ impl QemuCompletedQuantumBoundary {
         paired: crucible_qemu_protocol::native_console::NativeConsoleClamp,
         live: NodeSlotSnapshot,
     ) -> Result<(), crucible_qemu_protocol::native_console::NativeConsoleError> {
-        use crucible_qemu_protocol::native_console::{NativeConsoleControlKind, NativeConsoleError};
+        use crucible_qemu_protocol::native_console::{
+            NativeConsoleControlKind, NativeConsoleError,
+        };
 
         if paired.kind != NativeConsoleControlKind::Observation
             || paired.last_issued.is_some()

@@ -302,8 +302,8 @@ mod tests {
 
         let unbranched = charge(0)?;
         let branched = charge(256)?;
-        let per_branch =
-            BRANCH_INSTANCES * std::mem::size_of::<crucible_engine::SignalFaultCampaignBranch>() as u64;
+        let per_branch = BRANCH_INSTANCES
+            * std::mem::size_of::<crucible_engine::SignalFaultCampaignBranch>() as u64;
 
         assert_eq!(branched - unbranched, 256 * per_branch);
         assert!(branched < unbranched * 256);

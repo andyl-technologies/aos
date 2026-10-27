@@ -453,10 +453,12 @@ pub(super) fn measure_canonical_bytes(
     if let ReplayLog::Inline(entries) = &value.log
         && entries.len() > MAX_MEASUREMENT_EVENT_ENTRIES
     {
-        return Err(crucible_engine::model::MeasurementEvaluationError::LimitExceeded {
-            limit: "measurement-event-entries",
-        }
-        .into());
+        return Err(
+            crucible_engine::model::MeasurementEvaluationError::LimitExceeded {
+                limit: "measurement-event-entries",
+            }
+            .into(),
+        );
     }
     if value.terminal.node_icounts.len() > MAX_MEASUREMENT_TERMINAL_NODES {
         return Err(

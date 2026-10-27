@@ -506,7 +506,9 @@ where
     ) {
         (Some(proof), Some(source_evidence)) => {
             let raw_evidence = source_evidence
-                .canonical_bytes_with_limit(crucible_control_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES)
+                .canonical_bytes_with_limit(
+                    crucible_control_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES,
+                )
                 .map_err(|error| {
                     artifact_error(format!("encode remote observation evidence: {error}"))
                 })?;

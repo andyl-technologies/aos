@@ -310,7 +310,10 @@ pub(super) fn encode_replays(
 
 fn content_positions<I>(
     ids: &[I],
-) -> Result<BTreeMap<crucible_store::content_store::ContentId, usize>, PreparedSemanticResultCodecError>
+) -> Result<
+    BTreeMap<crucible_store::content_store::ContentId, usize>,
+    PreparedSemanticResultCodecError,
+>
 where
     I: ContentIdentity + Copy,
 {

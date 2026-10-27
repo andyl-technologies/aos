@@ -49,8 +49,9 @@ impl QemuHostIoCheckpoint {
         storage_device: ContentHash,
         device: crucible_device::BlockSnapshot,
     ) -> Result<Self, crucible_qemu_shmem::RegionLayoutError> {
-        let layout =
-            crucible_qemu_shmem::RegionLayout::for_config(crucible_qemu_shmem::RegionConfig::new(1, 8))?;
+        let layout = crucible_qemu_shmem::RegionLayout::for_config(
+            crucible_qemu_shmem::RegionConfig::new(1, 8),
+        )?;
         let region_header = crucible_qemu_shmem::RegionHeader::new(layout).snapshot();
         Ok(Self {
             execution_binding,

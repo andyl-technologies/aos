@@ -111,8 +111,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::error::Error;
 
-    use crucible_engine::{Configuration, EventLogOffset, ScenarioDefForm, VirtualTime};
     use crate::ProductionFaultEvidenceSnapshot;
+    use crucible_engine::{Configuration, EventLogOffset, ScenarioDefForm, VirtualTime};
 
     use super::*;
 

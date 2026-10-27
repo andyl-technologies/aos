@@ -671,7 +671,9 @@ mod tests {
             membership: exchange(1),
             observation: exchange(2),
             reproduction: exchange(3),
-            reproduction_segments: crucible_engine::ContentHash::from_bytes(b"reproduction segments"),
+            reproduction_segments: crucible_engine::ContentHash::from_bytes(
+                b"reproduction segments",
+            ),
             minimized: None,
             minimized_segments: None,
             report: crucible_engine::ContentHash::from_bytes(b"report"),

@@ -438,8 +438,10 @@ fn a_source_rebind_cannot_drop_a_branch_the_world_committed() -> Result<(), Camp
         .err()
         .map(|error| error.to_string());
     assert!(
-        refusal.as_ref().is_some_and(|refusal| refusal.contains("kept=[] committed=[")
-            && refusal.contains(&format!("child={}", branches[0].selected().id().to_hex()))),
+        refusal
+            .as_ref()
+            .is_some_and(|refusal| refusal.contains("kept=[] committed=[")
+                && refusal.contains(&format!("child={}", branches[0].selected().id().to_hex()))),
         "a committed branch must stay in the resume plan, and the refusal names it: {refusal:?}"
     );
     assert_eq!(

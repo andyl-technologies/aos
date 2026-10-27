@@ -21,11 +21,11 @@ fn evaluate(
         VirtualTime { ticks: at },
         SchedulerEvaluationBoundaryKind::Quantum,
     )?;
-    let mut pass =
-        ConditionEvaluationPass::from_log_prefix(prefix, |_leaf: crucible_engine::ConditionLeaf<'_>| {
-            false
-        })
-        .with_timer_fires(timers.clone());
+    let mut pass = ConditionEvaluationPass::from_log_prefix(
+        prefix,
+        |_leaf: crucible_engine::ConditionLeaf<'_>| false,
+    )
+    .with_timer_fires(timers.clone());
     Ok(pass.evaluate_event_graph(graph, state)?)
 }
 

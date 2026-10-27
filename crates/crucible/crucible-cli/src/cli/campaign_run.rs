@@ -775,7 +775,9 @@ fn campaign_save_boundary_proof(
             return Ok(SaveBoundaryProof::CampaignObservation {
                 proof: proof.clone(),
                 evidence: observation_evidence
-                    .canonical_bytes_with_limit(crucible_control_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES)
+                    .canonical_bytes_with_limit(
+                        crucible_control_api::RESUME_OBSERVATION_SOURCE_MAX_BYTES,
+                    )
                     .map_err(|error| {
                         campaign_run_error("encode campaign observation boundary evidence", error)
                     })?,

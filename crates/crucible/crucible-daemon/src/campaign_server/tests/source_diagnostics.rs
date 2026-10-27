@@ -65,7 +65,9 @@ fn original_missing_head_is_bound_to_its_request_and_preserves_refs() {
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
     let artifacts = CrucibleCampaignArtifactStore::new(repository.clone());
-    let scenario = crucible_engine::happy_path_scenario().expect("scenario").scenario;
+    let scenario = crucible_engine::happy_path_scenario()
+        .expect("scenario")
+        .scenario;
     let scenario_id = artifacts
         .import_scenario(&scenario)
         .expect("import scenario");

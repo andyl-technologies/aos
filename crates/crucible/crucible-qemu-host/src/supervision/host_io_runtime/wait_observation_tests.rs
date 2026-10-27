@@ -469,9 +469,10 @@ fn device_wait_observation_keeps_matching_head_separate_from_newer_worker_pin() 
 #[cfg(target_os = "linux")]
 #[test]
 fn device_wait_observation_reads_actual_mapped_block_head_without_consuming_it() {
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 4))
-            .unwrap_or_else(|e| panic!("allocation: {e}"));
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 4),
+    )
+    .unwrap_or_else(|e| panic!("allocation: {e}"));
     let layout = allocation.layout();
     let mut file = std::fs::File::from(
         crate::spawn::memfd_region(layout.region_size).unwrap_or_else(|e| panic!("region: {e}")),
@@ -574,9 +575,10 @@ fn device_wait_observation_reads_actual_mapped_block_head_without_consuming_it()
 #[cfg(target_os = "linux")]
 #[test]
 fn device_wait_observation_reads_actual_mapped_ninep_head_and_preserves_delivery_frontier() {
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 4))
-            .unwrap_or_else(|e| panic!("allocation: {e}"));
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 4),
+    )
+    .unwrap_or_else(|e| panic!("allocation: {e}"));
     let layout = allocation.layout();
     let mut file = std::fs::File::from(
         crate::spawn::memfd_region(layout.region_size).unwrap_or_else(|e| panic!("region: {e}")),
@@ -691,7 +693,10 @@ fn original_idle_guard_context_distinguishes_plugin_republication_from_scheduler
     for expected_new_authorization in [false, false, true] {
         if expected_new_authorization {
             let ceiling = crucible_qemu_shmem::authorize_advance_ceiling(0, 2000, None)?;
-            slot.publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)?;
+            slot.publish_scheduler_advance(
+                ceiling,
+                crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+            )?;
         }
         slot.publish_idle(100, 100)?;
         let current = slot.snapshot();

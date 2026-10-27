@@ -13,15 +13,15 @@ use crucible_engine::{
     AdvanceOutcome, GuestMeasurementValue, GuestSemanticMarkerDetail, Icount, ObservableEvent,
     ObservableEventPayload, SimulationBackend, VirtualTime,
 };
+use crucible_qemu_host::{
+    LinuxQemuAttemptHostFactory, QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuNode,
+    QemuProductionFreshLaunchAdmission, launch_qemu_production_fresh_node,
+};
 use crucible_qemu_protocol::selectable_catalog_plan::{
     SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
     SelectablePlanLimits, SelectablePlanPresence,
 };
 use crucible_qemu_protocol::{SelectionReply, SelectionReplyStatus};
-use crucible_qemu_host::{
-    LinuxQemuAttemptHostFactory, QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuNode,
-    QemuProductionFreshLaunchAdmission, launch_qemu_production_fresh_node,
-};
 use serde::Serialize;
 
 #[path = "guest_clock_reads/failure_context.rs"]

@@ -57,10 +57,11 @@ pub(super) fn replay_exact_finding(
         private.path(),
     )
     .map_err(|error| backend_error(format!("finding guest assets are invalid: {error}")))?;
-    let model = crucible_engine::ReproductionArtifact::from_compact_binary(capture.model_reproduction())
-        .map_err(|error| {
-        backend_error(format!("finding model reproduction is invalid: {error}"))
-    })?;
+    let model =
+        crucible_engine::ReproductionArtifact::from_compact_binary(capture.model_reproduction())
+            .map_err(|error| {
+                backend_error(format!("finding model reproduction is invalid: {error}"))
+            })?;
     let closure = capture.campaign_replay_closure().clone();
     closure
         .validate_for_schedule(model.scenario_form(), model.schedule())

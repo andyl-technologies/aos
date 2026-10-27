@@ -85,7 +85,9 @@ pub(super) fn validate_fault_trace_objects(
                 ),
             });
         }
-        actual.insert(crucible_engine::model::resolved_effect_trace_segment_id(bytes));
+        actual.insert(crucible_engine::model::resolved_effect_trace_segment_id(
+            bytes,
+        ));
     }
 
     if actual != expected {

@@ -135,8 +135,9 @@ fn anchor_fault_topology(world: &World) -> Result<WorldFaultTopology, Box<dyn Er
 
 #[test]
 fn network_fault_anchor_world_offers_the_park_choice_and_the_guest_choice() {
-    let fixture =
-        include_str!("../../../../../../../../tests/crucible/fixtures/e2e-determinism.scenario.toml");
+    let fixture = include_str!(
+        "../../../../../../../../tests/crucible/fixtures/e2e-determinism.scenario.toml"
+    );
     let directory = tempfile::tempdir().expect("create test directory");
     let kernel = directory.path().join("kernel");
     let root_image = directory.path().join("root.ext4");
@@ -193,9 +194,12 @@ fn network_fault_anchor_world_offers_the_park_choice_and_the_guest_choice() {
                     .expect("branch selection"),
             )
             .expect("network fault branch");
-        crucible_engine::NetworkFaultCampaignReplayPlan::new(branch.selected().clone(), vec![branch])
-            .expect("network replay plan")
-            .validate_topology(world.fault_topology())
-            .expect("the selected path names a kept fault domain");
+        crucible_engine::NetworkFaultCampaignReplayPlan::new(
+            branch.selected().clone(),
+            vec![branch],
+        )
+        .expect("network replay plan")
+        .validate_topology(world.fault_topology())
+        .expect("the selected path names a kept fault domain");
     }
 }

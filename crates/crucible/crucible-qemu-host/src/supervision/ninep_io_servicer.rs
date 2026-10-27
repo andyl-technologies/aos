@@ -1038,7 +1038,10 @@ impl QemuLive9pIoServicer {
     /// Copies the literal sorted completion head without delivering it.
     pub(crate) fn completion_head_observation(
         &self,
-    ) -> (Option<u64>, Option<(crucible_qemu_shmem::FrameDeliveryKey, u32)>) {
+    ) -> (
+        Option<u64>,
+        Option<(crucible_qemu_shmem::FrameDeliveryKey, u32)>,
+    ) {
         let core = self.device.core();
         (
             core.next_exact_local_event(),

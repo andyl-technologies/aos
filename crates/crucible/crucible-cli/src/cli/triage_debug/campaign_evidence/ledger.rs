@@ -391,7 +391,9 @@ impl CampaignTriageFold {
             Entry::Vacant(entry) => {
                 entry.insert((self.signed.len(), location));
                 self.signed
-                    .push(crucible_engine::FailureClusterFinding::new(artifact, signature));
+                    .push(crucible_engine::FailureClusterFinding::new(
+                        artifact, signature,
+                    ));
             }
             Entry::Occupied(entry)
                 if self.signed.get(entry.get().0).is_some_and(|existing| {
@@ -455,7 +457,9 @@ impl CampaignTriageEvidence {
     }
 
     /// Returns clustered reproduction artifacts in ascending order.
-    pub(crate) fn member_artifacts(&self) -> impl Iterator<Item = crucible_engine::ContentHash> + '_ {
+    pub(crate) fn member_artifacts(
+        &self,
+    ) -> impl Iterator<Item = crucible_engine::ContentHash> + '_ {
         self.members.keys().copied()
     }
 

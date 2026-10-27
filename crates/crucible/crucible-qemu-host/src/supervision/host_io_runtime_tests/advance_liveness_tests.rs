@@ -11,8 +11,9 @@ fn advance_completion_poll_respects_elapsed_host_deadline() -> Result<(), Box<dy
     use std::os::fd::AsFd;
     use std::time::Instant;
 
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 2),
+    )?;
     let layout = allocation.layout();
     let bytes = allocation.setup_region_bytes()?;
     let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
@@ -50,8 +51,9 @@ fn advance_completion_poll_slices_retain_the_original_absolute_deadline()
     use std::os::fd::AsFd;
     use std::time::Instant;
 
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 2),
+    )?;
     let layout = allocation.layout();
     let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&allocation.setup_region_bytes()?)?;

@@ -841,13 +841,12 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         let snapshot = self.node_snapshot()?;
         let current_icount = snapshot.current_icount;
         let max_advance_icount = snapshot.max_advance_icount;
-        let stop_condition = crucible_qemu_shmem::AdvanceStopCondition::decode(
-            snapshot.advance_stop_condition,
-        )
-        .map_err(|source| QemuQuantumError::NodeSlot {
-            operation: "load scheduler advance for inbound wake",
-            source,
-        })?;
+        let stop_condition =
+            crucible_qemu_shmem::AdvanceStopCondition::decode(snapshot.advance_stop_condition)
+                .map_err(|source| QemuQuantumError::NodeSlot {
+                    operation: "load scheduler advance for inbound wake",
+                    source,
+                })?;
         let ceiling = authorize_advance_ceiling(current_icount, max_advance_icount, None)
             .map_err(|source| QemuQuantumError::Lookahead { source })?;
         self.publish_scheduler_inputs(

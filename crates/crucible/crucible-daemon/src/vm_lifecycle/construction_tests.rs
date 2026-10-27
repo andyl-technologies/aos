@@ -177,7 +177,8 @@ fn branch_plan_launch_window_keeps_only_servable_entries() -> Result<(), Box<dyn
     let node = NodeId {
         name: String::from("node-a"),
     };
-    let stream = crucible_qemu_protocol::app_random_transport::app_random_stream_name(&node.name, "b");
+    let stream =
+        crucible_qemu_protocol::app_random_transport::app_random_stream_name(&node.name, "b");
     let entries = [0_u64, 3, 7]
         .into_iter()
         .map(|draw| AppRandomBranchPlanEntry::new(draw, draw, draw + 1, [0x5a; 32], stream.clone()))

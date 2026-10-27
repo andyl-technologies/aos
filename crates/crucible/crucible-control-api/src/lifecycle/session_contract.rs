@@ -481,9 +481,7 @@ impl ResumeReplayClosure {
 /// frames, more than [`RESUME_REPLAY_CLOSURE_MAX_FRAMES`] frames, a frame
 /// larger than [`RESUME_REPLAY_CLOSURE_FRAME_MAX_BYTES`], or more than
 /// [`RESUME_REPLAY_CLOSURE_MAX_BYTES`] in total.
-pub fn validate_resume_replay_closure_frames(
-    frames: &[Vec<u8>],
-) -> Result<(), LifecycleApiError> {
+pub fn validate_resume_replay_closure_frames(frames: &[Vec<u8>]) -> Result<(), LifecycleApiError> {
     let reject = |message: String| Err(LifecycleApiError::ResumeReplayClosure { message });
     if frames.is_empty() || frames.len() > RESUME_REPLAY_CLOSURE_MAX_FRAMES {
         return reject(format!(

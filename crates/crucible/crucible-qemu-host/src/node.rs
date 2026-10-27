@@ -2802,7 +2802,9 @@ impl QemuNode {
         }
         let stop_condition = match stop {
             crucible_engine::RunCeilingStop::Bound => crate::QemuQuantumStopCondition::Ceiling,
-            crucible_engine::RunCeilingStop::ExactEvent => crate::QemuQuantumStopCondition::ExactEvent,
+            crucible_engine::RunCeilingStop::ExactEvent => {
+                crate::QemuQuantumStopCondition::ExactEvent
+            }
         };
         let report = self
             .advance_to_ceiling_report_with_stop_condition(icount_ceiling, stop_condition)

@@ -21,7 +21,8 @@ impl MappedSetupRegion {
     pub fn native_console_clamp_for_request(
         &self,
         vm_slot: u32,
-    ) -> Result<crucible_qemu_protocol::native_console::NativeConsoleClamp, NativeConsoleError> {
+    ) -> Result<crucible_qemu_protocol::native_console::NativeConsoleClamp, NativeConsoleError>
+    {
         let slot = self
             .node_slot(vm_slot)
             .map_err(|_| NativeConsoleError::Binding)?;

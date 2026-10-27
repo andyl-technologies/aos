@@ -352,7 +352,10 @@ fn commit_after_settled_gap(reached: u64) -> Result<SingleScheduler, SchedulerEr
     assert_eq!(run.plan.node.node.name, "a");
     assert_eq!(run.plan.before, NodeCounter { ticks: 0 });
     let ceiling = run.plan.ceiling.max_advance_icount;
-    assert!(ceiling > 25, "the RUN may cross the settled point: {ceiling}");
+    assert!(
+        ceiling > 25,
+        "the RUN may cross the settled point: {ceiling}"
+    );
 
     next.commit_prepared_host_run(
         run,

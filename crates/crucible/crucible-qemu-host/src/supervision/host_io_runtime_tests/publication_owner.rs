@@ -145,7 +145,8 @@ fn actual_owned_exit_is_observed_before_and_after_quantum_publication()
                 use std::os::unix::fs::FileExt;
                 file.write_all_at(
                     &(before.publish_gen + 1).to_ne_bytes(),
-                    layout.node_slots_off + crucible_qemu_shmem::NODE_SLOT_PUBLISH_GEN_OFFSET as u64,
+                    layout.node_slots_off
+                        + crucible_qemu_shmem::NODE_SLOT_PUBLISH_GEN_OFFSET as u64,
                 )
                 .map_err(|error| {
                     crate::QemuNodeChannelError::new(

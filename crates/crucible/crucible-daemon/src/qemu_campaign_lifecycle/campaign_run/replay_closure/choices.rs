@@ -4,8 +4,8 @@
 //! discover; the cursor resolves each omitted one from the campaign store
 //! when replay reaches it, so promotion never copies the whole schedule.
 
-use crucible_engine::{Decision, ScenarioDefForm, Schedule};
 use crucible_campaign::{CampaignExecutorStore, Selection};
+use crucible_engine::{Decision, ScenarioDefForm, Schedule};
 
 use super::format::{Entry, invalid};
 use super::reader::FrameReader;

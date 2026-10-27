@@ -1078,8 +1078,11 @@ fn live_idle_callback_queues_then_commits_only_from_normal_loop_completion() {
     let ceiling = authorize_advance_ceiling(0, 10, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     // Only an exact-event ceiling wakes a node that has no wake of its own.
-    slot.publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::ExactEvent)
-        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    slot.publish_scheduler_advance(
+        ceiling,
+        crucible_qemu_shmem::AdvanceStopCondition::ExactEvent,
+    )
+    .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(46, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state
@@ -1171,8 +1174,11 @@ fn live_idle_exact_event_short_of_the_timer_advances_without_a_timer_witness() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 30, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
-    slot.publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::ExactEvent)
-        .unwrap_or_else(|error| panic!("exact-event ceiling should publish: {error}"));
+    slot.publish_scheduler_advance(
+        ceiling,
+        crucible_qemu_shmem::AdvanceStopCondition::ExactEvent,
+    )
+    .unwrap_or_else(|error| panic!("exact-event ceiling should publish: {error}"));
     let state = test_live_state(150, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
     state

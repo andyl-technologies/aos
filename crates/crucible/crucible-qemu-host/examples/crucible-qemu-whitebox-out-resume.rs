@@ -22,17 +22,17 @@ use std::time::Duration;
 use crucible_engine::{
     AdvanceOutcome, Icount, ObservableEvent, ObservableEventPayload, SimulationBackend, VirtualTime,
 };
-use crucible_qemu_protocol::selectable_catalog_plan::{
-    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectableCatalogPlan, SelectablePlanContinuation,
-    SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPhase, SelectablePlanPresence,
-};
-use crucible_qemu_protocol::{SelectionReply, SelectionReplyStatus};
 use crucible_qemu_host::{
     LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory, QemuCrashCause,
     QemuLaunchPluginSwitch, QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuNode,
     QemuNodeError, QemuNodeRunStatus, QemuProductionFreshLaunchAdmission, QemuShutdownReport,
     QemuShutdownRung, launch_qemu_production_fresh_node,
 };
+use crucible_qemu_protocol::selectable_catalog_plan::{
+    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectableCatalogPlan, SelectablePlanContinuation,
+    SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPhase, SelectablePlanPresence,
+};
+use crucible_qemu_protocol::{SelectionReply, SelectionReplyStatus};
 
 #[path = "crucible-qemu-whitebox-out-resume/firmware.rs"]
 mod firmware;

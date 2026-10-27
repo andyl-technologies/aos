@@ -13,12 +13,12 @@ use crucible_campaign::{
     CampaignPrincipal, CampaignPrincipalAuthorizer, CampaignRepository, CampaignServiceFailure,
     CampaignServiceFailureCategory, CampaignServiceOperation, GetCampaignRequest,
 };
-use crucible_store::content_store::{MemoryBlobBackend, MemoryRefBackend};
 use crucible_daemon::{
     CampaignConnectionDiagnostic, CampaignLoopbackServer, CampaignLoopbackServerConfig,
     LoopbackCampaignService, LoopbackCampaignTimeouts, UnixPeerCampaignCredentials,
     UnixPeerCampaignPrincipalResolver,
 };
+use crucible_store::content_store::{MemoryBlobBackend, MemoryRefBackend};
 
 use super::*;
 

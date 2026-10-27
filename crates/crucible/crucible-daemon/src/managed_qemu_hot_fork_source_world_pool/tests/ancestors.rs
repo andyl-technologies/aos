@@ -1,7 +1,7 @@
 //! Ancestor checkout: the deepest eligible published root below a parent.
 
-use crucible_engine::{Configuration, Decision};
 use crucible_campaign::ConfigurationArtifactId;
+use crucible_engine::{Configuration, Decision};
 use crucible_store::content_store::{ContentId, ObjectKind};
 
 use super::super::test_support::{

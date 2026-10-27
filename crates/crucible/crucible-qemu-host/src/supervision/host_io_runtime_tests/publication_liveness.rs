@@ -124,12 +124,14 @@ fn publication_process() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_dead_publication_reader() -> Result<(), Box<dyn std::error::Error>> {
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 2),
+    )?;
     let layout = allocation.layout();
     let mut file = tempfile::NamedTempFile::new()?;
     file.write_all(&allocation.setup_region_bytes()?)?;
-    let plugin = crucible_qemu_shmem::mmap_setup_region(file.as_file().as_fd(), layout.region_size)?;
+    let plugin =
+        crucible_qemu_shmem::mmap_setup_region(file.as_file().as_fd(), layout.region_size)?;
     let slot = plugin.node_slot(0)?;
     slot.publish_scheduler_advance(
         authorize_advance_ceiling(0, 100, None)?,

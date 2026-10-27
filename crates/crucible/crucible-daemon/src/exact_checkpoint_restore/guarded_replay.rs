@@ -22,10 +22,10 @@ use crucible_qemu_protocol::selectable_catalog_plan::{
 };
 
 use crate::guest_selectable::{resolve_guest_selectable, selected_guest_reply};
-use crate::{ProductionEventLogSegments, QemuAttemptProcessResourceGuard};
 use crate::qemu_campaign_lifecycle::{
     GuardedCampaignReplayChoices, GuardedCampaignReplaySelection,
 };
+use crate::{ProductionEventLogSegments, QemuAttemptProcessResourceGuard};
 
 mod contract_context;
 mod network_inputs;

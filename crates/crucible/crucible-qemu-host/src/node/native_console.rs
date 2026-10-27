@@ -133,7 +133,8 @@ impl QemuNode {
     pub(crate) fn native_console_emission_for_test(
         &self,
         sequence: u64,
-    ) -> Result<crucible_qemu_protocol::native_console::NativeConsoleAuthorization, BackendError> {
+    ) -> Result<crucible_qemu_protocol::native_console::NativeConsoleAuthorization, BackendError>
+    {
         let console = self
             .native_console
             .as_ref()

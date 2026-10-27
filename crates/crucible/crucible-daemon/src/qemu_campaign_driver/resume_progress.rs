@@ -16,7 +16,9 @@
 use std::collections::BTreeSet;
 use std::io::Write;
 
-use crucible_engine::{NodeId, ObservableEventPayload, SchedulerEventLogEntry, SchedulerEventLogPayload};
+use crucible_engine::{
+    NodeId, ObservableEventPayload, SchedulerEventLogEntry, SchedulerEventLogPayload,
+};
 
 use crate::AttemptExecutionContext;
 

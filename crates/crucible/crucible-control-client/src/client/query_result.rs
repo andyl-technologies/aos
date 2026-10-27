@@ -140,8 +140,8 @@ pub(super) fn parse_query_result_line(
                 })?;
                 crucible_engine::model::ResolvedEffectTraceManifest::from_canonical_bytes(&bytes)
                     .map_err(|error| {
-                        rpc_decode(format!("invalid resolved-effect trace manifest: {error}"))
-                    })?;
+                    rpc_decode(format!("invalid resolved-effect trace manifest: {error}"))
+                })?;
                 Some(bytes)
             };
             reject_extra_query_result_fields(fields.next())?;

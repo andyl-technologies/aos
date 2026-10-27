@@ -652,9 +652,10 @@ fn envoy_completion_requires_routed_request_exact_response_and_guest_marker()
     let wrong_response =
         ObservableEvent::network_delivered(at, Some(link), HttpServer::Nginx.response().to_vec());
     let evaluate = |events| -> Result<bool, Box<dyn Error>> {
-        let prefix = ::crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
-            at.ticks, events,
-        )?;
+        let prefix =
+            ::crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
+                at.ticks, events,
+            )?;
         let mut pass =
             ConditionEvaluationPass::from_log_prefix(prefix, |_: ConditionLeaf<'_>| false)
                 .with_world_white_box_policies(form.world());

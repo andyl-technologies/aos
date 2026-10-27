@@ -166,8 +166,10 @@ impl LocalCheckpointPromotionWorker for UnusedPromotionWorker {
 
 /// Returns the resolved-effect trace the controlled inner lifecycle reports.
 fn controlled_effect_trace() -> crucible_engine::model::ResolvedEffectTrace {
-    crucible_engine::model::ResolvedEffectTrace::empty(crucible_engine::model::FaultReplayMode::LockedEffect)
-        .expect("empty controlled effect trace")
+    crucible_engine::model::ResolvedEffectTrace::empty(
+        crucible_engine::model::FaultReplayMode::LockedEffect,
+    )
+    .expect("empty controlled effect trace")
 }
 
 fn unused_host_error() -> QemuVmRealizationError {

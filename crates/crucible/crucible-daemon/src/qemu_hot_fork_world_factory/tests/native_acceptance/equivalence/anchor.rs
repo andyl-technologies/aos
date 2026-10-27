@@ -20,8 +20,8 @@
 
 use std::fmt::Debug;
 
-use crucible_engine::{NetworkFaultPhase, NetworkFaultSelectable};
 use crucible_campaign::{ChoiceDiscovery, ConfigurationArtifact, ResolvedSelection};
+use crucible_engine::{NetworkFaultPhase, NetworkFaultSelectable};
 
 use super::*;
 use crate::managed_qemu_hot_fork_source_world_pool::ManagedQemuPublishedRootSink;

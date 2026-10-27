@@ -274,11 +274,9 @@ mod tests {
             recent[0].row(),
             "CRUCIBLE-HOST-RUN-V1 node=a before=0 reached=4 settled_before=0 settled_through=40 stop=idle idle_parked=true inputs=1 last_input_ps=40 outputs=0 emits=none local_deadline_ps=none vcpu_deadline_ps=45"
         );
-        assert!(
-            recent[1]
-                .row()
-                .contains("stop=console-output:3 idle_parked=false inputs=1 last_input_ps=7 outputs=2 emits=5..7")
-        );
+        assert!(recent[1].row().contains(
+            "stop=console-output:3 idle_parked=false inputs=1 last_input_ps=7 outputs=2 emits=5..7"
+        ));
         assert_eq!(records_near(12, 0, 8)[0].node, "b");
 
         for before in 0..(CAPACITY as u64 + 8) {

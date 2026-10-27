@@ -140,13 +140,18 @@ pub(super) fn reached_requested_stop(
 /// evaluator. A semantic marker follows that evaluator's white-box gate: it
 /// counts only when its source node is a declared World node with white-box
 /// observation enabled. Plain guest markers keep their established admission.
-fn names_boundary(payload: &ObservableEventPayload, name: &str, world: &crucible_engine::World) -> bool {
+fn names_boundary(
+    payload: &ObservableEventPayload,
+    name: &str,
+    world: &crucible_engine::World,
+) -> bool {
     match payload {
         ObservableEventPayload::GuestMarker { marker, .. } => marker.name == name,
         ObservableEventPayload::GuestSemanticMarker { node, marker, .. } => {
             marker == name
                 && world.vm_nodes().iter().any(|declared| {
-                    declared.id == *node && declared.white_box == crucible_engine::WhiteBoxPolicy::Enabled
+                    declared.id == *node
+                        && declared.white_box == crucible_engine::WhiteBoxPolicy::Enabled
                 })
         }
         _ => false,

@@ -9,8 +9,8 @@
 
 use std::fmt;
 
-use crucible_engine::Configuration;
 use crucible_campaign::{CampaignHash, ChoiceDiscovery, SelectionReplayMismatch};
+use crucible_engine::Configuration;
 use crucible_qemu_protocol::selectable_catalog_plan::SelectablePlanPendingRequest;
 
 use crate::guest_selectable::GuestSelectableReplayOpportunityContext;

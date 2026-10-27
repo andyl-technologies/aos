@@ -20,7 +20,9 @@
 
 use std::sync::Arc;
 
-use crucible_engine::attempt_log::{MAX_ATTEMPT_LOG_ENTRY_BYTES, encode_segment, encoded_entry_len};
+use crucible_engine::attempt_log::{
+    MAX_ATTEMPT_LOG_ENTRY_BYTES, encode_segment, encoded_entry_len,
+};
 use crucible_engine::{EVENT_LOG_SEAL_TARGET_BYTES, EventLogSegmentRef};
 
 use super::*;

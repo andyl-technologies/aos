@@ -234,8 +234,10 @@ struct FakeResumeDriver {
 
 /// Returns the applied-effect trace the restored child reports at its stop.
 fn resume_effect_trace() -> crucible_engine::model::ResolvedEffectTrace {
-    crucible_engine::model::ResolvedEffectTrace::empty(crucible_engine::model::FaultReplayMode::RecomputedCause)
-        .expect("empty resolved-effect trace")
+    crucible_engine::model::ResolvedEffectTrace::empty(
+        crucible_engine::model::FaultReplayMode::RecomputedCause,
+    )
+    .expect("empty resolved-effect trace")
 }
 
 struct ObservedResume {

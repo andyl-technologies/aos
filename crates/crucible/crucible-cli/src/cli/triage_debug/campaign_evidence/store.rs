@@ -58,7 +58,10 @@ impl CampaignExchangeRef {
     }
 
     /// Reads the request blob under the campaign message bound.
-    pub(super) fn read_request(self, store: &crucible_engine::LocalDagStore) -> Result<Vec<u8>, CliError> {
+    pub(super) fn read_request(
+        self,
+        store: &crucible_engine::LocalDagStore,
+    ) -> Result<Vec<u8>, CliError> {
         read_evidence_blob(
             store,
             self.request,
@@ -75,9 +78,12 @@ pub(super) fn parse_evidence_hash(
 ) -> Result<crucible_engine::ContentHash, CliError> {
     // The shared parser accepts only 64 lowercase hexadecimal characters, so
     // every accepted spelling is the canonical one the encoder writes.
-    crucible_engine::ContentAddressedBlobRef::parse("campaign evidence hash", &format!("blake3:{value}"))
-        .map(crucible_engine::ContentAddressedBlobRef::hash)
-        .map_err(|_| artifact_error(format!("evidence field `{field}` has an invalid hash")))
+    crucible_engine::ContentAddressedBlobRef::parse(
+        "campaign evidence hash",
+        &format!("blake3:{value}"),
+    )
+    .map(crucible_engine::ContentAddressedBlobRef::hash)
+    .map_err(|_| artifact_error(format!("evidence field `{field}` has an invalid hash")))
 }
 
 /// Stores one evidence blob and returns its content address.

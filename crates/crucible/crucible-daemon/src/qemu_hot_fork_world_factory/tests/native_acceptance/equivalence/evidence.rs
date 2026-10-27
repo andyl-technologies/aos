@@ -228,7 +228,8 @@ fn boundary_precedes_shared_fault(frontier_ticks: u64) -> bool {
 fn source_boundary_preserves_the_exact_shared_fault_deadline()
 -> Result<(), crucible_engine::TimeConversionError> {
     let pre_fault = crucible_engine::VirtualInstant::from_nanoseconds(1_000_000_000)?;
-    let fault = crucible_engine::VirtualInstant::from_nanoseconds(scenario::PERMANENT_FAILURE_NANOS)?;
+    let fault =
+        crucible_engine::VirtualInstant::from_nanoseconds(scenario::PERMANENT_FAILURE_NANOS)?;
 
     assert!(boundary_precedes_shared_fault(pre_fault.ticks));
     assert!(boundary_precedes_shared_fault(fault.ticks - 1));

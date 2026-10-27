@@ -6,13 +6,13 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crucible_engine::WorldIoNodeKind;
 use crate::vm_lifecycle::{
     ProductionVmExactNodeRestoreAdmission, ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest,
     ProductionVmNodeLauncher,
 };
 use crate::{ProductionVmLifecycleConfig, build_production_vm_lifecycle_loop_with_launcher};
 use crucible_control_api::LifecycleApiError;
+use crucible_engine::WorldIoNodeKind;
 
 use super::*;
 

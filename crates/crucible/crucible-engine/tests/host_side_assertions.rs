@@ -94,16 +94,19 @@ impl GrowingLog {
         for event in &events {
             let sequence = self.next_sequence();
             self.entries.push(
-                crucible_engine::test_support::condition_observation_entry_for_test(sequence, event),
+                crucible_engine::test_support::condition_observation_entry_for_test(
+                    sequence, event,
+                ),
             );
         }
         let sequence = self.next_sequence();
-        self.entries
-            .push(crucible_engine::test_support::condition_boundary_entry_for_test(
+        self.entries.push(
+            crucible_engine::test_support::condition_boundary_entry_for_test(
                 sequence,
                 time(ticks),
                 SchedulerEvaluationBoundaryKind::Quantum,
-            ));
+            ),
+        );
         crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
             self.entries.clone(),
         )

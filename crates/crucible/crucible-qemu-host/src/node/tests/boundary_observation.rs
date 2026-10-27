@@ -150,7 +150,8 @@ fn completed_observation_waits_for_coherence_then_drains_exactly_once() -> Resul
         );
         fixture.file.write_all_at(
             &(original.publish_gen + 2).to_ne_bytes(),
-            fixture.layout.node_slots_off + crucible_qemu_shmem::NODE_SLOT_PUBLISH_GEN_OFFSET as u64,
+            fixture.layout.node_slots_off
+                + crucible_qemu_shmem::NODE_SLOT_PUBLISH_GEN_OFFSET as u64,
         )?;
         let (node, events, attempts) = reader.join().map_err(|_| "observation reader panicked")?;
         Ok((node, events?, attempts))

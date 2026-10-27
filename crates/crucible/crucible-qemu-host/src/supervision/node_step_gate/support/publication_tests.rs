@@ -165,7 +165,8 @@ fn consumed_completion_keeps_its_original_frames_during_busy_clock_reread()
     let coherent = mapped.producer.node_slot(0)?.snapshot();
     mapped.set_producer_sequence(coherent.publish_gen + 1)?;
     let file = mapped.file.try_clone()?;
-    let offset = mapped.layout.node_slots_off + crucible_qemu_shmem::NODE_SLOT_PUBLISH_GEN_OFFSET as u64;
+    let offset =
+        mapped.layout.node_slots_off + crucible_qemu_shmem::NODE_SLOT_PUBLISH_GEN_OFFSET as u64;
     let deadline = HostSupervisionDeadline::start(Duration::from_secs(1));
     let mut refused = false;
 

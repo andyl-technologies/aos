@@ -148,9 +148,14 @@ fn network_fault_branch_input_with_tail(
     )
     .expect("network choice resolves")
     .expect("network choice is offered");
-    let value =
-        crucible_engine::NetworkFaultSelectable::selected_value("link_down", "primary", 1_000, 0, 0)
-            .expect("network fault value");
+    let value = crucible_engine::NetworkFaultSelectable::selected_value(
+        "link_down",
+        "primary",
+        1_000,
+        0,
+        0,
+    )
+    .expect("network fault value");
     let branch = selectable
         .resolve_branch(
             &selectable

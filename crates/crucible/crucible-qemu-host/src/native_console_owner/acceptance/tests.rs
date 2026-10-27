@@ -506,7 +506,8 @@ fn canonical_drain_keeps_boot_origin_and_original_run_map_after_rebase() -> Resu
     assert_eq!(observations[0].at().ticks, 0);
     assert_eq!(observations[1].at().ticks, 60);
     for (event, (ps, byte, sequence)) in observations.iter().zip([(60, b'b', 1), (160, b'r', 2)]) {
-        let crucible_engine::ObservableEventPayload::NativeConsoleByte { origin, .. } = event.payload()
+        let crucible_engine::ObservableEventPayload::NativeConsoleByte { origin, .. } =
+            event.payload()
         else {
             panic!("canonical drain must retain complete byte origin");
         };
@@ -1003,7 +1004,9 @@ pub(crate) fn accepted_console_stop_fixture() -> Result<AcceptedConsoleStopFixtu
     assert_eq!(boundary.calibration().raw_icount, 1);
     pending.completed_boundary = Some(boundary);
     let report = QemuShmemHotPathChannel::poll_quantum(&mut channel, &mut pending)?;
-    assert!(matches!(report.outcome, crucible_engine::AdvanceOutcome::Paused { at } if at.retired == 100));
+    assert!(
+        matches!(report.outcome, crucible_engine::AdvanceOutcome::Paused { at } if at.retired == 100)
+    );
     let owner = custody.lock()?;
     assert!(owner.issued.is_empty());
     assert_eq!(

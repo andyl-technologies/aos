@@ -1,10 +1,12 @@
 //! Real exact-restored guest progress after authenticated tier cache eviction.
 
 use super::*;
-use crucible_store::content_envelope::ContentEnvelope;
-use crucible_store::content_store::{DirectoryRefBackend, MutableRefBackend, RefCasOutcome, RefName};
 use crucible_daemon::{CampaignGcCandidateReason, CampaignGcJournalPhase};
 use crucible_qemu_host::QemuLaunchArtifactIdentity;
+use crucible_store::content_envelope::ContentEnvelope;
+use crucible_store::content_store::{
+    DirectoryRefBackend, MutableRefBackend, RefCasOutcome, RefName,
+};
 
 const CACHE_NODE: &str = "tier-cache";
 const SOURCE_NODE: &str = "tier-source";

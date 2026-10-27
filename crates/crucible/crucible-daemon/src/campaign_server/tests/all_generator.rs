@@ -22,7 +22,9 @@ fn missing_all_and_unselected_policy_refuse_without_publication() {
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
     let artifacts = CrucibleCampaignArtifactStore::new(repository.clone());
-    let scenario = crucible_engine::happy_path_scenario().expect("scenario").scenario;
+    let scenario = crucible_engine::happy_path_scenario()
+        .expect("scenario")
+        .scenario;
     let scenario_id = artifacts
         .import_scenario(&scenario)
         .expect("scenario import");

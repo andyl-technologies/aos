@@ -2,8 +2,8 @@
 
 use super::super::super::archive_transfer::{packed_archive_fixture, packed_repack_command};
 use super::*;
-use crucible_store::content_store::{PackedBlobBackend, StoreError};
 use crucible_qemu_host::QemuLaunchArtifactIdentity;
+use crucible_store::content_store::{PackedBlobBackend, StoreError};
 
 const PACKED_NODE: &str = "packed";
 const TARGET_PACK_BYTES: u64 = 65_536;

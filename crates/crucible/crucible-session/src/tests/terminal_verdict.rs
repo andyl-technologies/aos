@@ -35,11 +35,13 @@ async fn terminal_quantum_verdict_is_not_reapplied_as_a_breakpoint_action() {
         .step_quantum()
         .unwrap_or_else(|error| panic!("terminal-verdict quantum must complete: {error}"));
 
-    let entries = vec![crucible_engine::test_support::condition_boundary_entry_for_test(
-        0,
-        VirtualTime { ticks: 0 },
-        SchedulerEvaluationBoundaryKind::Quantum,
-    )];
+    let entries = vec![
+        crucible_engine::test_support::condition_boundary_entry_for_test(
+            0,
+            VirtualTime { ticks: 0 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
     let history = ConditionEventLogPrefix::from_scheduler_event_log_entries(entries.clone())
         .unwrap_or_else(|error| panic!("terminal history prefix must build: {error}"));
     engine

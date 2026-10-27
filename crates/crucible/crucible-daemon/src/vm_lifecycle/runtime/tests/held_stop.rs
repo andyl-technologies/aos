@@ -596,12 +596,19 @@ fn an_adopted_template_park_lets_a_fresh_node_set_release_the_marker() -> TestRe
         &[],
     )?
     .ok_or("network selectable absent")?;
-    let value =
-        crucible_engine::NetworkFaultSelectable::selected_value("link_down", "primary", 1_000, 0, 0)?;
+    let value = crucible_engine::NetworkFaultSelectable::selected_value(
+        "link_down",
+        "primary",
+        1_000,
+        0,
+        0,
+    )?;
     let branch = selectable.resolve_branch(&selectable.branch_selection(value)?)?;
     let selected = branch.selected().id();
-    let replay =
-        crucible_engine::NetworkFaultCampaignReplayPlan::new(branch.selected().clone(), vec![branch])?;
+    let replay = crucible_engine::NetworkFaultCampaignReplayPlan::new(
+        branch.selected().clone(),
+        vec![branch],
+    )?;
     lifecycle
         .inner
         .network_transaction_parts_mut()
@@ -653,12 +660,19 @@ fn production_marker_park_unblocks_network_and_requires_join_before_release() ->
         &[],
     )?
     .ok_or("network selectable absent")?;
-    let value =
-        crucible_engine::NetworkFaultSelectable::selected_value("link_down", "primary", 1_000, 0, 0)?;
+    let value = crucible_engine::NetworkFaultSelectable::selected_value(
+        "link_down",
+        "primary",
+        1_000,
+        0,
+        0,
+    )?;
     let branch = selectable.resolve_branch(&selectable.branch_selection(value)?)?;
     let selected = branch.selected().id();
-    let replay =
-        crucible_engine::NetworkFaultCampaignReplayPlan::new(branch.selected().clone(), vec![branch])?;
+    let replay = crucible_engine::NetworkFaultCampaignReplayPlan::new(
+        branch.selected().clone(),
+        vec![branch],
+    )?;
     lifecycle
         .inner
         .network_transaction_parts_mut()
@@ -739,7 +753,10 @@ fn committed_request_visibility_refuses_changed_source_counter() -> TestResult {
     lifecycle
         .inner
         .loop_impl_mut()
-        .rebase_restarted_backend_counter(pending.node(), crucible_engine::NodeCounter { ticks: 1_000 })?;
+        .rebase_restarted_backend_counter(
+            pending.node(),
+            crucible_engine::NodeCounter { ticks: 1_000 },
+        )?;
 
     assert!(
         lifecycle

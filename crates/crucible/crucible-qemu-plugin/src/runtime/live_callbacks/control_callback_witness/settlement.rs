@@ -163,9 +163,12 @@ mod tests {
         let context =
             witness.settlement_context(Some(u64::MAX), u64::MAX, u32::MAX, u64::MAX, None);
         witness.retain_settlement(context, SettlementReason::PublicationBackpressure);
-        let identity =
-            crucible_qemu_shmem::SetupRegionBackingIdentity::from_parts(u64::MAX, u64::MAX, u64::MAX)
-                .unwrap_or_else(|| panic!("valid bounded diagnostic identity"));
+        let identity = crucible_qemu_shmem::SetupRegionBackingIdentity::from_parts(
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+        )
+        .unwrap_or_else(|| panic!("valid bounded diagnostic identity"));
         let report = || {
             let mut bytes = Vec::new();
             witness

@@ -22,7 +22,10 @@ use crate::{
 };
 
 /// Final entries and effect trace one seal received.
-type SealRecord = (Vec<u64>, Option<crucible_engine::model::ResolvedEffectTrace>);
+type SealRecord = (
+    Vec<u64>,
+    Option<crucible_engine::model::ResolvedEffectTrace>,
+);
 
 struct RetentionDriver {
     order: Order,

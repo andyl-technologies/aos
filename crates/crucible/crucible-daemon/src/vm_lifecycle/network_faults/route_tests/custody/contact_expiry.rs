@@ -16,7 +16,8 @@ fn first_interval(
     let plan = topology
         .network_policy_artifact(&id("contact-plan"))
         .unwrap_or_else(|| panic!("contact plan"));
-    let crucible_engine::model::NetworkPolicyArtifactKind::ContactPlan { intervals } = &plan.artifact
+    let crucible_engine::model::NetworkPolicyArtifactKind::ContactPlan { intervals } =
+        &plan.artifact
     else {
         panic!("contact plan type")
     };
@@ -84,7 +85,10 @@ fn evidence(state: &NetworkEffectRuntimeState) -> Vec<u8> {
 
 #[test]
 fn closed_empty_contact_windows_are_dropped_and_open_windows_kept() {
-    let topology = custody_topology(crucible_engine::model::NetworkPolicyOverflow::DropNewest, 100);
+    let topology = custody_topology(
+        crucible_engine::model::NetworkPolicyOverflow::DropNewest,
+        100,
+    );
     let first = first_interval(&topology);
     let mut state = NetworkEffectRuntimeState::default();
     assert!(reserve_direct(&mut state, &topology, &first, 110_000, b"first-window").is_some());
@@ -142,7 +146,10 @@ fn closed_contact_windows_with_reservations_are_not_expired() {
 
 #[test]
 fn pruned_and_unpruned_contact_states_reserve_identically() {
-    let topology = custody_topology(crucible_engine::model::NetworkPolicyOverflow::DropNewest, 100);
+    let topology = custody_topology(
+        crucible_engine::model::NetworkPolicyOverflow::DropNewest,
+        100,
+    );
     let first = first_interval(&topology);
     let later = later_interval(&first);
     let mut unpruned = NetworkEffectRuntimeState::default();
@@ -182,7 +189,10 @@ fn pruned_and_unpruned_contact_states_reserve_identically() {
 
 #[test]
 fn checkpoint_compaction_drops_closed_windows_and_round_trips() {
-    let topology = custody_topology(crucible_engine::model::NetworkPolicyOverflow::DropNewest, 100);
+    let topology = custody_topology(
+        crucible_engine::model::NetworkPolicyOverflow::DropNewest,
+        100,
+    );
     let first = first_interval(&topology);
     let later = later_interval(&first);
     let mut live = NetworkEffectRuntimeState::default();
@@ -218,7 +228,10 @@ fn checkpoint_compaction_drops_closed_windows_and_round_trips() {
 
 #[test]
 fn checkpoint_validation_rejects_closed_empty_contact_windows() {
-    let topology = custody_topology(crucible_engine::model::NetworkPolicyOverflow::DropNewest, 100);
+    let topology = custody_topology(
+        crucible_engine::model::NetworkPolicyOverflow::DropNewest,
+        100,
+    );
     let first = first_interval(&topology);
     let mut live = NetworkEffectRuntimeState::default();
     assert!(reserve_direct(&mut live, &topology, &first, 110_000, b"first-window").is_some());

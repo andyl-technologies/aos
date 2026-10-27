@@ -76,7 +76,10 @@ fn first_chunk_key(record_text: &str) -> Result<crucible_engine::ContentHash, Bo
 }
 
 pub(super) fn parse_hash(hex: &str) -> Result<crucible_engine::ContentHash, Box<dyn Error>> {
-    Ok(crucible_engine::ContentAddressedBlobRef::parse("evidence hash", &format!("blake3:{hex}"))?.hash())
+    Ok(
+        crucible_engine::ContentAddressedBlobRef::parse("evidence hash", &format!("blake3:{hex}"))?
+            .hash(),
+    )
 }
 
 /// Rewrites a record's first chunk and stores the re-hashed chunk and record.

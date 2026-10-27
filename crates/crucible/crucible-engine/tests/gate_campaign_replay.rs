@@ -432,8 +432,9 @@ fn campaign_reproduction_to_native(
     directory: &Path,
     reproduction: &CampaignReproductionArtifact,
 ) -> Result<FindingReproductionArtifact, Box<dyn Error>> {
-    let manifest =
-        crucible_engine::ReproductionArtifact::stored_form_schedule_manifest(reproduction.payload())?;
+    let manifest = crucible_engine::ReproductionArtifact::stored_form_schedule_manifest(
+        reproduction.payload(),
+    )?;
     let manifest_segments = manifest
         .segments()
         .iter()

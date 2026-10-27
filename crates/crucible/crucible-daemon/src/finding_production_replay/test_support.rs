@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::MemorySegmentStore;
+use crucible_campaign::CampaignHash;
 use crucible_engine::model::{
     FaultCoordinate, FaultReplayMode, FaultResourceLimits, FaultSignalPlan,
     NormalizedSpatialArtifact, ResolvedReplayWorkItem, SignalBoundaryBehavior, SignalDomain,
@@ -17,7 +18,6 @@ use crucible_engine::{
     Icount, NodeTemplate, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
     SchedulerEventLogClass, Seed, WhiteBoxPolicy, World, WorldNode,
 };
-use crucible_campaign::CampaignHash;
 use crucible_store::content_store::BlobHandle;
 
 pub(crate) fn vm_node() -> WorldNode {

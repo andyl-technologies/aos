@@ -2,11 +2,11 @@
 
 use std::error::Error;
 
-use crucible_engine::{DeliveryOrderDecision, Schedule, VirtualTime};
 use crucible_campaign::{
     CampaignHash, ConfigurationArtifact, ConfigurationId, ScenarioArtifact, ScenarioDefId,
     StopCondition,
 };
+use crucible_engine::{DeliveryOrderDecision, Schedule, VirtualTime};
 
 use super::*;
 

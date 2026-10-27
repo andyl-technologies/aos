@@ -365,9 +365,10 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
         observation_result
     );
 
-    let trace =
-        crucible_engine::model::ResolvedEffectTrace::empty(crucible_engine::model::FaultReplayMode::LockedEffect)
-            .expect("empty resolved effect trace");
+    let trace = crucible_engine::model::ResolvedEffectTrace::empty(
+        crucible_engine::model::FaultReplayMode::LockedEffect,
+    )
+    .expect("empty resolved effect trace");
     let trace_manifest = trace
         .manifest()
         .canonical_bytes()

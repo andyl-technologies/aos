@@ -505,7 +505,9 @@ fn random_update(
     let data_lag_nanos = if rng.chance(50) { 0 } else { 1 + rng.below(3) };
     let release = match rng.below(3) {
         0 => NinepVisibilityRelease::AtTicks(now + rng.below(5_000)),
-        1 => NinepVisibilityRelease::AtNanos(now / crucible_qemu_shmem::TICKS_PER_NS + rng.below(5)),
+        1 => {
+            NinepVisibilityRelease::AtNanos(now / crucible_qemu_shmem::TICKS_PER_NS + rng.below(5))
+        }
         _ => on_event(
             EVENTS[rng.below(EVENTS.len() as u64) as usize],
             rng.recent_coordinate(now, 1_000),

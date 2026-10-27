@@ -73,13 +73,13 @@ mod guest_selectable;
 pub(crate) use failure_classification::{
     classify_production_lifecycle_failure, production_lifecycle_failure_class,
 };
-use guest_selectable::{apply_replayed_guest_selectables, publish_replayed_host_outcomes};
 use failure_classification::{
     cleanup_after_fresh_runner_failure, map_checkpoint_capture_failure,
     map_checkpoint_handoff_failure, map_fresh_driver_failure, map_fresh_lifecycle_failure,
     map_start_replay_scheduler_failure, map_terminal_fingerprint_capture_failure,
     start_replay_limit_failure,
 };
+use guest_selectable::{apply_replayed_guest_selectables, publish_replayed_host_outcomes};
 
 mod remote_observation_resume;
 pub use remote_observation_resume::RemoteObservationResumeFactory;

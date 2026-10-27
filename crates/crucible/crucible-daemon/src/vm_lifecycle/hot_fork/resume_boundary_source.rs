@@ -107,7 +107,10 @@ impl ProductionVmLifecycleLoop {
         })
     }
 
-    fn restore_network_replay(&mut self, replay: Option<crucible_engine::NetworkFaultCampaignReplayPlan>) {
+    fn restore_network_replay(
+        &mut self,
+        replay: Option<crucible_engine::NetworkFaultCampaignReplayPlan>,
+    ) {
         let (_, network) = self.inner.backend_and_network_output_interceptor_mut();
         network.restore_campaign_replay(replay);
     }
@@ -116,8 +119,10 @@ impl ProductionVmLifecycleLoop {
 /// Returns the network fault plan an exact resume with `config` installs.
 fn resume_network_replay(
     config: &ProductionVmLifecycleConfig,
-) -> Result<Option<crucible_engine::NetworkFaultCampaignReplayPlan>, crucible_engine::NetworkFaultSelectableError>
-{
+) -> Result<
+    Option<crucible_engine::NetworkFaultCampaignReplayPlan>,
+    crucible_engine::NetworkFaultSelectableError,
+> {
     let Some(replay) = config
         .signal_fault_replay
         .as_ref()

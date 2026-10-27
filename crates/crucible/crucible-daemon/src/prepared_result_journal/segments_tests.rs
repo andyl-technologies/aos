@@ -4,12 +4,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
+use crucible_campaign::{CampaignHash, ConfigurationId, ExecutionId, ScenarioDefId};
 use crucible_engine::model::{MeasurementDefinitions, MeasurementTerminalState};
 use crucible_engine::{
     EventAttributeValue, EventLevel, EventLogTime, EventPayload, EventSource,
     SchedulerEventLogClass, SchedulerEventLogEntry, VirtualTime,
 };
-use crucible_campaign::{CampaignHash, ConfigurationId, ExecutionId, ScenarioDefId};
 use tempfile::TempDir;
 
 use super::super::tests::{TEST_PAYLOAD_LIMIT, observation_candidate, semantic_key};

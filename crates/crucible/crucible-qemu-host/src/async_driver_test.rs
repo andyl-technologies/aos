@@ -570,7 +570,10 @@ mod owned_child {
             self.region
                 .node_slot(0)
                 .map_err(|error| QemuNodeChannelError::new("fixture slot", error.to_string()))?
-                .publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
+                .publish_scheduler_advance(
+                    ceiling,
+                    crucible_qemu_shmem::AdvanceStopCondition::Ceiling,
+                )
                 .map(|_wake| ())
                 .map_err(|error| QemuNodeChannelError::new("fixture advance", error.to_string()))
         }
@@ -612,8 +615,9 @@ mod owned_child {
             return Err("fixture ready byte differs".into());
         }
 
-        let allocation =
-            crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+        let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+            crucible_qemu_shmem::RegionConfig::new(1, 2),
+        )?;
         let layout = allocation.layout();
         let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
         shmem.write_all(&allocation.setup_region_bytes()?)?;

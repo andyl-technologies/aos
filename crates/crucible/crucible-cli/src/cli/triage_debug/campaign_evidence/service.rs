@@ -447,19 +447,20 @@ fn campaign_triage_report_from_replay(
             "campaign occurrence triage payload has an incompatible semantic binding",
         ));
     }
-    let replay = crucible_engine::FailureTriageReplayEvidence::from_compact_binary_for_reproduction(
-        crucible_engine::ContentHash {
-            bytes: reproduction.finding_fingerprint().as_bytes(),
-        },
-        artifact,
-        record.payload(),
-        log_segments,
-    )
-    .map_err(|error| {
-        artifact_error(format!(
-            "campaign occurrence triage payload is invalid: {error}"
-        ))
-    })?;
+    let replay =
+        crucible_engine::FailureTriageReplayEvidence::from_compact_binary_for_reproduction(
+            crucible_engine::ContentHash {
+                bytes: reproduction.finding_fingerprint().as_bytes(),
+            },
+            artifact,
+            record.payload(),
+            log_segments,
+        )
+        .map_err(|error| {
+            artifact_error(format!(
+                "campaign occurrence triage payload is invalid: {error}"
+            ))
+        })?;
     validate_campaign_native_signature_binding(record, reproduction, &replay)?;
     triage_finding_evidence_from_replay(&replay)
 }

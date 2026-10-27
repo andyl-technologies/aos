@@ -86,7 +86,10 @@ use thiserror::Error;
 use crate::QemuLiveBlockIoServicerCheckpoint;
 
 // One immutable device borrow captures the deadline and its sorted reply head.
-type CompletionHeadObservation = (Option<u64>, Option<(crucible_qemu_shmem::FrameDeliveryKey, u32)>);
+type CompletionHeadObservation = (
+    Option<u64>,
+    Option<(crucible_qemu_shmem::FrameDeliveryKey, u32)>,
+);
 
 /// In-flight request-queue capacity for the servicer's I/O core.
 const SERVICER_INBOX_CAPACITY: u64 = 16;

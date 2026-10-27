@@ -916,18 +916,19 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             .map_err(|_| SchedulerError::BoundaryViolation {
                 message: String::from("production fault runtime lock is poisoned"),
             })?;
-        let recorded =
-            match runtime.recorded_trace(crucible_engine::model::FaultReplayMode::RecomputedCause) {
-                Ok(trace) => Some(trace),
-                Err(crucible_qemu_host::ProductionFaultRuntimeError::Execution(
-                    crucible_engine::model::FaultExecutionError::CheckpointPresence,
-                )) => None,
-                Err(error) => {
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: format!("capture production resolved-effect trace: {error}"),
-                    });
-                }
-            };
+        let recorded = match runtime
+            .recorded_trace(crucible_engine::model::FaultReplayMode::RecomputedCause)
+        {
+            Ok(trace) => Some(trace),
+            Err(crucible_qemu_host::ProductionFaultRuntimeError::Execution(
+                crucible_engine::model::FaultExecutionError::CheckpointPresence,
+            )) => None,
+            Err(error) => {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("capture production resolved-effect trace: {error}"),
+                });
+            }
+        };
         drop(runtime);
         let network = self.inner.network_output_interceptor();
         super::network_faults::trace_with_campaign_network_records(

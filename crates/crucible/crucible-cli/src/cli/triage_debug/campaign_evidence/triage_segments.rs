@@ -48,7 +48,13 @@ pub(super) fn capture_occurrence_triage_log_segments<S>(
     role: crucible_campaign::CampaignFindingTriageReplayRole,
     record: &crucible_campaign::FindingTriageReplayEvidence,
     store: &crucible_engine::LocalDagStore,
-) -> Result<(crucible_engine::ContentHash, crucible_engine::FailureTriageReplaySegments), CliError>
+) -> Result<
+    (
+        crucible_engine::ContentHash,
+        crucible_engine::FailureTriageReplaySegments,
+    ),
+    CliError,
+>
 where
     S: crucible_campaign::CampaignFindingOccurrenceService,
     S::Error: crucible_campaign::CampaignServiceFailureSource,

@@ -504,9 +504,10 @@ fn test_ninep_servicer() -> (std::fs::File, QemuLive9pIoServicer) {
     use std::io::Write as _;
     use std::os::fd::AsFd as _;
 
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 4))
-            .unwrap_or_else(|error| panic!("test shared region should allocate: {error}"));
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 4),
+    )
+    .unwrap_or_else(|error| panic!("test shared region should allocate: {error}"));
     let layout = allocation.layout();
     let bytes = allocation
         .setup_region_bytes()

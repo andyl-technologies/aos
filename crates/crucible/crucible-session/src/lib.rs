@@ -26,7 +26,9 @@ pub mod engine {
         WorldNetworkSegment, WorldNetworkSegmentKind, WorldNetworkTechnology,
         decode_resolved_effect_trace_segment, reduce,
     };
-    pub use crucible_engine::segment_store::{ContentId, SegmentSink, SegmentSource, SharedSegmentStore};
+    pub use crucible_engine::segment_store::{
+        ContentId, SegmentSink, SegmentSource, SharedSegmentStore,
+    };
     pub use crucible_engine::{
         Action, AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind,
         BlackBoxHostOracle, CRASH_RESTART_SCENARIO_NAME, Checkpoint, CheckpointKind,
