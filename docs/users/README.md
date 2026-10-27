@@ -33,6 +33,8 @@
   - [Manage trust and incidents](registry/trust.md)
 - [Operate Crucible](crucible/)
   - [Run Nginx and Curl in Crucible](crucible/quickstart.md)
+- [Operate Terrane](terrane/)
+  - [Use a local repository](terrane/local-repository.md)
 
 ## Package runtime configuration
 

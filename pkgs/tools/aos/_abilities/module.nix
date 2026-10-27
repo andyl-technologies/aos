@@ -1,5 +1,9 @@
 ##! Composes the package-owned AOS ability modules.
-{lib, package, ...}: {
+{
+  lib,
+  package,
+  ...
+}: {
   imports = [
     ./attestation-verifier.nix
     ./configuration-evaluation.nix

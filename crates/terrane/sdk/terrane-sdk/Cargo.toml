@@ -1,0 +1,61 @@
+[package]
+name = "terrane-sdk"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+terrane-format.workspace = true
+async-trait.workspace = true
+buffa = { workspace = true, features = ["json"] }
+buffa-types = { version = "=0.9.2", features = ["json"] }
+serde_json.workspace = true
+serde.workspace = true
+toml.workspace = true
+blake3.workspace = true
+zeroize.workspace = true
+
+reqwest = { workspace = true, optional = true, features = ["http2"] }
+tokio = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+connectrpc = { workspace = true, optional = true, features = ["server-tls"] }
+rustls = { workspace = true, optional = true }
+jsonwebtoken = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+
+# Preserve native parallel Zstd support without requiring POSIX threads on wasm.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+zstd.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+zstd = "0.13"
+
+# Native filesystem dependencies must not enter portable std/wasm builds.
+[target.'cfg(unix)'.dependencies]
+xattr = { version = "=1.6.1", optional = true }
+libc = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true, features = ["process"] }
+
+[dev-dependencies]
+prost.workspace = true
+prost-types = "0.13"
+
+[build-dependencies]
+buffa.workspace = true
+buffa-codegen = "=0.9.2"
+connectrpc-codegen = "=0.9.0"
+
+[features]
+default = ["std"]
+std = ["dep:xattr", "dep:libc", "dep:rustix"]
+surface-sdk = ["std"]
+send = []
+tokio = ["std", "send", "dep:tokio", "dep:reqwest", "dep:bytes", "dep:futures-util", "dep:connectrpc", "dep:rustls", "dep:jsonwebtoken", "dep:base64"]
+wasm = []
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rcgen.workspace = true

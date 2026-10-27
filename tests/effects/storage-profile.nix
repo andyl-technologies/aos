@@ -50,7 +50,10 @@ let
             var.sizeMin = "8G";
             sealed-a = {sizeMin = "512M";};
             sealed-b = {sizeMin = "512M";};
-            home = {sizeMin = "512M"; encryption = "tpm2";};
+            home = {
+              sizeMin = "512M";
+              encryption = "tpm2";
+            };
           };
           arrays.sealed = {
             level = "raid1";

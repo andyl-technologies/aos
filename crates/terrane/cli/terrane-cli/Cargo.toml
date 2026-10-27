@@ -1,0 +1,20 @@
+[package]
+name = "terrane-cli"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "terrane"
+path = "src/main.rs"
+
+[dependencies]
+terrane-sdk = { workspace = true, features = ["tokio", "surface-sdk"] }
+clap.workspace = true
+tokio.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+terrane-linux = { workspace = true, features = ["tokio", "surface-fuse"] }
+
+[lints]
+workspace = true

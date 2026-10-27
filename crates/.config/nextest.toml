@@ -9,6 +9,200 @@ status-level = "slow"
 final-status-level = "fail"
 slow-timeout = { period = "60s", terminate-after = 2 }
 
+# The complete native Terrane suite exhausts the runner's 1,024-descriptor
+# limit when it starts a process per builder core. Its fixtures also perform
+# real durable operations under live leases. Reserve all slots for each case;
+# per-case timeout overrides below still apply independently, and no test or
+# production deadline changes. Other packages retain their existing scheduling.
+[[profile.default.overrides]]
+filter = 'package(=terrane-sdk)'
+threads-required = "num-test-threads"
+
+# Copied ownership and permanent recovery use genuine sixty-second barriers
+# before their independent fault checks. Reserve the outer runner slots so
+# unrelated test load cannot consume their process bounds.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & (test(gc::runner::copied_retirement_tests::) | test(gc::runner::permanent_local_tests::))'
+threads-required = "num-test-threads"
+
+# These exact cases retain their real sixty-second ownership barrier before
+# recovery, fresh nonces and closing assertions. Unchanged memo executions take
+# 121-130 seconds; the two fault cases finish in 103-108 seconds alone but reach
+# the 120-second package cap. Give each process a finite third minute. This
+# changes no case body, publication policy, C/G/D, token or whole-lease deadline.
+[[profile.default.overrides]]
+filter = 'package(=terrane-sdk) & test(=gc::runner::copied_retirement_tests::gc_copied_retirement_native_unused_memo_sharing_live_index_result_keeps_actual_context)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[[profile.default.overrides]]
+filter = 'package(=terrane-sdk) & test(=gc::runner::permanent_local_tests::faults::permanent_local_directory_sync_failure_keeps_selected_recovery_duties)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[[profile.default.overrides]]
+filter = 'package(=terrane-sdk) & test(=gc::runner::permanent_local_tests::faults::permanent_local_progress_conflict_retains_owner_and_uses_fresh_event_nonce)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# This recovery stress case discovers 4,100 canonical trash families and selects
+# at least 33 durable events after a genuine sixty-second barrier. Its complete
+# nontraced release run passes in 801 seconds; separate attempts reach the
+# fifteen-minute process limit. Allow a finite thirty-minute process for measured
+# runtime variation; all collector, lease, commit and G/D deadlines and completion
+# checks stay live.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & test(=gc::runner::permanent_local_tests::recovery::permanent_local_pass_reclaims_pack_index_and_all_observed_trash_cycles)'
+slow-timeout = { period = "60s", terminate-after = 30 }
+
+# This fault case keeps the pack through its first failed reclaim, then performs
+# genuine pack and trash recovery after a sixty-second ownership barrier. Its
+# separate trace completes in 110 seconds; reserve a finite three-minute runner
+# so ordinary scheduling variation does not consume the closing recovery work.
+# C/G/D and live whole-lease clocks remain unchanged and asserted by the case.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & test(=gc::runner::permanent_local_tests::faults::permanent_local_before_unlink_failure_keeps_selected_recovery_duties)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# This case retains its sixty-second ownership barrier, then performs three
+# genuine reconciliation passes and five durable progress events. A separate
+# trace completes all final reopen and ownership checks in 119 seconds. Reserve
+# a finite third minute for scheduling variation; C/G/D and lease checks remain.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & test(=gc::runner::permanent_local_tests::recovery::permanent_local_empty_pass_keeps_owner_and_reclaims_late_same_key_residue)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# This case retains its full ownership barrier, refuses the changed 130-cycle
+# traversal, then reclaims two actual duties through a fresh takeover. Its
+# archived trace completes all assertions and reopen in 144 seconds. Bound this
+# exact runner to three minutes while preserving staging and whole-lease clocks.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & test(=gc::runner::permanent_local_tests::recovery::staging::permanent_local_staging_added_cycle_keeps_late_residue_unselected)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# This restore case performs two fresh admissions, a full ownership barrier,
+# restoration and reopen while preserving unrelated serving and quarantine
+# rows. Its archived trace completes in 141 seconds. Reserve a finite third
+# runner minute; collector, publication and whole-lease clocks stay unchanged.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & test(=gc::runner::permanent_local_tests::restore::permanent_local_restore_preserves_fresh_serving_quarantine_and_unrelated_retirement)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# Authorized-only cancellation performs the same full deletion barrier and
+# repeated durable restore/reopen work. Its isolated unchanged release run takes
+# 107 seconds, while the full package run reaches the default 120-second limit;
+# include it in the finite five-minute local-deletion allowance below.
+#
+# The ten native local-deletion cases include real grace waits and repeated
+# durable fault/recovery prefixes. Their owning Nix run measured 100-210 seconds
+# per case. Reserve all test slots and bound each runner process to five minutes;
+# collector, lease, token and publication deadlines remain the actual clocks.
+# The integrated missing-Trash witness repeats fresh recovery and retirement
+# before its new full deletion wait; it shares this process scheduling bound.
+# The three post-Done source witnesses add reopen and cold-fork checks to actual
+# deletion. The measured deletion cases and 45-second imported cold-fork case
+# justify the same exclusive five-minute process bound without changing clocks.
+[[profile.default.overrides]]
+filter = '''
+package(terrane-sdk) & (
+  test(=gc::runner::tests::local_deletion::success::full_d_and_current_lease_unlink_exact_triple_and_finish_done) |
+  test(=gc::runner::tests::local_deletion::success::fresh_readmission_survives_old_container_deletion_and_reopen) |
+  test(=gc::runner::tests::local_deletion::recovery::fresh_higher_epoch_resumes_each_real_durable_prefix_without_old_marks) |
+  test(=gc::runner::tests::local_deletion::recovery::owned_absence_resynchronizes_before_phase_and_done_is_idempotent) |
+  test(=gc::runner::tests::local_deletion::faults::each_unlink_directory_and_progress_sync_fault_preserves_exact_recoverable_prefix) |
+  test(=gc::runner::tests::local_deletion::faults::each_handoff_refuses_current_expiry_control_change_and_replacement) |
+  test(=gc::runner::tests::local_deletion::faults::unit_success_or_swallowed_sync_failure_never_acknowledges_progress) |
+  test(=gc::runner::tests::local_deletion::recovery::cancelled_waiter_retains_exclusion_until_worker_then_fresh_collector_finishes) |
+  test(=gc::runner::tests::local_deletion::recovery::changed_current_fence_reconciles_retained_index_after_container_absence) |
+  test(=gc::runner::tests::local_deletion::recovery::restore_durably_cancels_exact_local_owner_before_clearing_exclusion) |
+  test(=gc::runner::tests::local_deletion::recovery::restore_durably_cancels_authorized_only_local_intent_before_clearing_exclusion) |
+  test(=gc::runner::tests::local_deletion::recovery::missing_trash_crash_requires_fresh_retirement_and_full_d_before_done) |
+  test(=gc::runner::tests::source_carry::post_done::ordinary::ordinary_source_and_original_survive_done_reopen_and_zero_node_cold_fork) |
+  test(=gc::runner::tests::source_carry::post_done::imported::foreign_used_view_and_original_survive_done_reopen_and_zero_node_cold_fork) |
+  test(=gc::runner::tests::source_carry::post_done::ordinary::consumed_original_reincarnation_after_done_refuses_cold_publication_without_tree_io)
+)
+'''
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+# The parallel native ownership matrices take about a minute to prepare before
+# their required 60-second deletion waits. Reserve the test slots and allow a
+# bounded third minute for the real handoffs and refusal assertions.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & (test(=gc::runner::tests::local_ownership::ownership::fresh_current_authority_required_before_each_ownership_effect) | test(=gc::runner::tests::local_ownership::ownership::authorized_and_each_owner_sync_fault_preserve_exact_partial_prefix))'
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# This ancestry case publishes and marks real native overlays, waits the full
+# sixty-second deletion window, then completes durable deletion and two reopen
+# checks. Its trace reaches that wait after 45 seconds and finishes ownership
+# at 110 seconds. Allow a bounded third runner minute for the remaining work;
+# commit, grace, deletion, retention and live lease clocks remain unchanged.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & test(=gc::runner::walk::tests::native::overlays::signed_overlay_layer_ancestry_survives_collection_and_reopen)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# Indexed overlay replay checks genuine publications, independent index bytes,
+# reopen, reversed inputs and refusal paths. Its unchanged isolated release run
+# completes in 107 seconds; the full package run reaches the default 120-second
+# limit. Allow a finite third runner minute without changing fixture clocks,
+# production deadlines, workloads or assertions.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & test(=gc::runner::walk::tests::native::overlays::indexed_signed_overlay_layer_replays_exact_output)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# These native collector matrices complete six fault or handoff fixtures, or
+# reopen and reconcile two cycles. Their isolated Nix runs take 135-166 seconds.
+# Reserve the slots and allow a third minute without changing operation clocks.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & (test(=gc::runner::tests::restore::gc_restore_native_each_handoff_rechecks_current_controls_and_pair) | test(=gc::runner::tests::restore::gc_restore_native_reopen_and_fresh_cycle_make_old_trash_stale) | test(=gc::runner::tests::retirement::gc_initial_retirement_native_trash_faults_keep_exclusion_without_acknowledgment))'
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# These restore cases pass alone within the ordinary two-minute bound. Keep
+# their native setup and reconciliation work free of concurrent test load.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & (test(=gc::runner::tests::restore::gc_restore_native_metadata_only_pair_handles_imported_unknown) | test(=gc::runner::tests::restore::gc_restore_native_preserves_fresh_live_quarantine_and_selected_values))'
+threads-required = "num-test-threads"
+
+# This genuine multiple-source publication passes alone in 36 seconds. Reserve
+# its slots while preserving the real commit deadline and ordinary test limit.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & test(=ref_advance::disclosure_tests::disclosure_boundary_manifest_and_multiple_source_certificates)'
+threads-required = "num-test-threads"
+
+# Growing-population witnesses qualify work and canonical native outputs under
+# their explicit bucket-capacity policy. Keep this finite runner budget local
+# to these six cases; existing deadline and collector controls retain theirs.
+[[profile.default.overrides]]
+filter = '''
+package(terrane-sdk) & (
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically) |
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_1024_adversarial) |
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_2048_ordinary) |
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_2048_adversarial) |
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_4096_ordinary) |
+  test(=guard::index_contract_tests::native_index_multi_edit_batches_and_resynchronizes_canonically_4096_adversarial)
+)
+'''
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 30 }
+
+# This composite rebuild case repairs five independent native populations and
+# verifies fresh reopen, fork, ordinary advance and corrupt-data refusal. Its
+# owning Nix execution passes in 443 seconds. Reserve the runner slots and a
+# finite fifteen minutes; original publication, token and bucket clocks remain.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & test(=guard::index_maintenance::tests::native_index_rebuild_recovers_divergent_and_missing_auxiliary_closures)'
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 15 }
+
+# This native refusal matrix checks independent producer, Original, current,
+# control-directory, token and final ACK faults. Its sealed execution passes in
+# 324 seconds. Reserve a finite fifteen minutes and the runner slots while all
+# actual fault invocations, refusal assertions and production clocks remain.
+[[profile.default.overrides]]
+filter = 'package(terrane-sdk) & test(=guard::index_maintenance::tests::native_index_rebuild_rechecks_original_current_producer_and_final_ack)'
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 15 }
+
 # This integration test launches a matrix of nested offline Cargo checks. Its
 # bounded work is materially slower than an ordinary unit test when the full
 # workspace suite is running concurrently.

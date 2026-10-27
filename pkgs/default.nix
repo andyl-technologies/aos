@@ -733,6 +733,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     "cargoNextestProfile"
     "cargoNextestOpenFilesLimit"
     "cargoNextestMaxTestThreads"
+    "cargoCheckWrapper"
     "nextestFlags"
     "cargoFlags"
     "buildType"
@@ -1383,7 +1384,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     src = aosWorkspaceVendorSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source";
-    hash = "sha256-0AGsSmmxR5ED9d+EXSKSSBxF4tm8f+iqbfRVvvQNVhk=";
+    hash = "sha256-saqFXYHaz9viGqRDEC1Q1Een787tpgrPev0ufSCidfE=";
   };
 
   # Auto-discover packages from subdirectories.

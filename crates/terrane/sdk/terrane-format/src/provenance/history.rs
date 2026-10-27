@@ -1,0 +1,1005 @@
+//! Resolves provenance through authenticated commits and canonical tree witnesses.
+//!
+//! The caller supplies stored node bytes, never an arbitrary entry lookup
+//! callback. Nodes are checked against their immutable identities and child
+//! summaries before they become usable evidence.
+
+use super::{Rejected, VerifiedCommit};
+use crate::{
+    identity::{Digest, IdentityKind, TERRANE_V1},
+    refs::{CommitGraph, CommitParents, EntryOrigin},
+    tree_format::{self, Entry, EntryKind, NodeItems},
+};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec,
+    vec::Vec,
+};
+
+mod merge;
+mod policy_layers;
+
+#[cfg(test)]
+mod entry_lookup_tests;
+
+pub(super) use policy_layers::PolicyLayer;
+
+/// Names an entry in the immutable tree evidence of a signed commit.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct EntryLocation {
+    /// Signed commit containing the selected tree.
+    pub commit: Digest,
+    /// Root containing the relative entry key.
+    pub root: Digest,
+    /// Canonical relative key bytes in that root.
+    pub path: Vec<u8>,
+}
+
+/// Stores authenticated commit records and fully checked Merkle tree witnesses.
+#[derive(Clone, Debug)]
+pub struct VerifiedHistory {
+    pub(super) commits: BTreeMap<Digest, VerifiedCommit>,
+    pub(super) graph: CommitGraph,
+    nodes: BTreeMap<Digest, Vec<u8>>,
+    // One canonical entry map per distinct validated leaf, shared across roots.
+    // These bytes accelerate pure lookup; root reachability remains independent.
+    leaf_entries: BTreeMap<Digest, BTreeMap<Vec<u8>, Vec<u8>>>,
+    roots: BTreeMap<Digest, BTreeSet<Digest>>,
+    min_chunk_size: u64,
+    selected_current: crate::properties::selected::Selection,
+    view_selections: BTreeMap<Digest, crate::properties::selected::Selection>,
+    usage: BTreeMap<Digest, tree_format::TreeUse>,
+    pub(super) side_attributes: BTreeMap<
+        super::side_attributes::SideAttributeKey,
+        super::side_attributes::BoundSideAttribute,
+    >,
+    pub(super) disclosure_boundaries:
+        BTreeMap<EntryLocation, super::disclosure::VerifiedDisclosureBoundary>,
+    pub(super) disclosure_parents: BTreeSet<(Digest, Digest)>,
+    pub(super) disclosure_verified_views: BTreeSet<Digest>,
+    pub(super) root_scopes: BTreeMap<Digest, super::root_context::VerifiedRootScope>,
+    pub(super) provisional_scopes: BTreeSet<Digest>,
+    pub(super) bootstrap_policies: BTreeMap<
+        (alloc::string::String, alloc::string::String, u64),
+        super::root_context::CheckedBootstrap,
+    >,
+}
+
+impl VerifiedHistory {
+    pub(super) const fn min_chunk_size(&self) -> u64 {
+        self.min_chunk_size
+    }
+
+    /// Creates a history using the configured chunk profile's minimum size.
+    pub fn new(min_chunk_size: u64) -> Self {
+        Self::new_selected(
+            min_chunk_size,
+            crate::properties::selected::Selection::Legacy,
+        )
+    }
+
+    /// Captures explicitly configured current semantics for genuine verification.
+    ///
+    /// This selection is ordinary input; signatures, Original scope, namespace
+    /// relationships and current authority remain independently checked.
+    pub fn new_selected(
+        min_chunk_size: u64,
+        selected: crate::properties::selected::Selection,
+    ) -> Self {
+        Self {
+            commits: BTreeMap::new(),
+            graph: CommitGraph::new(),
+            nodes: BTreeMap::new(),
+            leaf_entries: BTreeMap::new(),
+            roots: BTreeMap::new(),
+            usage: BTreeMap::new(),
+            min_chunk_size,
+            selected_current: selected,
+            view_selections: BTreeMap::new(),
+            side_attributes: BTreeMap::new(),
+            disclosure_boundaries: BTreeMap::new(),
+            disclosure_parents: BTreeSet::new(),
+            disclosure_verified_views: BTreeSet::new(),
+            root_scopes: BTreeMap::new(),
+            provisional_scopes: BTreeSet::new(),
+            bootstrap_policies: BTreeMap::new(),
+        }
+    }
+
+    /// Adds a commit whose signature and authorizing capability were verified.
+    ///
+    /// # Errors
+    /// Returns [`Rejected`] for a cycle, conflicting immutable record or Recorded
+    /// installation requiring an exact per-view selection.
+    pub fn insert_commit(&mut self, commit: VerifiedCommit) -> Result<(), Rejected> {
+        // Recorded history requires an exact independently supplied view selection.
+        if matches!(
+            &self.selected_current,
+            crate::properties::selected::Selection::Recorded(_)
+        ) {
+            return Err(Rejected);
+        }
+        self.insert_commit_selected(commit, self.selected_current.clone())
+    }
+
+    /// Binds one actual authenticated view to its independently selected semantics.
+    ///
+    /// # Errors
+    /// Rejects a different selection for an already inserted view, conflicting
+    /// immutable data or cycles. This supplies no completion or Original authority.
+    pub fn insert_commit_selected(
+        &mut self,
+        commit: VerifiedCommit,
+        selected: crate::properties::selected::Selection,
+    ) -> Result<(), Rejected> {
+        let identity = commit.identity();
+        if self
+            .view_selections
+            .get(&identity)
+            .is_some_and(|old| old != &selected)
+        {
+            return Err(Rejected);
+        }
+        if self
+            .commits
+            .get(&identity)
+            .is_some_and(|old| old != &commit)
+        {
+            return Err(Rejected);
+        }
+        self.graph
+            .insert(CommitParents {
+                identity,
+                parents: commit.commit().parents.clone(),
+            })
+            .map_err(|_| Rejected)?;
+        self.commits.insert(identity, commit);
+        self.view_selections.insert(identity, selected);
+        Ok(())
+    }
+
+    /// Returns only the independently associated selection for this actual view.
+    ///
+    /// # Errors
+    /// Rejects an absent association; it never infers selection from stored bytes.
+    pub(super) fn view_selection(
+        &self,
+        view: Digest,
+    ) -> Result<crate::properties::selected::Selection, Rejected> {
+        self.view_selections.get(&view).cloned().ok_or(Rejected)
+    }
+
+    /// Returns the exact independently installed ordinary property selection.
+    ///
+    /// The cloned configuration grants no admission, evaluation or publication
+    /// authority and cannot install a selection recovered from decoded claims.
+    ///
+    /// # Errors
+    /// Rejects an absent immutable view association without a current fallback.
+    pub fn property_selection(
+        &self,
+        view: Digest,
+    ) -> Result<crate::properties::selected::Selection, Rejected> {
+        self.view_selection(view)
+    }
+
+    /// Returns the explicitly configured input for unsigned authoring preparation.
+    pub(super) fn candidate_selection(&self) -> crate::properties::selected::Selection {
+        self.selected_current.clone()
+    }
+
+    /// Adds a complete canonical node witness for one root.
+    ///
+    /// Verification checks every node hash, child level, summary, and boundary
+    /// range. Graft targets are recorded as edges and may be supplied later.
+    /// Existing evidence remains unchanged on validation failure.
+    ///
+    /// # Errors
+    /// Returns [`Rejected`] for missing, malformed, noncanonical, misidentified,
+    /// overlapping, or inconsistent nodes and arithmetic failures.
+    pub fn insert_tree(
+        &mut self,
+        root: Digest,
+        nodes: &[(Digest, Vec<u8>)],
+    ) -> Result<(), Rejected> {
+        self.insert_tree_for(root, nodes, tree_format::TreeUse::Ordinary)
+    }
+
+    /// Adds canonical index-tree evidence with opaque attribute-value keys.
+    ///
+    /// # Errors
+    /// Returns [`Rejected`] for invalid index entries, incomplete or inconsistent
+    /// Merkle witnesses, or a conflicting interpretation of existing evidence.
+    pub fn insert_index_tree(
+        &mut self,
+        root: Digest,
+        nodes: &[(Digest, Vec<u8>)],
+    ) -> Result<(), Rejected> {
+        self.insert_tree_for(root, nodes, tree_format::TreeUse::Index)
+    }
+
+    /// Adds a checked overlay-layer witness, including deletion markers.
+    ///
+    /// # Errors
+    /// Returns [`Rejected`] for malformed or inconsistent tree evidence,
+    /// invalid layer entries, or a conflicting existing root interpretation.
+    pub fn insert_overlay_tree(
+        &mut self,
+        root: Digest,
+        nodes: &[(Digest, Vec<u8>)],
+    ) -> Result<(), Rejected> {
+        self.insert_tree_for(root, nodes, tree_format::TreeUse::OverlayLayer)
+    }
+
+    fn insert_tree_for(
+        &mut self,
+        root: Digest,
+        nodes: &[(Digest, Vec<u8>)],
+        usage: tree_format::TreeUse,
+    ) -> Result<(), Rejected> {
+        if self
+            .usage
+            .get(&root)
+            .is_some_and(|previous| *previous != usage)
+        {
+            return Err(Rejected);
+        }
+        let mut candidate = self.nodes.clone();
+        for (identity, bytes) in nodes {
+            let actual = TERRANE_V1
+                .calculate(IdentityKind::Node, bytes)
+                .and_then(|value| value.terrane_v1_digest())
+                .map_err(|_| Rejected)?;
+            if actual != *identity {
+                return Err(Rejected);
+            }
+            if let Some(previous) = candidate.get(identity)
+                && previous != bytes
+            {
+                return Err(Rejected);
+            }
+            candidate.insert(*identity, bytes.clone());
+        }
+
+        let mut pending = vec![(root, true)];
+        let mut entries = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut grafts = BTreeSet::new();
+        let mut leaf_entries = BTreeMap::new();
+        while let Some((identity, is_root)) = pending.pop() {
+            if !seen.insert(identity) {
+                return Err(Rejected);
+            }
+            let bytes = candidate.get(&identity).ok_or(Rejected)?;
+            let node = tree_format::decode_node_for(bytes, is_root, self.min_chunk_size, usage)
+                .map_err(|_| Rejected)?;
+            match &node.items {
+                NodeItems::Leaf(items) => {
+                    entries.extend(items.iter().cloned());
+                    if !self.leaf_entries.contains_key(&identity) {
+                        let mut encoded = BTreeMap::new();
+                        for item in items {
+                            let bytes = tree_format::encode_entry(&item.entry, self.min_chunk_size)
+                                .map_err(|_| Rejected)?;
+                            if encoded.insert(item.key.clone(), bytes).is_some() {
+                                return Err(Rejected);
+                            }
+                        }
+                        leaf_entries.insert(identity, encoded);
+                    }
+                    for item in items {
+                        if let EntryKind::Tree { root, .. } = item.entry.kind {
+                            grafts.insert(root);
+                        }
+                    }
+                }
+                NodeItems::Internal(children) => {
+                    // Descendant leaf ordering is validated globally below;
+                    // an internal child's first separator is not its first key.
+                    for child in children.iter().rev() {
+                        let child_bytes = candidate.get(&child.child).ok_or(Rejected)?;
+                        let child_node = tree_format::decode_node_for(
+                            child_bytes,
+                            false,
+                            self.min_chunk_size,
+                            usage,
+                        )
+                        .map_err(|_| Rejected)?;
+                        tree_format::verify_child_ref_for(
+                            node.level,
+                            child,
+                            &child_node,
+                            child_bytes,
+                            self.min_chunk_size,
+                            usage,
+                        )
+                        .map_err(|_| Rejected)?;
+                        pending.push((child.child, false));
+                    }
+                }
+            }
+        }
+
+        tree_format::validate_tree_entries(&entries, usage).map_err(|_| Rejected)?;
+        drop(entries);
+
+        self.nodes = candidate;
+        self.leaf_entries.extend(leaf_entries);
+        self.roots.insert(root, grafts);
+        self.usage.insert(root, usage);
+        Ok(())
+    }
+
+    /// Returns a previously authenticated signed commit record.
+    pub fn commit(&self, identity: &Digest) -> Option<&VerifiedCommit> {
+        self.commits.get(identity)
+    }
+
+    /// Borrows every authenticated signed commit record in identity order.
+    ///
+    /// The inventory includes records reached through disclosure dependencies,
+    /// not only ordinary parents. Records establish signature verification;
+    /// iteration grants no history completion, Original association, or current
+    /// authorization. Callers must independently retain or refresh that evidence.
+    pub fn commits(&self) -> impl Iterator<Item = &VerifiedCommit> {
+        self.commits.values()
+    }
+
+    pub(super) fn root_reachable(&self, commit: Digest, root: Digest) -> bool {
+        self.root_presence(commit, root) == Ok(true)
+    }
+
+    pub(super) fn root_presence(&self, commit: Digest, root: Digest) -> Result<bool, Rejected> {
+        let commit = self.commits.get(&commit).ok_or(Rejected)?;
+        let mut pending = vec![commit.commit().tree];
+        let mut seen = BTreeSet::new();
+        let mut incomplete = false;
+        while let Some(candidate) = pending.pop() {
+            if !seen.insert(candidate) {
+                continue;
+            }
+            if candidate == root {
+                return self
+                    .roots
+                    .contains_key(&root)
+                    .then_some(true)
+                    .ok_or(Rejected);
+            }
+            let Some(children) = self.roots.get(&candidate) else {
+                incomplete = true;
+                continue;
+            };
+            pending.extend(children.iter().copied());
+        }
+        if incomplete {
+            return Err(Rejected);
+        }
+        Ok(false)
+    }
+
+    /// Fetches an entry only from checked tree evidence reachable from its commit.
+    ///
+    /// # Errors
+    /// Returns [`Rejected`] for invalid keys, missing evidence, inaccessible
+    /// roots, malformed witness nodes, or absent entries.
+    pub fn entry(&self, location: &EntryLocation) -> Result<Entry<'_>, Rejected> {
+        if !self.root_reachable(location.commit, location.root) {
+            return Err(Rejected);
+        }
+        if self.usage.get(&location.root) == Some(&tree_format::TreeUse::Index) {
+            tree_format::validate_index_key(&location.path).map_err(|_| Rejected)?;
+        } else {
+            tree_format::validate_key(&location.path).map_err(|_| Rejected)?;
+        }
+        self.root_entry(location.root, &location.path)
+    }
+
+    pub(super) fn root_entry(&self, root: Digest, path: &[u8]) -> Result<Entry<'_>, Rejected> {
+        let usage = *self.usage.get(&root).ok_or(Rejected)?;
+        let mut current = root;
+        let mut is_root = true;
+        loop {
+            let bytes = self.nodes.get(&current).ok_or(Rejected)?;
+            if let Some(entries) = self.leaf_entries.get(&current) {
+                // Every insertion still checks this leaf in its actual root,
+                // TreeUse and child-summary context before installing the map.
+                let entry = entries.get(path).ok_or(Rejected)?;
+                return tree_format::decode_entry_bytes(entry, self.min_chunk_size)
+                    .map_err(|_| Rejected);
+            }
+            let node = tree_format::decode_node_for(bytes, is_root, self.min_chunk_size, usage)
+                .map_err(|_| Rejected)?;
+            match node.items {
+                NodeItems::Leaf(items) => {
+                    return items
+                        .into_iter()
+                        .find(|item| item.key == path)
+                        .map(|item| item.entry)
+                        .ok_or(Rejected);
+                }
+                NodeItems::Internal(children) => {
+                    current = children
+                        .iter()
+                        .find(|child| child.last_key.as_slice() >= path)
+                        .ok_or(Rejected)?
+                        .child;
+                    is_root = false;
+                }
+            }
+        }
+    }
+
+    pub(super) fn root_items(
+        &self,
+        root: Digest,
+    ) -> Result<Vec<tree_format::LeafItem<'_>>, Rejected> {
+        self.roots.get(&root).ok_or(Rejected)?;
+        let usage = *self.usage.get(&root).ok_or(Rejected)?;
+        let mut pending = vec![(root, true)];
+        let mut items = Vec::new();
+        while let Some((identity, is_root)) = pending.pop() {
+            let bytes = self.nodes.get(&identity).ok_or(Rejected)?;
+            let node = tree_format::decode_node_for(bytes, is_root, self.min_chunk_size, usage)
+                .map_err(|_| Rejected)?;
+            match node.items {
+                NodeItems::Leaf(leaf) => items.extend(leaf),
+                NodeItems::Internal(children) => {
+                    pending.extend(children.iter().rev().map(|child| (child.child, false)));
+                }
+            }
+        }
+        Ok(items)
+    }
+
+    pub(super) fn root_properties(
+        &self,
+        root: Digest,
+    ) -> Result<Vec<crate::tree_format::Property<'_>>, Rejected> {
+        let bytes = self.nodes.get(&root).ok_or(Rejected)?;
+        let usage = *self.usage.get(&root).ok_or(Rejected)?;
+        let node = tree_format::decode_node_for(bytes, true, self.min_chunk_size, usage)
+            .map_err(|_| Rejected)?;
+        Ok(node.props.unwrap_or_default())
+    }
+
+    /// Resolves a full view path through authenticated grafts and root policies.
+    ///
+    /// # Errors
+    /// Returns [`Rejected`] for absent paths, missing evidence, invalid keys,
+    /// or a graft cycle. Policy values are returned in ancestor-to-child order.
+    pub fn locate(
+        &self,
+        view: Digest,
+        path: &[u8],
+    ) -> Result<(EntryLocation, Vec<crate::tree_format::Property<'_>>), Rejected> {
+        let (location, properties) = self.locate_policies(view, path)?;
+        Ok((location, properties.into_iter().flatten().collect()))
+    }
+
+    /// Reads ancestor-first layers without erasing a graft binding's placement.
+    ///
+    /// The selected root comes from the existing checked immutable view. No
+    /// recorded interpretation is inferred from that root or its raw names.
+    ///
+    /// # Errors
+    /// Rejects absent views/paths, missing or invalid physical evidence, invalid
+    /// keys, graft cycles and paths deeper than the existing 64-edge limit.
+    pub(super) fn locate_policy_layers(
+        &self,
+        view: Digest,
+        path: &[u8],
+    ) -> Result<(EntryLocation, Vec<PolicyLayer<'_>>), Rejected> {
+        let root = self.commits.get(&view).ok_or(Rejected)?.commit().tree;
+        self.policy_layers_from_root(view, root, path)
+    }
+
+    pub(super) fn locate_policies(
+        &self,
+        view: Digest,
+        path: &[u8],
+    ) -> Result<(EntryLocation, Vec<Vec<crate::tree_format::Property<'_>>>), Rejected> {
+        let (location, layers) = self.locate_policy_layers(view, path)?;
+        let selected = self.view_selection(view)?;
+        for layer in &layers {
+            selected
+                .validate_layer(&layer.properties, layer.overrides.as_deref().unwrap_or(&[]))
+                .map_err(|_| Rejected)?;
+        }
+        Ok((location, policy_layers::legacy_properties(layers)))
+    }
+
+    pub(super) fn dependencies(
+        &self,
+        location: &EntryLocation,
+    ) -> Result<Option<Vec<EntryLocation>>, Rejected> {
+        self.require_disclosure_validation(location.commit)?;
+        self.require_root_context_validation(location.commit)?;
+        let record = self.commits.get(&location.commit).ok_or(Rejected)?.commit();
+        let entry = self.entry(location)?;
+        let receipt = record
+            .profile_pair
+            .entry_receipts
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .find(|receipt| receipt.root == location.root && receipt.path == location.path);
+        if let Some(receipt) = receipt {
+            // A raw certificate cannot replace verified source history. A
+            // disclosure-aware verifier must install an authenticated boundary
+            // before this entry can resolve through its attested introduction.
+            if receipt.disclosure_proof.is_some() {
+                if self.disclosure_boundaries.contains_key(location) {
+                    return Ok(None);
+                }
+                return Err(Rejected);
+            }
+            match &receipt.origin {
+                EntryOrigin::Current => {
+                    if entry.provenance.is_some() {
+                        return Err(Rejected);
+                    }
+                    // Current markers on unchanged content are reintroductions,
+                    // and require the explicit original-introduction attribute.
+                    let mut unchanged = self.unchanged_parents(location)?;
+                    if let Some(original) = &receipt.reintroduced_from {
+                        let original = EntryLocation {
+                            commit: original.commit,
+                            root: original.root,
+                            path: original.path.clone(),
+                        };
+                        if original.commit == location.commit
+                            || !same_content(&entry, &self.entry(&original)?)
+                        {
+                            return Err(Rejected);
+                        }
+                        unchanged = vec![original];
+                    } else if entry
+                        .attrs
+                        .iter()
+                        .any(|attribute| attribute.name == "provenance.reintroduced-from")
+                    {
+                        return Err(Rejected);
+                    }
+                    if !unchanged.is_empty()
+                        && (receipt.reintroduced_from.is_none()
+                            || !entry
+                                .attrs
+                                .iter()
+                                .any(|attribute| attribute.name == "provenance.reintroduced-from"))
+                    {
+                        return Err(Rejected);
+                    }
+                    return Ok(Some(unchanged));
+                }
+                EntryOrigin::Source(source) => {
+                    let crate::refs::EntrySource { commit, root, path } = source;
+                    if *commit == location.commit
+                        || self
+                            .disclosure_parents
+                            .contains(&(location.commit, *commit))
+                    {
+                        return Err(Rejected);
+                    }
+                    let source = EntryLocation {
+                        commit: *commit,
+                        root: *root,
+                        path: path.clone(),
+                    };
+                    if !same_content(&entry, &self.entry(&source)?) {
+                        return Err(Rejected);
+                    }
+                    return Ok(Some(vec![source]));
+                }
+            }
+        }
+        let parents = self.unchanged_parents(location)?;
+        if parents.is_empty() {
+            return Err(Rejected);
+        }
+        Ok(Some(parents))
+    }
+
+    pub(super) fn require_disclosure_validation(&self, view: Digest) -> Result<(), Rejected> {
+        let record = self.commits.get(&view).ok_or(Rejected)?.commit();
+        if record
+            .profile_pair
+            .entry_receipts
+            .iter()
+            .flatten()
+            .any(|receipt| receipt.disclosure_proof.is_some())
+            && !self.disclosure_verified_views.contains(&view)
+        {
+            return Err(Rejected);
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_root_context_validation(&self, view: Digest) -> Result<(), Rejected> {
+        let record = self.commits.get(&view).ok_or(Rejected)?.commit();
+        if record.profile_pair.commit_context.is_some()
+            && !self.root_scopes.contains_key(&view)
+            && !self.provisional_scopes.contains(&view)
+        {
+            return Err(Rejected);
+        }
+        Ok(())
+    }
+
+    /// Checks that a witness view exposes no provisional disclosure or root scope.
+    ///
+    /// # Errors
+    /// Returns [`Rejected`] for absent, provisional or incompletely checked views.
+    pub(crate) fn require_verified_context(&self, view: Digest) -> Result<(), Rejected> {
+        if self.provisional_scopes.contains(&view) {
+            return Err(Rejected);
+        }
+        self.require_disclosure_validation(view)?;
+        self.require_root_context_validation(view)
+    }
+
+    fn unchanged_parents(&self, location: &EntryLocation) -> Result<Vec<EntryLocation>, Rejected> {
+        let commit = self.commits.get(&location.commit).ok_or(Rejected)?.commit();
+        let entry = self.entry(location)?;
+        let mut result = Vec::new();
+        for parent in &commit.parents {
+            if self
+                .disclosure_parents
+                .contains(&(location.commit, *parent))
+            {
+                continue;
+            }
+            let parent_commit = self.commits.get(parent).ok_or(Rejected)?.commit();
+            // A missing witness is not evidence that the key was absent in a
+            // parent. Fresh introduction receipts must not hide that uncertainty.
+            if !self.roots.contains_key(&parent_commit.tree) {
+                return Err(Rejected);
+            }
+
+            let root = if location.root == commit.tree {
+                parent_commit.tree
+            } else {
+                location.root
+            };
+            if !self.root_presence(*parent, root)? {
+                continue;
+            }
+            let source = EntryLocation {
+                commit: *parent,
+                root,
+                path: location.path.clone(),
+            };
+            if let Ok(previous) = self.entry(&source)
+                && same_content(&entry, &previous)
+            {
+                result.push(source);
+            }
+        }
+        Ok(result)
+    }
+
+    pub(super) fn public_ancestor(&self, ancestor: Digest, view: Digest) -> Result<bool, Rejected> {
+        let mut pending = vec![view];
+        let mut seen = BTreeSet::new();
+        let mut found = false;
+        while let Some(current) = pending.pop() {
+            if !seen.insert(current) {
+                continue;
+            }
+            found |= current == ancestor;
+            let record = self.commits.get(&current).ok_or(Rejected)?;
+            self.require_disclosure_validation(current)?;
+            self.require_root_context_validation(current)?;
+            pending.extend(
+                record
+                    .commit()
+                    .parents
+                    .iter()
+                    .copied()
+                    .filter(|parent| !self.disclosure_parents.contains(&(current, *parent))),
+            );
+        }
+        Ok(found)
+    }
+
+    /// Resolves the actual introducing signed commit through receipts and parents.
+    ///
+    /// Missing commits or ambiguous unchanged-parent introductions fail closed.
+    /// Explicit entry digests are checked against graph-derived provenance.
+    ///
+    /// # Errors
+    /// Returns [`Rejected`] for missing evidence, invalid source selection,
+    /// ambiguous ancestry, circular receipts, or mismatched introducing claims.
+    pub fn introducing_commit(&self, location: &EntryLocation) -> Result<Digest, Rejected> {
+        let mut pending = vec![(location.clone(), false)];
+        let mut active = BTreeSet::new();
+        let mut resolved = BTreeMap::new();
+        while let Some((current, finishing)) = pending.pop() {
+            if resolved.contains_key(&current) {
+                continue;
+            }
+            let dependencies = self.dependencies(&current)?;
+            if !finishing {
+                if !active.insert(current.clone()) {
+                    return Err(Rejected);
+                }
+                pending.push((current.clone(), true));
+                if let Some(dependencies) = &dependencies {
+                    for source in dependencies.iter().rev() {
+                        pending.push((source.clone(), false));
+                    }
+                }
+                continue;
+            }
+
+            let current_receipt = self
+                .commits
+                .get(&current.commit)
+                .ok_or(Rejected)?
+                .commit()
+                .profile_pair
+                .entry_receipts
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .any(|receipt| {
+                    receipt.root == current.root
+                        && receipt.path == current.path
+                        && receipt.origin == EntryOrigin::Current
+                });
+            let identity = if current_receipt {
+                let entry = self.entry(&current)?;
+                if let Some(dependencies) = &dependencies
+                    && !dependencies.is_empty()
+                {
+                    let attribute = entry
+                        .attrs
+                        .iter()
+                        .find(|attribute| attribute.name == "provenance.reintroduced-from")
+                        .ok_or(Rejected)?;
+                    let mut decoder = crate::cbor::Decoder::new(attribute.value);
+                    let original: Digest = decoder
+                        .bytes(32)
+                        .map_err(|_| Rejected)?
+                        .try_into()
+                        .map_err(|_| Rejected)?;
+                    decoder.finish().map_err(|_| Rejected)?;
+                    for source in dependencies {
+                        if resolved.get(source) != Some(&original) {
+                            return Err(Rejected);
+                        }
+                    }
+                }
+                current.commit
+            } else if let Some(dependencies) = dependencies {
+                let mut identities = dependencies
+                    .iter()
+                    .map(|source| resolved.get(source).copied().ok_or(Rejected));
+                let first = identities.next().ok_or(Rejected)??;
+                for identity in identities {
+                    if identity? != first {
+                        return Err(Rejected);
+                    }
+                }
+                first
+            } else {
+                current.commit
+            };
+            if self
+                .entry(&current)?
+                .provenance
+                .is_some_and(|claimed| claimed != identity)
+            {
+                return Err(Rejected);
+            }
+            active.remove(&current);
+            resolved.insert(current, identity);
+        }
+        resolved.get(location).copied().ok_or(Rejected)
+    }
+
+    pub(super) fn acceptance_commits(
+        &self,
+        location: &EntryLocation,
+        introducing: Digest,
+    ) -> Result<Vec<Digest>, Rejected> {
+        // Unknown ancestry is not evidence of no acceptance, especially under
+        // negation. Checked disclosure cuts remain the only omitted parents.
+        self.public_ancestor(location.commit, location.commit)?;
+        let entry = self.entry(location)?;
+        let view = self.commits.get(&location.commit).ok_or(Rejected)?;
+        let mut accepted = BTreeSet::new();
+
+        // Receipts preserve carried-entry evidence when grafts or transforms
+        // change a key/root. Source edges preserve introduction evidence, but only
+        // actual view ancestors can establish acceptance.
+        let mut pending = vec![location.clone()];
+        let mut seen = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if !seen.insert(current.clone()) || self.introducing_commit(&current)? != introducing {
+                continue;
+            }
+            if current.commit != introducing
+                && self.public_ancestor(current.commit, location.commit)?
+            {
+                accepted.insert(current.commit);
+            }
+            if let Some(dependencies) = self.dependencies(&current)? {
+                pending.extend(dependencies);
+            }
+        }
+
+        // A merge can also retain an entry through another unchanged input
+        // besides its selected source receipt. Check those real ancestor views.
+        for (identity, commit) in &self.commits {
+            if *identity == introducing || !self.public_ancestor(*identity, location.commit)? {
+                continue;
+            }
+            let root = if location.root == view.commit().tree {
+                commit.commit().tree
+            } else {
+                location.root
+            };
+            let candidate = EntryLocation {
+                commit: *identity,
+                root,
+                path: location.path.clone(),
+            };
+            if !self.root_presence(*identity, root)? {
+                continue;
+            }
+            if let Ok(carried) = self.entry(&candidate)
+                && same_content(&entry, &carried)
+                && self.introducing_commit(&candidate)? == introducing
+            {
+                accepted.insert(*identity);
+            }
+        }
+        Ok(accepted.into_iter().collect())
+    }
+
+    /// Returns reachable signed records that actually carried the selected entry.
+    ///
+    /// The view and introducing records are included. This pure evidence walk
+    /// is intended for later repository protocol and CLI audit operations.
+    ///
+    /// # Errors
+    /// Returns [`Rejected`] if introduction or complete public carrying history
+    /// cannot be resolved from verified commit and canonical tree evidence.
+    pub fn provenance_walk(
+        &self,
+        location: &EntryLocation,
+    ) -> Result<Vec<&VerifiedCommit>, Rejected> {
+        let introducing = self.introducing_commit(location)?;
+        let mut identities = self.acceptance_commits(location, introducing)?;
+        if !identities.contains(&location.commit) {
+            identities.insert(0, location.commit);
+        }
+        if !identities.contains(&introducing) {
+            identities.push(introducing);
+        }
+        identities
+            .into_iter()
+            .map(|identity| self.commits.get(&identity).ok_or(Rejected))
+            .collect()
+    }
+}
+
+/// Compares content identity without attributes, POSIX modes, or provenance.
+pub fn same_content(left: &Entry<'_>, right: &Entry<'_>) -> bool {
+    let mut pending = vec![(left, right)];
+    while let Some((left, right)) = pending.pop() {
+        let equal = match (&left.kind, &right.kind) {
+            (
+                EntryKind::File {
+                    size: left_size,
+                    content: left_content,
+                    ..
+                },
+                EntryKind::File {
+                    size: right_size,
+                    content: right_content,
+                    ..
+                },
+            ) => left_size == right_size && left_content == right_content,
+            (EntryKind::Directory { .. }, EntryKind::Directory { .. }) => true,
+            (EntryKind::Symlink { target: left }, EntryKind::Symlink { target: right }) => {
+                left == right
+            }
+            (EntryKind::Tree { root: left, .. }, EntryKind::Tree { root: right, .. }) => {
+                left == right
+            }
+            (EntryKind::Whiteout, EntryKind::Whiteout) => true,
+            (EntryKind::Index { targets: left }, EntryKind::Index { targets: right }) => {
+                left == right
+            }
+            (
+                EntryKind::Conflict {
+                    candidates: left,
+                    base: left_base,
+                },
+                EntryKind::Conflict {
+                    candidates: right,
+                    base: right_base,
+                },
+            ) => {
+                if left.len() != right.len() {
+                    return false;
+                }
+                pending.extend(left.iter().zip(right));
+                match (left_base, right_base) {
+                    (None, None) | (Some(None), Some(None)) => {}
+                    (Some(Some(left)), Some(Some(right))) => pending.push((left, right)),
+                    _ => return false,
+                }
+                true
+            }
+            _ => false,
+        };
+        if !equal {
+            return false;
+        }
+    }
+    true
+}
+
+/// Iterates source commits retained by an authenticated record's entry receipts.
+///
+/// References include content origins, attribute producers, and explicit
+/// reintroduction evidence. They are garbage-collection edges even when the
+/// source is outside parent ancestry. Duplicates are allowed; collectors also
+/// retain introducing identities found in their checked live entry witnesses.
+pub fn source_commit_references(commit: &VerifiedCommit) -> impl Iterator<Item = Digest> + '_ {
+    commit
+        .commit()
+        .profile_pair
+        .entry_receipts
+        .iter()
+        .flat_map(|receipts| receipts.iter())
+        .flat_map(|receipt| {
+            core::iter::once(&receipt.origin)
+                .chain(
+                    receipt
+                        .attributes
+                        .iter()
+                        .flat_map(|attributes| attributes.iter().map(|(_, origin)| origin)),
+                )
+                .filter_map(|origin| match origin {
+                    EntryOrigin::Current => None,
+                    EntryOrigin::Source(source) => Some(source.commit),
+                })
+                .chain(receipt.reintroduced_from.iter().map(|source| source.commit))
+        })
+}
+
+#[cfg(test)]
+impl VerifiedHistory {
+    /// Revalidates physical fixtures and reinserts already signature-checked records.
+    ///
+    /// This creates a fresh independently configured test history. No checked
+    /// root scope, admission flag, side evidence or disclosure completion is copied.
+    ///
+    /// # Errors
+    /// Rejects absent selections and any canonical tree or immutable commit conflict.
+    pub(super) fn fixture_with_selections(
+        &self,
+        selections: &BTreeMap<Digest, crate::properties::selected::Selection>,
+    ) -> Result<Self, Rejected> {
+        let mut history = Self::new_selected(self.min_chunk_size, self.selected_current.clone());
+        let nodes: Vec<_> = self
+            .nodes
+            .iter()
+            .map(|(identity, bytes)| (*identity, bytes.clone()))
+            .collect();
+        for root in self.roots.keys() {
+            history.insert_tree_for(*root, &nodes, *self.usage.get(root).ok_or(Rejected)?)?;
+        }
+        for (view, commit) in &self.commits {
+            let selected = selections
+                .get(view)
+                .cloned()
+                .unwrap_or(self.view_selection(*view)?);
+            history.insert_commit_selected(commit.clone(), selected)?;
+        }
+        Ok(history)
+    }
+}

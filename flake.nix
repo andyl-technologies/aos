@@ -410,6 +410,7 @@
           ++ cargoBuildPackages
           ++ cargoTestPackages);
         cargo = mkDevShell "aos-cargo-dev" cargoBuildPackages;
+        terrane = mkDevShell "aos-cargo-dev" (cargoBuildPackages ++ cargoTestPackages);
 
         # The operator shell for canonical releases: only the installed
         # release tooling closure, whose wrappers export AOS_RELEASE_TOOLING

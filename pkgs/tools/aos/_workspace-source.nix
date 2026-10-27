@@ -47,8 +47,15 @@ in
           == ".git"
           || base == ".direnv"
           || base == ".worktrees"
-          || base == "result"
-          || lib.hasPrefix "result-" base
+          # Importing a proof helper on the host must not change build inputs.
+          || base == "__pycache__"
+          # Nested modules may legitimately be named result. Only checkout
+          # root result directories are generated Nix build outputs.
+          || (
+            dirOf pathString
+            == repoRootString
+            && (base == "result" || lib.hasPrefix "result-" base)
+          )
           || base == "target"
           || lib.hasPrefix "target-" base
         );
@@ -92,6 +99,10 @@ in
         || lib.hasPrefix "${repoRootString}/tests/build" pathString
         || lib.hasPrefix "${repoRootString}/tests/fleet" pathString
         || lib.hasPrefix "${repoRootString}/tests/qualification" pathString
+        || lib.hasPrefix "${repoRootString}/tests/terrane" pathString
+        || pathString == "${repoRootString}/docs"
+        || pathString == "${repoRootString}/docs/rfcs"
+        || lib.hasPrefix "${repoRootString}/docs/rfcs/0024-terrane" pathString
         || lib.hasPrefix "${repoRootString}/tests/vm" pathString
         || pathString == "${repoRootString}/tests/native"
         || pathString == "${repoRootString}/tests/native/hub-settings.py"
@@ -100,6 +111,9 @@ in
         || pathString == "${repoRootString}/justfile";
     in
       !generatedDir
+      && !(lib.hasSuffix ".pyc" base || lib.hasSuffix ".pyo" base)
+      # The gate registry binds progress separately from compilation sources.
+      && pathString != "${repoRootString}/docs/rfcs/0024-terrane/integration/05-implementation-plan.md"
       && pathString != daemonRunState
       && !lib.hasPrefix "${daemonRunState}/" pathString
       && (workspaceInput || (includeIntegrationInputs && integrationInput));

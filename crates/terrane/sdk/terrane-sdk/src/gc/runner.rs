@@ -1,0 +1,738 @@
+//! Coordinates genuine selected roots and resumable metadata-only mark checkpoints.
+//!
+//! Every operation refreshes its exact whole lease before acquiring the real
+//! namespace holder. Checkpoint data grants no retirement, restoration, deletion,
+//! source-preservation or remote D-82 authority. Failed renewal or cancellation
+//! permanently stops this session before subsequent publication.
+
+use crate::bucket::{BucketBinding, FileBucket};
+use crate::gc::lease::{Collector, LeaseError};
+use crate::guard::{Guard, OriginalAuthority};
+use crate::store::{Clock, ContentValidator, LocalFs, StoreErrorKind, StoreFailure};
+use terrane_format::gc::{GcError, GcLease, GcRoots, GcState, Windows};
+
+/// Authenticates the complete selected root inventory and its retention policy.
+pub(crate) mod roots;
+/// Retains actual lease ownership, clock continuity and cancellation poison.
+pub(crate) mod session;
+
+/// Selects fresh cycle numbers from retained registered publication keys.
+#[path = "cycle.rs"]
+pub(crate) mod cycle;
+
+#[path = "local_ownership.rs"]
+mod local_ownership;
+
+#[path = "local_deletion.rs"]
+mod local_deletion;
+
+/// Expands authenticated metadata contexts without reading chunk plaintext.
+pub(crate) mod walk;
+
+/// Coordinates copied destination barriers and checked first ownership.
+#[path = "copied_retirement.rs"]
+pub mod copied_retirement;
+
+/// Coordinates permanent local recovery and restoration through fresh placements.
+#[path = "permanent_local.rs"]
+pub mod permanent_local;
+
+/// Selects bounded recurring lookup hints without granting effect authority.
+#[path = "maintenance.rs"]
+pub mod maintenance;
+
+#[cfg(all(test, feature = "tokio", unix))]
+pub(crate) mod fixture;
+#[cfg(all(test, feature = "tokio", unix))]
+mod tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+#[path = "runner/tests/copied_retirement.rs"]
+mod copied_retirement_tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+#[path = "runner/tests/permanent_local.rs"]
+mod permanent_local_tests;
+
+/// Reports refused traversal, fenced ownership or failed native checkpoint effects.
+#[derive(Debug)]
+pub enum CollectionError {
+    /// Canonical records or collector arithmetic were rejected.
+    Record(GcError),
+    /// Actual native lease selection was refused or failed.
+    Lease(LeaseError),
+    /// Fresh historical verification, retained inputs or storage failed.
+    Store(StoreFailure),
+}
+
+impl core::fmt::Display for CollectionError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Record(error) => error.fmt(formatter),
+            Self::Lease(error) => error.fmt(formatter),
+            Self::Store(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for CollectionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Record(error) => Some(error),
+            Self::Lease(error) => Some(error),
+            Self::Store(error) => Some(error),
+        }
+    }
+}
+
+impl From<GcError> for CollectionError {
+    fn from(error: GcError) -> Self {
+        Self::Record(error)
+    }
+}
+
+impl From<LeaseError> for CollectionError {
+    fn from(error: LeaseError) -> Self {
+        Self::Lease(error)
+    }
+}
+
+impl From<StoreFailure> for CollectionError {
+    fn from(error: StoreFailure) -> Self {
+        Self::Store(error)
+    }
+}
+
+/// Reports a refused current configured collector session or checkpoint.
+pub(crate) fn denied() -> StoreFailure {
+    StoreFailure::new(StoreErrorKind::Denied {
+        verb: "gc-checkpoint",
+        pattern: "current configured collector session".into(),
+    })
+}
+
+/// Owns a fresh native maintenance lease without requiring old marking progress.
+///
+/// Restoration qualifies current roots using the retained candidate metadata
+/// view. A newly opened holder can therefore restore a retired Meta pack needed
+/// by those roots without treating its old marking epoch as current permission.
+pub struct Restoration<'configuration, F, B, V, C> {
+    guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+    authority: &'configuration OriginalAuthority,
+    session: session::Session,
+    cycle: Option<u64>,
+    windows: Windows,
+}
+
+impl<'configuration, F, B, V, C> Restoration<'configuration, F, B, V, C>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+    C: Clock,
+{
+    /// Acquires actual collector ownership before any candidate root traversal.
+    ///
+    /// # Errors
+    /// Refuses competing ownership, unsupported native clocks, invalid leases
+    /// and failed whole selected lease publication. No marking cycle is created.
+    pub async fn start(
+        guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+        authority: &'configuration OriginalAuthority,
+        holder: String,
+        duration: u64,
+        cycle: u64,
+        windows: Windows,
+    ) -> Result<Self, CollectionError> {
+        Self::start_with_cycle(guard, authority, holder, duration, Some(cycle), windows).await
+    }
+
+    /// Acquires restoration ownership without supplying a marking cycle number.
+    ///
+    /// Each restoration chooses above the retained registered cycle keys under
+    /// its actual held publication. That number scopes fresh root verification;
+    /// it does not reserve or create a checkpoint. [`Self::begin_next_collection`]
+    /// independently selects its new cycle from the then-current publication.
+    ///
+    /// # Errors
+    /// Preserves ownership and native-clock failures from [`Self::start`]. Later
+    /// restoration refuses malformed or exhausted registered cycle inventories.
+    pub async fn start_next(
+        guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+        authority: &'configuration OriginalAuthority,
+        holder: String,
+        duration: u64,
+        windows: Windows,
+    ) -> Result<Self, CollectionError> {
+        Self::start_with_cycle(guard, authority, holder, duration, None, windows).await
+    }
+
+    async fn start_with_cycle(
+        guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+        authority: &'configuration OriginalAuthority,
+        holder: String,
+        duration: u64,
+        cycle: Option<u64>,
+        windows: Windows,
+    ) -> Result<Self, CollectionError> {
+        let lease = Collector::new(guard, authority)
+            .acquire(holder, duration)
+            .await?
+            .lease;
+        let clock = guard.clock().retain_native_clock().map_err(|_| denied())?;
+        let session = session::Session::new(lease, duration, clock)?;
+        Ok(Self {
+            guard,
+            authority,
+            session,
+            cycle,
+            windows,
+        })
+    }
+
+    /// Restores eligible old placements and clears precisely the selected binding.
+    ///
+    /// The tuple selects a candidate; complete fresh qualification and native
+    /// retention provide permission. False means its binding is no longer current.
+    /// Trash age is unused, and permanent ownership or burn always refuses.
+    ///
+    /// # Errors
+    /// Refuses incomplete current history, unsafe or missing pair, permanent
+    /// ownership and failed native acknowledgment. Cancellation poisons the session.
+    pub async fn restore_pack(
+        &mut self,
+        requested: terrane_format::bucket::PackExclusion,
+    ) -> Result<bool, CollectionError> {
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let result = crate::selected_bridge::native_collection_restore::restore_pack(
+            self.guard,
+            self.authority,
+            &mut self.session,
+            (self.cycle, self.windows),
+            &requested,
+        )
+        .await?;
+        operation.complete();
+        Ok(result)
+    }
+
+    /// Starts a fresh marking cycle while retaining this original session.
+    ///
+    /// Consumes restoration ownership, renews the same whole lease and invokes
+    /// the ordinary checkpoint producer. Complete current root authentication
+    /// runs again. No old restoration observation supplies marking authority;
+    /// no lease release, takeover or replacement cancellation guard occurs.
+    ///
+    /// # Errors
+    /// Rejects lost or poisoned ownership, incomplete current roots, malformed
+    /// or exhausted retained cycle keys and failed checkpoint durability.
+    /// Cancellation or failure stops the consumed session permanently.
+    pub async fn begin_next_collection(
+        mut self,
+    ) -> Result<Collection<'configuration, F, B, V, C>, CollectionError> {
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let (roots, state) = crate::selected_bridge::native_collection_checkpoints::begin_next(
+            self.guard,
+            self.authority,
+            &self.session,
+            self.windows,
+        )
+        .await?;
+        operation.complete();
+        Ok(Collection {
+            guard: self.guard,
+            authority: self.authority,
+            session: self.session,
+            windows: self.windows,
+            roots,
+            state,
+        })
+    }
+
+    /// Borrows the exact whole currently acknowledged native maintenance lease.
+    pub fn lease(&self) -> &GcLease {
+        self.session.lease()
+    }
+}
+
+/// Owns a genuine lease session and its last acknowledged whole mark checkpoint.
+pub struct Collection<'configuration, F, B, V, C> {
+    guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+    authority: &'configuration OriginalAuthority,
+    session: session::Session,
+    windows: Windows,
+    roots: GcRoots,
+    state: GcState,
+}
+
+impl<'configuration, F, B, V, C> Collection<'configuration, F, B, V, C>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+    C: Clock,
+{
+    /// Acquires native collector ownership and selects a complete new root snapshot.
+    ///
+    /// # Errors
+    /// Refuses competition, incomplete inventories, unverified original history,
+    /// unsupported source/control cases, existing cycles and failed native durability.
+    pub async fn start(
+        guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+        authority: &'configuration OriginalAuthority,
+        holder: String,
+        duration: u64,
+        cycle: u64,
+        windows: Windows,
+    ) -> Result<Self, CollectionError> {
+        Self::start_with_cycle(guard, authority, holder, duration, Some(cycle), windows).await
+    }
+
+    /// Acquires ownership and starts above every retained selected cycle number.
+    ///
+    /// Selection and initial checkpoint publication share the actual held namespace
+    /// after whole-lease acquisition. No clock-derived or random cycle is used.
+    /// Retained absent-key entries and copied cycle reservations remain occupied.
+    ///
+    /// # Errors
+    /// Preserves all [`Self::start`] failures and rejects exhausted cycle numbers
+    /// or malformed registered cycle keys. Unselected physical leftovers can still
+    /// cause the original create-once checkpoint publication to fail closed.
+    pub async fn start_next(
+        guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+        authority: &'configuration OriginalAuthority,
+        holder: String,
+        duration: u64,
+        windows: Windows,
+    ) -> Result<Self, CollectionError> {
+        Self::start_with_cycle(guard, authority, holder, duration, None, windows).await
+    }
+
+    async fn start_with_cycle(
+        guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+        authority: &'configuration OriginalAuthority,
+        holder: String,
+        duration: u64,
+        cycle: Option<u64>,
+        windows: Windows,
+    ) -> Result<Self, CollectionError> {
+        let lease = Collector::new(guard, authority)
+            .acquire(holder, duration)
+            .await?
+            .lease;
+        let clock = guard.clock().retain_native_clock().map_err(|_| denied())?;
+        let session = session::Session::new(lease, duration, clock)?;
+        let operation = session.operation()?;
+        let (roots, state) = match cycle {
+            Some(cycle) => {
+                crate::selected_bridge::native_collection_checkpoints::begin(
+                    guard, authority, &session, cycle, windows,
+                )
+                .await?
+            }
+            None => {
+                crate::selected_bridge::native_collection_checkpoints::begin_next(
+                    guard, authority, &session, windows,
+                )
+                .await?
+            }
+        };
+        operation.complete();
+        Ok(Self {
+            guard,
+            authority,
+            session,
+            windows,
+            roots,
+            state,
+        })
+    }
+
+    /// Reconciles permanent residues under this collection's original live session.
+    ///
+    /// Marking roots and checkpoints remain unchanged. The owner key is only a
+    /// candidate hint; the original producer independently checks current owner,
+    /// physical controls, history and whole lease before every native effect.
+    ///
+    /// # Errors
+    /// Rejects invalid bounds, unknown ownership, lost leases, changed controls,
+    /// unsafe artifacts and incomplete native durability. Cancellation stops the
+    /// session and queued native work retains its exclusions.
+    ///
+    /// # Panics
+    /// In test builds, panics if opt-in phase diagnostics cannot write to stderr.
+    pub async fn reconcile_permanent(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+        owner_key: &str,
+        maximum_requests: usize,
+    ) -> Result<permanent_local::Reconciliation, CollectionError> {
+        permanent_local::check_configuration(self.guard, coordinator, self.windows)?;
+        permanent_local::reconcile_current(
+            self.guard,
+            self.authority,
+            &mut self.session,
+            &self.windows,
+            owner_key,
+            maximum_requests,
+        )
+        .await
+    }
+
+    /// Selects copied first ownership through this collection's original session.
+    ///
+    /// Current roots and checkpoints stay unchanged. The copied producer checks
+    /// destination DATA independently and waits its own complete native barrier;
+    /// marking progress grants neither foreign Original nor deletion permission.
+    ///
+    /// # Errors
+    /// Preserves configuration, current DATA, lease, full-wait and native
+    /// acknowledgment refusals. Work failure or cancellation stops this session.
+    pub async fn own_copied_pack(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+        pack: [u8; 16],
+    ) -> Result<terrane_format::gc::retirement::PermanentDeleteOperation, CollectionError> {
+        copied_retirement::own_current(
+            self.guard,
+            self.authority,
+            &mut self.session,
+            coordinator,
+            self.windows,
+            pack,
+        )
+        .await
+    }
+
+    /// Reopens selected progress after renewing an exact whole lease through native selection.
+    ///
+    /// Persisted traversal claims are replayed against actual authenticated roots
+    /// before any checkpoint carrier can be constructed. Resume requires the
+    /// original marking epoch; a takeover must start a different cycle.
+    ///
+    /// # Errors
+    /// Refuses stale ownership, a different marking epoch, malformed progress,
+    /// changed contexts, incomplete historical controls and unsupported resumed phases.
+    pub async fn resume(
+        guard: &'configuration Guard<FileBucket<F, B, V>, C>,
+        authority: &'configuration OriginalAuthority,
+        lease: GcLease,
+        duration: u64,
+        cycle: u64,
+        windows: Windows,
+    ) -> Result<Self, CollectionError> {
+        let clock = guard.clock().retain_native_clock().map_err(|_| denied())?;
+        let mut session = session::Session::new(lease, duration, clock)?;
+        let operation = session.operation()?;
+        session.renew(&Collector::new(guard, authority)).await?;
+        let (roots, state) = crate::selected_bridge::native_collection_checkpoints::resume(
+            guard, authority, &session, cycle, windows,
+        )
+        .await?;
+        operation.complete();
+        Ok(Self {
+            guard,
+            authority,
+            session,
+            windows,
+            roots,
+            state,
+        })
+    }
+
+    /// Borrows the complete selected roots last acknowledged by this session.
+    pub fn roots(&self) -> &GcRoots {
+        &self.roots
+    }
+
+    /// Borrows the complete durable traversal checkpoint last acknowledged.
+    pub fn state(&self) -> &GcState {
+        &self.state
+    }
+
+    /// Starts a fresh marking cycle under this collector's original live session.
+    ///
+    /// The current mark frontier must already have reached sweep. The new cycle
+    /// independently authenticates current roots and publishes its own initial
+    /// checkpoint after whole-lease renewal. Previous cycle records remain
+    /// unchanged; starting this cycle completes no retirement or deletion duty.
+    /// No second collector lease is acquired and no session is cloned.
+    ///
+    /// # Errors
+    /// Rejects an unfinished mark frontier, a nonincreasing or occupied cycle,
+    /// lost ownership, incomplete current roots and native checkpoint failures.
+    /// Failed renewal, checkpoint work or cancellation permanently stops the
+    /// session; invalid phase or cycle-number preflight performs no effects.
+    pub async fn begin_cycle(&mut self, cycle: u64) -> Result<(), CollectionError> {
+        if self.state.phase != terrane_format::gc::Phase::Sweep || cycle <= self.state.cycle {
+            return Err(denied().into());
+        }
+
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let (roots, state) = crate::selected_bridge::native_collection_checkpoints::begin(
+            self.guard,
+            self.authority,
+            &self.session,
+            cycle,
+            self.windows,
+        )
+        .await?;
+
+        self.roots = roots;
+        self.state = state;
+        operation.complete();
+        Ok(())
+    }
+
+    /// Starts above every retained selected cycle using this same live session.
+    ///
+    /// Requires completed marking and selects current authenticated roots. Cycle
+    /// selection and publication share the original held namespace; old checkpoints
+    /// and cycle reservations remain unchanged.
+    ///
+    /// # Errors
+    /// Rejects unfinished marking without effects. Lost ownership, exhausted cycle
+    /// numbers, malformed keys and checkpoint failures stop the original session.
+    pub async fn begin_next_cycle(&mut self) -> Result<(), CollectionError> {
+        if self.state.phase != terrane_format::gc::Phase::Sweep {
+            return Err(denied().into());
+        }
+
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let (roots, state) = crate::selected_bridge::native_collection_checkpoints::begin_next(
+            self.guard,
+            self.authority,
+            &self.session,
+            self.windows,
+        )
+        .await?;
+
+        self.roots = roots;
+        self.state = state;
+        operation.complete();
+        Ok(())
+    }
+
+    /// Borrows the exact whole currently acknowledged collector lease.
+    pub fn lease(&self) -> &GcLease {
+        self.session.lease()
+    }
+
+    /// Tombstones at most one genuinely eligible listed unburned pack and creates Trash.
+    ///
+    /// A returned record acknowledges actual durable Trash creation. It grants
+    /// no deletion age, restore, recovery or physical unlink permission; selected
+    /// deletion progress remains unchanged. None means this listing found none.
+    /// The borrowed coordinator must own the same Guard and supply the actual
+    /// enforced commit bound, conservatively rounded upward to whole seconds.
+    ///
+    /// # Errors
+    /// Permanently stops on renewal failure or cancellation. Refuses incomplete
+    /// current roots/catalog/controls, unknown native incarnations, unsafe inputs
+    /// and failed exclusion or Trash durability. A failure after selection can
+    /// leave the pack excluded with missing Trash, which remains undeletable.
+    pub async fn retire_one(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+    ) -> Result<Option<terrane_format::gc::Tombstone>, CollectionError> {
+        self.retire(coordinator, None).await
+    }
+
+    /// Retires one requested pack only when fresh native qualification permits it.
+    ///
+    /// The pack identifier narrows candidate selection; it supplies no authority,
+    /// age, marking result or deletion permission. Every lease, complete current
+    /// root, catalog, incarnation, grace and durable Trash check is identical to
+    /// [`Self::retire_one`]. Other eligible packs are left unchanged. Returns
+    /// `None` when the requested pack is absent or ineligible in this observation.
+    ///
+    /// # Errors
+    /// Preserves every qualification, cancellation, lease, timing and native
+    /// durability failure from [`Self::retire_one`], including unknown creation
+    /// history. A selected exclusion can remain without acknowledged Trash.
+    pub async fn retire_pack(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+        pack: crate::pack::PackId,
+    ) -> Result<Option<terrane_format::gc::Tombstone>, CollectionError> {
+        self.retire(coordinator, Some(pack)).await
+    }
+
+    async fn retire(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+        requested: Option<crate::pack::PackId>,
+    ) -> Result<Option<terrane_format::gc::Tombstone>, CollectionError> {
+        self.check_retirement_inputs(coordinator)?;
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let result = crate::selected_bridge::native_collection_retirement::retire_one(
+            self.guard,
+            self.authority,
+            &self.session,
+            (&self.roots, &self.state),
+            self.windows,
+            requested,
+        )
+        .await?;
+        operation.complete();
+        Ok(result)
+    }
+
+    fn check_retirement_inputs(
+        &self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+    ) -> Result<(), CollectionError> {
+        if !std::ptr::eq(self.guard, coordinator.guard()) {
+            return Err(denied().into());
+        }
+        let maximum = coordinator.maximum_commit_duration();
+        let commit = maximum
+            .as_secs()
+            .checked_add(u64::from(maximum.subsec_nanos() != 0))
+            .ok_or(GcError::Exhausted)?;
+        if self.windows.commit() != commit
+            || self.windows.grace() <= commit
+            || self.windows.deletion() < self.windows.grace()
+        {
+            return Err(GcError::Window.into());
+        }
+        Ok(())
+    }
+
+    /// Restores an older exclusion and qualifies a fresh retirement in this cycle.
+    ///
+    /// Requires completed marking and a strictly older exclusion. Current native
+    /// restoration checks run before the ordinary retirement checks repeat in
+    /// this session. Missing old Trash is never backfilled, and its age grants
+    /// no permission to the new incarnation.
+    ///
+    /// Restoration and retirement publish separate durable generations. An
+    /// interruption between them leaves the restored placements available. Returns
+    /// `None` if the binding is stale, or if the restored pack is now ineligible;
+    /// in the latter case the restoration remains durable.
+    ///
+    /// # Errors
+    /// Rejects unfinished marking, a non-older cycle or incompatible coordinator
+    /// before effects. Preserves all current-root, ownership, incarnation, timing
+    /// and durability failures of restoration and retirement. Cancellation or a
+    /// failure after preflight permanently stops the original session.
+    pub async fn refresh_exclusion(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+        requested: terrane_format::bucket::PackExclusion,
+    ) -> Result<Option<terrane_format::gc::Tombstone>, CollectionError> {
+        if self.state.phase != terrane_format::gc::Phase::Sweep
+            || requested.cycle >= self.state.cycle
+        {
+            return Err(denied().into());
+        }
+        self.check_retirement_inputs(coordinator)?;
+
+        // Retain the outer operation across both durable steps so interruption
+        // cannot leave this session reusable after only restoration completed.
+        let operation = self.session.operation()?;
+        let pack = crate::pack::PackId::from_random_bytes(requested.pack_id);
+        let result = if self.restore_pack(requested).await? {
+            self.retire_pack(coordinator, pack).await?
+        } else {
+            None
+        };
+        operation.complete();
+        Ok(result)
+    }
+
+    /// Restores one exact current binding using independently fresh qualification.
+    ///
+    /// Old cycle marks and retirement age do not grant restoration permission.
+    /// A new holder can use [`Restoration`] without replaying an old marking epoch.
+    ///
+    /// # Errors
+    /// Refuses incomplete current history, unsafe or missing pair, permanent
+    /// ownership and failed native acknowledgment. Cancellation poisons the session.
+    pub async fn restore_pack(
+        &mut self,
+        requested: terrane_format::bucket::PackExclusion,
+    ) -> Result<bool, CollectionError> {
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let result = crate::selected_bridge::native_collection_restore::restore_pack(
+            self.guard,
+            self.authority,
+            &mut self.session,
+            (Some(self.roots.cycle), self.windows),
+            &requested,
+        )
+        .await?;
+        operation.complete();
+        Ok(result)
+    }
+
+    /// Expands a bounded number of authenticated commit contexts and selects progress.
+    ///
+    /// # Errors
+    /// Permanently stops on renewal failure or cancellation. Refuses stale
+    /// checkpoints, expired clocks, malformed metadata and failed native effects.
+    pub async fn mark_batch(&mut self, limit: usize) -> Result<(), CollectionError> {
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let state = crate::selected_bridge::native_collection_checkpoints::advance(
+            self.guard,
+            self.authority,
+            &self.session,
+            &self.roots,
+            &self.state,
+            self.windows,
+            crate::selected_bridge::native_collection_checkpoints::Step::Mark { limit },
+        )
+        .await?;
+        self.state = state;
+        operation.complete();
+        Ok(())
+    }
+
+    /// Completes selected immutable mark revisions and selects sweep phase.
+    ///
+    /// This acknowledgment grants no sweep or physical deletion permission.
+    ///
+    /// # Errors
+    /// Refuses a nonempty frontier, stale whole progress, lost ownership,
+    /// cancellation, altered immutable shards and failed native durability.
+    pub async fn finish_mark(&mut self) -> Result<(), CollectionError> {
+        let operation = self.session.operation()?;
+        self.session
+            .renew(&Collector::new(self.guard, self.authority))
+            .await?;
+        let state = crate::selected_bridge::native_collection_checkpoints::advance(
+            self.guard,
+            self.authority,
+            &self.session,
+            &self.roots,
+            &self.state,
+            self.windows,
+            crate::selected_bridge::native_collection_checkpoints::Step::Finish,
+        )
+        .await?;
+        self.state = state;
+        operation.complete();
+        Ok(())
+    }
+}

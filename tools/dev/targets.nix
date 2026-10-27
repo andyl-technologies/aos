@@ -7,6 +7,17 @@
   names = builtins.attrNames;
   join = builtins.concatStringsSep "\n";
   isDerivation = value: builtins.isAttrs value && (value.type or null) == "derivation";
+  collectChecks = prefix: value: let
+    kind = builtins.tryEval (value.type or null);
+    children = builtins.tryEval (names value);
+  in
+    if prefix == "terrane.gates" && kind.success && kind.value == "derivation"
+    then [prefix] ++ map (name: "${prefix}.${name}") value.passthru.registeredGateNames
+    else if kind.success && kind.value == "derivation"
+    then [prefix]
+    else if children.success
+    then builtins.concatMap (name: collectChecks "${prefix}.${name}" value.${name}) children.value
+    else [];
   imageNames = builtins.concatMap (
     variant:
       if aos.systems.${variant}.build ? image
@@ -51,8 +62,12 @@
       in
         if target == null
         then []
+        else if scope == "terrane.gates"
+        then collectChecks scope target
         else if isDerivation target
         then [scope]
+        else if scope == "terrane" || scope == "terrane.integration"
+        then collectChecks scope target
         else map (name: "${scope}.${name}") (names target);
     builds = buildNames;
     evals = [

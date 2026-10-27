@@ -1,0 +1,341 @@
+//! Supplies deliberately limited services for transport-only socket tests.
+//!
+//! Unused methods return explicit unsupported status. The fixture is not a
+//! Distribution backend and supplies no authentication or custody evidence.
+
+use connectrpc::{RequestContext, Response, ServiceRequest, ServiceResult, ServiceStream};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+use terrane_sdk::wire::{
+    services::{ContentService, RefService, TierService},
+    status::{Outcome, ProtocolError},
+    transport::TransportLimits,
+    v1,
+};
+
+#[derive(Default)]
+pub(super) struct Services {
+    pub(super) calls: AtomicUsize,
+    pub(super) dropped_stream: Arc<AtomicBool>,
+    pub(super) tokens: std::sync::Mutex<Vec<Vec<u8>>>,
+    pub(super) has_bitmap: Option<Vec<u8>>,
+    pub(super) has_delay: std::time::Duration,
+    pub(super) negotiation_response: Option<v1::NegotiateResponse>,
+    pub(super) negotiation_delay: std::time::Duration,
+    pub(super) ref_response: Option<v1::RefState>,
+    pub(super) ref_delay: std::time::Duration,
+    pub(super) ref_requests: std::sync::Mutex<Vec<v1::GetRefRequest>>,
+    pub(super) ref_log_entries: Option<Vec<v1::RefLogEntry>>,
+    pub(super) ref_log_error: bool,
+    pub(super) ref_log_pending: bool,
+    pub(super) ref_log_delay: std::time::Duration,
+    pub(super) ref_log_requests: std::sync::Mutex<Vec<v1::GetRefLogRequest>>,
+    pub(super) ref_list_entries: Option<Vec<v1::RefState>>,
+    pub(super) ref_list_error: bool,
+    pub(super) ref_list_pending: bool,
+    pub(super) ref_list_delay: std::time::Duration,
+    pub(super) ref_list_requests: std::sync::Mutex<Vec<v1::ListRefsRequest>>,
+}
+
+fn unsupported() -> connectrpc::ConnectError {
+    ProtocolError::from_outcome(Outcome::MethodUnavailable, "transport-fixture").into()
+}
+
+macro_rules! unavailable_unary {
+    ($method:ident, $request:ty, $response:ty) => {
+        async fn $method(
+            &self,
+            _context: RequestContext,
+            _request: ServiceRequest<'_, $request>,
+        ) -> ServiceResult<$response> {
+            Err::<Response<$response>, _>(unsupported())
+        }
+    };
+}
+
+macro_rules! unavailable_stream {
+    ($method:ident, $request:ty, $response:ty) => {
+        async fn $method(
+            &self,
+            _context: RequestContext,
+            _request: ServiceRequest<'_, $request>,
+        ) -> ServiceResult<ServiceStream<$response>> {
+            Err::<Response<ServiceStream<$response>>, _>(unsupported())
+        }
+    };
+}
+
+// The fixture intentionally exposes concrete messages for opaque generated responses.
+#[allow(refining_impl_trait)]
+impl ContentService for Services {
+    unavailable_unary!(
+        presign_read,
+        v1::PresignReadRequest,
+        v1::PresignReadResponse
+    );
+    unavailable_stream!(get_bundle, v1::GetBundleRequest, v1::BundleFrame);
+    unavailable_stream!(get_filter, v1::GetFilterRequest, v1::FilterShard);
+    unavailable_stream!(get_index, v1::GetIndexRequest, v1::IndexShard);
+
+    async fn negotiate(
+        &self,
+        _context: RequestContext,
+        request: ServiceRequest<'_, v1::NegotiateRequest>,
+    ) -> ServiceResult<v1::NegotiateResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if !self.negotiation_delay.is_zero() {
+            tokio::time::sleep(self.negotiation_delay).await;
+        }
+        if let Some(response) = &self.negotiation_response {
+            return Ok(Response::new(response.clone()));
+        }
+
+        let request = request.to_owned_message();
+        let mut missing_bitmap = vec![0; request.hashes.len().div_ceil(8)];
+        for (position, hash) in request.hashes.iter().enumerate() {
+            if hash.value != [7; 32] {
+                missing_bitmap[position / 8] |= 1 << (position % 8);
+            }
+        }
+        Ok(Response::new(v1::NegotiateResponse {
+            known_commits: request
+                .have_commits
+                .into_iter()
+                .filter(|hash| hash.value == [7; 32])
+                .collect(),
+            missing_nodes: request.roots,
+            missing_bitmap,
+            ..Default::default()
+        }))
+    }
+
+    async fn has(
+        &self,
+        context: RequestContext,
+        request: ServiceRequest<'_, v1::HasRequest>,
+    ) -> ServiceResult<v1::HasResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if !self.has_delay.is_zero() {
+            tokio::time::sleep(self.has_delay).await;
+        }
+        if let Some(token) = context
+            .extensions()
+            .get::<terrane_sdk::wire::authentication::RequestToken>()
+        {
+            self.tokens
+                .lock()
+                .map_err(|_| unsupported())?
+                .push(token.bytes().to_vec());
+        }
+        let hashes = request.to_owned_message().hashes;
+        let mut present_bitmap = vec![0; hashes.len().div_ceil(8)];
+        for (position, hash) in hashes.iter().enumerate() {
+            if hash.value == [7; 32] {
+                present_bitmap[position / 8] |= 1 << (position % 8);
+            }
+        }
+        Ok(Response::new(v1::HasResponse {
+            present_bitmap: self.has_bitmap.clone().unwrap_or(present_bitmap),
+            ..Default::default()
+        }))
+    }
+
+    async fn put_pack(
+        &self,
+        _context: RequestContext,
+        _requests: connectrpc::InboundStream<v1::PutPackFrame>,
+    ) -> ServiceResult<v1::PutPackResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err::<Response<v1::PutPackResponse>, _>(unsupported())
+    }
+
+    async fn get_range(
+        &self,
+        _context: RequestContext,
+        _request: ServiceRequest<'_, v1::GetRangeRequest>,
+    ) -> ServiceResult<ServiceStream<v1::GetRangeFrame>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let stream: ServiceStream<v1::GetRangeFrame> = Box::pin(PendingBody {
+            emitted: false,
+            dropped: self.dropped_stream.clone(),
+        });
+        Ok(Response::new(stream))
+    }
+}
+
+struct PendingBody {
+    emitted: bool,
+    dropped: Arc<AtomicBool>,
+}
+
+impl futures_util::Stream for PendingBody {
+    type Item = Result<v1::GetRangeFrame, connectrpc::ConnectError>;
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        if self.emitted {
+            return std::task::Poll::Pending;
+        }
+        self.emitted = true;
+        std::task::Poll::Ready(Some(Ok(v1::GetRangeFrame {
+            data: b"first frame".to_vec(),
+            ..Default::default()
+        })))
+    }
+}
+
+impl Drop for PendingBody {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
+struct StreamLifetime(Arc<AtomicBool>);
+
+impl Drop for StreamLifetime {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl RefService for Services {
+    async fn get_ref(
+        &self,
+        _context: RequestContext,
+        request: ServiceRequest<'_, v1::GetRefRequest>,
+    ) -> ServiceResult<v1::RefState> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.ref_requests
+            .lock()
+            .map_err(|_| unsupported())?
+            .push(request.to_owned_message());
+        if !self.ref_delay.is_zero() {
+            tokio::time::sleep(self.ref_delay).await;
+        }
+        match &self.ref_response {
+            Some(response) => Ok(Response::new(response.clone())),
+            None => Err(unsupported()),
+        }
+    }
+
+    unavailable_unary!(
+        compare_and_swap_ref,
+        v1::CompareAndSwapRefRequest,
+        v1::RefState
+    );
+
+    async fn get_ref_log(
+        &self,
+        _context: RequestContext,
+        request: ServiceRequest<'_, v1::GetRefLogRequest>,
+    ) -> ServiceResult<ServiceStream<v1::RefLogEntry>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.ref_log_requests
+            .lock()
+            .map_err(|_| unsupported())?
+            .push(request.to_owned_message());
+        let entries = self.ref_log_entries.clone().ok_or_else(unsupported)?;
+        let state = (
+            entries.into_iter(),
+            self.ref_log_error,
+            self.ref_log_pending,
+            self.ref_log_delay,
+            StreamLifetime(self.dropped_stream.clone()),
+        );
+        let stream = futures_util::stream::unfold(
+            state,
+            |(mut entries, mut fail, pending, delay, lifetime)| async move {
+                let next = if let Some(entry) = entries.next() {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    Ok(entry)
+                } else if fail {
+                    fail = false;
+                    Err(unsupported())
+                } else if pending {
+                    return std::future::pending().await;
+                } else {
+                    return None;
+                };
+                Some((next, (entries, fail, pending, delay, lifetime)))
+            },
+        );
+        Ok(Response::new(
+            Box::pin(stream) as ServiceStream<v1::RefLogEntry>
+        ))
+    }
+
+    unavailable_stream!(watch_refs, v1::WatchRefsRequest, v1::RefEvent);
+
+    async fn list_refs(
+        &self,
+        _context: RequestContext,
+        request: ServiceRequest<'_, v1::ListRefsRequest>,
+    ) -> ServiceResult<ServiceStream<v1::RefState>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.ref_list_requests
+            .lock()
+            .map_err(|_| unsupported())?
+            .push(request.to_owned_message());
+        let entries = self.ref_list_entries.clone().ok_or_else(unsupported)?;
+        let state = (
+            entries.into_iter(),
+            self.ref_list_error,
+            self.ref_list_pending,
+            self.ref_list_delay,
+            StreamLifetime(self.dropped_stream.clone()),
+        );
+        let stream = futures_util::stream::unfold(
+            state,
+            |(mut entries, mut fail, pending, delay, lifetime)| async move {
+                let next = if let Some(entry) = entries.next() {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    Ok(entry)
+                } else if fail {
+                    fail = false;
+                    Err(unsupported())
+                } else if pending {
+                    return std::future::pending().await;
+                } else {
+                    return None;
+                };
+                Some((next, (entries, fail, pending, delay, lifetime)))
+            },
+        );
+        Ok(Response::new(
+            Box::pin(stream) as ServiceStream<v1::RefState>
+        ))
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl TierService for Services {
+    unavailable_unary!(
+        capabilities,
+        v1::CapabilitiesRequest,
+        v1::CapabilitiesResponse
+    );
+    unavailable_unary!(residency, v1::ResidencyRequest, v1::ResidencyResponse);
+    unavailable_unary!(r#where, v1::WhereRequest, v1::WhereResponse);
+    unavailable_unary!(warm, v1::WarmRequest, v1::WarmResponse);
+    unavailable_unary!(costs, v1::CostsRequest, v1::CostsResponse);
+}
+
+pub(super) fn limits() -> TransportLimits {
+    TransportLimits {
+        max_request_bytes: 2 * 1024 * 1024,
+        max_message_bytes: 1024 * 1024,
+        max_element_memory: 1024 * 1024,
+        max_concurrent_streams: 8,
+        handshake_timeout: std::time::Duration::from_secs(10),
+        header_timeout: std::time::Duration::from_secs(2),
+        request_timeout: std::time::Duration::from_secs(2),
+    }
+}
