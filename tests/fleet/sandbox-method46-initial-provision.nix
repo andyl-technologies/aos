@@ -53,7 +53,7 @@
     operator = "/usr/lib/aos${operatorLauncher}";
   };
 in
-  assert initialCut == null || builtins.elem initialCut ["before-command" "after-response" "partial-publication"]; {
+  assert initialCut == null || builtins.elem initialCut ["before-command" "after-response" "partial-publication" "short-write"]; {
     name =
       if initialCut == null
       then "sandbox-method46-initial-provision"

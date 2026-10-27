@@ -46,6 +46,18 @@ Recent committed startup fixes close narrower prerequisites:
   short-write recovery receipt and does not qualify power loss during checkpoint
   publication.
 
+- `checks.fleet.sandbox-method46-initial-short-write-power-loss` extends the
+  same real short-write failure to a QEMU/swtpm process power cut. The live
+  producer must first write the exact 128-byte canonical prefix and fail its
+  publication. After the cut, the unsynced stage may contain that prefix or
+  remain empty; any other bytes fail the test. The retained signed intent,
+  authenticated Written NV value, cold completion without another approval,
+  final sidecar/NV comparison and repeat refusal remain required. Full fleet
+  derivation evaluation, generated-Python initialization and prefix-observer
+  rejection checks pass. Execution is pending. This case covers power loss
+  after the failed short write, not interruption during writing or between
+  rename and directory sync.
+
 - The host-only initial-Extend command gate passes its registered AOS Nix
   mechanics check at
   `/nix/store/sgxkf4f740yyc96h2nd4zf6fsr4a7z57-sandbox-method46-tpm-command-gate-check`

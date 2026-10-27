@@ -16,6 +16,7 @@ from uuid import UUID
 
 
 PURPOSES = ("controller", "storage")
+SHORT_WRITE_CASES = ("partial-publication", "short-write")
 DIRECTORIES = {
     "controller": "/lib/aos/sandboxd/broker-session/storage",
     "storage": "/lib/aos/sandbox-storage/broker-session",
@@ -275,7 +276,7 @@ def install_command_gate(purpose, relays):
     # _launch reuses this same live backend and passes its real data descriptor
     # through the relay. No TPM state is cleared, replaced or restored.
     vm._ensure_swtpm()
-    edge = "after-response" if initial_cut == "partial-publication" else initial_cut
+    edge = "after-response" if initial_cut in SHORT_WRITE_CASES else initial_cut
     return relays.enter_context(Method46TpmCommandGate(
         vm.tpm_socket, 0x0180a046 + PURPOSES.index(purpose), edge,
     ))
@@ -317,12 +318,14 @@ finally:
     return pid
 
 
-def require_partial_prefix(purpose, expectations):
+def require_partial_prefix(purpose, expectations, allow_unwritten=False):
     path = "/var" + DIRECTORIES[purpose] + "/session-floor.journal.initial.pending"
     script = f"import base64,pathlib; print(base64.b64encode(pathlib.Path({path!r}).read_bytes()).decode())"
     observed = base64.b64decode(vm.succeed(f"{tools['operator']} -c {shlex.quote(script)}"))
     expected = (expectations / f"{purpose}-sidecar").read_bytes()
-    assert len(expected) == 429 and observed == expected[:128], (purpose, len(observed))
+    allowed_lengths = (0, 128) if allow_unwritten else (128,)
+    assert len(expected) == 429 and len(observed) in allowed_lengths, (purpose, len(observed))
+    assert observed == expected[:len(observed)], purpose
 
 
 def finish_short_publication(purpose, gate, expectations):
@@ -365,7 +368,7 @@ def recover_after_initial_cut(purpose, gate, transcript, prepared, expectations,
                               delivered, native, scratch, relays):
     gate.wait_reached(60)
     assert gate.forwarded_extends == (0 if initial_cut == "before-command" else 1)
-    if initial_cut == "partial-publication":
+    if initial_cut in SHORT_WRITE_CASES:
         finish_short_publication(purpose, gate, expectations)
         require_interrupted_files(purpose, transcript, native)
     before_cut = UUID(vm.succeed("cat /proc/sys/kernel/random/boot_id").strip())
@@ -408,8 +411,10 @@ def recover_after_initial_cut(purpose, gate, transcript, prepared, expectations,
     # Let ext4 replay its own journal before observing the durable intent.
     # Reading raw inode tables before replay would not establish fsync loss.
     require_interrupted_files(purpose, transcript, native)
-    if initial_cut == "partial-publication":
-        require_partial_prefix(purpose, expectations)
+    if initial_cut in SHORT_WRITE_CASES:
+        # A short write has no successful file fsync. Following power loss,
+        # ext4 may retain its exact prefix or the previously empty stage.
+        require_partial_prefix(purpose, expectations, allow_unwritten=initial_cut == "short-write")
     deliver_credentials(delivered)
     vm.succeed(f"test ! -e /run/method46-qualification/{purpose}")
     vm.execute(f"systemctl start aos-sandbox-{purpose}-floor-initialize.service")
