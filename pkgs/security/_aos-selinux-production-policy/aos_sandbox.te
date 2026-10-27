@@ -6,6 +6,7 @@ require {
     attribute domain;
     attribute aos_explicit_loader_domain;
     attribute aos_no_context_translation_domain;
+    attribute aos_explicit_proc_file_domain;
     attribute file_type;
     type init_t;
     type init_tmpfs_t;

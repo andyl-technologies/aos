@@ -109,6 +109,7 @@ type aos_method46_initial_@ROLE@_helper_t;
 typeattribute aos_method46_initial_@ROLE@_helper_t domain;
 typeattribute aos_method46_initial_@ROLE@_helper_t aos_no_context_translation_domain;
 typeattribute aos_method46_initial_@ROLE@_helper_t aos_private_root_custody_domain;
+typeattribute aos_method46_initial_@ROLE@_helper_t aos_explicit_proc_file_domain;
 role system_r types aos_method46_initial_@ROLE@_helper_t;
 type aos_method46_initial_@ROLE@_helper_exec_t;
 type_transition aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_exec_t:process aos_method46_initial_@ROLE@_helper_t;

@@ -153,12 +153,21 @@ class SelectedInitialPolicyTest(unittest.TestCase):
         classmap.update(dbus=["send_msg"], service=["status"])
         classmap["system"] = [*classmap["system"], "status"]
         attributes = ("domain", "aos_no_context_translation_domain", "aos_private_root_custody_domain")
+        proc_file_attribute = "aos_explicit_proc_file_domain"
+        # Exercise the upstream self-file grant that caused the first linked
+        # policy failure. Only the fixed helpers opt out; the real rendered
+        # role rules must still supply their required reads and peer GET_INFO.
+        manage_file = "append create getattr ioctl link lock open read rename setattr unlink write"
+        upstream_proc_files = f"allow domain self:file {{ {manage_file} }};"
+        explicit_proc_files = f"allow {{ domain -{proc_file_attribute} }} self:file {{ {manage_file} }};"
         source = "\n".join((
             *(f"class {name}" for name in sorted(classes)), "sid kernel",
             *(f"class {name} {{ {' '.join(classmap[name])} }}" for name in sorted(classes)),
             *(f"attribute {name};" for name in attributes),
+            f"attribute {proc_file_attribute};",
             *(f"type {name};" for name in sorted(required)),
             "role system_r;", body,
+            explicit_proc_files,
             "role system_r types { " + " ".join(sorted(required | declared)) + " };",
             "user system_u roles system_r;", "sid kernel system_u:system_r:kernel_t",
         ))
@@ -178,6 +187,10 @@ class SelectedInitialPolicyTest(unittest.TestCase):
                 members = checker.attribute_members(setools, policy, attribute)
                 self.assertEqual(members, set(initial.DOMAINS))
                 self.assertFalse(members.intersection(initial.OBJECT_TYPES))
+            self.assertEqual(
+                checker.attribute_members(setools, policy, proc_file_attribute),
+                {journal.initial_helper(role) for role in initial.PURPOSES},
+            )
             for domain in initial.DOMAINS:
                 self.assertFalse(policy.lookup_type(domain).ispermissive)
             main_positive, _, _ = journal.matrix(checker.Access, checker.Transition, checker.accesses, actors)
@@ -190,6 +203,15 @@ class SelectedInitialPolicyTest(unittest.TestCase):
                 self.assertFalse(checker.allow_rules(setools, policy, access), str(access))
             for transition in transitions:
                 self.assertTrue(checker.transition_rules(setools, policy, transition), str(transition))
+
+            path.write_text(source.replace(explicit_proc_files, upstream_proc_files))
+            result = subprocess.run(
+                [os.environ["AOS_METHOD46_CHECKPOLICY"], "-c", "33", "-U", "reject", "-o", str(binary), str(path)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with self.assertRaisesRegex(ValueError, "foreign method46 initial custody grant exists: .*helper_t file ioctl"):
+                checker._check_method46_initial_policy(setools, setools.SELinuxPolicy(str(binary)))
 
 
 if __name__ == "__main__":

@@ -97,6 +97,7 @@ class InitialPolicyRenderingTest(unittest.TestCase):
                 "role system_r;", "attribute domain;",
                 "attribute aos_no_context_translation_domain;",
                 "attribute aos_private_root_custody_domain;",
+                "attribute aos_explicit_proc_file_domain;",
                 *(f"type {name};" for name in sorted(external_types)),
                 *(f"class {name} {{ {' '.join(classmap[name])} }};" for name in sorted(classes)),
             ]

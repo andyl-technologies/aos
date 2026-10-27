@@ -31,6 +31,15 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The first selected-initializer VM build stopped before boot: the merged
+  policy inherited `domain self:file manage_file_perms` for the fixed helpers,
+  violating their existing ioctl exclusion. A refpolicy marker now excludes
+  only those two helpers from that blanket grant; their explicit reads remain.
+  The native custody/rendering check passes, including real compiled policies
+  that reproduce the failure when the upstream grant is restored. The narrowed
+  selected policy and VM are rebuilding. This establishes no installed producer
+  entry or TPM provisioning; admission remains closed.
+
 - The user approved PID 1's `start/status` access to the image-labeled networkd
   socket/service, clearing the approval blocker recorded in the checkpoints
   below. The focused regression requires both startup permissions and rejects
