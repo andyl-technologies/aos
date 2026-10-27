@@ -8,6 +8,8 @@ view retains test and build-script compilation edges for repository audits;
 those edges never contribute to the production package graph.
 Test compilation and execution records separately retain source roots, feature
 selectors, and wrapper-to-binary bindings for gate discovery without Cargo.
+Separate lint records retain configuration levels, per-compilation bindings,
+Clippy roots, and configuration-file selections without inferring inheritance.
 """
 
 import argparse
@@ -222,6 +224,113 @@ def test_metadata(rules, catalog, compilations):
     return dict(sorted(tests.items())), executions
 
 
+def selected_attribute(attribute, expected, read_values):
+    """Retains typed attribute alternatives and concatenated selector elements."""
+    if attribute["type"] == expected:
+        return {"type": expected, "values": read_values(attribute)}
+    if attribute["type"] != "SELECTOR_LIST" or attribute["selectorList"]["type"] != expected:
+        raise ValueError("unexpected lint attribute selection type")
+    elements = []
+    for element in attribute["selectorList"]["elements"]:
+        entries = element["entries"]
+        if not entries or len({entry["label"] for entry in entries}) != len(entries):
+            raise ValueError("lint selector requires distinct nonempty branches")
+        elements.append(sorted([
+            {"condition": entry["label"], "values": read_values(entry)} for entry in entries
+        ], key=lambda entry: entry["condition"]))
+    if not elements:
+        raise ValueError("lint selector has no elements")
+    return {"type": "SELECTOR_LIST", "elements": elements}
+
+
+def label_selection(attribute, kind="LABEL"):
+    """Preserves optional labels and label lists without flattening conditions."""
+    return selected_attribute(attribute, kind, lambda entry: attribute_values({**entry, "type": kind}, kind))
+
+
+def lint_level_selection(attribute):
+    """Retains lint levels, including weakened branches, and rejects ambiguous keys."""
+    def levels(entry):
+        result = {}
+        for row in entry.get("stringDictValue", []):
+            name, level = row["key"], row["value"]
+            if not isinstance(name, str) or not name or name in result:
+                raise ValueError("invalid or duplicate lint configuration key")
+            # These are the levels accepted by the pinned rules_rust rule.
+            if not isinstance(level, str) or level not in {"allow", "warn", "deny", "forbid", "force-warn"}:
+                raise ValueError("unsupported lint configuration level")
+            result[name] = level
+        return dict(sorted(result.items()))
+
+    return selected_attribute(attribute, "STRING_DICT", levels)
+
+
+def lint_metadata(rules, catalog):
+    """Exports declared lint policy separately from compilation dependency edges."""
+    configurations = {}
+    aliases = {}
+    groups = {}
+    for label, rule in sorted(rules.items()):
+        attrs = attributes(rule)
+        if rule["ruleClass"] == "rust_lint_config":
+            configurations[label] = {
+                name: lint_level_selection(attrs[name]) for name in ["rustc", "clippy", "rustdoc"]
+            }
+        elif rule["ruleClass"] == "alias":
+            aliases[label] = label_selection(attrs["actual"])
+        elif rule["ruleClass"] == "filegroup":
+            if not label.startswith("//tools/bazel/rules:"):
+                raise ValueError("lint data group escapes the shared rules package")
+            groups[label] = label_selection(attrs["srcs"], "LABEL_LIST")
+
+    def resolve_configuration(label, active=()):
+        if label in active:
+            raise ValueError("lint configuration alias cycle")
+        if label in configurations:
+            return
+        if label not in aliases:
+            raise ValueError("unmodeled lint configuration: " + label)
+        targets = attribute_values(attributes(rules[label])["actual"], "LABEL")
+        if not targets:
+            raise ValueError("lint configuration alias has no target")
+        for target in targets:
+            resolve_configuration(target, (*active, label))
+
+    bindings = {}
+    targets = {}
+    for label, rule in sorted(rules.items()):
+        kind = rule["ruleClass"]
+        if kind not in RUST_RULES | {"rust_test", "rust_clippy"}:
+            continue
+        owner = catalog.get(label.partition(":")[0])
+        if owner is None:
+            raise ValueError("lint target has no declared source package")
+        attrs = attributes(rule)
+        identity = {"package": owner["name"], "kind": kind,
+                    "test_only": attrs["testonly"].get("booleanValue", False)}
+        if kind == "rust_clippy":
+            targets[label] = {**identity, "target_selection": label_selection(attrs["deps"], "LABEL_LIST")}
+            continue
+        config = attrs.get("lint_config", {"type": "LABEL"})
+        for configuration in attribute_values(config, "LABEL"):
+            resolve_configuration(configuration)
+        # Test compilations use their own lint_config; their crate binding does
+        # not imply that the library's lint policy is inherited.
+        bindings[label] = {
+            **identity, "configuration_selection": label_selection(config),
+            "rustc_flag_selection": string_list_selection(attrs.get("rustc_flags", {"type": "STRING_LIST"})),
+            "tag_selection": string_list_selection(attrs.get("tags", {"type": "STRING_LIST"})),
+        }
+    return {
+        "lint_target_selection": "declared Rust compilation lint bindings, lint levels, Clippy roots, and shared configuration-file groups; selectors retained",
+        "lint_configuration_count": len(configurations), "lint_configurations": configurations,
+        "lint_binding_count": len(bindings), "lint_bindings": bindings,
+        "clippy_target_count": len(targets), "clippy_targets": targets,
+        "alias_target_count": len(aliases), "alias_targets": aliases,
+        "lint_data_group_count": len(groups), "lint_data_groups": groups,
+    }
+
+
 def export(records, repositories):
     """Retains source ownership and unions production package edges across profiles."""
     rules = {}
@@ -232,7 +341,7 @@ def export(records, repositories):
         label = rule["name"]
         if label in rules:
             raise ValueError("duplicate architecture query rule: " + label)
-        if rule["ruleClass"] not in DEPENDENCY_RULES | PROFILE_RULES | {"_source_package", "alias", "_libtest_test"}:
+        if rule["ruleClass"] not in DEPENDENCY_RULES | PROFILE_RULES | {"_source_package", "alias", "_libtest_test", "rust_lint_config", "filegroup"}:
             raise ValueError("unexpected architecture query rule class")
         rules[label] = rule
     catalog = {}
@@ -370,6 +479,7 @@ def export(records, repositories):
         "test_execution_targets": test_executions,
         "unavailable_profile_targets": dict(sorted(unavailable.items())),
         "native_dependencies": production_native,
+        **lint_metadata(rules, catalog),
     }
 
 

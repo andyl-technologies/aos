@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "metadata"))
-from export_architecture import attribute_values, export, repository_packages, string_list_selection
+from export_architecture import attribute_values, export, lint_level_selection, repository_packages, string_list_selection
 
 
 def attribute(name, kind, value):
@@ -48,7 +48,8 @@ def compilation(name, target="lib", deps=(), testonly=False, **extra):
 
 
 def selected(name, kind, *branches):
-    field = "stringValue" if kind == "LABEL" else "stringListValue"
+    field = {"LABEL": "stringValue", "LABEL_LIST": "stringListValue",
+             "STRING_LIST": "stringListValue", "STRING_DICT": "stringDictValue"}[kind]
     return {"name": name, "type": "SELECTOR_LIST", "selectorList": {
         "type": kind, "elements": [{"entries": [
             {"label": condition, field: value} for condition, value in branch.items()
@@ -60,6 +61,111 @@ class ArchitectureExportTests(unittest.TestCase):
     def packages(self, records, repositories=None):
         result = export(records, repositories or {})
         return {package["name"]: package for package in result["packages"]}
+
+    def test_lint_levels_preserve_weakened_branches_instead_of_a_level_union(self):
+        levels = selected("clippy", "STRING_DICT", {
+            "//conditions:default": [{"key": "unwrap_used", "value": "deny"}],
+            "//features:weakened": [{"key": "unwrap_used", "value": "allow"}],
+        }, {"//conditions:default": [{"key": "all", "value": "deny"}]})
+
+        self.assertEqual(lint_level_selection(levels), {"type": "SELECTOR_LIST", "elements": [
+            [{"condition": "//conditions:default", "values": {"unwrap_used": "deny"}},
+             {"condition": "//features:weakened", "values": {"unwrap_used": "allow"}}],
+            [{"condition": "//conditions:default", "values": {"all": "deny"}}],
+        ]})
+
+    def test_lint_bindings_do_not_infer_unit_test_inheritance(self):
+        config = record("//tools/bazel/rules:lints", "rust_lint_config", *[
+            {"name": name, "type": "STRING_DICT"} for name in ["rustc", "clippy", "rustdoc"]
+        ])
+        library = compilation("app")
+        library["rule"]["attribute"].append(attribute("lint_config", "LABEL", config["rule"]["name"]))
+        unit = record("//crates/app:unit", "rust_test", attribute("testonly", "BOOLEAN", True),
+                      attribute("crate", "LABEL", "//crates/app:lib"),
+                      attribute("rustc_flags", "STRING_LIST", ["--cap-lints=allow", "-Aunused", "-Aunused"]),
+                      attribute("tags", "STRING_LIST", ["no-clippy"]))
+
+        result = export([source("app"), config, library, unit], {})
+
+        self.assertEqual(result["lint_binding_count"], 2)
+        self.assertEqual(result["lint_bindings"]["//crates/app:lib"]["configuration_selection"],
+                         {"type": "LABEL", "values": ["//tools/bazel/rules:lints"]})
+        unit_binding = result["lint_bindings"]["//crates/app:unit"]
+        self.assertEqual(unit_binding["configuration_selection"], {"type": "LABEL", "values": []})
+        self.assertEqual(unit_binding["rustc_flag_selection"]["values"], ["--cap-lints=allow", "-Aunused", "-Aunused"])
+        self.assertEqual(unit_binding["tag_selection"]["values"], ["no-clippy"])
+
+    def test_lint_configuration_aliases_retain_all_alternatives(self):
+        configs = [record("//tools/bazel/rules:" + name, "rust_lint_config", *[
+            {"name": kind, "type": "STRING_DICT"} for kind in ["rustc", "clippy", "rustdoc"]
+        ]) for name in ["strict", "other"]]
+        alias = record("//tools/bazel/rules:alias", "alias", selected("actual", "LABEL", {
+            "//conditions:default": "//tools/bazel/rules:strict", "//platform:other": "//tools/bazel/rules:other",
+        }))
+        library = compilation("app")
+        library["rule"]["attribute"].append(attribute("lint_config", "LABEL", alias["rule"]["name"]))
+        records = [source("app"), library, alias, *configs]
+
+        result = export(records, {})
+
+        self.assertEqual(result["lint_configuration_count"], 2)
+        self.assertEqual(result["alias_target_count"], 1)
+        alternatives = result["alias_targets"][alias["rule"]["name"]]["elements"][0]
+        self.assertEqual([entry["values"] for entry in alternatives],
+                         [["//tools/bazel/rules:strict"], ["//tools/bazel/rules:other"]])
+        with self.assertRaisesRegex(ValueError, "unmodeled lint configuration"):
+            export(records[:-1], {})
+
+    def test_clippy_roots_and_configuration_files_keep_selectors_without_package_edges(self):
+        clippy = record("//crates/app:clippy", "rust_clippy", attribute("testonly", "BOOLEAN", True),
+                        selected("deps", "LABEL_LIST", {"//conditions:default": ["//crates/app:lib"],
+                                                        "//features:other": ["//crates/other:lib"]}))
+        files = record("//tools/bazel/rules:clippy_config", "filegroup", selected("srcs", "LABEL_LIST", {
+            "//conditions:default": ["//tools/bazel/rules:clippy.toml"],
+            "//features:standalone": ["//tools/bazel/rules:accache/clippy.toml"],
+        }))
+        records = [source("app"), source("other"), compilation("app"), compilation("other"), clippy, files]
+
+        result = export(records, {})
+
+        self.assertEqual(result["clippy_target_count"], 1)
+        self.assertEqual(result["lint_data_group_count"], 1)
+        self.assertEqual(result["clippy_targets"][clippy["rule"]["name"]]["target_selection"]["elements"][0][1]["values"],
+                         ["//crates/other:lib"])
+        self.assertEqual(result["lint_data_groups"][files["rule"]["name"]]["elements"][0][1]["values"],
+                         ["//tools/bazel/rules:accache/clippy.toml"])
+        self.assertEqual(self.packages(records)["app"]["production_dependencies"], [])
+
+    def test_lint_levels_reject_duplicate_keys_invalid_levels_and_malformed_selectors(self):
+        repeated = {"type": "STRING_DICT", "stringDictValue": [
+            {"key": "unwrap_used", "value": "deny"}, {"key": "unwrap_used", "value": "allow"},
+        ]}
+        wrong_level = {"type": "STRING_DICT", "stringDictValue": [{"key": "all", "value": "ignore"}]}
+        duplicate = selected("clippy", "STRING_DICT", {"//conditions:default": []})
+        duplicate["selectorList"]["elements"][0]["entries"] *= 2
+        malformed = [repeated, wrong_level, duplicate,
+                     selected("clippy", "STRING_DICT", {}),
+                     selected("clippy", "STRING_LIST", {"//conditions:default": []})]
+
+        for value in malformed:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                lint_level_selection(value)
+
+    def test_lint_configuration_alias_cycles_are_rejected(self):
+        library = compilation("app")
+        library["rule"]["attribute"].append(attribute("lint_config", "LABEL", "//tools/bazel/rules:a"))
+        records = [source("app"), library,
+                   record("//tools/bazel/rules:a", "alias", attribute("actual", "LABEL", "//tools/bazel/rules:b")),
+                   record("//tools/bazel/rules:b", "alias", attribute("actual", "LABEL", "//tools/bazel/rules:a"))]
+
+        with self.assertRaisesRegex(ValueError, "lint configuration alias cycle"):
+            export(records, {})
+
+    def test_lint_data_groups_cannot_pull_unrelated_crate_runfiles_into_the_view(self):
+        group = record("//crates/app:runfiles", "filegroup", attribute("srcs", "LABEL_LIST", []))
+
+        with self.assertRaisesRegex(ValueError, "lint data group escapes"):
+            export([source("app"), compilation("app"), group], {})
 
     def test_selector_union_retains_concatenated_branches_without_condition_edges(self):
         deps = selected("deps", "LABEL_LIST",

@@ -4403,6 +4403,17 @@ runfile, and runner fixtures, with all 80 source guards and 79 SDK contracts
 checked. This static traceability qualification does not establish the actual
 campaign runtime flights or qualify production cutover.
 
+The architecture export also retains three lint-level configurations, 1,646
+explicit compilation bindings, 86 Clippy roots, 123 aliases, and the shared
+Clippy configuration-file group. Dictionary and label selectors preserve
+their conditions and concatenated elements. A unit test's crate binding does
+not imply lint inheritance; its own configuration, Rust flags, and skip tags
+remain visible. The [lint metadata receipt](tests/evidence/crucible-lint-target-metadata.json)
+checks compatibility with all five converted audit readers and verifies the
+unchanged production, dependency, and test metadata. The harness lint consumer
+still needs conversion, and these declarations do not establish actual Clippy
+execution or enforcement of a required tier.
+
 ```sh
 nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture --no-out-link
 nix-build tools/bazel/tests/crucible-controller.nix -A test-architecture-parity --no-out-link
