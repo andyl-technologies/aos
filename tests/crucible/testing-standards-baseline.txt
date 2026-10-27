@@ -120,7 +120,6 @@ crucible-daemon	src/supervision	thread::sleep	1
 crucible-daemon	src/qemu_campaign_lifecycle/tests/fresh_execution	retry	1
 crucible-daemon	src/qemu_campaign_lifecycle/tests/host_parallel_native	retry	1
 crucible-daemon	src/qemu_resource_guard/tests	retry	1
-aos-linux-project-quota	src/linux_project_quota/released_usage	thread::sleep	1
 crucible-qemu-host	src/linux_attempt_host	retry	1
 crucible-qemu-host	src/unix_socket_path	thread::sleep	1
 crucible-qemu-host	src/linux_attempt_host	thread::sleep	1
@@ -130,8 +129,8 @@ crucible-qemu-host	src/linux_cgroup/quarantine	thread::sleep	1
 crucible-qemu-host	src/linux_cgroup	retry	1
 crucible-qemu-host	src/linux_cgroup	thread::sleep	1
 crucible-qemu-host	src/spawn	thread::sleep	1
-crucible-daemon	src/debug_gateway	std::thread::sleep	1
-crucible-daemon	src/debug_gateway	thread::sleep	1
+crucible-control-server	src/debug_gateway	std::thread::sleep	1
+crucible-control-server	src/debug_gateway	thread::sleep	1
 crucible-daemon	src/vm_lifecycle/network_faults/route/custody_and_payload	retry	1
 crucible-daemon	src/vm_lifecycle/network_faults/route_tests/medium	retry	1
 crucible-daemon	src/vm_lifecycle/network_faults/route_tests/medium/protocol	retry	1

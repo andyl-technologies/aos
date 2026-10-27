@@ -528,7 +528,6 @@ qemu-manifest|crucible-cli|crates/crucible/crucible-cli/Cargo.toml|crucible-daem
 # The concrete lifecycle adapter owns typed socket seal receipts and native
 # process/generation checks. The world continuation and file authenticator
 # remain independent of those wire types.
-qemu-token|crucible-daemon|crates/crucible/crucible-daemon/src/vm_lifecycle/hot_fork/tests/clone_cost.rs|Qemu
 qemu-token|crucible-cli|crates/crucible/crucible-cli/src/cli/campaign_run.rs|Qemu
 qemu-token|crucible-cli|crates/crucible/crucible-cli/src/cli/campaign_run.rs|qemu
 qemu-token|crucible-cli|crates/crucible/crucible-cli/src/cli/verify_serve/packaged_executor.rs|QEMU
@@ -618,11 +617,6 @@ shape-header|crates/crucible/crucible-engine/tests/gate_debug_cli_surface.rs
 shape-header|crates/crucible/crucible-engine/tests/support/mod.rs
 qemu-manifest|crucible-cli|crates/crucible/crucible-cli/Cargo.toml|crucible-daemon|dev-dependencies
 # The block-overlay closure test wraps a device snapshot in the host-I/O continuation the store persists.
-qemu-token|crucible-daemon|crates/crucible/crucible-daemon/src/vm_lifecycle/checkpoint_store/tests/block_overlay_closure.rs|Qemu
-qemu-token|crucible-daemon|crates/crucible/crucible-daemon/src/vm_lifecycle/network_faults/route_tests/campaign_choices.rs|Qemu
-qemu-token|crucible-daemon|crates/crucible/crucible-daemon/src/vm_lifecycle/network_faults/route_tests/campaign_choices.rs|crucible_qemu
-qemu-token|crucible-daemon|crates/crucible/crucible-daemon/src/vm_lifecycle/network_faults/route_tests/campaign_choices.rs|qemu
-qemu-token|crucible-daemon|crates/crucible/crucible-daemon/src/vm_lifecycle/network_faults/tests/campaign_frame_loss.rs|Qemu
 qemu-token|crucible-engine|crates/crucible/crucible-engine/src/model/temporal_graph/core/debug_navigation.rs|qemu
 qemu-token|crucible-engine|crates/crucible/crucible-engine/src/scheduler/tests/production_backend.rs|qemu
 qemu-token|crucible-cli|crates/crucible/crucible-cli/src/cli/campaign_run/execution.rs|qemu

@@ -78,7 +78,7 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
             ("default", &[][..]),
             (
                 "test-support",
-                &["crucible-engine/test-double", "crucible-shmem/test-support"][..],
+                &["crucible-engine/test-double", "crucible-qemu-shmem/test-support"][..],
             ),
         ],
     );
