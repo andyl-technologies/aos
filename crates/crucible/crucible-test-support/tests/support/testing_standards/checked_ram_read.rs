@@ -97,10 +97,43 @@ const INPUTS: &[Input] = &[
         required: &[
             "let original = self.original;",
             "let mut first = None;",
+            "let mut original_failure: Option<crate::owned_decode::DecodeAdmissionError> = None;",
+            "if let Some(source) = &original_failure { return Err(crate::content_store::batch::admission_under(original, source.clone(), )); }",
+            r#"
+                if let Err(source) = original.verify_live() {
+                    original_failure = Some(source.clone());
+                    return Err(crate::content_store::batch::admission_under(
+                        original, source,
+                    ));
+                }
+            "#,
+            r#"
+                Ok(()) => match original.verify_live() {
+                    Ok(()) => Ok(()),
+                    Err(source) => {
+                        original_failure = Some(source.clone());
+                        Err(crate::content_store::batch::admission_under(
+                            original, source,
+                        ))
+                    }
+                },
+            "#,
+            "(None, Some(source), Ok(value)) => { drop(value); Err(RamStoreError::from_admission(original, source)) }",
+            r#"
+                (None, Some(source), Err(storage)) => {
+                    if matches!(&storage, StoreError::DecodeAdmission { source: returned, .. } if returned == &source)
+                    {
+                        Err(RamStoreError::from_admission(original, source))
+                    } else {
+                        let first = RamStoreError::from_admission(original, source);
+                        Err(self.fail_validation_with_provider(first, storage).into())
+                    }
+                }
+            "#,
             "let result = operation(original, &mut ||",
             "first = Some(error);",
-            "(Some(first), Ok(value)) => { drop(value); Err(first) }",
-            "(Some(first), Err(storage @ StoreError::RamBoundary { .. })) => { Err(self.retain_boundary(first, storage)) }",
+            "(Some(first), _, Ok(value)) => { drop(value); Err(first) }",
+            "(Some(first), _, Err(storage @ StoreError::RamBoundary { .. })) => { Err(self.retain_boundary(first, storage)) }",
             "self.state.first_failure = Some(FirstReadCause::Boundary(cause.clone()));",
             "let cause = slot.retain(Some(first), storage.into());",
         ],

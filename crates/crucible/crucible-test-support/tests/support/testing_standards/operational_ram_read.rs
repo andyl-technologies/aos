@@ -358,7 +358,40 @@ pub(super) const CONTRACTS: &[Contract] = &[
                 path: "crates/crucible/crucible-store/src/ram/store_boundary.rs",
                 required: &[
                     r#"if let Some(first) = &self.state.first_failure { return Err(match first { FirstReadCause::Boundary(failure) => RamStoreError::Boundary(failure.clone()), first => first.error().into(), }); }"#,
-                    r#"(Some(first), Err(storage @ StoreError::RamBoundary { .. })) => { Err(self.retain_boundary(first, storage)) }"#,
+                    r#"(Some(first), _, Err(storage @ StoreError::RamBoundary { .. })) => { Err(self.retain_boundary(first, storage)) }"#,
+                    r#"let mut original_failure: Option<crate::owned_decode::DecodeAdmissionError> = None;"#,
+                    r#"if let Some(source) = &original_failure { return Err(crate::content_store::batch::admission_under(original, source.clone(), )); }"#,
+                    r#"
+                        if let Err(source) = original.verify_live() {
+                            original_failure = Some(source.clone());
+                            return Err(crate::content_store::batch::admission_under(
+                                original, source,
+                            ));
+                        }
+                    "#,
+                    r#"
+                        Ok(()) => match original.verify_live() {
+                            Ok(()) => Ok(()),
+                            Err(source) => {
+                                original_failure = Some(source.clone());
+                                Err(crate::content_store::batch::admission_under(
+                                    original, source,
+                                ))
+                            }
+                        },
+                    "#,
+                    r#"(None, Some(source), Ok(value)) => { drop(value); Err(RamStoreError::from_admission(original, source)) }"#,
+                    r#"
+                        (None, Some(source), Err(storage)) => {
+                            if matches!(&storage, StoreError::DecodeAdmission { source: returned, .. } if returned == &source)
+                            {
+                                Err(RamStoreError::from_admission(original, source))
+                            } else {
+                                let first = RamStoreError::from_admission(original, source);
+                                Err(self.fail_validation_with_provider(first, storage).into())
+                            }
+                        }
+                    "#,
                     r#"self.state.first_failure = Some(FirstReadCause::Boundary(cause.clone()));"#,
                 ],
                 counts: &[(r#"fn retain_boundary("#, 1)],
