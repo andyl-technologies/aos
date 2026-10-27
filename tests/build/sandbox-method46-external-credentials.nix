@@ -122,6 +122,9 @@ in
         assert len(checkpoint) == 156
         assert int.from_bytes(checkpoint[52:60], "big") == native_cut["next_sequence"]
         assert checkpoint[60:92] == bytes(native_cut["head"])
+        sidecar = checkpoint_path.with_name(f"{purpose}-sidecar").read_bytes()
+        assert len(sidecar) == 429 and sidecar.count(checkpoint) == 1
+        assert len(checkpoint_path.with_name(f"{purpose}-nv").read_bytes()) == 32
 
     def output_bytes():
         return {

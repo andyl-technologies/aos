@@ -32,7 +32,7 @@ is deferred until its backend contract settles.
 Recent committed startup fixes close narrower prerequisites:
 
 - Runtime external credential preparation passes at
-  `/nix/store/8slkspm4ybnkv19q89s6aybn478k108r-sandbox-method46-external-credentials-check`
+  `/nix/store/zzxfj9g43h30iqi3mhiz5mmqjj6xirzf-sandbox-method46-external-credentials-check`
   (NAR hash `sha256-2qbUhg+VVoIDdn8PfJz1PPEFnC0mRqLVjaz6UVDv8dc=`).
   Fresh normal keys and canonical public manifests cover both actual 29-member
   initializer delivery rosters, with paired endpoint manifests and distinct
@@ -40,7 +40,9 @@ Recent committed startup fixes close narrower prerequisites:
   preparation records and a native-history comparison cut supply the fixed
   public provision and expected checkpoint DATA. Checks reject shared purpose
   pins, empty history, invalid node inputs, unsafe private-record modes and
-  replacement of earlier output. Secrets are runtime inputs/outputs outside the
+  replacement of earlier output. The generator also independently encodes the
+  exact 429-byte initial sidecar and expected NV value for comparison with the
+  installed producer. Secrets are runtime inputs/outputs outside the
   Nix store; neither host-only fixture source enters ordinary production Rust
   source. This prepares comparisons and credentials; it supplies no live normal
   authority, authenticated TPM observation or installed Source execution.
@@ -86,7 +88,12 @@ Recent committed startup fixes close narrower prerequisites:
   `/nix/store/d7cjy7krd4h5pcl4w3bbh3nz3i0wrnjy-aos-resource-parent-enclosure-v6`
   (NAR hash `sha256-JQdJktn1d2FLGbpSplA7m229x0B3cbMmqoyk5SfzDAE=`).
   The selected-initializer VM's parent also passes, with identical content;
-  that VM's image assembly and startup qualification remain in progress.
+  that VM now passes at
+  `/nix/store/vf1mg18g480l56kf89mcpk5f7pkqr1pj-aos-fleet-test-sandbox-method46-initial-startup-0`
+  (NAR hash `sha256-2my9c65K52brG5OvWVYDg71Wwnq/eL1GW9mC2MiT7vU=`).
+  Its enforcing startup assertions pass on both boots across a real QEMU/vTPM
+  power cycle. Both manual units remain loaded, inactive and never started.
+  This qualifies startup composition, not initial provisioning execution.
 
 - A host-only independent-approval fixture now uses the production request and
   provisioning decoders before signing either fixed purpose. It compares the

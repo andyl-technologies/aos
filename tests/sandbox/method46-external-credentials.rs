@@ -28,8 +28,12 @@ use aos_sandbox_broker_session_security::method46_initial_provisioning::{
     Method46InitialPurposeV1, Method46InitialRequestDataV1,
 };
 use aos_sandbox_controller_domain::policy_compiler::encode_source_hold_readback_signer_credential_v1;
+use aos_sandbox_model::RecordNamespace;
 use aos_sandbox_policy::policy_signer_credential::{
     PolicySignerRoleV1, encode_policy_signer_credential_v1,
+};
+use aos_sandbox_protocol::domain_ledger::transaction::{
+    JournalRecord, JournalTransaction, encode_transaction,
 };
 use aos_sandbox_protocol::host_execution_no_apply::root_attestation::RootNoApplyPublicPinDataV2;
 use aos_sandbox_protocol::method46_provisioning::{
@@ -267,6 +271,25 @@ fn run() -> Result<()> {
             &expected.join(format!("{name}-checkpoint")),
             &request.checkpoint(),
         )?;
+        let checkpoint = request.checkpoint();
+        let digest = Sha256::new()
+            .chain_update(b"aos.sandbox.broker-session.tpm-floor.initial-sidecar.v1\0")
+            .chain_update(checkpoint)
+            .finalize();
+        let transaction = JournalTransaction::new(
+            digest[..16].try_into()?,
+            vec![JournalRecord::put(
+                RecordNamespace::BrokerSessionTraffic,
+                b"checkpoint".to_vec(),
+                checkpoint.to_vec(),
+            )],
+        )?;
+        let sidecar: Vec<u8> = encode_transaction(&transaction, 1)?.concat();
+        if sidecar.len() != 429 {
+            return Err("unexpected canonical initial sidecar geometry".into());
+        }
+        write_new(&expected.join(format!("{name}-sidecar")), &sidecar)?;
+        write_new(&expected.join(format!("{name}-nv")), &request.expected_nv())?;
     }
     for directory_path in [&delivered, &private, &expected, root] {
         File::open(directory_path)?.sync_all()?;

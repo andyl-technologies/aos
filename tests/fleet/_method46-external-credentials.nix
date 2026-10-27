@@ -14,7 +14,9 @@ pkgs.mkCargoPackage {
   cargoRoot = "crates";
   buildType = "debug";
   cargoFlags = "-p aos-sandbox-service-journal-probe --bin aos-method46-external-credentials";
-  cargoTestFlags = "-p aos-sandbox-service-journal-probe --bin aos-method46-external-credentials";
+  # This fixture has no Rust unit cases. The registered CLI check executes
+  # the actual installed binary against both complete credential rosters.
+  doCheck = false;
   postPatch = ''
     cp tests/sandbox/method46-external-credentials.rs \
       crates/sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal/src/bin/aos-method46-external-credentials.rs
