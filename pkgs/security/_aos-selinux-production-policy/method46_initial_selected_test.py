@@ -144,7 +144,7 @@ class SelectedInitialPolicyTest(unittest.TestCase):
         body = re.sub(r"#[^\n]*", "", self.case["moduleText"])
         body = re.sub(r"require\s*\{[^}]*\}", "", body)
         declared = set(re.findall(r"^type ([a-z0-9_]+);", body, re.M))
-        actors = {*checker.DOMAINS, *checker.owner_policy.ENFORCING, "init_t", "kernel_t", "unconfined_t"}
+        actors = {*checker.DOMAINS, *checker.owner_policy.ENFORCING, "init_t", "kernel_t", "unconfined_t", "devicekit_disk_t"}
         required = (set(re.findall(r"\b[a-z][a-z0-9_]*_t\b", body)) | actors) - declared
         classes = set(re.findall(r":([a-z][a-z0-9_]*)\b", body))
         positive, negative, transitions = initial.matrix(checker.Access, checker.Transition, checker.accesses, actors)
@@ -160,6 +160,13 @@ class SelectedInitialPolicyTest(unittest.TestCase):
         manage_file = "append create getattr ioctl link lock open read rename setattr unlink write"
         upstream_proc_files = f"allow domain self:file {{ {manage_file} }};"
         explicit_proc_files = f"allow {{ domain -{proc_file_attribute} }} self:file {{ {manage_file} }};"
+        # Both upstream socket-observation interfaces expand to this cell.
+        # Preserve observations of ordinary domains while excluding private
+        # producer channels, including an otherwise inert foreign observer.
+        upstream_socket_observation = "allow devicekit_disk_t domain:unix_stream_socket getattr;"
+        private_socket_observation = (
+            "allow devicekit_disk_t { domain -aos_private_root_custody_domain }:unix_stream_socket getattr;"
+        )
         source = "\n".join((
             *(f"class {name}" for name in sorted(classes)), "sid kernel",
             *(f"class {name} {{ {' '.join(classmap[name])} }}" for name in sorted(classes)),
@@ -168,6 +175,8 @@ class SelectedInitialPolicyTest(unittest.TestCase):
             *(f"type {name};" for name in sorted(required)),
             "role system_r;", body,
             explicit_proc_files,
+            "typeattribute devicekit_disk_t domain;",
+            private_socket_observation,
             "role system_r types { " + " ".join(sorted(required | declared)) + " };",
             "user system_u roles system_r;", "sid kernel system_u:system_r:kernel_t",
         ))
@@ -183,9 +192,15 @@ class SelectedInitialPolicyTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             policy = setools.SELinuxPolicy(str(binary))
             checker._check_method46_initial_policy(setools, policy)
+            self.assertTrue(checker.allow_rules(
+                setools, policy, checker.Access("devicekit_disk_t", "devicekit_disk_t", "unix_stream_socket", "getattr"),
+            ))
             for attribute in attributes:
                 members = checker.attribute_members(setools, policy, attribute)
-                self.assertEqual(members, set(initial.DOMAINS))
+                expected = set(initial.DOMAINS)
+                if attribute == "domain":
+                    expected.add("devicekit_disk_t")
+                self.assertEqual(members, expected)
                 self.assertFalse(members.intersection(initial.OBJECT_TYPES))
             self.assertEqual(
                 checker.attribute_members(setools, policy, proc_file_attribute),
@@ -211,6 +226,15 @@ class SelectedInitialPolicyTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             with self.assertRaisesRegex(ValueError, "foreign method46 initial custody grant exists: .*helper_t file ioctl"):
+                checker._check_method46_initial_policy(setools, setools.SELinuxPolicy(str(binary)))
+
+            path.write_text(source.replace(private_socket_observation, upstream_socket_observation))
+            result = subprocess.run(
+                [os.environ["AOS_METHOD46_CHECKPOLICY"], "-c", "33", "-U", "reject", "-o", str(binary), str(path)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with self.assertRaisesRegex(ValueError, "foreign method46 initial custody grant exists: .*initial_t unix_stream_socket getattr"):
                 checker._check_method46_initial_policy(setools, setools.SELinuxPolicy(str(binary)))
 
 

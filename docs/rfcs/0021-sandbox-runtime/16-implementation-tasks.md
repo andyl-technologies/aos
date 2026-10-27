@@ -31,6 +31,17 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The linked scan then passed the helper file cut and found inherited socket
+  observation from `devicekit_disk_t` to an initial producer. Both upstream
+  blanket socket-observation interfaces now exclude the existing private-custody
+  attribute. Explicit producer/helper/PID 1 channel grants remain unchanged.
+  Native compiled-policy tests preserve ordinary-domain observation and reject
+  restoration of the foreign producer observation; all four selected-role cases
+  and the custody/rendering suites pass. All ordered refpolicy patches apply
+  without fuzz to the pinned source. The updated production policy is building;
+  no installed provisioning or connected lifecycle result follows from these
+  native checks. Admission remains closed.
+
 - The first selected-initializer VM build stopped before boot: the merged
   policy inherited `domain self:file manage_file_perms` for the fixed helpers,
   violating their existing ioctl exclusion. A refpolicy marker now excludes

@@ -106,4 +106,29 @@
  	allow domain $1:process sigchld;
  ')
  
-
+@@ -946,10 +946,10 @@
+ #
+ interface(`domain_getattr_all_sockets',`
+ 	gen_require(`
+-		attribute domain;
++		attribute domain, aos_private_root_custody_domain;
+ 	')
+ 
+-	allow $1 domain:socket_class_set getattr;
++	allow $1 { domain -aos_private_root_custody_domain }:socket_class_set getattr;
+ ')
+ 
+ ########################################
+@@ -1146,10 +1146,10 @@
+ #
+ interface(`domain_getattr_all_stream_sockets',`
+ 	gen_require(`
+-		attribute domain;
++		attribute domain, aos_private_root_custody_domain;
+ 	')
+ 
+-	allow $1 domain:unix_stream_socket getattr;
++	allow $1 { domain -aos_private_root_custody_domain }:unix_stream_socket getattr;
+ ')
+ 
+ ########################################
