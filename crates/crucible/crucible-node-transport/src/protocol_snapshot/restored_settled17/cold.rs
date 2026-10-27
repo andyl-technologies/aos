@@ -15,6 +15,10 @@ use crate::reference_packet::service::native_snapshot::PacketNativeRestoredSettl
 #[path = "cold_context.rs"]
 mod context;
 
+#[path = "cold/native_pair18.rs"]
+mod native_pair18;
+pub use native_pair18::RestoredSettledNative18GraphAttempt;
+
 /// Borrows exactly framed native roles and their final Source Journal17.
 ///
 /// The plan cannot authorize native adoption or report semantic completion.
@@ -565,7 +569,7 @@ mod tests {
 
     // These deliberately inert fixtures establish framing only. No native
     // decoder, signed Source history or live issuer accepts their empty DTOs.
-    fn roles() -> [(ContentRef, Vec<u8>); 5] {
+    pub(super) fn roles() -> [(ContentRef, Vec<u8>); 5] {
         let before = br#"{"framing":"before"}"#.to_vec();
         let before_ref = canonical::content_ref(&before, "application/json").unwrap();
         let control = br#"{"framing":"control"}"#.to_vec();
@@ -618,7 +622,7 @@ mod tests {
         ]
     }
 
-    fn input(roles: &[(ContentRef, Vec<u8>); 5]) -> RestoredSettledNative17Input<'_> {
+    pub(super) fn input(roles: &[(ContentRef, Vec<u8>); 5]) -> RestoredSettledNative17Input<'_> {
         RestoredSettledNative17Input {
             snapshot: (&roles[0].0, &roles[0].1),
             current_protocol: (&roles[1].0, &roles[1].1),
@@ -628,7 +632,7 @@ mod tests {
         }
     }
 
-    fn limits(roles: &[(ContentRef, Vec<u8>); 5]) -> RestoredSettledNative17Limits {
+    pub(super) fn limits(roles: &[(ContentRef, Vec<u8>); 5]) -> RestoredSettledNative17Limits {
         RestoredSettledNative17Limits::new(
             std::array::from_fn(|index| roles[index].1.len()),
             1,

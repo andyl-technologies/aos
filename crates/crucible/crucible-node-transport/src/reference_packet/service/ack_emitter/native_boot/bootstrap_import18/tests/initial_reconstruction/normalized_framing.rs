@@ -256,6 +256,15 @@ pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap)
         pointers
     );
     assert_eq!(attempt.retained_backing_data().unwrap(), backing);
+    if matches!(
+        case,
+        "initial_context_complete"
+            | "initial_context_incomplete"
+            | "initial_context_terminal_expired"
+    ) {
+        assert_native_graph_prefix(owner, &attempt, case == "initial_context_complete");
+    }
+
     assert_eq!(
         admission.framing_calls.get(),
         match case {
@@ -301,4 +310,101 @@ fn normalized_native_framing_joins_actual_history_before_callback() {
     ] {
         flight(case);
     }
+}
+
+// This component admission observes rows only. It cannot issue genuine native
+// phase funding; the inert graph must still refuse its semantic reader.
+struct GraphAdmission {
+    calls: Cell<usize>,
+    observations: Cell<usize>,
+}
+
+impl NativeCold17Admission for GraphAdmission {
+    fn begin_data(&self, _: NativeCold17PrewalkData) -> Result<(), ProviderError> {
+        self.calls.set(self.calls.get() + 1);
+        Ok(())
+    }
+
+    fn construct_data(&self, _: NativeCold17ConstructionData) -> Result<(), ProviderError> {
+        self.calls.set(self.calls.get() + 1);
+        Ok(())
+    }
+
+    fn finish_data(&self, _: NativeCold17Work, _: usize) -> Result<(), ProviderError> {
+        self.calls.set(self.calls.get() + 1);
+        Ok(())
+    }
+}
+
+impl crate::reference_packet::service::ack_emitter::native_boot::bootstrap_import18::native_framing::OriginalImport18NativeGraphAdmission for GraphAdmission {
+    fn finish_attempt_data(
+        &self,
+        attempt: &crate::protocol_snapshot::restored_settled17::RestoredSettledNative18GraphAttempt,
+        actual: usize,
+    ) -> Result<(), ProviderError> {
+        assert!(!attempt.graphs_decoded_data());
+        assert_eq!(attempt.retained_requested_storage_data(usize::MAX).unwrap(), actual);
+        assert_eq!(self.observations.replace(1), 0);
+        self.calls.set(self.calls.get() + 1);
+        Ok(())
+    }
+}
+
+fn assert_native_graph_prefix(
+    owner: &OriginalImport18RawBootstrap,
+    normalization: &OriginalImport18NormalizationAttempt,
+    expect_backing: bool,
+) {
+    let pointers = owner.inputs.bodies_data().unwrap().map(<[u8]>::as_ptr);
+    let retained = owner.retained_requested_bytes().unwrap();
+    let admission = GraphAdmission {
+        calls: Cell::new(0),
+        observations: Cell::new(0),
+    };
+    let mut graphs = None;
+
+    assert!(
+        owner
+            .decode_native17_graphs_into_data(normalization, &mut graphs, &admission)
+            .is_err()
+    );
+    let attempt = graphs.as_ref().expect("actual graph attempt retained");
+    assert!(!attempt.graphs_decoded_data());
+    let graph_backing = attempt.retained_requested_storage_data(usize::MAX).unwrap();
+    assert_eq!(graph_backing > 0, expect_backing);
+    assert_eq!(admission.observations.get(), 1);
+    let calls = admission.calls.get();
+    if expect_backing {
+        assert!(calls > 3, "framing alone cannot retain native raw roles");
+    } else {
+        assert_eq!(
+            calls, 1,
+            "only final observation runs after a guard refusal"
+        );
+    }
+
+    assert!(
+        owner
+            .decode_native17_graphs_into_data(normalization, &mut graphs, &admission)
+            .is_err()
+    );
+    assert_eq!(admission.calls.get(), calls);
+    assert_eq!(
+        graphs
+            .as_ref()
+            .unwrap()
+            .retained_requested_storage_data(usize::MAX)
+            .unwrap(),
+        graph_backing
+    );
+    assert_eq!(owner.retained_requested_bytes().unwrap(), retained);
+    assert_eq!(
+        owner.inputs.bodies_data().unwrap().map(<[u8]>::as_ptr),
+        pointers
+    );
+    assert!(
+        OriginalImport18RawBootstrap::native17_graph_decode_counter_scratch_data()
+            > OriginalImport18RawBootstrap::normalized_native17_framing_counter_scratch_data::<()>(
+            )
+    );
 }

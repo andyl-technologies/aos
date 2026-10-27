@@ -466,7 +466,7 @@ pub(crate) mod current_import17;
 
 mod cold;
 pub(crate) mod cold_admission;
-pub use cold::RestoredSettledNative17Plan;
+pub use cold::{RestoredSettledNative17Plan, RestoredSettledNative18GraphAttempt};
 pub use cold_admission::{
     NativeCold17Admission, NativeCold17ConstructionData, NativeCold17PrewalkData, NativeCold17Work,
 };

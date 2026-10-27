@@ -15,6 +15,25 @@ use crate::reference_packet::service::complete_restore::import18::{
     OriginalImport18NormalizationAttempt, PacketNativeImport18Normalization,
 };
 
+/// Observes the actual native prefix after either decoder outcome.
+///
+/// Constructor admission remains inherited from the independently funded cold
+/// reader. This final observation includes the surviving attempt in the actual
+/// enclosing owner and does not declare any native work stage completed.
+pub(in super::super) trait OriginalImport18NativeGraphAdmission:
+    NativeCold17Admission
+{
+    /// Observes retained graph backing before terminal original custody guards.
+    ///
+    /// # Errors
+    /// Refuses stale custody, an incomplete enclosing census or short credit.
+    fn finish_attempt_data(
+        &self,
+        attempt: &crate::protocol_snapshot::restored_settled17::RestoredSettledNative18GraphAttempt,
+        actual_graph_backing: usize,
+    ) -> Result<(), ProviderError>;
+}
+
 impl OriginalImport18RawBootstrap {
     /// Preflights complete native role framing inside the original guarded loan.
     ///
@@ -105,6 +124,62 @@ impl OriginalImport18RawBootstrap {
             )?;
             inspect(&plan, decoded)
         })
+    }
+
+    /// Retains both native decoder banks beneath the original normalized loan.
+    ///
+    /// The caller owns and funds the attempt's inline root before entry, plus
+    /// all original bootstrap banks, normalized-loan controls and independently
+    /// admitted cold constructors. A failed guard or reader consumes this slot
+    /// and preserves every initialized raw or typed child. Graph completion is
+    /// inert DATA; SDK/Source/semantic validation and phase funding stay required.
+    ///
+    /// # Errors
+    /// Refuses a reused slot, invalid original normalization/framing, admission
+    /// or decoder failure, short target limits, or terminal original guards.
+    pub(in super::super) fn decode_native17_graphs_into_data(
+        &self,
+        normalization: &OriginalImport18NormalizationAttempt,
+        destination: &mut Option<
+            crate::protocol_snapshot::restored_settled17::RestoredSettledNative18GraphAttempt,
+        >,
+        admission: &dyn OriginalImport18NativeGraphAdmission,
+    ) -> Result<(), ProviderError> {
+        use crate::protocol_snapshot::restored_settled17::RestoredSettledNative18GraphAttempt;
+
+        // Install the once-attempt even when the first original guard refuses.
+        let attempt = RestoredSettledNative18GraphAttempt::begin_into_data(destination)?;
+        let outcome = self.with_normalized_native17_framing_data(
+            normalization,
+            admission,
+            |plan, decoded| {
+                let maximum = usize::try_from(decoded.limits.maximum_target_requested_bytes.get())
+                    .map_err(|_| refused())?;
+                attempt.read_framed_with_admission_data(plan, maximum, admission)
+            },
+        );
+
+        // Observe real surviving backing even when framing or decoding refused.
+        // The callback cannot bypass a fresh original/cut guard after it runs.
+        let observed = attempt
+            .retained_requested_storage_data(usize::MAX)
+            .and_then(|actual| admission.finish_attempt_data(attempt, actual));
+        let terminal = self.with_completed_inputs_data(|_| Ok(()));
+        attempt.finish_original_guards_data(outcome.and(observed).and(terminal))
+    }
+
+    /// Names the separate original loan and owning native graph reader controls.
+    pub(in super::super) fn native17_graph_decode_counter_scratch_data() -> usize {
+        use crate::protocol_snapshot::restored_settled17::RestoredSettledNative18GraphAttempt;
+
+        Self::normalized_native17_framing_counter_scratch_data::<()>()
+            + RestoredSettledNative18GraphAttempt::counter_scratch_data()
+            + size_of::<&dyn OriginalImport18NativeGraphAdmission>()
+            + size_of::<&mut Option<RestoredSettledNative18GraphAttempt>>()
+            + size_of::<Result<&mut RestoredSettledNative18GraphAttempt, ProviderError>>()
+            + size_of::<Result<(), ProviderError>>() * 4
+            + size_of::<Result<usize, ProviderError>>()
+            + size_of::<Result<usize, std::num::TryFromIntError>>()
     }
 
     /// Names actual normalized-framing controls without changing initial demand.
