@@ -69,7 +69,7 @@ failed attempts appear in the dated entries below.
 | Native compiler correction | Signed atomic `4b64466043`, conventional `3038851ffc`, preserves the deliberately disconnected RR birth body and all CPU admission refusals, documenting its unused state. Fresh configure, actual owning Source object, direct default/provider Source objects, six syntax checks and extraction pass with unchanged warnings. The packaged configuration completes all 1,941 x86 image compile/link actions with its existing system libfdt. | The separate minimal configuration's bundled-libfdt compiler failure remains recorded. Compilation and linking establish no runtime qualification. Complete execution backing, containing prebirth payment and external collection remain absent. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The latest isolated strict host-library check reports 20 errors: one large-error return, sixteen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 705 bindings: 686 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 709 bindings: 690 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Archive transfer and receiving retention
 
@@ -172,6 +172,24 @@ whitespace in the separately passing store test.
 Archive inspection still uses ordinary envelope reads between boundary polls.
 Blocked-I/O deadlines, the outer paired GC guards and genuine native activation
 remain unqualified. This staging component does not qualify those requirements.
+
+#### Original revocation at shared store boundaries
+
+The shared checked-store adapter verifies its saved original before and after
+each caller callback. A callback that revokes that original and returns success
+cannot permit a successful operation. Swallowing the callback's admission error
+also cannot turn the operation into success. A direct original refusal retains
+its existing typed error and custody; a distinct later provider cleanup failure
+uses the already prepaid validation carrier. A caller cancellation remains first
+when its own callback also revokes the original.
+
+All-target compilation, strict store/campaign library Clippy and the four new
+revocation controls pass. The broader RAM, transfer and policy suites are running.
+Formatting and coverage inventory pass: 665 model, 25 format and nineteen native
+bindings qualify no capability. Mandatory application compilation is running
+against an immutable source matching all 7,943 frozen inputs, including 5,479
+Rust, TOML and lockfile inputs. No passing application result or blocked-I/O
+deadline qualification is recorded for this component.
 
 #### Executor exact-candidate handoff retention
 

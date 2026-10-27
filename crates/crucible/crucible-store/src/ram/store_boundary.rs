@@ -11,6 +11,9 @@ use super::read_failure::RamReadValidation;
 use super::read_failure::{FirstReadCause, RamReadContinuation};
 use super::{PreparedRamFailure, RamFailureAdmission, RamStoreError, Work};
 
+#[cfg(test)]
+mod tests;
+
 /// Marks a refusal produced by the RAM adapter's current callback.
 ///
 /// Its constructor is private. A direct marker is mapped back to cancellation
@@ -162,14 +165,35 @@ impl<'a> WorkAccount<'a> {
         }
         let original = self.original;
         let mut first = None;
+        let mut original_failure: Option<crate::owned_decode::DecodeAdmissionError> = None;
         let result = operation(original, &mut || {
             if first.is_some() {
                 return Err(StoreError::RamBoundary {
                     source: RamBoundaryRefusal(()),
                 });
             }
+            if let Some(source) = &original_failure {
+                return Err(crate::content_store::batch::admission_under(
+                    original,
+                    source.clone(),
+                ));
+            }
+            if let Err(source) = original.verify_live() {
+                original_failure = Some(source.clone());
+                return Err(crate::content_store::batch::admission_under(
+                    original, source,
+                ));
+            }
             match boundary() {
-                Ok(()) => Ok(()),
+                Ok(()) => match original.verify_live() {
+                    Ok(()) => Ok(()),
+                    Err(source) => {
+                        original_failure = Some(source.clone());
+                        Err(crate::content_store::batch::admission_under(
+                            original, source,
+                        ))
+                    }
+                },
                 Err(error) => {
                     first = Some(error);
                     Err(StoreError::RamBoundary {
@@ -179,16 +203,34 @@ impl<'a> WorkAccount<'a> {
             }
         });
 
-        match (first, result) {
-            (None, result) => result.map_err(RamStoreError::from),
-            (Some(first), Ok(value)) => {
+        match (first, original_failure, result) {
+            (None, None, result) => result.map_err(RamStoreError::from),
+            (None, Some(source), Ok(value)) => {
+                drop(value);
+                Err(RamStoreError::from_admission(original, source))
+            }
+            (None, Some(source), Err(storage)) => {
+                if matches!(
+                    &storage,
+                    StoreError::DecodeAdmission {
+                        source: returned,
+                        ..
+                    } if returned == &source
+                ) {
+                    Err(storage.into())
+                } else {
+                    let first = RamStoreError::from_admission(original, source);
+                    Err(self.fail_validation_with_provider(first, storage).into())
+                }
+            }
+            (Some(first), _, Ok(value)) => {
                 drop(value);
                 Err(first)
             }
-            (Some(first), Err(storage @ StoreError::RamBoundary { .. })) => {
+            (Some(first), _, Err(storage @ StoreError::RamBoundary { .. })) => {
                 Err(self.retain_boundary(first, storage))
             }
-            (Some(first), Err(storage)) => {
+            (Some(first), _, Err(storage)) => {
                 // A retained failure poisons this Work; no second operation
                 // can consume the linear reservation again.
                 match self.state.boundary_slot.take() {
