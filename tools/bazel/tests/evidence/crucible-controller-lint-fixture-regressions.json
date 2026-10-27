@@ -15,6 +15,13 @@
     },
     "source": "/nix/store/s4f82nzs2ra9j67av9w1b3a25f6xmlzd-aos-workspace-src"
   },
+  "application_compilation_validation": {
+    "compiled_test_artifacts": 185,
+    "output": "/nix/store/b9180qqhyb02rgp1vk3iv9iln5gzw6j2-aos-test-targets-0.1.0",
+    "receipt": "tools/bazel/tests/evidence/crucible-controller-audit-application-compilation.json",
+    "receipt_sha256": "33471e9e7bf8578ae34333ef5311a59cc270f91ffca2a031f0834c8d9d3fe171",
+    "status": "PASS"
+  },
   "limits": [
     "Focused fixture regressions only; this receipt does not qualify complete Clippy coverage, production cutover or unrelated pre-existing failures."
   ],
@@ -23,7 +30,6 @@
     "8ef94a7a030"
   ],
   "pending_validation": [
-    "Required checks.rust.aos-test-targets application compilation for this source snapshot",
     "Complete controller package Clippy run"
   ],
   "regressions": {

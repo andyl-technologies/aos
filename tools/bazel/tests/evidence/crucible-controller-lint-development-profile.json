@@ -1,4 +1,11 @@
 {
+  "application_compilation_validation": {
+    "compiled_test_artifacts": 185,
+    "output": "/nix/store/b9180qqhyb02rgp1vk3iv9iln5gzw6j2-aos-test-targets-0.1.0",
+    "receipt": "tools/bazel/tests/evidence/crucible-controller-audit-application-compilation.json",
+    "receipt_sha256": "33471e9e7bf8578ae34333ef5311a59cc270f91ffca2a031f0834c8d9d3fe171",
+    "status": "PASS"
+  },
   "configurations": {
     "debug": {
       "cargo_profile": "debug",
@@ -54,8 +61,7 @@
     "rustc_flags"
   ],
   "pending_validation": [
-    "Complete controller package Clippy execution with this development-profile configuration",
-    "Required checks.rust.aos-test-targets application compilation for the ten-source Rust binding"
+    "Complete controller package Clippy execution with this development-profile configuration"
   ],
   "prior_release_configuration": {
     "only_other_changes": {
